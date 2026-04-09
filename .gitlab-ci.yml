@@ -1,0 +1,16 @@
+stages:
+  - test
+
+default:
+  image: python:3.12
+
+before_script:
+  - python -V
+  - pip install --upgrade pip
+  - pip install -e .
+  - pip install pytest
+
+test:
+  stage: test
+  script:
+    - pytest
