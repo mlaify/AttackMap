@@ -96,6 +96,7 @@ def summarize_architecture(scan: ScanResult, graph: nx.DiGraph) -> str:
         "# Architecture Summary",
         "",
         "## Overview",
+        f"- AttackMap inferred a {'web-facing' if route_count else 'non-web'} repository with {route_count} entry point{'s' if route_count != 1 else ''}.",
         f"- Files scanned: {scan.files_scanned}",
         f"- Languages detected: {', '.join(scan.languages) if scan.languages else 'none'}",
         f"- Inferred entry points: {route_count}",
@@ -112,6 +113,14 @@ def summarize_architecture(scan: ScanResult, graph: nx.DiGraph) -> str:
                 "",
                 "## Entry Point Concentration",
                 *[f"- {file}: {count} routes" for file, count in common],
+            ]
+        )
+        busiest_file, busiest_count = common[0]
+        lines.extend(
+            [
+                "",
+                "## Likely Review Starting Point",
+                f"- Start with `{busiest_file}`. It contains {busiest_count} of the detected routes and is the fastest place to validate exposure and trust boundaries.",
             ]
         )
 
@@ -161,6 +170,9 @@ def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurfa
     external_targets = sorted({call.target for call in scan.external_calls})
     auth_summary = sorted({a.hint for a in scan.auth_hints})
     high_risk = [surface for surface in ordered_surfaces if surface.risk == "high"]
+    auth_and_admin = [surface for surface in ordered_surfaces if surface.category in {"auth", "admin"}]
+    public_entry_points = [surface for surface in ordered_surfaces if surface.exposure == "public" and surface.category not in {"auth", "admin", "health"}]
+    operational_routes = [surface for surface in ordered_surfaces if surface.category in {"health", "internal"}]
 
     lines = [
         "# Attack Surface",
@@ -182,15 +194,35 @@ def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurfa
     else:
         lines.append("- No high-risk entry points were classified")
 
-    lines.extend(["", "## Classified Routes"])
-    if ordered_surfaces:
-        for surface in ordered_surfaces[:25]:
+    lines.extend(["", "## Auth And Privileged Routes"])
+    if auth_and_admin:
+        for surface in auth_and_admin[:10]:
             lines.append(
                 f"- [{surface.risk.upper()}] {surface.method} {surface.route} "
                 f"({surface.file}) -> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
             )
     else:
-        lines.append("- No route-based attack surfaces classified")
+        lines.append("- No dedicated auth or admin routes were classified")
+
+    lines.extend(["", "## Public Application Routes"])
+    if public_entry_points:
+        for surface in public_entry_points[:10]:
+            lines.append(
+                f"- [{surface.risk.upper()}] {surface.method} {surface.route} "
+                f"({surface.file}) -> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
+            )
+    else:
+        lines.append("- No additional public application routes were classified")
+
+    lines.extend(["", "## Operational And Internal Routes"])
+    if operational_routes:
+        for surface in operational_routes[:10]:
+            lines.append(
+                f"- [{surface.risk.upper()}] {surface.method} {surface.route} "
+                f"({surface.file}) -> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
+            )
+    else:
+        lines.append("- No health, metrics, debug, or internal routes were classified")
 
     lines.extend(["", "## External Dependencies"])
     if external_targets:

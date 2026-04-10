@@ -36,6 +36,7 @@ def test_summarize_attack_surface_includes_classified_section() -> None:
 
     assert "## Priority View" in summary
     assert "## Highest-Risk Entry Points" in summary
+    assert "## Public Application Routes" in summary
     assert "[HIGH] POST /webhook/stripe (api.py) -> webhook" in summary
 
 
@@ -52,7 +53,9 @@ def test_summarize_architecture_highlights_boundaries_and_overview() -> None:
     summary = summarize_architecture(scan, build_graph(scan))
 
     assert "## Overview" in summary
+    assert "web-facing repository" in summary
     assert "- Inferred entry points: 1" in summary
+    assert "## Likely Review Starting Point" in summary
     assert "## Inferred Trust Boundaries" in summary
     assert "web -> postgresql (uses)" in summary
     assert "## Analyst Notes" in summary

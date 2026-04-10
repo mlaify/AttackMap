@@ -16,6 +16,19 @@ def _action_step(label: str, action: str) -> str:
     return f"{label}: {action}"
 
 
+def _finding_evidence(surface: AttackSurface) -> str:
+    details: list[str] = [_surface_label(surface)]
+    if surface.auth_signals:
+        details.append(f"auth signals: {', '.join(surface.auth_signals)}")
+    else:
+        details.append("no auth signals observed")
+    if surface.data_store_interaction:
+        details.append("data store reachable")
+    if surface.outbound_integration:
+        details.append("external integration reachable")
+    return "; ".join(details)
+
+
 def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[Finding]:
     surfaces = attack_surfaces if attack_surfaces is not None else identify_attack_surfaces(scan)
     findings: list[Finding] = []
@@ -37,10 +50,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if webhook_surfaces:
         findings.append(
             Finding(
-                title="Webhook endpoints detected",
+                title="Public webhook endpoint may trust attacker-controlled events",
                 severity="high",
-                evidence=[_surface_label(surface) for surface in webhook_surfaces],
-                mitigation="Verify request signatures, constrain source IPs when possible, and enforce strict payload validation.",
+                evidence=[_finding_evidence(surface) for surface in webhook_surfaces[:10]],
+                mitigation="Require signature verification before processing webhook payloads, reject replays, and keep any downstream state change behind strict validation.",
                 confidence="high",
             )
         )
@@ -48,10 +61,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if admin_surfaces:
         findings.append(
             Finding(
-                title="Privileged administrative endpoints exposed",
+                title="Administrative routes appear reachable from the main application surface",
                 severity="high",
-                evidence=[_surface_label(surface) for surface in admin_surfaces[:10]],
-                mitigation="Require strong authentication, enforce authorization server-side, and isolate admin routes from public exposure where possible.",
+                evidence=[_finding_evidence(surface) for surface in admin_surfaces[:10]],
+                mitigation="Require strong authentication and explicit server-side authorization on every admin action, and move admin routes behind a narrower exposure boundary where possible.",
                 confidence="high",
             )
         )
@@ -59,10 +72,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if upload_surfaces:
         findings.append(
             Finding(
-                title="File or import endpoints widen attacker-controlled input",
+                title="Upload or import routes expand attacker-controlled input handling",
                 severity="high",
-                evidence=[_surface_label(surface) for surface in upload_surfaces[:10]],
-                mitigation="Constrain file types, scan uploads, isolate parsers, and treat imported content as fully untrusted.",
+                evidence=[_finding_evidence(surface) for surface in upload_surfaces[:10]],
+                mitigation="Constrain accepted formats, isolate parsers, scan uploaded content, and treat imported files as untrusted all the way through storage and processing.",
                 confidence="medium",
             )
         )
@@ -70,10 +83,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if auth_surfaces and not any(surface.auth_signals for surface in auth_surfaces):
         findings.append(
             Finding(
-                title="Authentication endpoints detected without nearby auth indicators",
+                title="Authentication routes were detected without strong nearby auth controls",
                 severity="medium",
-                evidence=[_surface_label(surface) for surface in auth_surfaces[:10]],
-                mitigation="Review login and session handlers for rate limiting, token handling, and clear server-side authorization checks.",
+                evidence=[_finding_evidence(surface) for surface in auth_surfaces[:10]],
+                mitigation="Review these routes for rate limiting, credential validation, token or session handling, and the exact point where trust is established server-side.",
                 confidence="medium",
             )
         )
@@ -81,10 +94,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if public_integration_surfaces and not any(h.hint in {"jwt", "oauth", "bearer", "token"} for h in scan.auth_hints):
         findings.append(
             Finding(
-                title="Outbound integrations without strong auth indicators",
+                title="Public routes appear to influence outbound integrations without clear auth signals",
                 severity="medium",
-                evidence=[_surface_label(surface) for surface in public_integration_surfaces[:10]],
-                mitigation="Review authentication, request signing, and least-privilege credentials for outbound service calls.",
+                evidence=[_finding_evidence(surface) for surface in public_integration_surfaces[:10]],
+                mitigation="Check how outbound requests are authenticated, signed, and authorized, and confirm that untrusted route input cannot directly steer third-party actions.",
                 confidence="medium",
             )
         )
@@ -92,10 +105,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if scan.secret_hints:
         findings.append(
             Finding(
-                title="Secret-bearing environment variables referenced in code",
+                title="Secret-bearing environment variables are referenced in executable paths",
                 severity="medium",
                 evidence=[f"{hint.name} in {hint.file}" for hint in scan.secret_hints[:10]],
-                mitigation="Ensure secrets are injected securely, never logged, rotated regularly, and scoped to minimum required privilege.",
+                mitigation="Confirm these secrets are injected securely, never logged or returned, rotated regularly, and scoped only to the privileges each route actually needs.",
                 confidence="high",
             )
         )
@@ -103,10 +116,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if public_data_surfaces:
         findings.append(
             Finding(
-                title="Public routes likely sit on top of sensitive data operations",
+                title="Public routes likely sit close to sensitive data operations",
                 severity="medium",
-                evidence=[_surface_label(surface) for surface in public_data_surfaces[:10]],
-                mitigation="Validate input consistently, enforce authorization at the service boundary, and parameterize all database operations.",
+                evidence=[_finding_evidence(surface) for surface in public_data_surfaces[:10]],
+                mitigation="Validate untrusted input before it reaches business logic, enforce authorization at the route boundary, and verify that downstream queries or writes stay parameterized.",
                 confidence="medium",
             )
         )
@@ -114,10 +127,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     if not findings:
         findings.append(
             Finding(
-                title="Limited attack surface identified by heuristic scan",
+                title="Heuristic scan found only a limited attack surface",
                 severity="low",
                 evidence=["No major route, secret, or integration patterns triggered a stronger finding."],
-                mitigation="Expand parser coverage and manually validate architecture assumptions.",
+                mitigation="Treat this as a weak signal, expand parser coverage, and manually validate the real entry points and trust boundaries.",
                 confidence="low",
             )
         )
@@ -127,7 +140,6 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
 
 def generate_attack_paths(scan: ScanResult) -> list[AttackPath]:
     surfaces = identify_attack_surfaces(scan)
-    paths: list[AttackPath] = []
     webhook_surface = next((surface for surface in surfaces if surface.category == "webhook"), None)
     admin_surface = next((surface for surface in surfaces if surface.category == "admin"), None)
     auth_surface = next((surface for surface in surfaces if surface.category == "auth"), None)
@@ -141,87 +153,94 @@ def generate_attack_paths(scan: ScanResult) -> list[AttackPath]:
         None,
     )
 
-    if webhook_surface:
-        paths.append(
+    if webhook_surface and (public_data_surface or integration_surface):
+        strongest_surface = webhook_surface
+        impact = "Unauthorized state changes can be triggered from the internet and then propagated into internal data or downstream systems."
+        steps = [
+            _action_step("Entry", f"An attacker reaches {strongest_surface.method} {strongest_surface.route} in {strongest_surface.file}, a webhook-style endpoint that accepts untrusted inbound events"),
+            _action_step("Weak point", "The endpoint is treated like a trusted integration boundary before its input is fully verified"),
+        ]
+        if public_data_surface:
+            steps.append(_action_step("Propagation", "Attacker-controlled input is processed close to a data store, making unauthorized writes or state changes plausible"))
+        if integration_surface:
+            steps.append(_action_step("Propagation", "The same request path can also influence outbound service calls, which widens the blast radius beyond the application itself"))
+        steps.append(_action_step("Impact", "The attacker drives business actions that should only occur after a trusted event or validated request"))
+        return [
             AttackPath(
-                name="Webhook abuse to backend action",
-                steps=[
-                    _action_step("Entry", f"{webhook_surface.method} {webhook_surface.route} in {webhook_surface.file} is reachable from an untrusted caller"),
-                    _action_step("Abuse", "An attacker sends forged or replayed webhook payloads"),
-                    _action_step("Boundary crossed", "The application accepts untrusted event data as if it came from a trusted provider"),
-                    _action_step("Result", "Downstream state changes or data modifications occur"),
-                ],
-                impact="Unauthorized actions, fraud, or inconsistent data state.",
+                name="External event spoofing into internal state change",
+                steps=steps,
+                impact=impact,
             )
-        )
+        ]
 
     if admin_surface:
-        paths.append(
+        return [
             AttackPath(
-                name="Admin function abuse",
+                name="Administrative route abuse",
                 steps=[
-                    _action_step("Entry", f"{admin_surface.method} {admin_surface.route} in {admin_surface.file} exposes privileged behavior"),
-                    _action_step("Abuse", "An attacker bypasses, weakens, or reuses administrative access controls"),
-                    _action_step("Boundary crossed", "Administrative operations execute with attacker influence"),
+                    _action_step("Entry", f"An attacker reaches {admin_surface.method} {admin_surface.route} in {admin_surface.file}, a route associated with privileged behavior"),
+                    _action_step("Weak point", "Authentication or authorization around that route is bypassed, reused, or enforced too late"),
+                    _action_step("Propagation", "Administrative actions execute with attacker influence and affect higher-value parts of the system"),
+                    _action_step("Impact", "Privileged changes, sensitive data access, or configuration abuse follow from a single foothold"),
                 ],
-                impact="Privilege escalation, destructive configuration changes, or sensitive data access.",
+                impact="Privilege escalation or destructive administrative actions from a route that should be tightly controlled.",
             )
-        )
+        ]
 
     if auth_surface:
-        paths.append(
+        return [
             AttackPath(
-                name="Authentication boundary attack",
+                name="Authentication boundary bypass",
                 steps=[
-                    _action_step("Entry", f"{auth_surface.method} {auth_surface.route} in {auth_surface.file} governs identity or session state"),
-                    _action_step("Abuse", "Credentials, tokens, or sessions are brute-forced, replayed, or mishandled"),
-                    _action_step("Boundary crossed", "The attacker gains an authenticated foothold"),
-                    _action_step("Next move", "That foothold is used to reach higher-value internal actions"),
+                    _action_step("Entry", f"An attacker targets {auth_surface.method} {auth_surface.route} in {auth_surface.file}, which controls login, tokens, or session state"),
+                    _action_step("Weak point", "Credential handling, token validation, or session establishment is weaker than the route implies"),
+                    _action_step("Propagation", "The attacker converts that weakness into an authenticated foothold"),
+                    _action_step("Impact", "The foothold becomes the starting point for deeper movement into protected application behavior"),
                 ],
-                impact="Account takeover or a stepping stone into higher-value internal actions.",
+                impact="Account takeover or a trusted session that opens access to additional internal actions.",
             )
-        )
+        ]
 
     if upload_surface:
-        paths.append(
+        return [
             AttackPath(
-                name="Untrusted file processing abuse",
+                name="Untrusted file handling abuse",
                 steps=[
-                    _action_step("Entry", f"{upload_surface.method} {upload_surface.route} in {upload_surface.file} accepts attacker-supplied content"),
-                    _action_step("Abuse", "The attacker submits crafted files or import payloads"),
-                    _action_step("Boundary crossed", "Parsers, storage layers, or downstream consumers trust the content too broadly"),
-                    _action_step("Result", "Malicious content is executed, persisted, or used to deny service"),
+                    _action_step("Entry", f"An attacker submits content to {upload_surface.method} {upload_surface.route} in {upload_surface.file}"),
+                    _action_step("Weak point", "The application accepts or parses attacker-controlled files too broadly"),
+                    _action_step("Propagation", "Storage, parsing, or downstream consumers treat that content as safer than it is"),
+                    _action_step("Impact", "The result is execution, persistence of malicious content, or operational disruption"),
                 ],
-                impact="Remote code execution, stored malicious content, or parser-driven denial of service.",
+                impact="Stored malicious content, parser abuse, or denial of service from untrusted file input.",
             )
-        )
+        ]
 
     if public_data_surface:
-        paths.append(
+        return [
             AttackPath(
-                name="Input-to-database abuse",
+                name="Public input into sensitive data path",
                 steps=[
-                    _action_step("Entry", f"{public_data_surface.method} {public_data_surface.route} in {public_data_surface.file} accepts attacker-controlled input"),
-                    _action_step("Abuse", "That input flows into business logic without enough validation or authorization"),
-                    _action_step("Boundary crossed", "The data layer receives malformed or malicious payloads"),
-                    _action_step("Result", "Application confidentiality, integrity, or authorization guarantees are weakened"),
+                    _action_step("Entry", f"An attacker uses {public_data_surface.method} {public_data_surface.route} in {public_data_surface.file} as a public foothold"),
+                    _action_step("Weak point", "Input validation or authorization is weaker than the route exposure suggests"),
+                    _action_step("Propagation", "Attacker-controlled data reaches code operating close to the data store"),
+                    _action_step("Impact", "Confidentiality, integrity, or authorization guarantees around application data are weakened"),
                 ],
-                impact="Data exposure, data corruption, or privilege escalation through unsafe backend operations.",
+                impact="Unauthorized data access or modification through a public-facing application route.",
             )
-        )
+        ]
 
     if integration_surface:
-        paths.append(
+        return [
             AttackPath(
-                name="Third-party integration trust abuse",
+                name="Outbound trust boundary abuse",
                 steps=[
-                    _action_step("Entry", f"{integration_surface.method} {integration_surface.route} in {integration_surface.file} can influence third-party communication"),
-                    _action_step("Abuse", "The attacker targets assumptions around external service communication"),
-                    _action_step("Boundary crossed", "The application accepts tampered or spoofed external responses"),
-                    _action_step("Result", "Internal logic trusts external state too broadly and makes unsafe decisions"),
+                    _action_step("Entry", f"An attacker influences {integration_surface.method} {integration_surface.route} in {integration_surface.file}, which sits near an outbound integration"),
+                    _action_step("Weak point", "The application assumes too much trust in external calls or responses"),
+                    _action_step("Propagation", "Spoofed, replayed, or attacker-steered third-party interactions affect internal logic"),
+                    _action_step("Impact", "Unsafe business decisions or downstream actions follow from a weak external trust boundary"),
                 ],
-                impact="Bad decisions, poisoned data, or chained compromise through an upstream dependency.",
+                impact="Poisoned state or unsafe downstream actions caused by over-trusting an external dependency.",
             )
-        )
+        ]
 
-    return paths
+    return []
