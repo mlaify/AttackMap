@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .analyzer import summarize_architecture, summarize_attack_surface
-from .models import AttackPath, Finding, ScanResult
+from .models import AttackPath, AttackSurface, Finding, ScanResult
+
+
+def _severity_rank(value: str) -> int:
+    return {"high": 0, "medium": 1, "low": 2}.get(value, 3)
 
 
 def write_reports(
@@ -12,6 +15,7 @@ def write_reports(
     scan: ScanResult,
     architecture_md: str,
     attack_surface_md: str,
+    attack_surfaces: list[AttackSurface],
     findings: list[Finding],
     attack_paths: list[AttackPath],
 ) -> None:
@@ -25,6 +29,7 @@ def write_reports(
         "scan": scan.model_dump(),
         "architecture_summary": architecture_md,
         "attack_surface_summary": attack_surface_md,
+        "attack_surfaces": [surface.model_dump() for surface in attack_surfaces],
         "findings": [finding.model_dump() for finding in findings],
         "attack_paths": [path.model_dump() for path in attack_paths],
     }
@@ -32,6 +37,7 @@ def write_reports(
 
 
 def render_console_summary(scan: ScanResult, findings: list[Finding], attack_paths: list[AttackPath]) -> str:
+    ordered_findings = sorted(findings, key=lambda finding: (_severity_rank(finding.severity), finding.title))
     lines = [
         f"Scanned {scan.files_scanned} files",
         f"Detected languages: {', '.join(scan.languages) if scan.languages else 'none'}",
@@ -41,12 +47,12 @@ def render_console_summary(scan: ScanResult, findings: list[Finding], attack_pat
         "",
         "Findings:",
     ]
-    for finding in findings:
+    for finding in ordered_findings:
         lines.append(f"- [{finding.severity.upper()}] {finding.title}")
 
     lines.append("")
     lines.append("Attack paths:")
     for path in attack_paths:
-        lines.append(f"- {path.name}")
+        lines.append(f"- {path.name}: {path.impact}")
 
     return "\n".join(lines)

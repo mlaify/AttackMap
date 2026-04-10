@@ -4,7 +4,7 @@ from pathlib import Path
 
 import typer
 
-from .analyzer import summarize_architecture, summarize_attack_surface
+from .analyzer import identify_attack_surfaces, summarize_architecture, summarize_attack_surface
 from .graph import build_graph
 from .report import render_console_summary, write_reports
 from .scanner import scan_repo
@@ -25,12 +25,13 @@ def analyze(
 
     scan = scan_repo(repo_path)
     graph = build_graph(scan)
+    attack_surfaces = identify_attack_surfaces(scan)
     architecture_md = summarize_architecture(scan, graph)
-    attack_surface_md = summarize_attack_surface(scan)
-    findings = generate_findings(scan)
+    attack_surface_md = summarize_attack_surface(scan, attack_surfaces)
+    findings = generate_findings(scan, attack_surfaces)
     attack_paths = generate_attack_paths(scan)
 
-    write_reports(output, scan, architecture_md, attack_surface_md, findings, attack_paths)
+    write_reports(output, scan, architecture_md, attack_surface_md, attack_surfaces, findings, attack_paths)
     typer.echo(render_console_summary(scan, findings, attack_paths))
     typer.echo("")
     typer.echo(f"Reports written to: {Path(output).resolve()}")

@@ -13,3 +13,4 @@ def test_webhook_route_generates_high_severity_finding() -> None:
 
     assert any(f.title == "Webhook endpoints detected" for f in findings)
     assert any(p.name == "Webhook abuse to backend action" for p in attack_paths)
+    assert any(step.startswith("Entry:") for path in attack_paths for step in path.steps)
