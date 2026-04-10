@@ -32,6 +32,19 @@ class SecretHint(BaseModel):
     file: str
 
 
+class AttackSurface(BaseModel):
+    route: str
+    method: str
+    file: str
+    category: Literal["webhook", "admin", "auth", "upload", "internal", "health", "public_api"]
+    exposure: Literal["public", "internal", "unknown"] = "public"
+    risk: Literal["low", "medium", "high"]
+    auth_signals: list[str] = Field(default_factory=list)
+    data_store_interaction: bool = False
+    outbound_integration: bool = False
+    rationale: list[str] = Field(default_factory=list)
+
+
 class Finding(BaseModel):
     title: str
     severity: Literal["low", "medium", "high"]
