@@ -18,6 +18,10 @@ FASTAPI_ROUTER_PATTERN = re.compile(
     r"(\w+)\s*=\s*APIRouter\(\s*(?:[^)]*?\bprefix\s*=\s*['\"]([^'\"]*)['\"])?",
     re.IGNORECASE | re.DOTALL,
 )
+FASTAPI_INCLUDE_ROUTER_PATTERN = re.compile(
+    r"(\w+)\.include_router\(\s*(\w+)(?:\s*,\s*prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    re.IGNORECASE,
+)
 FASTAPI_DECORATOR_PATTERN = re.compile(
     r"@(\w+)\.(get|post|put|delete|patch|options|head)\(\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
@@ -29,6 +33,10 @@ FASTAPI_API_ROUTE_PATTERN = re.compile(
 FLASK_BLUEPRINT_PATTERN = re.compile(
     r"(\w+)\s*=\s*Blueprint\(\s*['\"][^'\"]+['\"]\s*,\s*[^,]+(?:,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
     re.IGNORECASE | re.DOTALL,
+)
+FLASK_REGISTER_BLUEPRINT_PATTERN = re.compile(
+    r"(\w+)\.register_blueprint\(\s*(\w+)(?:\s*,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    re.IGNORECASE,
 )
 FLASK_ROUTE_PATTERN = re.compile(
     r"@(\w+)\.route\(\s*['\"]([^'\"]+)['\"](?P<args>.*?)\)",
@@ -65,6 +73,17 @@ DB_KEYWORDS = {
     "mysql": "mysql",
 }
 
+DB_PATTERNS = [
+    (re.compile(r"create_engine\(\s*['\"](?:postgresql|mysql|sqlite|mssql|oracle)\+?", re.IGNORECASE), "sql"),
+    (re.compile(r"sqlite3\.connect\(", re.IGNORECASE), "sqlite"),
+    (re.compile(r"psycopg(?:2)?\.connect\(", re.IGNORECASE), "postgresql"),
+    (re.compile(r"(?:AsyncIOMotorClient|MongoClient)\(", re.IGNORECASE), "mongodb"),
+    (re.compile(r"redis\.(?:Redis|StrictRedis)\(", re.IGNORECASE), "redis"),
+    (re.compile(r"new\s+PrismaClient\(", re.IGNORECASE), "sql"),
+    (re.compile(r"mongoose\.connect\(", re.IGNORECASE), "mongodb"),
+    (re.compile(r"new\s+Pool\(", re.IGNORECASE), "postgresql"),
+]
+
 AUTH_KEYWORDS = [
     "jwt",
     "oauth",
@@ -76,6 +95,18 @@ AUTH_KEYWORDS = [
     "password",
     "token",
     "mfa",
+]
+
+AUTH_PATTERNS = [
+    (re.compile(r"@login_required\b", re.IGNORECASE), "login_required"),
+    (re.compile(r"@jwt_required\b", re.IGNORECASE), "jwt"),
+    (re.compile(r"Depends\(\s*(?:oauth2_scheme|get_current_user|current_user|verify_token)\s*\)", re.IGNORECASE), "depends_auth"),
+    (re.compile(r"OAuth2PasswordBearer\(", re.IGNORECASE), "oauth"),
+    (re.compile(r"request\.authorization\b", re.IGNORECASE), "authorization"),
+    (re.compile(r"Authorization['\"]?\s*\]", re.IGNORECASE), "authorization"),
+    (re.compile(r"passport\.authenticate\(", re.IGNORECASE), "passport"),
+    (re.compile(r"\b(?:verify|require)Token\b", re.IGNORECASE), "token"),
+    (re.compile(r"\bauthMiddleware\b", re.IGNORECASE), "auth_middleware"),
 ]
 
 SECRET_PATTERNS = [
@@ -113,13 +144,37 @@ def _extract_methods(args: str, default_method: str = "ANY") -> list[str]:
 
 
 def _python_route_prefixes(content: str) -> dict[str, str]:
-    prefixes: dict[str, str] = {}
+    local_prefixes: dict[str, str] = {}
 
     for match in FASTAPI_ROUTER_PATTERN.finditer(content):
-        prefixes[match.group(1)] = match.group(2) or ""
+        local_prefixes[match.group(1)] = match.group(2) or ""
 
     for match in FLASK_BLUEPRINT_PATTERN.finditer(content):
-        prefixes[match.group(1)] = match.group(2) or ""
+        local_prefixes[match.group(1)] = match.group(2) or ""
+
+    prefixes = dict(local_prefixes)
+
+    updated = True
+    while updated:
+        updated = False
+
+        for match in FASTAPI_INCLUDE_ROUTER_PATTERN.finditer(content):
+            parent_name, child_name, extra_prefix = match.groups()
+            parent_prefix = prefixes.get(parent_name, "")
+            child_prefix = local_prefixes.get(child_name, "")
+            combined = _join_route_parts(parent_prefix, _join_route_parts(extra_prefix or "", child_prefix))
+            if prefixes.get(child_name) != combined:
+                prefixes[child_name] = combined
+                updated = True
+
+        for match in FLASK_REGISTER_BLUEPRINT_PATTERN.finditer(content):
+            parent_name, child_name, extra_prefix = match.groups()
+            parent_prefix = prefixes.get(parent_name, "")
+            child_prefix = local_prefixes.get(child_name, "")
+            combined = _join_route_parts(parent_prefix, _join_route_parts(extra_prefix or "", child_prefix))
+            if prefixes.get(child_name) != combined:
+                prefixes[child_name] = combined
+                updated = True
 
     return prefixes
 
@@ -154,12 +209,21 @@ def _extract_python_routes(content: str, file: str) -> list[Route]:
 
 
 def _express_prefixes(content: str) -> dict[str, str]:
+    local_prefixes: dict[str, str] = {}
     prefixes: dict[str, str] = {}
 
-    for match in EXPRESS_USE_PATTERN.finditer(content):
-        parent_name, mount_path, child_name = match.groups()
-        parent_prefix = prefixes.get(parent_name, "")
-        prefixes[child_name] = _join_route_parts(parent_prefix, mount_path)
+    updated = True
+    while updated:
+        updated = False
+        for match in EXPRESS_USE_PATTERN.finditer(content):
+            parent_name, mount_path, child_name = match.groups()
+            parent_prefix = prefixes.get(parent_name, "")
+            child_prefix = local_prefixes.get(child_name, "")
+            local_prefixes[child_name] = child_prefix
+            combined = _join_route_parts(parent_prefix, _join_route_parts(mount_path, child_prefix))
+            if prefixes.get(child_name) != combined:
+                prefixes[child_name] = combined
+                updated = True
 
     return prefixes
 
@@ -190,6 +254,34 @@ def extract_routes(content: str, file: str, suffix: str) -> list[Route]:
     return []
 
 
+def _append_unique_database_hints(result: ScanResult, relative: str, content: str, lowered: str) -> None:
+    seen = {(hint.kind, hint.file) for hint in result.databases}
+
+    for pattern, kind in DB_PATTERNS:
+        if pattern.search(content) and (kind, relative) not in seen:
+            result.databases.append(DatabaseHint(kind=kind, file=relative))
+            seen.add((kind, relative))
+
+    for keyword, kind in DB_KEYWORDS.items():
+        if keyword in lowered and (kind, relative) not in seen:
+            result.databases.append(DatabaseHint(kind=kind, file=relative))
+            seen.add((kind, relative))
+
+
+def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, lowered: str) -> None:
+    seen = {(hint.hint, hint.file) for hint in result.auth_hints}
+
+    for pattern, hint in AUTH_PATTERNS:
+        if pattern.search(content) and (hint, relative) not in seen:
+            result.auth_hints.append(AuthHint(hint=hint, file=relative))
+            seen.add((hint, relative))
+
+    for keyword in AUTH_KEYWORDS:
+        if keyword in lowered and (keyword, relative) not in seen:
+            result.auth_hints.append(AuthHint(hint=keyword, file=relative))
+            seen.add((keyword, relative))
+
+
 def scan_repo(root: str | Path) -> ScanResult:
     root_path = Path(root).resolve()
     result = ScanResult(root=str(root_path))
@@ -218,13 +310,8 @@ def scan_repo(root: str | Path) -> ScanResult:
                 result.external_calls.append(ExternalCall(target=target, file=relative))
 
         lowered = content.lower()
-        for keyword, kind in DB_KEYWORDS.items():
-            if keyword in lowered:
-                result.databases.append(DatabaseHint(kind=kind, file=relative))
-
-        for keyword in AUTH_KEYWORDS:
-            if keyword in lowered:
-                result.auth_hints.append(AuthHint(hint=keyword, file=relative))
+        _append_unique_database_hints(result, relative, content, lowered)
+        _append_unique_auth_hints(result, relative, content, lowered)
 
         for pattern in SECRET_PATTERNS:
             for match in pattern.finditer(content):
