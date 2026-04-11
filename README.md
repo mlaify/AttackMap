@@ -37,7 +37,15 @@ pip install -e .
 attackmap analyze .
 attackmap analyze . --output reports
 attackmap analyze . --format json
+attackmap analyze . --module php-web
+attackmap modules
 ```
+
+`--module` can be repeated to select multiple analyzers. When a requested external analyzer is not installed, AttackMap will attempt to install it automatically from the GitLab subgroup at `https://gitlab.com/matthewd.xyzAI/attackmap-analyzers`.
+
+`attackmap modules` now lists:
+- analyzers currently available in your environment
+- analyzer module repositories available in `matthewd.xyzAI/attackmap-analyzers`
 
 ## Example output files
 
