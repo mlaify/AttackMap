@@ -5,6 +5,7 @@ from pathlib import Path
 import typer
 
 from .analyzer import identify_attack_surfaces, summarize_architecture, summarize_attack_surface
+from .defensive_review import render_defensive_review
 from .analyzers import (
     analyze_repository,
     get_available_modules,
@@ -48,8 +49,9 @@ def analyze(
     attack_surface_md = summarize_attack_surface(scan, attack_surfaces)
     findings = generate_findings(scan, attack_surfaces)
     attack_paths = generate_attack_paths(scan)
+    defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
 
-    write_reports(output, scan, architecture_md, attack_surface_md, attack_surfaces, findings, attack_paths)
+    write_reports(output, scan, architecture_md, attack_surface_md, defensive_review_md, attack_surfaces, findings, attack_paths)
     typer.echo(render_console_summary(scan, findings, attack_paths))
     typer.echo("")
     typer.echo(f"Reports written to: {Path(output).resolve()}")

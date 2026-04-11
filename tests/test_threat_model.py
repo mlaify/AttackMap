@@ -65,3 +65,32 @@ def test_service_chain_linker_generates_distributed_attack_path() -> None:
     assert any(step.startswith("Propagation:") for step in attack_paths[0].steps)
     assert any(step.startswith("Config risk:") for step in attack_paths[0].steps)
     assert any(step.startswith("Evidence: confidence=") for step in attack_paths[0].steps)
+
+
+def test_atproto_chain_linker_generates_namespace_aware_attack_path() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/xrpc/com.atproto.server.createSession", method="ANY", file="packages/pds/src/api.ts")],
+        auth_hints=[
+            AuthHint(hint="service_name:pds", file="packages/pds/src/api.ts"),
+            AuthHint(hint="service_name:relay", file="services/relay/src/store.ts"),
+            AuthHint(hint="edge:pds->relay", file="packages/pds/src/api.ts"),
+            AuthHint(hint="atproto_namespace:com.atproto", file="packages/pds/src/api.ts"),
+            AuthHint(hint="atproto_protocol:xrpc", file="packages/pds/src/api.ts"),
+            AuthHint(hint="atproto_lexicon:com.atproto.server.createSession", file="lexicons/com/atproto/server/createSession.json"),
+            AuthHint(hint="atproto_service_note:pds", file="packages/pds/src/api.ts"),
+            AuthHint(hint="atproto_service_edge:relay", file="packages/pds/src/api.ts"),
+        ],
+        databases=[DatabaseHint(kind="postgresql", file="services/relay/src/store.ts")],
+        external_calls=[ExternalCall(target="env://RELAY_URL", file="packages/pds/src/api.ts")],
+    )
+
+    findings = generate_findings(scan)
+    attack_paths = generate_attack_paths(scan)
+
+    assert any(f.title == "AT Protocol XRPC surface chains into a downstream trust boundary" for f in findings)
+    assert len(attack_paths) == 1
+    assert attack_paths[0].name == "AT Protocol namespace trust-chain abuse"
+    assert any(step.startswith("Namespace:") for step in attack_paths[0].steps)
+    assert any(step.startswith("Propagation:") for step in attack_paths[0].steps)
+    assert any(step.startswith("Config risk:") for step in attack_paths[0].steps)
