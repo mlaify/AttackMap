@@ -1,100 +1,246 @@
 # AGENTS.md
 
 ## Project
-AttackMap is an open source security analysis tool that explains a codebase from an attacker’s perspective.
+AttackMap is an open-source defensive security analysis engine.
 
-Its purpose is to:
-- infer architecture from code and config
-- identify attack surface
-- generate initial threat findings
-- map plausible attack paths
-- produce useful reports for engineers and security reviewers
+Its purpose is to help engineers understand and improve the security of real systems by:
+- inferring architecture
+- mapping attack surface
+- identifying trust boundaries
+- linking evidence into risk chains
+- highlighting strengths and weaknesses
+- generating actionable defensive recommendations
 
-## Product framing
-AttackMap is not a generic AI code explainer and not a classic static analyzer.
-Its unique value is system-level security reasoning:
-- entry points
-- trust boundaries
-- data flows
-- reachable attack paths
-- practical mitigations
+AttackMap is not a generic chatbot, not a simple code scanner, and not an exploit-generation tool.
 
-When making suggestions, preserve this framing.
+## Product direction
+AttackMap should evolve into a strong, general-purpose defensive security product that can analyze:
+- applications
+- services
+- distributed systems
+- protocol-driven systems
+- config-heavy systems
+- infrastructure and deployment surfaces over time
 
-## Current stack
-- Python 3.11+
-- Typer CLI
-- Pydantic
-- NetworkX
-- pytest
-- GitLab-first workflow
+AttackMap should work well for:
+- Bluesky / ATProto
+- PHP / Laminas / Omeka S
+- Node / TypeScript service architectures
+- and eventually any ecosystem supported by analyzers
 
-## Repo layout
-- `src/attackmap/cli.py` - CLI entrypoint
-- `src/attackmap/scanner.py` - heuristic repo scanning
-- `src/attackmap/graph.py` - graph construction
-- `src/attackmap/analyzer.py` - architecture and attack surface summaries
-- `src/attackmap/threat_model.py` - findings and attack path generation
-- `src/attackmap/report.py` - markdown/json report writing
-- `src/attackmap/models.py` - Pydantic models
-- `tests/` - test suite
-- `examples/` - demo apps for local testing
+## Core philosophy
 
-## How to work
-Prefer small, reviewable changes.
-Before editing code:
-1. understand the current implementation
-2. explain your plan briefly
-3. make minimal changes
-4. run tests if available
-5. summarize exactly what changed
+### Evidence first
+All meaningful output should be grounded in:
+- analyzer-emitted structured signals
+- deterministic parsing and modeling
+- explicit evidence chains
+- explainable heuristics
 
-## Commands
-Install:
-`pip install -e .`
+Do not invent evidence.
 
-Run tests:
-`pytest`
+### Defensive, not offensive
+AttackMap is a defensive analysis product.
+It should:
+- map architecture
+- surface strengths
+- identify weaknesses
+- highlight risky trust chains
+- recommend improvements
+- support engineering triage
 
-Run CLI:
-`attackmap analyze .`
-`attackmap analyze examples/vulnerable-demo-app --output reports`
+It should not:
+- generate exploit instructions
+- produce offensive attack playbooks
+- optimize for compromise
 
-## Engineering preferences
+### Explainability over noise
+AttackMap should help a human understand:
+- what was observed
+- what was inferred
+- why it matters
+- what to improve next
+
+### Strengths matter
+A good review includes:
+- positive controls already present
+- architectural strengths
+- auth/signing/validation signals
+- boundaries that appear well-designed
+
+### Incremental, maintainable engineering
+Prefer small, reviewable improvements over broad rewrites.
+
+## Current architecture
+AttackMap is organized as:
+- `attackmap` = core engine
+- external analyzers live under GitLab subgroup:
+  - `matthewd.xyzAI/attackmap-analyzers`
+
+Core owns:
+- CLI orchestration
+- analyzer discovery/loading
+- normalized analysis models
+- merge behavior
+- graph/service/trust modeling
+- findings generation
+- attack path and evidence-chain generation
+- defensive review output
+- scoring and prioritization
+
+Analyzers own:
+- applicability detection
+- structured signal extraction
+- analyzer-scoped notes/hints where appropriate
+
+Analyzers must not:
+- render final reports
+- own global scoring policy
+- directly control CLI formatting
+- bypass the core merge/modeling pipeline
+
+## Analyzer design rules
+Analyzers should be:
+- broad when possible
+- layered when useful
+- heuristic but explainable
+- easy to test with fixtures
+
+Preferred analyzer layering:
+- language analyzers
+- framework analyzers
+- application/protocol overlays
+
+Examples:
+- `php-web`
+- `php-laminas`
+- `omeka-s`
+- `node-service`
+- `atproto`
+
+Keep analyzers focused on structured extraction.
+Do not move core reasoning into analyzers.
+
+## Output quality rules
+AttackMap output must strive to be:
+- evidence-backed
+- prioritized
+- readable
+- actionable
+- appropriately uncertain
+
+Prefer:
+- “observed” vs “inferred” distinctions
+- confidence labels
+- provenance where available
+- source-quality weighting
+- fewer stronger findings over many noisy ones
+
+Down-rank or exclude low-quality sources such as:
+- `tests/`
+- `__tests__/`
+- `fixtures/`
+- `mocks/`
+- `examples/`
+unless a task explicitly asks to analyze them.
+
+## Defensive review expectations
+AttackMap should increasingly produce a high-quality defensive review that includes:
+- system overview
+- attack surface
+- strengths
+- weaknesses / risk hotspots
+- key evidence chains
+- recommendations
+- analyst notes
+
+Good recommendations are:
+- concrete
+- prioritized
+- tied to evidence
+- useful to engineers
+
+## Risk reasoning expectations
+When ranking or prioritizing, prefer explainable scoring based on:
+- exposure
+- privilege sensitivity
+- reachability
+- trust-boundary crossing
+- chain depth
+- confidence
+- operational impact
+
+Scoring should remain in core, not in analyzers.
+
+## Bluesky / ATProto guidance
+Bluesky and ATProto are an important motivating domain for AttackMap.
+
+When working on Bluesky/ATProto support, optimize for:
+- service boundary detection
+- inter-service trust modeling
+- XRPC / lexicon surface inference
+- identity / signing / auth hotspots
+- datastore and downstream dependency chains
+- distributed system reasoning
+
+Do not treat Bluesky work as a one-off special case unless necessary.
+Prefer reusable general capabilities first, then thin protocol/application overlays.
+
+## Coding preferences
+- prefer minimal diffs
+- preserve current CLI behavior unless explicitly asked to change it
+- avoid unnecessary dependencies
 - keep functions focused and readable
-- prefer explicit data models
-- avoid adding heavy dependencies without strong justification
-- write or update tests with behavior changes
-- keep security language concrete, not hypey
-- document assumptions and heuristic limitations
+- favor explicit data models
+- add comments only where they improve clarity
+- avoid over-engineering
+- keep naming consistent with the current architecture
 
-## MVP priorities
-Highest priority:
-1. better framework detection for FastAPI, Flask, and Express
-2. better route extraction
-3. datastore detection improvements
-4. attack surface and attack path quality
-5. cleaner report structure
-6. example projects and demo output
+## Testing expectations
+When making changes:
+- update or add focused tests
+- use small fixtures
+- run the smallest relevant verification set
+- summarize what was verified
 
-Lower priority:
-- full LLM integration
-- UI
-- distributed analysis
-- large refactors
+Prefer:
+- unit tests for analyzers and merge/scoring logic
+- fixture-based tests for real-world patterns
+- targeted integration-style checks when appropriate
 
-## Output expectations
-Good output should help answer:
-- what is exposed?
-- what can talk to what?
-- where are trust boundaries?
-- how might an attacker chain weaknesses together?
-- what should be fixed first?
+## Workflow expectations
+Before changing code:
+1. inspect relevant files
+2. summarize current behavior
+3. identify the smallest useful change
+4. implement that change
+5. run relevant tests
+6. summarize changed files, commands run, results, and remaining risks
+
+Do not jump into large rewrites without being asked.
+
+## Documentation expectations
+Keep docs aligned with implementation.
+When architecture changes materially, update:
+- README if user-facing behavior changes
+- analyzer contract docs if analyzer-facing behavior changes
+- examples or fixtures if they are part of validation
+
+## Current priorities
+In general, prioritize:
+1. output credibility
+2. source-quality weighting
+3. observed vs inferred clarity
+4. hotspot ranking and recommendation quality
+5. distributed system/service-boundary modeling
+6. protocol-aware overlays
+7. analyzer ecosystem growth
 
 ## Definition of done
 A task is done when:
-- code is correct and focused
-- tests pass or are updated appropriately
-- CLI behavior is preserved unless intentionally changed
-- output is more useful to a security-minded engineer
-- assumptions and limitations are documented
+- the patch is focused and reviewable
+- current behavior is preserved unless intentionally changed
+- tests are updated and relevant verification is run
+- output quality or modeling quality is measurably improved
+- limitations are stated honestly
+- the next incremental step is clear

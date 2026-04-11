@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from .analyzer import identify_attack_surfaces
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 
+LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
+
 
 def _surface_label(surface: AttackSurface) -> str:
     return f"{surface.method} {surface.route} in {surface.file}"
@@ -77,6 +79,11 @@ def _extract_prefixed_hints(scan: ScanResult, prefix: str) -> list[tuple[str, st
         for hint in scan.auth_hints
         if hint.hint.startswith(prefix)
     ]
+
+
+def _is_low_quality_source(path_or_text: str) -> bool:
+    normalized = path_or_text.replace("\\", "/").lower()
+    return any(segment in f"/{normalized}/" for segment in LOW_QUALITY_SEGMENTS)
 
 
 def _extract_edge_hints(scan: ScanResult) -> list[tuple[str, str, str]]:
@@ -464,22 +471,31 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
 
 def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[Finding]:
     surfaces = attack_surfaces if attack_surfaces is not None else identify_attack_surfaces(scan)
+    runtime_surfaces = [surface for surface in surfaces if not _is_low_quality_source(surface.file)]
     findings: list[Finding] = []
     atproto_chains = _build_atproto_chains(scan)
     service_chains = _build_service_chains(scan)
     chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
-    webhook_surfaces = [surface for surface in surfaces if surface.category == "webhook"]
-    admin_surfaces = [surface for surface in surfaces if surface.category == "admin"]
-    upload_surfaces = [surface for surface in surfaces if surface.category == "upload"]
-    auth_surfaces = [surface for surface in surfaces if surface.category == "auth"]
+    webhook_surfaces = [
+        surface
+        for surface in runtime_surfaces
+        if surface.category == "webhook"
+        and surface.exposure == "public"
+        and surface.method in {"POST", "PUT", "PATCH", "DELETE", "ANY"}
+        and (surface.data_store_interaction or surface.outbound_integration)
+        and not any(signal in {"jwt", "oauth", "authorization", "service_auth"} for signal in surface.auth_signals)
+    ]
+    admin_surfaces = [surface for surface in runtime_surfaces if surface.category == "admin"]
+    upload_surfaces = [surface for surface in runtime_surfaces if surface.category == "upload"]
+    auth_surfaces = [surface for surface in runtime_surfaces if surface.category == "auth"]
     public_data_surfaces = [
         surface
-        for surface in surfaces
+        for surface in runtime_surfaces
         if surface.exposure == "public" and surface.data_store_interaction and surface.category != "health"
     ]
     public_integration_surfaces = [
         surface
-        for surface in surfaces
+        for surface in runtime_surfaces
         if surface.exposure == "public" and surface.outbound_integration
     ]
 
