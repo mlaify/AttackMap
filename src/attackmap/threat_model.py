@@ -57,6 +57,20 @@ class ServiceChain:
     env_risk: str | None = None
 
 
+@dataclass(frozen=True)
+class AtprotoChain:
+    route_method: str
+    route_path: str
+    route_file: str
+    namespace: str
+    entry_service: str
+    next_service: str | None
+    sink: str
+    confidence: float
+    evidence: list[str]
+    env_risk: str | None = None
+
+
 def _extract_prefixed_hints(scan: ScanResult, prefix: str) -> list[tuple[str, str]]:
     return [
         (hint.hint.removeprefix(prefix), hint.file)
@@ -197,6 +211,147 @@ def _build_service_chains(scan: ScanResult) -> list[ServiceChain]:
     return chains
 
 
+def _is_atproto_scan(scan: ScanResult) -> bool:
+    return any(hint.hint.startswith("atproto_") for hint in scan.auth_hints)
+
+
+def _extract_xrpc_namespace(route_path: str) -> str | None:
+    marker = "/xrpc/"
+    if marker not in route_path:
+        return None
+    value = route_path.split(marker, 1)[1].strip("/")
+    if not value:
+        return None
+    if value.startswith("com.atproto."):
+        return "com.atproto"
+    if value.startswith("app.bsky."):
+        return "app.bsky"
+    return None
+
+
+def _build_atproto_chains(scan: ScanResult) -> list[AtprotoChain]:
+    if not _is_atproto_scan(scan):
+        return []
+
+    file_service = _file_service_map(scan)
+    for service_name, service_file in _extract_prefixed_hints(scan, "atproto_service_note:"):
+        file_service.setdefault(service_file, service_name.lower())
+
+    edge_targets_by_source: dict[str, list[str]] = {}
+    for source, target, _file in _extract_edge_hints(scan):
+        edge_targets_by_source.setdefault(source, []).append(target)
+
+    namespaces = {name for name, _file in _extract_prefixed_hints(scan, "atproto_namespace:")}
+    lexicons = {name for name, _file in _extract_prefixed_hints(scan, "atproto_lexicon:")}
+    xrpc_refs = {name for name, _file in _extract_prefixed_hints(scan, "atproto_xrpc_ref:")}
+    service_edges = {name for name, _file in _extract_prefixed_hints(scan, "atproto_service_edge:")}
+    stream_hints = {name for name, _file in _extract_prefixed_hints(scan, "atproto_event_stream:")}
+
+    databases_by_service: dict[str, tuple[str, str]] = {}
+    for database in scan.databases:
+        service = file_service.get(database.file)
+        if service and service not in databases_by_service:
+            databases_by_service[service] = (database.kind, database.file)
+
+    outbound_by_service: dict[str, tuple[str, str]] = {}
+    env_url_by_service: dict[str, str] = {}
+    for call in scan.external_calls:
+        service = file_service.get(call.file)
+        if not service:
+            continue
+        if call.target.startswith("env://"):
+            env_url_by_service.setdefault(service, call.target)
+            continue
+        outbound_by_service.setdefault(service, (call.target, call.file))
+
+    chains: list[AtprotoChain] = []
+    for route in scan.routes:
+        namespace = _extract_xrpc_namespace(route.path)
+        if namespace is None:
+            continue
+
+        evidence = [f"xrpc route {route.method} {route.path} in {route.file}"]
+        confidence = 0.45
+        if namespace in namespaces:
+            confidence += 0.1
+            evidence.append(f"namespace signal observed: {namespace}")
+
+        endpoint_name = route.path.removeprefix("/xrpc/")
+        if endpoint_name in lexicons:
+            confidence += 0.1
+            evidence.append(f"lexicon-defined endpoint: {endpoint_name}")
+        if endpoint_name in xrpc_refs:
+            confidence += 0.05
+            evidence.append(f"code-level xrpc reference: {endpoint_name}")
+
+        entry_service = file_service.get(route.file) or _infer_service_name_from_file(route.file) or "entry-service"
+        if file_service.get(route.file):
+            confidence += 0.15
+            evidence.append(f"entry service from analyzer hints: {entry_service}")
+        else:
+            confidence += 0.05
+            evidence.append(f"entry service inferred from repository layout: {entry_service}")
+
+        next_service = None
+        sink = "privileged downstream action"
+        env_risk = env_url_by_service.get(entry_service)
+
+        edge_candidates = edge_targets_by_source.get(entry_service, [])
+        if edge_candidates:
+            next_service = edge_candidates[0]
+            confidence += 0.1
+            evidence.append(f"inter-service edge: {entry_service}->{next_service}")
+        elif service_edges:
+            next_service = sorted(service_edges)[0]
+            confidence += 0.05
+            evidence.append(f"atproto env-derived service edge: {entry_service}->{next_service}")
+
+        sink_service = next_service or entry_service
+        if sink_service in databases_by_service:
+            kind, db_file = databases_by_service[sink_service]
+            sink = "database"
+            confidence += 0.15
+            evidence.append(f"database sink in service {sink_service}: {kind} ({db_file})")
+        elif sink_service in outbound_by_service:
+            target, outbound_file = outbound_by_service[sink_service]
+            sink = "external dependency"
+            confidence += 0.12
+            evidence.append(f"outbound sink in service {sink_service}: {target} ({outbound_file})")
+        elif scan.databases:
+            sink = "database"
+            confidence += 0.03
+            evidence.append(f"database hint elsewhere in repo: {scan.databases[0].kind} ({scan.databases[0].file})")
+        elif scan.external_calls:
+            sink = "external dependency"
+            confidence += 0.03
+            evidence.append(f"external call elsewhere in repo: {scan.external_calls[0].target} ({scan.external_calls[0].file})")
+
+        if env_risk:
+            confidence += 0.04
+            evidence.append(f"env-configured dependency in entry service: {env_risk}")
+        if stream_hints:
+            confidence += 0.03
+            evidence.append(f"event stream exposure hints: {', '.join(sorted(stream_hints)[:2])}")
+
+        chains.append(
+            AtprotoChain(
+                route_method=route.method,
+                route_path=route.path,
+                route_file=route.file,
+                namespace=namespace,
+                entry_service=entry_service,
+                next_service=next_service,
+                sink=sink,
+                confidence=min(confidence, 0.95),
+                evidence=evidence,
+                env_risk=env_risk,
+            )
+        )
+
+    chains.sort(key=lambda chain: chain.confidence, reverse=True)
+    return chains
+
+
 def _file_module_key(file_path: str) -> str:
     normalized = file_path.replace("\\", "/")
     marker = "/module/"
@@ -310,6 +465,7 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
 def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[Finding]:
     surfaces = attack_surfaces if attack_surfaces is not None else identify_attack_surfaces(scan)
     findings: list[Finding] = []
+    atproto_chains = _build_atproto_chains(scan)
     service_chains = _build_service_chains(scan)
     chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
     webhook_surfaces = [surface for surface in surfaces if surface.category == "webhook"]
@@ -404,6 +560,21 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    if atproto_chains:
+        top_atproto_chain = atproto_chains[0]
+        findings.append(
+            Finding(
+                title="AT Protocol XRPC surface chains into a downstream trust boundary",
+                severity="high" if top_atproto_chain.sink in {"database", "privileged downstream action"} else "medium",
+                evidence=[f"confidence={top_atproto_chain.confidence:.2f}", *top_atproto_chain.evidence[:6]],
+                mitigation=(
+                    "Enforce namespace-specific authz on XRPC handlers, validate service-auth at each hop, and constrain "
+                    "downstream service/database permissions per endpoint."
+                ),
+                confidence="high" if top_atproto_chain.confidence >= 0.7 else "medium",
+            )
+        )
+
     if service_chains:
         top_service_chain = service_chains[0]
         findings.append(
@@ -450,8 +621,55 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
 
 def generate_attack_paths(scan: ScanResult) -> list[AttackPath]:
     surfaces = identify_attack_surfaces(scan)
+    atproto_chains = _build_atproto_chains(scan)
     service_chains = _build_service_chains(scan)
     chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
+
+    if atproto_chains:
+        top_chain = atproto_chains[0]
+        chain_label = (
+            f"{top_chain.entry_service} -> {top_chain.next_service}"
+            if top_chain.next_service
+            else top_chain.entry_service
+        )
+        steps = [
+            _action_step(
+                "Entry",
+                f"Attacker reaches {top_chain.route_method} {top_chain.route_path} in {top_chain.route_file}",
+            ),
+            _action_step("Namespace", f"Endpoint is exposed in AT Protocol namespace `{top_chain.namespace}`"),
+            _action_step("Service entry", f"XRPC request is handled by service `{top_chain.entry_service}`"),
+        ]
+        if top_chain.next_service:
+            steps.append(
+                _action_step(
+                    "Propagation",
+                    f"Service trust edge allows request influence to reach `{top_chain.next_service}`",
+                )
+            )
+        if top_chain.env_risk:
+            steps.append(
+                _action_step(
+                    "Config risk",
+                    f"Runtime behavior depends on env-configured endpoint {top_chain.env_risk}, which can widen downstream trust exposure",
+                )
+            )
+        steps.extend(
+            [
+                _action_step("Sink", f"Influence reaches {top_chain.sink} through protocol-driven service flow"),
+                _action_step("Evidence", f"confidence={top_chain.confidence:.2f}; {'; '.join(top_chain.evidence[:4])}"),
+            ]
+        )
+        return [
+            AttackPath(
+                name="AT Protocol namespace trust-chain abuse",
+                steps=steps,
+                impact=(
+                    f"An exposed XRPC namespace can be abused to propagate across `{chain_label}` and affect {top_chain.sink} "
+                    "when per-namespace authorization and inter-service trust controls are weak."
+                ),
+            )
+        ]
 
     if service_chains:
         top_chain = service_chains[0]
