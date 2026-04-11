@@ -123,6 +123,14 @@ def should_scan(path: Path) -> bool:
     return path.suffix in CODE_EXTENSIONS
 
 
+def should_scan_with_suffixes(path: Path, suffixes: set[str] | None = None) -> bool:
+    if not should_scan(path):
+        return False
+    if suffixes is None:
+        return True
+    return path.suffix in suffixes
+
+
 def _join_route_parts(prefix: str, path: str) -> str:
     base = prefix.strip()
     suffix = path.strip()
@@ -282,12 +290,12 @@ def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, l
             seen.add((keyword, relative))
 
 
-def scan_repo(root: str | Path) -> ScanResult:
+def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
     root_path = Path(root).resolve()
     result = ScanResult(root=str(root_path))
 
     for file_path in root_path.rglob("*"):
-        if not file_path.is_file() or not should_scan(file_path):
+        if not file_path.is_file() or not should_scan_with_suffixes(file_path, suffixes):
             continue
 
         result.files_scanned += 1
