@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from attackmap.analyzer_contracts import normalize_analyzer_metadata
 from attackmap.analyzers import (
     ANALYZER_ENTRYPOINT_GROUP,
     AnalyzerMetadata,
@@ -19,7 +20,17 @@ from attackmap.analyzers import (
     merge_analyzer_results,
     select_requested_analyzers,
 )
-from attackmap.models import AuthHint, ExternalCall, Route, ScanResult, SecretHint
+from attackmap.models import (
+    AuthHint,
+    EdgeHint,
+    ExternalCall,
+    FrameworkHint,
+    ProtocolHint,
+    Route,
+    ScanResult,
+    SecretHint,
+    ServiceHint,
+)
 
 
 def test_analyzer_result_reuses_scan_result_shape() -> None:
@@ -246,6 +257,35 @@ def test_analyzer_metadata_remains_backward_compatible_with_legacy_ecosystems_in
     assert metadata.ecosystems == ("php", "laminas")
 
 
+def test_normalize_analyzer_metadata_preserves_rich_plugin_fields() -> None:
+    metadata = normalize_analyzer_metadata(
+        {
+            "name": "node-service",
+            "display_name": "Node Service Analyzer",
+            "version": "1.2.3",
+            "description": "Plugin metadata shape",
+            "scope": "node service repos",
+            "targets": ["node-service", "node"],
+            "languages": ["typescript", "javascript"],
+            "priority": 25,
+            "experimental": False,
+            "enabled_by_default": True,
+        }
+    )
+
+    assert metadata.name == "node-service"
+    assert metadata.display_name == "Node Service Analyzer"
+    assert metadata.version == "1.2.3"
+    assert metadata.description == "Plugin metadata shape"
+    assert metadata.scope == "node service repos"
+    assert metadata.targets == ["node-service", "node"]
+    assert metadata.languages == ["typescript", "javascript"]
+    assert metadata.priority == 25
+    assert metadata.experimental is False
+    assert metadata.enabled_by_default is True
+    assert metadata.ecosystems == ("typescript", "javascript", "node-service", "node")
+
+
 def test_get_available_modules_returns_registered_metadata(monkeypatch) -> None:
     class ExternalAnalyzer:
         metadata = AnalyzerMetadata(
@@ -269,6 +309,40 @@ def test_get_available_modules_returns_registered_metadata(monkeypatch) -> None:
     assert len(modules) == 1
     assert modules[0].name == "php-web"
     assert modules[0].ecosystems == ("php",)
+
+
+def test_get_analyzer_metadata_normalizes_external_rich_metadata_shape() -> None:
+    class ExternalAnalyzer:
+        metadata = {
+            "name": "atproto",
+            "display_name": "AT Protocol Analyzer",
+            "version": "0.9.0",
+            "description": "Protocol-aware overlay",
+            "scope": "ATProto repos",
+            "targets": ["atproto", "bluesky"],
+            "languages": ["typescript", "json"],
+            "priority": 35,
+            "experimental": True,
+            "enabled_by_default": False,
+        }
+
+        @property
+        def name(self) -> str:
+            return "atproto"
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    metadata = get_analyzer_metadata(ExternalAnalyzer())
+
+    assert metadata.name == "atproto"
+    assert metadata.display_name == "AT Protocol Analyzer"
+    assert metadata.version == "0.9.0"
+    assert metadata.scope == "ATProto repos"
+    assert metadata.priority == 35
+    assert metadata.experimental is True
+    assert metadata.enabled_by_default is False
+    assert metadata.ecosystems == ("typescript", "json", "atproto", "bluesky")
 
 
 def test_get_available_repository_modules_filters_and_normalizes() -> None:
@@ -302,6 +376,10 @@ def test_merge_analyzer_results_combines_languages_and_deduplicates_signals() ->
         routes=[Route(path="/health", method="GET", file="app.py")],
         external_calls=[ExternalCall(target="https://api.example.com", file="app.py")],
         auth_hints=[AuthHint(hint="oauth", file="app.py")],
+        service_hints=[ServiceHint(hint="service_name:api", file="app.py")],
+        edge_hints=[EdgeHint(hint="edge:api->worker", file="app.py")],
+        protocol_hints=[ProtocolHint(hint="atproto_protocol:xrpc", file="app.py")],
+        framework_hints=[FrameworkHint(hint="controller:App\\Controller\\Health", file="app.py")],
         secret_hints=[SecretHint(name="API_KEY", file="app.py")],
         files_scanned=2,
     )
@@ -314,6 +392,10 @@ def test_merge_analyzer_results_combines_languages_and_deduplicates_signals() ->
         ],
         external_calls=[ExternalCall(target="https://api.example.com", file="app.py")],
         auth_hints=[AuthHint(hint="oauth", file="app.py")],
+        service_hints=[ServiceHint(hint="service_name:api", file="app.py")],
+        edge_hints=[EdgeHint(hint="edge:api->worker", file="app.py")],
+        protocol_hints=[ProtocolHint(hint="atproto_protocol:xrpc", file="app.py")],
+        framework_hints=[FrameworkHint(hint="controller:App\\Controller\\Health", file="app.py")],
         secret_hints=[SecretHint(name="API_KEY", file="app.py")],
         files_scanned=3,
     )
@@ -328,6 +410,10 @@ def test_merge_analyzer_results_combines_languages_and_deduplicates_signals() ->
     }
     assert len(merged.external_calls) == 1
     assert len(merged.auth_hints) == 1
+    assert len(merged.service_hints) == 1
+    assert len(merged.edge_hints) == 1
+    assert len(merged.protocol_hints) == 1
+    assert len(merged.framework_hints) == 1
     assert len(merged.secret_hints) == 1
 
 

@@ -7,7 +7,19 @@ from .contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
-from .models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+from .models import (
+    AuthHint,
+    DatabaseHint,
+    EdgeHint,
+    EntrypointHint,
+    ExternalCall,
+    FrameworkHint,
+    ProtocolHint,
+    Route,
+    ScanResult,
+    SecretHint,
+    ServiceHint,
+)
 
 __all__ = [
     "AnalyzerResult",
@@ -19,6 +31,11 @@ __all__ = [
     "ExternalCall",
     "DatabaseHint",
     "AuthHint",
+    "ServiceHint",
+    "EdgeHint",
+    "EntrypointHint",
+    "ProtocolHint",
+    "FrameworkHint",
     "SecretHint",
     "ScanResult",
 ]

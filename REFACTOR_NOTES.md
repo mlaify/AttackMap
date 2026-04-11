@@ -1,37 +1,25 @@
-# Analyzer Contract Refactor Notes
-
-This refactor removes duplicated local analyzer contract models in external analyzer packages and uses the shared AttackMap SDK contract surface directly.
-
-## What changed
-
-- Switched external analyzer `contracts.py` modules to import canonical contracts/models from:
-  - `attackmap.sdk.contracts`
-  - `attackmap.sdk.models`
-- Removed local fallback copies of:
-  - `AnalyzerMetadata`
-  - `AttackMapAnalyzerProtocol`
-  - `Route`, `ExternalCall`, `DatabaseHint`, `AuthHint`, `SecretHint`, `ScanResult`
-- Kept a minimal compatibility alias:
-  - `AttackMapAnalyzerProtocol = AnalyzerProtocol`
-- Added a missing `contracts.py` for `node-service` so its existing analyzer imports resolve consistently.
-- Added compatibility tests in each external analyzer repo to assert shared SDK type reuse.
+# Refactor Notes: Analyzer Contract Unification
 
 ## Scope
+This pass focused on ensuring analyzer packages use shared AttackMap contracts/models instead of local duplicated definitions.
 
-- External analyzers updated:
-  - `node-service`
-  - `atproto`
-  - `omeka-s`
-  - `php-laminas`
-  - `php-web`
-- Core built-ins (`javascript-web`, `default`) already used shared core contracts and required no contract-layer changes.
+## What changed in core
+- Updated [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py) to import canonical shared types from:
+  - `attackmap.sdk.contracts`
+  - `attackmap.sdk.models`
+- Behavior is unchanged; this is an import-path unification cleanup.
 
-## Behavior impact
+## External analyzer package status
+Reviewed local analyzer repos under:
+- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-node-service`
+- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-atproto`
+- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-omeka-s`
+- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-laminas`
+- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-web`
 
-- Analyzer behavior and emitted recon signals are unchanged.
-- `auth_hints` semantics are unchanged.
-- This is a contract-source unification and cleanup step only.
+Each currently imports `AnalyzerMetadata`/`AnalyzerProtocol` from `attackmap.sdk.contracts` and recon/result models from `attackmap.sdk.models`. No duplicated local model definitions were found in those repos.
 
-## Compatibility note
-
-- External analyzers now require AttackMap core SDK imports at runtime (expected in plugin usage, where analyzers are loaded by AttackMap).
+## Compatibility
+- No signal schema changes.
+- `auth_hints` semantics are intentionally unchanged in this pass.
+- Public analyzer exports remain intact.
