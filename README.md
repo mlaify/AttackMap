@@ -106,9 +106,16 @@ class PhpLaminasAnalyzer(Analyzer):
 
 ### Follow-up work for external analyzers
 
-- Add installed-package discovery for analyzers published under `matthewd.xyzAI/attackmap-analyzers`
+- Installed packages can now register analyzers via Python entry points under `attackmap.analyzers`
 - Define analyzer metadata such as supported ecosystems and confidence
 - Evolve `ScanResult` into a richer analyzer result model when framework-specific analyzers need more structure
+
+Example `pyproject.toml` for an external analyzer package:
+
+```toml
+[project.entry-points."attackmap.analyzers"]
+php_web = "attackmap_analyzer_php_web:PhpWebAnalyzer"
+```
 
 ## Roadmap
 
