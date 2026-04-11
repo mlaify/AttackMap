@@ -1,12 +1,16 @@
 from pathlib import Path
 
 from attackmap.analyzers import (
+    ANALYZER_ENTRYPOINT_GROUP,
+    AnalyzerMetadata,
     AnalyzerResult,
     BuiltinJavaScriptWebAnalyzer,
     BuiltinPythonWebAnalyzer,
     DefaultAnalyzer,
     analyze_repository,
+    discover_installed_analyzers,
     get_analyzer_metadata,
+    get_builtin_repository_analyzers,
     get_registered_analyzers,
     merge_analyzer_results,
 )
@@ -19,13 +23,101 @@ def test_analyzer_result_reuses_scan_result_shape() -> None:
     assert isinstance(result, ScanResult)
 
 
-def test_get_registered_analyzers_exposes_builtin_web_analyzers() -> None:
+def test_get_registered_analyzers_exposes_builtin_web_analyzers(monkeypatch) -> None:
+    monkeypatch.setattr("attackmap.analyzers.discover_installed_analyzers", lambda: [])
     analyzers = get_registered_analyzers()
 
     assert len(analyzers) == 3
     assert isinstance(analyzers[0], BuiltinPythonWebAnalyzer)
     assert isinstance(analyzers[1], BuiltinJavaScriptWebAnalyzer)
     assert isinstance(analyzers[2], DefaultAnalyzer)
+    assert [analyzer.name for analyzer in analyzers] == ["python-web", "javascript-web", "default"]
+
+
+def test_get_builtin_repository_analyzers_contains_builtin_defaults() -> None:
+    analyzers = get_builtin_repository_analyzers()
+
+    assert len(analyzers) == 3
+    assert [analyzer.name for analyzer in analyzers] == ["python-web", "javascript-web", "default"]
+
+
+def test_discover_installed_analyzers_loads_valid_entrypoints_in_name_order(monkeypatch) -> None:
+    class ExternalAnalyzerB:
+        metadata = AnalyzerMetadata(
+            name="external-b",
+            description="external b",
+            scope="external analyzer test",
+            ecosystems=("php",),
+        )
+
+        @property
+        def name(self) -> str:
+            return "external-b"
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    class ExternalAnalyzerA:
+        metadata = AnalyzerMetadata(
+            name="external-a",
+            description="external a",
+            scope="external analyzer test",
+            ecosystems=("php",),
+        )
+
+        @property
+        def name(self) -> str:
+            return "external-a"
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    class FakeEntryPoint:
+        def __init__(self, name: str, value) -> None:
+            self.name = name
+            self._value = value
+
+        def load(self):
+            return self._value
+
+    class FakeEntryPoints:
+        def __init__(self, candidates) -> None:
+            self._candidates = candidates
+
+        def select(self, *, group: str):
+            if group != ANALYZER_ENTRYPOINT_GROUP:
+                return []
+            return self._candidates
+
+    fake_points = FakeEntryPoints(
+        [
+            FakeEntryPoint("php-web", ExternalAnalyzerB),
+            FakeEntryPoint("aaa-web", ExternalAnalyzerA),
+            FakeEntryPoint("broken", object()),
+        ]
+    )
+    monkeypatch.setattr("attackmap.analyzers.entry_points", lambda: fake_points)
+
+    analyzers = discover_installed_analyzers()
+
+    assert [analyzer.name for analyzer in analyzers] == ["external-a", "external-b"]
+
+
+def test_get_registered_analyzers_skips_duplicate_names(monkeypatch) -> None:
+    class DuplicatePythonAnalyzer:
+        metadata = get_analyzer_metadata(BuiltinPythonWebAnalyzer())
+
+        @property
+        def name(self) -> str:
+            return "python-web"
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    monkeypatch.setattr("attackmap.analyzers.discover_installed_analyzers", lambda: [DuplicatePythonAnalyzer()])
+
+    analyzers = get_registered_analyzers()
+
     assert [analyzer.name for analyzer in analyzers] == ["python-web", "javascript-web", "default"]
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from importlib.metadata import entry_points
+import logging
 from pathlib import Path
 from typing import Protocol
 
@@ -19,6 +21,10 @@ from .scanner import (
     extract_routes,
     scan_repo,
 )
+
+logger = logging.getLogger(__name__)
+
+ANALYZER_ENTRYPOINT_GROUP = "attackmap.analyzers"
 
 # Backward-compatible structured signal contract used by the lower-level scanner tests.
 class AnalyzerSignals(BaseModel):
@@ -218,8 +224,82 @@ class BuiltinJavaScriptWebAnalyzer:
         return scan_repo(root, suffixes={".js"})
 
 
-def get_registered_analyzers() -> list[Analyzer]:
+def get_builtin_repository_analyzers() -> list[Analyzer]:
     return [BuiltinPythonWebAnalyzer(), BuiltinJavaScriptWebAnalyzer(), DefaultAnalyzer()]
+
+
+def discover_installed_analyzers(group: str = ANALYZER_ENTRYPOINT_GROUP) -> list[Analyzer]:
+    discovered: list[Analyzer] = []
+    all_entry_points = entry_points()
+    if hasattr(all_entry_points, "select"):
+        candidates = list(all_entry_points.select(group=group))
+    else:
+        candidates = list(all_entry_points.get(group, ()))
+
+    for analyzer_entry_point in sorted(candidates, key=lambda candidate: candidate.name):
+        analyzer = _load_discovered_analyzer(analyzer_entry_point)
+        if analyzer is None:
+            continue
+        discovered.append(analyzer)
+    return discovered
+
+
+def _load_discovered_analyzer(analyzer_entry_point: object) -> Analyzer | None:
+    entry_name = getattr(analyzer_entry_point, "name", "<unknown>")
+    try:
+        loaded_object = analyzer_entry_point.load()
+    except Exception as exc:
+        logger.warning("Failed to load analyzer entry point '%s': %s", entry_name, exc)
+        return None
+
+    try:
+        analyzer = _coerce_analyzer_instance(loaded_object)
+    except Exception as exc:
+        logger.warning("Failed to initialize analyzer entry point '%s': %s", entry_name, exc)
+        return None
+
+    if not _is_valid_analyzer(analyzer):
+        logger.warning("Skipping entry point '%s': loaded object is not a valid analyzer.", entry_name)
+        return None
+    return analyzer
+
+
+def _coerce_analyzer_instance(loaded_object: object) -> object:
+    if isinstance(loaded_object, type):
+        return loaded_object()
+    if hasattr(loaded_object, "analyze") and hasattr(loaded_object, "metadata"):
+        return loaded_object
+    if callable(loaded_object):
+        return loaded_object()
+    return loaded_object
+
+
+def _is_valid_analyzer(candidate: object) -> bool:
+    if not hasattr(candidate, "metadata") or not hasattr(candidate, "analyze") or not callable(candidate.analyze):
+        return False
+
+    candidate_name = getattr(candidate, "name", None)
+    if not isinstance(candidate_name, str) or not candidate_name.strip():
+        return False
+
+    metadata = getattr(candidate, "metadata")
+    metadata_name = getattr(metadata, "name", None)
+    return isinstance(metadata_name, str) and bool(metadata_name.strip())
+
+
+def get_registered_analyzers() -> list[Analyzer]:
+    analyzers = [*get_builtin_repository_analyzers(), *discover_installed_analyzers()]
+    deduplicated: list[Analyzer] = []
+    seen_names: set[str] = set()
+
+    for analyzer in analyzers:
+        if analyzer.name in seen_names:
+            logger.warning("Skipping duplicate analyzer name '%s'.", analyzer.name)
+            continue
+        seen_names.add(analyzer.name)
+        deduplicated.append(analyzer)
+
+    return deduplicated
 
 
 def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
