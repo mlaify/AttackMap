@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-from .analyzers import AnalyzerContext, get_builtin_analyzers, merge_analyzer_signals
-from .models import ScanResult
+from .models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 
 CODE_EXTENSIONS = {
     ".py": "python",
@@ -11,6 +11,106 @@ CODE_EXTENSIONS = {
     ".ts": "typescript",
     ".tsx": "typescript",
 }
+
+FASTAPI_ROUTER_PATTERN = re.compile(
+    r"(\w+)\s*=\s*APIRouter\(\s*(?:[^)]*?\bprefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    re.IGNORECASE | re.DOTALL,
+)
+FASTAPI_INCLUDE_ROUTER_PATTERN = re.compile(
+    r"(\w+)\.include_router\(\s*(\w+)(?:\s*,\s*prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    re.IGNORECASE,
+)
+FASTAPI_DECORATOR_PATTERN = re.compile(
+    r"@(\w+)\.(get|post|put|delete|patch|options|head)\(\s*['\"]([^'\"]+)['\"]",
+    re.IGNORECASE,
+)
+FASTAPI_API_ROUTE_PATTERN = re.compile(
+    r"@(\w+)\.api_route\(\s*['\"]([^'\"]+)['\"](?P<args>.*?)\)",
+    re.IGNORECASE | re.DOTALL,
+)
+FLASK_BLUEPRINT_PATTERN = re.compile(
+    r"(\w+)\s*=\s*Blueprint\(\s*['\"][^'\"]+['\"]\s*,\s*[^,]+(?:,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    re.IGNORECASE | re.DOTALL,
+)
+FLASK_REGISTER_BLUEPRINT_PATTERN = re.compile(
+    r"(\w+)\.register_blueprint\(\s*(\w+)(?:\s*,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    re.IGNORECASE,
+)
+FLASK_ROUTE_PATTERN = re.compile(
+    r"@(\w+)\.route\(\s*['\"]([^'\"]+)['\"](?P<args>.*?)\)",
+    re.IGNORECASE | re.DOTALL,
+)
+EXPRESS_DIRECT_ROUTE_PATTERN = re.compile(
+    r"\b(\w+)\.(get|post|put|delete|patch|options|head)\(\s*['\"]([^'\"]+)['\"]",
+    re.IGNORECASE,
+)
+EXPRESS_CHAIN_ROUTE_PATTERN = re.compile(
+    r"\b(\w+)\.route\(\s*['\"]([^'\"]+)['\"]\s*\)(?P<chain>[\s\S]*?)(?=(?:\n\s*\w+\.)|\Z)",
+    re.IGNORECASE,
+)
+EXPRESS_USE_PATTERN = re.compile(
+    r"\b(\w+)\.use\(\s*['\"]([^'\"]+)['\"]\s*,\s*(\w+)\s*\)",
+    re.IGNORECASE,
+)
+METHOD_LIST_PATTERN = re.compile(r"['\"](GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)['\"]", re.IGNORECASE)
+
+EXTERNAL_CALL_PATTERNS = [
+    re.compile(r"requests\.(get|post|put|delete|patch)\(['\"]([^'\"]+)['\"]"),
+    re.compile(r"axios\.(get|post|put|delete|patch)\(['\"]([^'\"]+)['\"]"),
+    re.compile(r"fetch\(['\"]([^'\"]+)['\"]"),
+]
+
+DB_KEYWORDS = {
+    "postgres": "postgresql",
+    "psycopg": "postgresql",
+    "sqlalchemy": "sql",
+    "mongodb": "mongodb",
+    "mongo": "mongodb",
+    "redis": "redis",
+    "sqlite": "sqlite",
+    "mysql": "mysql",
+}
+
+DB_PATTERNS = [
+    (re.compile(r"create_engine\(\s*['\"](?:postgresql|mysql|sqlite|mssql|oracle)\+?", re.IGNORECASE), "sql"),
+    (re.compile(r"sqlite3\.connect\(", re.IGNORECASE), "sqlite"),
+    (re.compile(r"psycopg(?:2)?\.connect\(", re.IGNORECASE), "postgresql"),
+    (re.compile(r"(?:AsyncIOMotorClient|MongoClient)\(", re.IGNORECASE), "mongodb"),
+    (re.compile(r"redis\.(?:Redis|StrictRedis)\(", re.IGNORECASE), "redis"),
+    (re.compile(r"new\s+PrismaClient\(", re.IGNORECASE), "sql"),
+    (re.compile(r"mongoose\.connect\(", re.IGNORECASE), "mongodb"),
+    (re.compile(r"new\s+Pool\(", re.IGNORECASE), "postgresql"),
+]
+
+AUTH_KEYWORDS = [
+    "jwt",
+    "oauth",
+    "auth0",
+    "apikey",
+    "api_key",
+    "bearer",
+    "session",
+    "password",
+    "token",
+    "mfa",
+]
+
+AUTH_PATTERNS = [
+    (re.compile(r"@login_required\b", re.IGNORECASE), "login_required"),
+    (re.compile(r"@jwt_required\b", re.IGNORECASE), "jwt"),
+    (re.compile(r"Depends\(\s*(?:oauth2_scheme|get_current_user|current_user|verify_token)\s*\)", re.IGNORECASE), "depends_auth"),
+    (re.compile(r"OAuth2PasswordBearer\(", re.IGNORECASE), "oauth"),
+    (re.compile(r"request\.authorization\b", re.IGNORECASE), "authorization"),
+    (re.compile(r"Authorization['\"]?\s*\]", re.IGNORECASE), "authorization"),
+    (re.compile(r"passport\.authenticate\(", re.IGNORECASE), "passport"),
+    (re.compile(r"\b(?:verify|require)Token\b", re.IGNORECASE), "token"),
+    (re.compile(r"\bauthMiddleware\b", re.IGNORECASE), "auth_middleware"),
+]
+
+SECRET_PATTERNS = [
+    re.compile(r"os\.getenv\(['\"]([^'\"]*(SECRET|TOKEN|KEY|PASSWORD)[^'\"]*)['\"]", re.IGNORECASE),
+    re.compile(r"process\.env\.([A-Z0-9_]*(SECRET|TOKEN|KEY|PASSWORD)[A-Z0-9_]*)", re.IGNORECASE),
+]
 
 
 def should_scan(path: Path) -> bool:
@@ -59,7 +159,6 @@ def _python_route_prefixes(content: str) -> dict[str, str]:
         local_prefixes[match.group(1)] = match.group(2) or ""
 
     prefixes = dict(local_prefixes)
-
     updated = True
     while updated:
         updated = False
@@ -91,13 +190,7 @@ def _extract_python_routes(content: str, file: str) -> list[Route]:
 
     for match in FASTAPI_DECORATOR_PATTERN.finditer(content):
         router_name, method, route_path = match.groups()
-        routes.append(
-            Route(
-                path=_join_route_parts(prefixes.get(router_name, ""), route_path),
-                method=method.upper(),
-                file=file,
-            )
-        )
+        routes.append(Route(path=_join_route_parts(prefixes.get(router_name, ""), route_path), method=method.upper(), file=file))
 
     for match in FASTAPI_API_ROUTE_PATTERN.finditer(content):
         router_name, route_path, args = match.group(1), match.group(2), match.group("args")
@@ -191,7 +284,6 @@ def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, l
 def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
     root_path = Path(root).resolve()
     result = ScanResult(root=str(root_path))
-    analyzers = get_builtin_analyzers()
 
     for file_path in root_path.rglob("*"):
         if not file_path.is_file() or not should_scan_with_suffixes(file_path, suffixes):
@@ -207,17 +299,20 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
         except UnicodeDecodeError:
             continue
 
-        context = AnalyzerContext(
-            root_path=root_path,
-            file_path=file_path,
-            relative_path=str(file_path.relative_to(root_path)),
-            content=content,
-            suffix=file_path.suffix,
-            language=language,
-        )
+        relative = str(file_path.relative_to(root_path))
+        result.routes.extend(extract_routes(content, relative, file_path.suffix))
 
-        for analyzer in analyzers:
-            merge_analyzer_signals(result, analyzer.analyze(context))
+        for pattern in EXTERNAL_CALL_PATTERNS:
+            for match in pattern.finditer(content):
+                result.external_calls.append(ExternalCall(target=match.groups()[-1], file=relative))
+
+        lowered = content.lower()
+        _append_unique_database_hints(result, relative, content, lowered)
+        _append_unique_auth_hints(result, relative, content, lowered)
+
+        for pattern in SECRET_PATTERNS:
+            for match in pattern.finditer(content):
+                result.secret_hints.append(SecretHint(name=match.groups()[0], file=relative))
 
     result.languages.sort()
     return result
