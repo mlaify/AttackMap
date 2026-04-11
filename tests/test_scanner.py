@@ -1,6 +1,54 @@
 from pathlib import Path
 
+from attackmap.analyzers import AnalyzerSignals, get_builtin_analyzers, merge_analyzer_signals
+from attackmap.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from attackmap.scanner import scan_repo
+
+
+def test_builtin_analyzers_are_explicitly_registered() -> None:
+    analyzers = get_builtin_analyzers()
+
+    assert [analyzer.name for analyzer in analyzers] == [
+        "routes",
+        "external_calls",
+        "databases",
+        "auth",
+        "secrets",
+    ]
+
+
+def test_merge_analyzer_signals_applies_core_merge_rules() -> None:
+    scan = ScanResult(root=".")
+    signals = AnalyzerSignals(
+        routes=[
+            Route(path="/users", method="GET", file="api.py"),
+            Route(path="/users", method="GET", file="api.py"),
+        ],
+        external_calls=[
+            ExternalCall(target="https://api.example.com/a", file="api.py"),
+            ExternalCall(target="https://api.example.com/a", file="api.py"),
+        ],
+        databases=[
+            DatabaseHint(kind="postgresql", file="db.py"),
+            DatabaseHint(kind="postgresql", file="db.py"),
+        ],
+        auth_hints=[
+            AuthHint(hint="jwt", file="auth.py"),
+            AuthHint(hint="jwt", file="auth.py"),
+        ],
+        secret_hints=[
+            SecretHint(name="STRIPE_SECRET_KEY", file="api.py"),
+            SecretHint(name="STRIPE_SECRET_KEY", file="api.py"),
+        ],
+    )
+
+    merge_analyzer_signals(scan, signals)
+
+    assert len(scan.routes) == 2
+    assert len(scan.external_calls) == 2
+    assert len(scan.secret_hints) == 2
+    assert scan.databases == [DatabaseHint(kind="postgresql", file="db.py")]
+    assert scan.auth_hints == [AuthHint(hint="jwt", file="auth.py")]
 
 
 def test_scan_repo_detects_fastapi_routes_and_secrets(tmp_path: Path) -> None:
