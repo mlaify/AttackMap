@@ -74,11 +74,42 @@ class AtprotoChain:
 
 
 def _extract_prefixed_hints(scan: ScanResult, prefix: str) -> list[tuple[str, str]]:
-    return [
-        (hint.hint.removeprefix(prefix), hint.file)
-        for hint in scan.auth_hints
-        if hint.hint.startswith(prefix)
-    ]
+    grouped_hints: list[tuple[str, str]] = []
+    for hint in scan.auth_hints:
+        if hint.hint.startswith(prefix):
+            grouped_hints.append((hint.hint.removeprefix(prefix), hint.file))
+
+    # Phase-2 migration support: allow specialized non-auth hint categories to
+    # carry prefixed values while keeping auth_hints fallback behavior.
+    if prefix.startswith("service_"):
+        for hint in scan.service_hints:
+            if hint.hint.startswith(prefix):
+                grouped_hints.append((hint.hint.removeprefix(prefix), hint.file))
+    elif prefix.startswith("edge:"):
+        for hint in scan.edge_hints:
+            if hint.hint.startswith(prefix):
+                grouped_hints.append((hint.hint.removeprefix(prefix), hint.file))
+    elif prefix.startswith("entrypoint:"):
+        for hint in scan.entrypoint_hints:
+            if hint.hint.startswith(prefix):
+                grouped_hints.append((hint.hint.removeprefix(prefix), hint.file))
+    elif prefix.startswith(("atproto_", "protocol:")):
+        for hint in scan.protocol_hints:
+            if hint.hint.startswith(prefix):
+                grouped_hints.append((hint.hint.removeprefix(prefix), hint.file))
+    elif prefix.startswith(("controller:", "service:", "omeka_", "laminas_")):
+        for hint in scan.framework_hints:
+            if hint.hint.startswith(prefix):
+                grouped_hints.append((hint.hint.removeprefix(prefix), hint.file))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in grouped_hints:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 def _is_low_quality_source(path_or_text: str) -> bool:
@@ -92,7 +123,8 @@ def _runtime_routes(scan: ScanResult) -> list[Route]:
 
 def _extract_edge_hints(scan: ScanResult) -> list[tuple[str, str, str]]:
     edges: list[tuple[str, str, str]] = []
-    for hint in scan.auth_hints:
+    all_edge_hints = [*scan.edge_hints, *scan.auth_hints]
+    for hint in all_edge_hints:
         if not hint.hint.startswith("edge:"):
             continue
         raw_edge = hint.hint.removeprefix("edge:")
@@ -133,7 +165,8 @@ def _file_service_map(scan: ScanResult) -> dict[str, str]:
 
 def _build_service_chains(scan: ScanResult) -> list[ServiceChain]:
     service_edges = _extract_edge_hints(scan)
-    if not service_edges and not any(h.hint.startswith("service_name:") for h in scan.auth_hints):
+    has_service_hints = any(h.hint.startswith("service_name:") for h in [*scan.service_hints, *scan.auth_hints])
+    if not service_edges and not has_service_hints:
         return []
 
     file_service = _file_service_map(scan)
@@ -223,7 +256,7 @@ def _build_service_chains(scan: ScanResult) -> list[ServiceChain]:
 
 
 def _is_atproto_scan(scan: ScanResult) -> bool:
-    return any(hint.hint.startswith("atproto_") for hint in scan.auth_hints)
+    return any(hint.hint.startswith("atproto_") for hint in [*scan.protocol_hints, *scan.auth_hints])
 
 
 def _extract_xrpc_namespace(route_path: str) -> str | None:
@@ -389,12 +422,13 @@ def _guess_action(route_path: str) -> str | None:
 
 
 def _is_framework_mvc_scan(scan: ScanResult) -> bool:
+    framework_values = [*scan.framework_hints, *scan.auth_hints]
     return any(
         hint.hint.startswith("controller:")
         or hint.hint.startswith("service:")
         or hint.hint.startswith("omeka_")
         or hint.hint.startswith("laminas_")
-        for hint in scan.auth_hints
+        for hint in framework_values
     )
 
 
@@ -639,8 +673,15 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     return sorted(findings, key=lambda finding: (_severity_rank(finding.severity), finding.title))
 
 
-def generate_attack_paths(scan: ScanResult) -> list[AttackPath]:
-    surfaces = [surface for surface in identify_attack_surfaces(scan) if not _is_low_quality_source(surface.file)]
+def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[AttackPath]:
+    """
+    Generate plausible attacker-centric paths from recon signals.
+
+    If `attack_surfaces` is provided, reuse it to avoid redundant surface
+    recomputation in callers that already translated recon -> surface.
+    """
+    surfaces_source = attack_surfaces if attack_surfaces is not None else identify_attack_surfaces(scan)
+    surfaces = [surface for surface in surfaces_source if not _is_low_quality_source(surface.file)]
     atproto_chains = _build_atproto_chains(scan)
     service_chains = _build_service_chains(scan)
     chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []

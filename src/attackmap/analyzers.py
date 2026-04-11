@@ -14,20 +14,25 @@ from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
-from .analyzer_contracts import (
+from .sdk.contracts import (
     AnalyzerMetadata,
     AnalyzerProtocol,
     AnalyzerRepositoryModule,
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
-from .recon_models import (
+from .sdk.models import (
     AuthHint,
     DatabaseHint,
+    EdgeHint,
+    EntrypointHint,
     ExternalCall,
+    FrameworkHint,
+    ProtocolHint,
     Route,
     ScanResult,
     SecretHint,
+    ServiceHint,
 )
 from .scanner import (
     AUTH_KEYWORDS,
@@ -508,6 +513,11 @@ def merge_analyzer_results(
     external_keys: set[tuple[str, str]] = set()
     database_keys: set[tuple[str, str]] = set()
     auth_keys: set[tuple[str, str]] = set()
+    service_keys: set[tuple[str, str]] = set()
+    edge_keys: set[tuple[str, str]] = set()
+    entrypoint_keys: set[tuple[str, str]] = set()
+    protocol_keys: set[tuple[str, str]] = set()
+    framework_keys: set[tuple[str, str]] = set()
     secret_keys: set[tuple[str, str]] = set()
 
     for result in result_list:
@@ -519,6 +529,15 @@ def merge_analyzer_results(
         _merge_unique_items(merged.external_calls, external_keys, result.external_calls, lambda item: (item.target, item.file))
         _merge_unique_items(merged.databases, database_keys, result.databases, lambda item: (item.kind, item.file))
         _merge_unique_items(merged.auth_hints, auth_keys, result.auth_hints, lambda item: (item.hint, item.file))
+        _merge_unique_items(merged.service_hints, service_keys, result.service_hints, lambda item: (item.hint, item.file))
+        _merge_unique_items(merged.edge_hints, edge_keys, result.edge_hints, lambda item: (item.hint, item.file))
+        _merge_unique_items(
+            merged.entrypoint_hints, entrypoint_keys, result.entrypoint_hints, lambda item: (item.hint, item.file)
+        )
+        _merge_unique_items(merged.protocol_hints, protocol_keys, result.protocol_hints, lambda item: (item.hint, item.file))
+        _merge_unique_items(
+            merged.framework_hints, framework_keys, result.framework_hints, lambda item: (item.hint, item.file)
+        )
         _merge_unique_items(merged.secret_hints, secret_keys, result.secret_hints, lambda item: (item.name, item.file))
 
     merged.languages.sort()

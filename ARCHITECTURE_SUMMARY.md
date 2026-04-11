@@ -1,82 +1,80 @@
-# AttackMap Analyzer Architecture Summary
+# AttackMap Architecture Summary (Current)
 
-## Current State (Two Analyzer Systems)
-AttackMap currently runs two analyzer systems in parallel:
+## High-Level Pipeline
 
-1. Legacy file-level scanner analyzers
-- Purpose: scanner decomposition and lower-level signal tests.
-- Contract: `AnalyzerSignals` + `FileAnalyzer`.
-- Output shape: intermediate signal bundle merged into `ScanResult`.
+1. Recon collection:
+- `scan_repo(...)` in [scanner.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/scanner.py) provides generic extraction only.
+- Built-in and plugin analyzers run via [analyzers.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py) and each return `ScanResult`-compatible output.
 
-2. Repository-level analyzers (plugin architecture)
-- Purpose: built-ins + external analyzer packages discovered via entry points.
-- Contract: `Analyzer` protocol + metadata + `AnalyzerResult`.
-- Output shape: `AnalyzerResult` (currently alias of `ScanResult`).
+2. Recon merge:
+- `analyze_repository(...)` merges analyzer outputs with `merge_analyzer_results(...)` into one `ScanResult`.
 
-## Files Defining Core Contracts and Runtime Behavior
+3. Recon -> higher-level translation:
+- `translate_recon(scan)` in [recon_to_analysis.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/recon_to_analysis.py) is the canonical gateway.
+- It produces:
+  - `AttackSurface` via `identify_attack_surfaces(...)`
+  - `Finding` via `generate_findings(...)`
+  - `AttackPath` via `generate_attack_paths(...)`
 
-### Shared data/result models
-- [`src/attackmap/models.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/models.py)
-  - Defines `Route`, `ExternalCall`, `DatabaseHint`, `AuthHint`, `SecretHint`, `ScanResult`, `AttackSurface`, `Finding`, `AttackPath`.
+4. Downstream reporting/prioritization:
+- [defensive_review.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/defensive_review.py), [review_json.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/review_json.py), [report.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/report.py) consume translated models.
 
-### Legacy file-level analyzer contracts and wiring
-- [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py)
-  - `AnalyzerSignals` (legacy signal contract).
-  - `AnalyzerContext`, `FileAnalyzer`, and `RouteAnalyzer` / `ExternalCallAnalyzer` / `DatabaseAnalyzer` / `AuthAnalyzer` / `SecretAnalyzer`.
-  - `FILE_ANALYZERS`, `get_builtin_analyzers()`, `merge_analyzer_signals()`.
+## Contracts and Model Sources of Truth
 
-### Repository-level analyzer contracts
-- [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py)
-  - `AnalyzerResult = ScanResult` alias.
-  - `AnalyzerMetadata` (core dataclass contract).
-  - `AnalyzerRepositoryModule`.
-  - `Analyzer` protocol (`name`, optional `detect`, `analyze`).
+### Analyzer/plugin contract
+- Canonical module: [analyzer_contracts.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzer_contracts.py)
+  - `AnalyzerProtocol`
+  - `AnalyzerMetadata`
+  - `AnalyzerRepositoryModule`
+  - `AnalyzerResult = ScanResult`
 
-### Analyzer discovery/loading/selection
-- [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py)
-  - Entry point group: `attackmap.analyzers`.
-  - `discover_installed_analyzers()`, `_load_discovered_analyzer()`, `_coerce_analyzer_instance()`, `_is_valid_analyzer()`.
-  - `get_registered_analyzers()`.
-  - `select_requested_analyzers()` and module auto-install.
-  - `get_available_modules()`, `get_available_repository_modules()`.
+### Recon/result contract
+- Canonical recon exports: [recon_models.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/recon_models.py)
+- Base model definitions: [models.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/models.py)
+  - `Route`, `ExternalCall`, `DatabaseHint`, `AuthHint`, `SecretHint`, `ScanResult`
+  - higher-level `AttackSurface`, `Finding`, `AttackPath`
 
-### Analyzer execution and merge
-- [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py)
-  - `resolve_run_analyzers()` and `_should_run_analyzer()` (detect gating).
-  - `analyze_repository()` orchestration.
-  - `merge_analyzer_results()` (deduplicates routes/external/databases/auth/secrets).
+### SDK import surface
+- [sdk/contracts.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/sdk/contracts.py)
+- [sdk/models.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/sdk/models.py)
 
-### Scanner-backed built-ins (repo-level built-ins currently wrap scanner)
-- [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py)
-  - `BuiltinPythonWebAnalyzer` -> `scan_repo(..., suffixes={".py"})`
-  - `BuiltinJavaScriptWebAnalyzer` -> `scan_repo(..., suffixes={".js"})`
-  - `DefaultAnalyzer` -> fallback suffix coverage.
-- [`src/attackmap/scanner.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/scanner.py)
-  - `scan_repo()`, route extraction, DB/auth/secret/external extraction, Node-service and thin ATProto overlay hints.
+## Current Module Responsibilities
 
-### CLI orchestration
-- [`src/attackmap/cli.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/cli.py)
-  - Resolves selected analyzers, runs `analyze_repository()`, then analysis/report pipeline.
+### `scanner.py` (generic scanner)
+- file walking / suffix filtering
+- generic Python/JS route extraction
+- generic external call, DB, auth, secret extraction
+- no node-service or atproto overlay logic
 
-### Tests covering architecture behavior
-- [`tests/test_analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/tests/test_analyzers.py)
-  - Discovery, selection, metadata, detect behavior, merge behavior.
-- [`tests/test_scanner.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/tests/test_scanner.py)
-  - Scanner extraction behavior and scanner-emitted service/protocol hints.
+### `analyzers.py` (execution + registry + merge)
+- built-in scanner-backed analyzers (`python-web`, `javascript-web`, `default`)
+- plugin discovery (entry points), selection, optional install
+- repository-level analyzer orchestration and merge
 
-## External Plugin Contract Duplication (Observed)
-External analyzer repos currently duplicate contract shims via local `contracts.py` files:
-- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-node-service/src/attackmap_analyzer_node_service/contracts.py`
-- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-atproto/src/attackmap_analyzer_atproto/contracts.py`
-- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-omeka-s/src/attackmap_analyzer_omeka_s/contracts.py`
-- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-laminas/src/attackmap_analyzer_php_laminas/contracts.py`
-- `/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-web/src/attackmap_analyzer_php_web/contracts.py`
+### `recon_to_analysis.py` (formal gateway)
+- canonical translation entrypoint used by CLI
+- conservative auth filtering for surface/finding translation due to overloaded `auth_hints`
+- attack-path generation still uses full hints to preserve chain-linking during migration
 
-These contracts typically try `from attackmap.models import ...` and fall back to local model definitions.
+### `analyzer.py` and `threat_model.py` (constructor logic)
+- `analyzer.py`: constructs `AttackSurface`
+- `threat_model.py`: constructs `Finding` and `AttackPath`
 
-## Practical Architecture Notes
-- `ScanResult` is already the de facto cross-analyzer output contract.
-- `auth_hints` currently carries both auth and non-auth recon semantics (service identity, role, entrypoint, edge, visibility, protocol hints).
-- Core and external metadata schemas are not identical:
-  - Core: simple dataclass (`name`, `description`, `scope`, `ecosystems`).
-  - Plugins: richer pydantic metadata (`display_name`, `version`, `targets`, `languages`, etc.) with derived `ecosystems`.
+## Known Architectural Tensions
+
+1. `auth_hints` overload:
+- holds true auth signals plus non-auth metadata (service/edge/protocol/framework hints)
+- translation mitigates this conservatively, but schema remains overloaded
+
+2. Constructor logic is split:
+- formal gateway exists (`translate_recon`), but concrete constructors remain in `analyzer.py` and `threat_model.py`
+
+3. Path generation recomputes surfaces:
+- `generate_attack_paths(scan)` internally calls `identify_attack_surfaces(scan)` rather than reusing translated surfaces from gateway output
+
+## Call Relationship (CLI path)
+
+- [cli.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/cli.py)
+  - `scan = analyze_repository(...)`
+  - `analysis = translate_recon(scan)`
+  - downstream rendering consumes `analysis.attack_surfaces/findings/attack_paths`

@@ -1,67 +1,54 @@
-# Result Model Migration (Phase 2)
+# Result Model Migration (Staged)
 
 ## Problem
-
-`auth_hints` currently mixes true auth/security signals with non-auth concepts such as:
-
-- service identity / role
-- entrypoint markers
-- inter-service edges
-- protocol overlays (for example AT Protocol namespace and XRPC notes)
-
-This reduces model clarity and makes downstream threat logic harder to reason about.
+`ScanResult.auth_hints` is currently overloaded as a generic hint bus. It includes true auth signals plus non-auth concepts (service identity, edges, framework/protocol notes, entrypoint markers), which makes translation and prioritization noisy.
 
 ## Migration goals
-
-1. Introduce dedicated result-model fields for non-auth concepts.
-2. Keep backward compatibility while analyzers migrate.
-3. Avoid breaking current report/threat behavior during transition.
+- Introduce dedicated non-auth hint categories.
+- Preserve backward compatibility while analyzers migrate.
+- Keep `translate_recon(scan)` behavior stable.
+- Reduce auth filtering complexity over time.
 
 ## Staged plan
+1. **Phase 2.1 (this patch): Add new hint buckets + compatibility readers**
+   - Add new `ScanResult` fields:
+     - `service_hints`
+     - `edge_hints`
+     - `entrypoint_hints`
+     - `protocol_hints`
+     - `framework_hints`
+   - Keep `auth_hints` unchanged for compatibility.
+   - Update core consumers to read new buckets first, then fall back to `auth_hints`.
+   - Keep report/CLI outputs stable.
 
-### Step 1 (implemented now): Add model categories + compatibility reads
+2. **Phase 2.2: Analyzer emission migration (node-service + atproto first)**
+   - Update analyzers to emit service/edge/protocol data into dedicated fields.
+   - Keep temporary dual-write to `auth_hints` where needed for compatibility.
 
-- Added dedicated hint models and `ScanResult` fields:
-  - `service_hints`
-  - `entrypoint_hints`
-  - `edge_hints`
-  - `protocol_hints`
-- Kept `auth_hints` unchanged and fully supported.
-- Updated core merge logic to merge/dedupe new hint fields.
-- Updated threat modeling helpers to read **both**:
-  - legacy encoded hints in `auth_hints`
-  - new typed categories
+3. **Phase 2.3: Translation tightening**
+   - Simplify `recon_to_analysis` auth filtering by relying on dedicated buckets instead of large prefix-based exclusions.
+   - Reduce legacy prefix compatibility logic.
 
-Result: no analyzer changes required yet; existing behavior remains stable.
+4. **Phase 2.4: De-overload outputs**
+   - Update downstream outputs that currently assume non-auth hints in `auth_signals`.
+   - Move to explicit auth vs non-auth evidence sections.
 
-### Step 2 (next): Migrate `node-service` and `atproto` emitters
+5. **Phase 2.5: Compatibility removal**
+   - Remove legacy `auth_hints`-as-bus assumptions once analyzer migration is complete and coverage is stable.
 
-- Update analyzers to emit non-auth hints into dedicated fields.
-- Keep dual-write temporarily for compatibility:
-  - write to new field + legacy `auth_hints`.
-- Add analyzer tests asserting new-field emission.
-
-### Step 3: Migrate remaining analyzers
-
-- Apply same dual-write migration for:
-  - `php-web`
-  - `php-laminas`
-  - `omeka-s`
-  - built-in/default/javascript paths where relevant.
-
-### Step 4: Shift downstream consumers to new fields first
-
-- Prefer dedicated fields in threat/review logic.
-- Keep legacy read fallback for one compatibility window.
-
-### Step 5: Deprecate and remove legacy non-auth usage in `auth_hints`
-
-- Remove prefixed non-auth encodings from `auth_hints`.
-- Keep `auth_hints` strictly auth-related.
-- Update docs/tests to reflect final contract.
+## Phase 2.1 changes included
+- Added new hint models and `ScanResult` fields in core models.
+- Exposed new hint models via `recon_models` and `attackmap.sdk.models`/`attackmap.sdk`.
+- Updated merge logic to deduplicate and merge new hint fields across analyzers.
+- Updated threat modeling chain extraction to consume dedicated buckets with `auth_hints` fallback.
+- Updated translation filtering to ignore hints that have already migrated to dedicated buckets.
+- Added tests for:
+  - shared SDK import paths for new hint types
+  - merged result dedupe across new fields
+  - chain generation from dedicated service/edge/protocol hints
+  - translation behavior stability with migrated hints
 
 ## Compatibility notes
-
-- This step is intentionally additive and non-breaking.
-- Existing analyzers that only emit `auth_hints` continue to work.
-- Existing tests remain valid, with added coverage for new-field compatibility.
+- `auth_hints` behavior is still supported.
+- Existing analyzers/tests that only emit `auth_hints` continue to work.
+- No CLI shape or report artifact shape changes in this step.

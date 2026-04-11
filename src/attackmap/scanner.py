@@ -3,7 +3,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .recon_models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+
+# Scanner responsibilities are intentionally generic-only:
+# - file walking and suffix filtering
+# - route extraction
+# - external-call extraction
+# - datastore/auth/secret hint extraction
+# Ecosystem overlays (for example node-service and atproto service/protocol hints)
+# must be emitted by specialized analyzers, not by this module.
 
 CODE_EXTENSIONS = {
     ".py": "python",

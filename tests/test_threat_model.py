@@ -1,4 +1,4 @@
-from attackmap.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult
+from attackmap.models import AttackSurface, AuthHint, DatabaseHint, EdgeHint, ExternalCall, ProtocolHint, Route, ScanResult, ServiceHint
 from attackmap.threat_model import generate_attack_paths, generate_findings
 
 
@@ -130,3 +130,60 @@ def test_chain_generation_ignores_test_only_routes() -> None:
 
     assert not any(f.title == "AT Protocol XRPC surface chains into a downstream trust boundary" for f in findings)
     assert not any(path.name == "AT Protocol namespace trust-chain abuse" for path in attack_paths)
+
+
+def test_chain_generation_uses_dedicated_service_edge_and_protocol_hints() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/xrpc/com.atproto.server.createSession", method="ANY", file="packages/pds/src/api.ts")],
+        service_hints=[
+            ServiceHint(hint="service_name:pds", file="packages/pds/src/api.ts"),
+            ServiceHint(hint="service_name:relay", file="services/relay/src/store.ts"),
+        ],
+        edge_hints=[EdgeHint(hint="edge:pds->relay", file="packages/pds/src/api.ts")],
+        protocol_hints=[
+            ProtocolHint(hint="atproto_namespace:com.atproto", file="packages/pds/src/api.ts"),
+            ProtocolHint(
+                hint="atproto_lexicon:com.atproto.server.createSession",
+                file="lexicons/com/atproto/server/createSession.json",
+            ),
+            ProtocolHint(hint="atproto_service_note:pds", file="packages/pds/src/api.ts"),
+        ],
+        databases=[DatabaseHint(kind="postgresql", file="services/relay/src/store.ts")],
+    )
+
+    attack_paths = generate_attack_paths(scan)
+
+    assert len(attack_paths) == 1
+    assert attack_paths[0].name == "AT Protocol namespace trust-chain abuse"
+
+
+def test_generate_attack_paths_reuses_provided_attack_surfaces(monkeypatch) -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/admin/reindex", method="POST", file="app/admin.py")],
+    )
+    provided_surfaces = [
+        AttackSurface(
+            route="/admin/reindex",
+            method="POST",
+            file="app/admin.py",
+            category="admin",
+            exposure="public",
+            risk="high",
+            auth_signals=[],
+            data_store_interaction=False,
+            outbound_integration=False,
+            rationale=["test surface"],
+        )
+    ]
+
+    def fail_if_called(_scan: ScanResult) -> list[AttackSurface]:
+        raise AssertionError("identify_attack_surfaces should not be called when attack_surfaces are provided")
+
+    monkeypatch.setattr("attackmap.threat_model.identify_attack_surfaces", fail_if_called)
+
+    attack_paths = generate_attack_paths(scan, attack_surfaces=provided_surfaces)
+
+    assert len(attack_paths) == 1
+    assert attack_paths[0].name == "Administrative route abuse"

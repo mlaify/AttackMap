@@ -10,15 +10,30 @@ from .models import AttackSurface, ScanResult
 def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
     surfaces: list[AttackSurface] = []
     auth_hints_by_file: dict[str, set[str]] = {}
-    global_auth_hints = sorted({hint.hint for hint in scan.auth_hints})
-
     for hint in scan.auth_hints:
         auth_hints_by_file.setdefault(hint.file, set()).add(hint.hint)
+    global_auth_hints = sorted({hint.hint for hint in scan.auth_hints})
+
+    supporting_hints_by_file: dict[str, set[str]] = {}
+    all_supporting_hints = [
+        *scan.auth_hints,
+        *scan.service_hints,
+        *scan.edge_hints,
+        *scan.entrypoint_hints,
+        *scan.protocol_hints,
+        *scan.framework_hints,
+    ]
+
+    for hint in all_supporting_hints:
+        supporting_hints_by_file.setdefault(hint.file, set()).add(hint.hint)
 
     for route in scan.routes:
         path_lower = route.path.lower()
         file_auth_hints = sorted(auth_hints_by_file.get(route.file, set()))
         auth_signals = file_auth_hints or global_auth_hints
+        supporting_signals = sorted(supporting_hints_by_file.get(route.file, set())) or sorted(
+            {hint.hint for hint in all_supporting_hints}
+        )
         rationale: list[str] = []
         exposure: AttackSurface["exposure"] = "public"
         internal_handler_markers = {
@@ -28,8 +43,8 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
             "service_role:event_consumer",
             "service_role:internal_handler",
         }
-        has_explicit_public_visibility = "handler_visibility:public" in auth_signals
-        has_internal_handler_hint = any(marker in auth_signals for marker in internal_handler_markers) and not has_explicit_public_visibility
+        has_explicit_public_visibility = "handler_visibility:public" in supporting_signals
+        has_internal_handler_hint = any(marker in supporting_signals for marker in internal_handler_markers) and not has_explicit_public_visibility
 
         if "webhook" in path_lower:
             category = "webhook"
