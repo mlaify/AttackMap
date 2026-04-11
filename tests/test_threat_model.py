@@ -19,6 +19,18 @@ def test_webhook_route_generates_high_severity_finding() -> None:
     assert any(step.startswith("Entry:") for path in attack_paths for step in path.steps)
 
 
+def test_webhook_finding_requires_stronger_runtime_evidence() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/webhook/events", method="GET", file="tests/webhook_test.ts")],
+        external_calls=[ExternalCall(target="https://api.example.com/process", file="tests/webhook_test.ts")],
+    )
+
+    findings = generate_findings(scan)
+
+    assert not any(f.title == "Public webhook endpoint may trust attacker-controlled events" for f in findings)
+
+
 def test_framework_chain_linker_generates_evidence_backed_attack_path() -> None:
     scan = ScanResult(
         root=".",
