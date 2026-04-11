@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .analyzer import identify_attack_surfaces
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 
@@ -29,9 +31,141 @@ def _finding_evidence(surface: AttackSurface) -> str:
     return "; ".join(details)
 
 
+@dataclass(frozen=True)
+class ProbableChain:
+    route_method: str
+    route_path: str
+    route_file: str
+    controller: str | None
+    action: str | None
+    service: str | None
+    sink: str
+    confidence: float
+    evidence: list[str]
+
+
+def _extract_prefixed_hints(scan: ScanResult, prefix: str) -> list[tuple[str, str]]:
+    return [
+        (hint.hint.removeprefix(prefix), hint.file)
+        for hint in scan.auth_hints
+        if hint.hint.startswith(prefix)
+    ]
+
+
+def _file_module_key(file_path: str) -> str:
+    normalized = file_path.replace("\\", "/")
+    marker = "/module/"
+    if marker in normalized:
+        suffix = normalized.split(marker, 1)[1]
+        parts = suffix.split("/")
+        if parts and parts[0]:
+            return f"module/{parts[0].lower()}"
+    parts = normalized.split("/")
+    if parts:
+        return parts[0].lower()
+    return normalized.lower()
+
+
+def _guess_action(route_path: str) -> str | None:
+    lower = route_path.lower()
+    if "/admin" in lower:
+        return "admin action"
+    if "/api" in lower:
+        return "api action"
+    if lower.startswith("/s/") or "/site" in lower:
+        return "site action"
+    return None
+
+
+def _is_framework_mvc_scan(scan: ScanResult) -> bool:
+    return any(
+        hint.hint.startswith("controller:")
+        or hint.hint.startswith("service:")
+        or hint.hint.startswith("omeka_")
+        or hint.hint.startswith("laminas_")
+        for hint in scan.auth_hints
+    )
+
+
+def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
+    controllers = _extract_prefixed_hints(scan, "controller:")
+    services = _extract_prefixed_hints(scan, "service:")
+    db_by_module = {_file_module_key(db.file): db for db in scan.databases}
+    external_by_module = {_file_module_key(call.file): call for call in scan.external_calls}
+
+    chains: list[ProbableChain] = []
+    for route in scan.routes:
+        module_key = _file_module_key(route.file)
+        evidence = [f"route {route.method} {route.path} in {route.file}"]
+        confidence = 0.35
+
+        route_controller = next((name for name, file in controllers if file == route.file), None)
+        if route_controller is None:
+            route_controller = next((name for name, file in controllers if _file_module_key(file) == module_key), None)
+            if route_controller:
+                confidence += 0.15
+                evidence.append(f"controller inferred by module proximity: {route_controller}")
+        else:
+            confidence += 0.25
+            evidence.append(f"controller in same file: {route_controller}")
+
+        route_service = next((name for name, file in services if file == route.file), None)
+        if route_service is None:
+            route_service = next((name for name, file in services if _file_module_key(file) == module_key), None)
+            if route_service:
+                confidence += 0.10
+                evidence.append(f"service inferred by module proximity: {route_service}")
+        else:
+            confidence += 0.20
+            evidence.append(f"service in same file: {route_service}")
+
+        sink = "privileged action"
+        if module_key in db_by_module:
+            sink = "database"
+            confidence += 0.2
+            evidence.append(f"database hint in same module: {db_by_module[module_key].kind} ({db_by_module[module_key].file})")
+        elif module_key in external_by_module:
+            sink = "external integration"
+            confidence += 0.15
+            evidence.append(f"external call in same module: {external_by_module[module_key].target} ({external_by_module[module_key].file})")
+        elif scan.databases:
+            sink = "database"
+            confidence += 0.05
+            evidence.append(f"database hint elsewhere in repo: {scan.databases[0].kind} ({scan.databases[0].file})")
+        elif scan.external_calls:
+            sink = "external integration"
+            confidence += 0.05
+            evidence.append(
+                f"external call elsewhere in repo: {scan.external_calls[0].target} ({scan.external_calls[0].file})"
+            )
+
+        action = _guess_action(route.path)
+        if action:
+            confidence += 0.05
+            evidence.append(f"route naming suggests {action}")
+
+        chains.append(
+            ProbableChain(
+                route_method=route.method,
+                route_path=route.path,
+                route_file=route.file,
+                controller=route_controller,
+                action=action,
+                service=route_service,
+                sink=sink,
+                confidence=min(confidence, 0.95),
+                evidence=evidence,
+            )
+        )
+
+    chains.sort(key=lambda chain: chain.confidence, reverse=True)
+    return chains
+
+
 def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[Finding]:
     surfaces = attack_surfaces if attack_surfaces is not None else identify_attack_surfaces(scan)
     findings: list[Finding] = []
+    chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
     webhook_surfaces = [surface for surface in surfaces if surface.category == "webhook"]
     admin_surfaces = [surface for surface in surfaces if surface.category == "admin"]
     upload_surfaces = [surface for surface in surfaces if surface.category == "upload"]
@@ -124,6 +258,21 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    if chains:
+        top_chain = chains[0]
+        findings.append(
+            Finding(
+                title="Framework route-to-service chain reaches a sensitive sink",
+                severity="high" if top_chain.sink in {"database", "privileged action"} else "medium",
+                evidence=[f"confidence={top_chain.confidence:.2f}", *top_chain.evidence[:6]],
+                mitigation=(
+                    "Validate and authorize at the route boundary, enforce controller-level policy checks, and gate "
+                    "service/factory entry points before database writes or privileged actions."
+                ),
+                confidence="high" if top_chain.confidence >= 0.7 else "medium",
+            )
+        )
+
     if not findings:
         findings.append(
             Finding(
@@ -140,6 +289,38 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
 
 def generate_attack_paths(scan: ScanResult) -> list[AttackPath]:
     surfaces = identify_attack_surfaces(scan)
+    chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
+
+    if chains:
+        top_chain = chains[0]
+        controller_text = top_chain.controller or "framework controller mapping"
+        service_text = top_chain.service or "framework service/factory"
+        action_text = top_chain.action or "application action"
+        sink_text = top_chain.sink
+        evidence_text = "; ".join(top_chain.evidence[:4])
+        return [
+            AttackPath(
+                name="Framework route-to-sink attack chain",
+                steps=[
+                    _action_step(
+                        "Entry",
+                        f"Attacker reaches {top_chain.route_method} {top_chain.route_path} in {top_chain.route_file}",
+                    ),
+                    _action_step("Routing", f"Framework route config maps request toward {controller_text} ({action_text})"),
+                    _action_step("Execution", f"Controller path likely invokes {service_text}"),
+                    _action_step(
+                        "Sink",
+                        f"Request influence reaches {sink_text}, creating an opportunity for unauthorized state change or abuse",
+                    ),
+                    _action_step("Evidence", f"confidence={top_chain.confidence:.2f}; {evidence_text}"),
+                ],
+                impact=(
+                    "A public request can be chained through framework routing and service execution to sensitive operations "
+                    "if boundary validation and authorization checks are weak or misplaced."
+                ),
+            )
+        ]
+
     webhook_surface = next((surface for surface in surfaces if surface.category == "webhook"), None)
     admin_surface = next((surface for surface in surfaces if surface.category == "admin"), None)
     auth_surface = next((surface for surface in surfaces if surface.category == "auth"), None)
