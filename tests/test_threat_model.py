@@ -39,3 +39,29 @@ def test_framework_chain_linker_generates_evidence_backed_attack_path() -> None:
     assert len(attack_paths) == 1
     assert attack_paths[0].name == "Framework route-to-sink attack chain"
     assert any(step.startswith("Evidence: confidence=") for step in attack_paths[0].steps)
+
+
+def test_service_chain_linker_generates_distributed_attack_path() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/xrpc/ping", method="GET", file="services/api/src/server.ts")],
+        auth_hints=[
+            AuthHint(hint="service_name:api", file="services/api/src/server.ts"),
+            AuthHint(hint="service_role:api", file="services/api/src/server.ts"),
+            AuthHint(hint="service_name:worker", file="services/worker/src/worker.ts"),
+            AuthHint(hint="service_role:worker", file="services/worker/src/worker.ts"),
+            AuthHint(hint="edge:api->worker", file="services/api/src/server.ts"),
+        ],
+        databases=[DatabaseHint(kind="postgresql", file="services/worker/src/worker.ts")],
+        external_calls=[ExternalCall(target="env://FEEDGEN_URL", file="services/api/src/server.ts")],
+    )
+
+    findings = generate_findings(scan)
+    attack_paths = generate_attack_paths(scan)
+
+    assert any(f.title == "Inter-service trust chain reaches a sensitive downstream sink" for f in findings)
+    assert len(attack_paths) == 1
+    assert attack_paths[0].name == "Distributed service trust-chain abuse"
+    assert any(step.startswith("Propagation:") for step in attack_paths[0].steps)
+    assert any(step.startswith("Config risk:") for step in attack_paths[0].steps)
+    assert any(step.startswith("Evidence: confidence=") for step in attack_paths[0].steps)
