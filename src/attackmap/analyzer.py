@@ -21,6 +21,15 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
         auth_signals = file_auth_hints or global_auth_hints
         rationale: list[str] = []
         exposure: AttackSurface["exposure"] = "public"
+        internal_handler_markers = {
+            "handler_visibility:internal",
+            "handler_type:internal_handler",
+            "service_role:worker",
+            "service_role:event_consumer",
+            "service_role:internal_handler",
+        }
+        has_explicit_public_visibility = "handler_visibility:public" in auth_signals
+        has_internal_handler_hint = any(marker in auth_signals for marker in internal_handler_markers) and not has_explicit_public_visibility
 
         if "webhook" in path_lower:
             category = "webhook"
@@ -51,6 +60,13 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
             category = "public_api"
             risk = "medium" if scan.databases or scan.external_calls else "low"
             rationale.append("Public application routes are initial footholds for probing input handling and authorization gaps.")
+
+        if has_internal_handler_hint and category not in {"admin", "auth", "webhook"}:
+            exposure = "internal"
+            if category == "public_api":
+                category = "internal"
+            risk = "medium" if category != "health" else "low"
+            rationale.append("Service-level handler metadata suggests this route is internal-facing (worker/event/internal handler path).")
 
         if auth_signals:
             rationale.append(f"Auth indicators observed: {', '.join(auth_signals)}.")

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import typer
 
-from .analyzer import identify_attack_surfaces, summarize_architecture, summarize_attack_surface
+from .analyzer import summarize_architecture, summarize_attack_surface
 from .defensive_review import render_defensive_review
 from .analyzers import (
     analyze_repository,
@@ -15,8 +15,8 @@ from .analyzers import (
     select_requested_analyzers,
 )
 from .graph import build_graph
+from .recon_to_analysis import translate_recon
 from .report import render_console_summary, write_reports
-from .threat_model import generate_attack_paths, generate_findings
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
 
@@ -47,11 +47,12 @@ def analyze(
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
     scan = analyze_repository(repo_path, analyzers=active_analyzers)
     graph = build_graph(scan)
-    attack_surfaces = identify_attack_surfaces(scan)
+    analysis = translate_recon(scan)
+    attack_surfaces = analysis.attack_surfaces
     architecture_md = summarize_architecture(scan, graph)
     attack_surface_md = summarize_attack_surface(scan, attack_surfaces)
-    findings = generate_findings(scan, attack_surfaces)
-    attack_paths = generate_attack_paths(scan)
+    findings = analysis.findings
+    attack_paths = analysis.attack_paths
     defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
 
     write_reports(
