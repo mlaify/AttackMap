@@ -173,6 +173,8 @@ class Analyzer(Protocol):
     @property
     def name(self) -> str: ...
 
+    def detect(self, root: str | Path) -> bool: ...
+
     def analyze(self, root: str | Path) -> AnalyzerResult: ...
 
 
@@ -309,10 +311,23 @@ def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
 def analyze_repository(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> AnalyzerResult:
     repo_root = Path(root).resolve()
     active_analyzers = list(analyzers) if analyzers is not None else get_registered_analyzers()
-    results = [analyzer.analyze(repo_root) for analyzer in active_analyzers]
+    results = [analyzer.analyze(repo_root) for analyzer in active_analyzers if _should_run_analyzer(analyzer, repo_root)]
     if not results:
         return AnalyzerResult(root=str(repo_root))
     return merge_analyzer_results(results, root=repo_root)
+
+
+def _should_run_analyzer(analyzer: Analyzer, repo_root: Path) -> bool:
+    detect_fn = getattr(analyzer, "detect", None)
+    if detect_fn is None:
+        return True
+    if not callable(detect_fn):
+        return True
+    try:
+        return bool(detect_fn(repo_root))
+    except Exception as exc:
+        logger.warning("Analyzer '%s' detect() failed: %s", analyzer.name, exc)
+        return False
 
 
 def merge_analyzer_results(
