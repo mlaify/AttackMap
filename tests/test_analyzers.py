@@ -229,6 +229,45 @@ def test_analyze_repository_merges_and_deduplicates_multiple_analyzer_results() 
     assert len(result.secret_hints) == 1
 
 
+def test_analyze_repository_respects_optional_detect() -> None:
+    class DetectFalseAnalyzer:
+        metadata = get_analyzer_metadata(DefaultAnalyzer())
+
+        @property
+        def name(self) -> str:
+            return "detect-false"
+
+        def detect(self, root: str | Path) -> bool:
+            return False
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            raise AssertionError("analyze() should not run when detect() is False")
+
+    class DetectTrueAnalyzer:
+        metadata = get_analyzer_metadata(DefaultAnalyzer())
+
+        @property
+        def name(self) -> str:
+            return "detect-true"
+
+        def detect(self, root: str | Path) -> bool:
+            return True
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(
+                root=str(root),
+                languages=["php"],
+                routes=[Route(path="/health", method="GET", file="index.php")],
+                files_scanned=1,
+            )
+
+    result = analyze_repository(".", analyzers=[DetectFalseAnalyzer(), DetectTrueAnalyzer()])
+
+    assert result.files_scanned == 1
+    assert result.languages == ["php"]
+    assert any(route.path == "/health" and route.file == "index.php" for route in result.routes)
+
+
 def test_registered_analyzers_merge_specialized_and_fallback_results(tmp_path: Path) -> None:
     js_file = tmp_path / "server.js"
     js_file.write_text(
