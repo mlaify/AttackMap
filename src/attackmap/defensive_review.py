@@ -94,6 +94,30 @@ def _provenance_breakdown(surfaces: list[AttackSurface]) -> str:
     )
 
 
+def _provenance_counts(surfaces: list[AttackSurface]) -> dict[str, int]:
+    counts = {"observed_runtime": 0, "protocol_derived": 0, "low_quality": 0}
+    for surface in surfaces:
+        key = _surface_provenance(surface)
+        if key in counts:
+            counts[key] += 1
+    return counts
+
+
+def _recommendation_basis_label(surfaces: list[AttackSurface]) -> str:
+    counts = _provenance_counts(surfaces)
+    total = max(sum(counts.values()), 1)
+    observed_pct = (counts["observed_runtime"] / total) * 100
+    protocol_pct = (counts["protocol_derived"] / total) * 100
+    low_quality_pct = (counts["low_quality"] / total) * 100
+    if observed_pct >= 50:
+        return "observed"
+    if protocol_pct >= 50:
+        return "inferred-protocol"
+    if low_quality_pct >= 50:
+        return "low-quality-evidence"
+    return "mixed-evidence"
+
+
 def _top_score_reasons(factors: dict[str, float], top_n: int = 3) -> str:
     ranked = sorted(factors.items(), key=lambda item: item[1], reverse=True)
     top = [f"{name}={value:.1f}" for name, value in ranked[:top_n] if value > 0]
@@ -331,6 +355,7 @@ def _evidence_chains(attack_paths: list[AttackPath]) -> list[str]:
 
 def _recommendations(findings: list[Finding], attack_paths: list[AttackPath], attack_surfaces: list[AttackSurface]) -> list[str]:
     recommendations: list[str] = []
+    low_quality_recommendations: list[str] = []
     scored_findings = sorted(
         (
             (_finding_priority(finding, attack_surfaces, attack_paths), finding)
@@ -340,10 +365,25 @@ def _recommendations(findings: list[Finding], attack_paths: list[AttackPath], at
         reverse=True,
     )
     for (_score, _factors), finding in scored_findings:
-        if finding.mitigation and finding.mitigation not in recommendations:
-            recommendations.append(f"- {finding.mitigation}")
+        if not finding.mitigation:
+            continue
+        related_surfaces = _related_surfaces_for_finding(finding, attack_surfaces)
+        basis = _recommendation_basis_label(related_surfaces)
+        line = f"- [{basis}] {finding.mitigation}"
+        if basis == "low-quality-evidence":
+            if line not in low_quality_recommendations:
+                low_quality_recommendations.append(line)
+            continue
+        if line not in recommendations:
+            recommendations.append(line)
         if len(recommendations) >= 4:
             break
+
+    for line in low_quality_recommendations:
+        if len(recommendations) >= 4:
+            break
+        if line not in recommendations:
+            recommendations.append(line)
 
     high_scored_path = max((_path_priority(path)[0] for path in attack_paths), default=0.0)
     if attack_paths and len(recommendations) < 5 and high_scored_path >= 22.0:

@@ -209,3 +209,56 @@ def test_defensive_review_classifies_entrypoints_and_downweights_test_sources() 
     assert review.index("Runtime admin weakness") < review.index("Test-only weakness")
     assert "Provenance: observed_runtime=100%, protocol_derived=0%, low_quality=0%" in review
     assert "Provenance: observed_runtime=0%, protocol_derived=0%, low_quality=100%" in review
+
+
+def test_recommendations_prefer_observed_evidence_over_low_quality_only_sources() -> None:
+    scan = ScanResult(
+        root=".",
+        languages=["typescript"],
+        routes=[Route(path="/admin", method="POST", file="services/api/src/admin.ts")],
+        files_scanned=4,
+    )
+    surfaces = [
+        AttackSurface(
+            route="/admin",
+            method="POST",
+            file="services/api/src/admin.ts",
+            category="admin",
+            exposure="public",
+            risk="high",
+            auth_signals=["jwt"],
+        ),
+        AttackSurface(
+            route="/debug/test-route",
+            method="GET",
+            file="tests/api/debug.test.ts",
+            category="public_api",
+            exposure="public",
+            risk="medium",
+        ),
+    ]
+    findings = [
+        Finding(
+            title="Observed runtime admin issue",
+            severity="medium",
+            mitigation="Enforce admin policy checks.",
+            confidence="high",
+            evidence=["route POST /admin in services/api/src/admin.ts"],
+        ),
+        Finding(
+            title="Fixture-only issue",
+            severity="high",
+            mitigation="Fix fixture route handling.",
+            confidence="high",
+            evidence=["route GET /debug/test-route in tests/api/debug.test.ts"],
+        ),
+    ]
+    attack_paths = [AttackPath(name="Admin path", steps=["Entry: /admin"], impact="Privileged effect")]
+
+    review = render_defensive_review(scan, surfaces, findings, attack_paths)
+
+    assert "[observed] Enforce admin policy checks." in review
+    assert "[low-quality-evidence] Fix fixture route handling." in review
+    assert review.index("[observed] Enforce admin policy checks.") < review.index(
+        "[low-quality-evidence] Fix fixture route handling."
+    )
