@@ -44,12 +44,157 @@ class ProbableChain:
     evidence: list[str]
 
 
+@dataclass(frozen=True)
+class ServiceChain:
+    route_method: str
+    route_path: str
+    route_file: str
+    entry_service: str
+    next_service: str | None
+    sink: str
+    confidence: float
+    evidence: list[str]
+    env_risk: str | None = None
+
+
 def _extract_prefixed_hints(scan: ScanResult, prefix: str) -> list[tuple[str, str]]:
     return [
         (hint.hint.removeprefix(prefix), hint.file)
         for hint in scan.auth_hints
         if hint.hint.startswith(prefix)
     ]
+
+
+def _extract_edge_hints(scan: ScanResult) -> list[tuple[str, str, str]]:
+    edges: list[tuple[str, str, str]] = []
+    for hint in scan.auth_hints:
+        if not hint.hint.startswith("edge:"):
+            continue
+        raw_edge = hint.hint.removeprefix("edge:")
+        if "->" not in raw_edge:
+            continue
+        source, target = raw_edge.split("->", 1)
+        source_name = source.strip().lower()
+        target_name = target.strip().lower()
+        if not source_name or not target_name:
+            continue
+        edges.append((source_name, target_name, hint.file))
+    return edges
+
+
+def _infer_service_name_from_file(file_path: str) -> str | None:
+    normalized = file_path.replace("\\", "/")
+    parts = normalized.split("/")
+    for parent in ("services", "packages", "apps"):
+        if parent in parts:
+            idx = parts.index(parent)
+            if idx + 1 < len(parts):
+                return parts[idx + 1].lower()
+    return None
+
+
+def _file_service_map(scan: ScanResult) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for service_name, service_file in _extract_prefixed_hints(scan, "service_name:"):
+        mapping[service_file] = service_name.lower()
+    for path in [*mapping.keys(), *(route.file for route in scan.routes), *(db.file for db in scan.databases), *(call.file for call in scan.external_calls)]:
+        if path in mapping:
+            continue
+        inferred = _infer_service_name_from_file(path)
+        if inferred:
+            mapping[path] = inferred
+    return mapping
+
+
+def _build_service_chains(scan: ScanResult) -> list[ServiceChain]:
+    service_edges = _extract_edge_hints(scan)
+    if not service_edges and not any(h.hint.startswith("service_name:") for h in scan.auth_hints):
+        return []
+
+    file_service = _file_service_map(scan)
+    edge_targets_by_source: dict[str, list[str]] = {}
+    for source, target, _file in service_edges:
+        edge_targets_by_source.setdefault(source, []).append(target)
+
+    databases_by_service: dict[str, DatabaseHint] = {}
+    for database in scan.databases:
+        service = file_service.get(database.file)
+        if service and service not in databases_by_service:
+            databases_by_service[service] = database
+
+    outbound_by_service: dict[str, ExternalCall] = {}
+    env_url_by_service: dict[str, str] = {}
+    for call in scan.external_calls:
+        service = file_service.get(call.file)
+        if not service:
+            continue
+        if call.target.startswith("env://"):
+            env_url_by_service.setdefault(service, call.target)
+            continue
+        outbound_by_service.setdefault(service, call)
+
+    chains: list[ServiceChain] = []
+    for route in scan.routes:
+        evidence = [f"route {route.method} {route.path} in {route.file}"]
+        confidence = 0.35
+        entry_service = file_service.get(route.file) or _infer_service_name_from_file(route.file) or "entry-service"
+        if file_service.get(route.file):
+            confidence += 0.25
+            evidence.append(f"entry service from file-local hint: {entry_service}")
+        else:
+            confidence += 0.1
+            evidence.append(f"entry service inferred from repository layout: {entry_service}")
+
+        next_service = None
+        sink = "privileged downstream action"
+        env_risk = env_url_by_service.get(entry_service)
+
+        candidates = edge_targets_by_source.get(entry_service, [])
+        if candidates:
+            next_service = candidates[0]
+            confidence += 0.15
+            evidence.append(f"inter-service edge: {entry_service}->{next_service}")
+
+        sink_service = next_service or entry_service
+        if sink_service in databases_by_service:
+            db_hint = databases_by_service[sink_service]
+            sink = "database"
+            confidence += 0.2
+            evidence.append(f"database sink in service {sink_service}: {db_hint.kind} ({db_hint.file})")
+        elif sink_service in outbound_by_service:
+            ext_hint = outbound_by_service[sink_service]
+            sink = "external dependency"
+            confidence += 0.15
+            evidence.append(f"external sink in service {sink_service}: {ext_hint.target} ({ext_hint.file})")
+        elif scan.databases:
+            sink = "database"
+            confidence += 0.05
+            evidence.append(f"database hint elsewhere in repo: {scan.databases[0].kind} ({scan.databases[0].file})")
+        elif scan.external_calls:
+            sink = "external dependency"
+            confidence += 0.05
+            evidence.append(f"external call elsewhere in repo: {scan.external_calls[0].target} ({scan.external_calls[0].file})")
+
+        if env_risk:
+            confidence += 0.05
+            evidence.append(f"env-configured dependency in entry service: {env_risk}")
+
+        chains.append(
+            ServiceChain(
+                route_method=route.method,
+                route_path=route.path,
+                route_file=route.file,
+                entry_service=entry_service,
+                next_service=next_service,
+                sink=sink,
+                confidence=min(confidence, 0.95),
+                evidence=evidence,
+                env_risk=env_risk,
+            )
+        )
+
+    chains.sort(key=lambda chain: chain.confidence, reverse=True)
+    return chains
 
 
 def _file_module_key(file_path: str) -> str:
@@ -165,6 +310,7 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
 def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[Finding]:
     surfaces = attack_surfaces if attack_surfaces is not None else identify_attack_surfaces(scan)
     findings: list[Finding] = []
+    service_chains = _build_service_chains(scan)
     chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
     webhook_surfaces = [surface for surface in surfaces if surface.category == "webhook"]
     admin_surfaces = [surface for surface in surfaces if surface.category == "admin"]
@@ -258,6 +404,21 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    if service_chains:
+        top_service_chain = service_chains[0]
+        findings.append(
+            Finding(
+                title="Inter-service trust chain reaches a sensitive downstream sink",
+                severity="high" if top_service_chain.sink in {"database", "privileged downstream action"} else "medium",
+                evidence=[f"confidence={top_service_chain.confidence:.2f}", *top_service_chain.evidence[:6]],
+                mitigation=(
+                    "Apply explicit authn/authz checks at each service hop, constrain service-to-service callers, and "
+                    "treat env-configured upstream and downstream endpoints as untrusted until verified."
+                ),
+                confidence="high" if top_service_chain.confidence >= 0.7 else "medium",
+            )
+        )
+
     if chains:
         top_chain = chains[0]
         findings.append(
@@ -289,7 +450,59 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
 
 def generate_attack_paths(scan: ScanResult) -> list[AttackPath]:
     surfaces = identify_attack_surfaces(scan)
+    service_chains = _build_service_chains(scan)
     chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
+
+    if service_chains:
+        top_chain = service_chains[0]
+        chain_label = (
+            f"{top_chain.entry_service} -> {top_chain.next_service}"
+            if top_chain.next_service
+            else top_chain.entry_service
+        )
+        steps = [
+            _action_step(
+                "Entry",
+                f"Attacker reaches {top_chain.route_method} {top_chain.route_path} in {top_chain.route_file}",
+            ),
+            _action_step("Service entry", f"Request is handled by service `{top_chain.entry_service}`"),
+        ]
+        if top_chain.next_service:
+            steps.append(
+                _action_step(
+                    "Propagation",
+                    f"Service-to-service trust edge allows request influence to reach `{top_chain.next_service}`",
+                )
+            )
+        if top_chain.env_risk:
+            steps.append(
+                _action_step(
+                    "Config risk",
+                    f"Runtime behavior depends on env-configured endpoint {top_chain.env_risk}, which can widen trust assumptions if misconfigured",
+                )
+            )
+        steps.extend(
+            [
+                _action_step(
+                    "Sink",
+                    f"Influence reaches {top_chain.sink}, creating a plausible unauthorized downstream action path",
+                ),
+                _action_step(
+                    "Evidence",
+                    f"confidence={top_chain.confidence:.2f}; {'; '.join(top_chain.evidence[:4])}",
+                ),
+            ]
+        )
+        return [
+            AttackPath(
+                name="Distributed service trust-chain abuse",
+                steps=steps,
+                impact=(
+                    f"A public API foothold can propagate across `{chain_label}` and affect {top_chain.sink} "
+                    "if service boundaries or downstream trust checks are weak."
+                ),
+            )
+        ]
 
     if chains:
         top_chain = chains[0]
