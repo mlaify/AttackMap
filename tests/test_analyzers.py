@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from attackmap.analyzers import (
     ANALYZER_ENTRYPOINT_GROUP,
     AnalyzerMetadata,
@@ -101,6 +103,14 @@ def test_discover_installed_analyzers_loads_valid_entrypoints_in_name_order(monk
     analyzers = discover_installed_analyzers()
 
     assert [analyzer.name for analyzer in analyzers] == ["external-a", "external-b"]
+
+
+def test_discover_installed_analyzers_includes_php_web_when_installed() -> None:
+    pytest.importorskip("attackmap_analyzer_php_web")
+
+    analyzers = discover_installed_analyzers()
+
+    assert any(analyzer.name == "php-web" for analyzer in analyzers)
 
 
 def test_get_registered_analyzers_skips_duplicate_names(monkeypatch) -> None:
@@ -294,6 +304,31 @@ fetch("https://api.example.com/ping");
     assert any(route.path == "/healthz" and route.method == "GET" for route in result.routes)
     assert any(call.target == "https://api.example.com/ping" and call.file == "client.ts" for call in result.external_calls)
     assert any(secret.name == "API_KEY" and secret.file == "client.ts" for secret in result.secret_hints)
+
+
+def test_analyze_repository_uses_installed_php_web_analyzer_for_php_routes(tmp_path: Path) -> None:
+    pytest.importorskip("attackmap_analyzer_php_web")
+
+    composer = tmp_path / "composer.json"
+    composer.write_text(
+        """
+{"name": "example/php-app", "require": {"php": "^8.2"}}
+""",
+        encoding="utf-8",
+    )
+    routes_file = tmp_path / "routes.php"
+    routes_file.write_text(
+        """
+<?php
+Route::post('/webhook/stripe', fn () => null);
+""",
+        encoding="utf-8",
+    )
+
+    result = analyze_repository(tmp_path)
+
+    assert "php" in result.languages
+    assert any(route.path == "/webhook/stripe" and route.method == "POST" for route in result.routes)
 
 
 def test_analyze_repository_runs_registered_builtin_analyzers(tmp_path: Path) -> None:
