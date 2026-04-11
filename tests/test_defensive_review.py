@@ -49,6 +49,7 @@ def test_render_defensive_review_contains_expected_sections() -> None:
     assert "## Recommendations" in review
     assert "AT Protocol namespace trust-chain abuse" in review
     assert "Reason:" in review
+    assert "Provenance:" in review
 
 
 def test_defensive_review_prioritizes_weaknesses_hotspots_and_recommendations() -> None:
@@ -128,3 +129,83 @@ def test_defensive_review_prioritizes_weaknesses_hotspots_and_recommendations() 
     assert admin_hotspot_idx < health_hotspot_idx
     assert high_mitigation_idx < low_mitigation_idx
     assert review.count("Reason:") >= 2
+
+
+def test_defensive_review_classifies_entrypoints_and_downweights_test_sources() -> None:
+    scan = ScanResult(
+        root=".",
+        languages=["typescript"],
+        routes=[
+            Route(path="/xrpc/com.atproto.server.createSession", method="ANY", file="lexicons/com/atproto/server/createSession.json"),
+            Route(path="/admin", method="POST", file="services/api/src/admin.ts"),
+            Route(path="/health", method="GET", file="services/api/src/health.ts"),
+            Route(path="/debug/test-route", method="GET", file="tests/api/debug.test.ts"),
+        ],
+        files_scanned=10,
+    )
+    surfaces = [
+        AttackSurface(
+            route="/xrpc/com.atproto.server.createSession",
+            method="ANY",
+            file="lexicons/com/atproto/server/createSession.json",
+            category="public_api",
+            exposure="public",
+            risk="medium",
+            auth_signals=["atproto_namespace:com.atproto"],
+            outbound_integration=True,
+        ),
+        AttackSurface(
+            route="/admin",
+            method="POST",
+            file="services/api/src/admin.ts",
+            category="admin",
+            exposure="public",
+            risk="high",
+            auth_signals=["jwt"],
+            data_store_interaction=True,
+        ),
+        AttackSurface(
+            route="/health",
+            method="GET",
+            file="services/api/src/health.ts",
+            category="health",
+            exposure="internal",
+            risk="low",
+        ),
+        AttackSurface(
+            route="/debug/test-route",
+            method="GET",
+            file="tests/api/debug.test.ts",
+            category="public_api",
+            exposure="public",
+            risk="medium",
+            outbound_integration=True,
+        ),
+    ]
+    findings = [
+        Finding(
+            title="Runtime admin weakness",
+            severity="medium",
+            mitigation="Harden admin auth.",
+            confidence="high",
+            evidence=["route POST /admin in services/api/src/admin.ts"],
+        ),
+        Finding(
+            title="Test-only weakness",
+            severity="high",
+            mitigation="Fix test fixture.",
+            confidence="high",
+            evidence=["route GET /debug/test-route in tests/api/debug.test.ts"],
+        ),
+    ]
+    attack_paths = [AttackPath(name="Admin path", steps=["Entry: /admin"], impact="Privileged effect")]
+
+    review = render_defensive_review(scan, surfaces, findings, attack_paths)
+
+    assert "- Observed runtime/public surfaces: 1" in review
+    assert "- Protocol/lexicon-derived surfaces (inferred): 1" in review
+    assert "- Internal-only surfaces: 1" in review
+    assert "- Test/example/mocked surfaces (down-weighted): 1" in review
+    assert review.index("Runtime admin weakness") < review.index("Test-only weakness")
+    assert "Provenance: observed_runtime=100%, protocol_derived=0%, low_quality=0%" in review
+    assert "Provenance: observed_runtime=0%, protocol_derived=0%, low_quality=100%" in review

@@ -4,6 +4,8 @@ import re
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 
+LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
+
 
 def _severity_rank(value: str) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(value, 3)
@@ -30,6 +32,66 @@ def _extract_numeric_confidence(text: str) -> float | None:
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     lowered = text.lower()
     return any(keyword in lowered for keyword in keywords)
+
+
+def _is_low_quality_source(path_or_text: str) -> bool:
+    normalized = path_or_text.replace("\\", "/").lower()
+    return any(segment in f"/{normalized}/" for segment in LOW_QUALITY_SEGMENTS)
+
+
+def _is_protocol_derived_surface(surface: AttackSurface) -> bool:
+    file_lower = surface.file.lower()
+    route_lower = surface.route.lower()
+    return "lexicon" in file_lower or "/xrpc/" in route_lower or "atproto_" in " ".join(surface.auth_signals).lower()
+
+
+def _entrypoint_counts(attack_surfaces: list[AttackSurface]) -> tuple[int, int, int, int]:
+    observed_runtime_public = 0
+    protocol_derived = 0
+    internal_only = 0
+    low_quality = 0
+    for surface in attack_surfaces:
+        if _is_low_quality_source(surface.file):
+            low_quality += 1
+            continue
+        if surface.exposure == "internal":
+            internal_only += 1
+            continue
+        if _is_protocol_derived_surface(surface):
+            protocol_derived += 1
+            continue
+        if surface.exposure == "public":
+            observed_runtime_public += 1
+    return observed_runtime_public, protocol_derived, internal_only, low_quality
+
+
+def _surface_provenance(surface: AttackSurface) -> str:
+    if _is_low_quality_source(surface.file):
+        return "low_quality"
+    if _is_protocol_derived_surface(surface):
+        return "protocol_derived"
+    if surface.exposure == "public":
+        return "observed_runtime"
+    return "other"
+
+
+def _provenance_breakdown(surfaces: list[AttackSurface]) -> str:
+    if not surfaces:
+        return "observed_runtime=0%, protocol_derived=0%, low_quality=0%"
+    counts = {"observed_runtime": 0, "protocol_derived": 0, "low_quality": 0}
+    for surface in surfaces:
+        key = _surface_provenance(surface)
+        if key in counts:
+            counts[key] += 1
+    total = max(len(surfaces), 1)
+    observed_pct = round((counts["observed_runtime"] / total) * 100)
+    protocol_pct = round((counts["protocol_derived"] / total) * 100)
+    low_quality_pct = round((counts["low_quality"] / total) * 100)
+    return (
+        f"observed_runtime={observed_pct}%, "
+        f"protocol_derived={protocol_pct}%, "
+        f"low_quality={low_quality_pct}%"
+    )
 
 
 def _top_score_reasons(factors: dict[str, float], top_n: int = 3) -> str:
@@ -61,6 +123,8 @@ def _surface_priority(surface: AttackSurface) -> tuple[float, dict[str, float]]:
         "chain_depth": 1.0 * chain_depth_score,
         "confidence": 1.0 * confidence_score,
     }
+    if _is_low_quality_source(surface.file):
+        weighted["source_quality_penalty"] = -8.0
     return round(sum(weighted.values()), 2), weighted
 
 
@@ -90,6 +154,8 @@ def _path_priority(path: AttackPath) -> tuple[float, dict[str, float]]:
         "chain_depth": 1.2 * chain_depth_score,
         "confidence": 1.5 * confidence_score,
     }
+    if _is_low_quality_source(text):
+        weighted["source_quality_penalty"] = -10.0
     return round(sum(weighted.values()), 2), weighted
 
 
@@ -165,6 +231,9 @@ def _finding_priority(finding: Finding, attack_surfaces: list[AttackSurface], at
         "chain_depth": 1.2 * chain_depth_score,
         "confidence": 1.5 * confidence_score,
     }
+    evidence_blob = f"{finding.title} {' '.join(finding.evidence)}"
+    if _is_low_quality_source(evidence_blob) and all(_is_low_quality_source(surface.file) for surface in surfaces):
+        weighted["source_quality_penalty"] = -10.0
     return round(sum(weighted.values()), 2), weighted
 
 
@@ -187,14 +256,14 @@ def _strengths(scan: ScanResult, attack_surfaces: list[AttackSurface]) -> list[s
         items.append(
             (
                 9.0 + min(len(auth_hints), 5),
-                f"- Authentication/identity controls are present in code signals ({', '.join(auth_hints[:6])}).",
+                f"- Authentication/identity indicators are present in code signals ({', '.join(auth_hints[:6])}).",
             )
         )
     if secure_surfaces:
         items.append(
             (
                 8.0 + min(len(secure_surfaces), 5),
-                f"- {len(secure_surfaces)} route(s) have nearby auth indicators, which can support defensive enforcement if validated.",
+                f"- {len(secure_surfaces)} route(s) include nearby auth indicators, which may support defensive enforcement if validated at runtime.",
             )
         )
     if internal_surfaces:
@@ -221,8 +290,10 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
         reverse=True,
     )
     for (score, factors), finding in finding_scores[:3]:
+        related_surfaces = _related_surfaces_for_finding(finding, attack_surfaces)
         items.append(f"- [{finding.severity.upper()} | score {score:.1f}] {finding.title}")
         items.append(f"- Reason: {_top_score_reasons(factors, top_n=3)}")
+        items.append(f"- Provenance: {_provenance_breakdown(related_surfaces)}")
 
     hotspot_scores = sorted(
         (
@@ -237,7 +308,8 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
             f"- Hotspot [score {score:.1f}]: {surface.method} {surface.route} ({surface.file}) -> {surface.category} / {surface.risk}"
         )
         items.append(f"- Reason: {_top_score_reasons(factors, top_n=2)}")
-    return items[:8]
+        items.append(f"- Provenance: {_provenance_breakdown([surface])}")
+    return items[:12]
 
 
 def _evidence_chains(attack_paths: list[AttackPath]) -> list[str]:
@@ -292,11 +364,17 @@ def render_defensive_review(
     findings: list[Finding],
     attack_paths: list[AttackPath],
 ) -> str:
+    observed_runtime_public, protocol_derived, internal_only, low_quality = _entrypoint_counts(attack_surfaces)
     lines = [
         "# Defensive Review",
         "",
         "## System Overview",
         _overview_line(scan),
+        f"- Raw inferred entry points: {len(scan.routes)}",
+        f"- Observed runtime/public surfaces: {observed_runtime_public}",
+        f"- Protocol/lexicon-derived surfaces (inferred): {protocol_derived}",
+        f"- Internal-only surfaces: {internal_only}",
+        f"- Test/example/mocked surfaces (down-weighted): {low_quality}",
         f"- Languages: {', '.join(scan.languages) if scan.languages else 'none'}",
         f"- Datastores: {', '.join(sorted({db.kind for db in scan.databases})) if scan.databases else 'none'}",
         f"- External dependencies observed: {len(scan.external_calls)}",
