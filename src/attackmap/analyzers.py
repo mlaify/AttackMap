@@ -3,9 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+import json
 import logging
 from pathlib import Path
+import subprocess
+import sys
 from typing import Protocol
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +30,9 @@ from .scanner import (
 logger = logging.getLogger(__name__)
 
 ANALYZER_ENTRYPOINT_GROUP = "attackmap.analyzers"
+ANALYZER_SUBGROUP_PREFIX = "matthewd.xyzai/attackmap-analyzers/"
+ANALYZER_SUBGROUP_BASE_URL = "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers"
+ANALYZER_SUBGROUP_API_URL = "https://gitlab.com/api/v4/groups/matthewd.xyzAI%2Fattackmap-analyzers/projects?simple=true&per_page=100"
 
 # Backward-compatible structured signal contract used by the lower-level scanner tests.
 class AnalyzerSignals(BaseModel):
@@ -167,6 +175,13 @@ class AnalyzerMetadata:
     ecosystems: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class AnalyzerRepositoryModule:
+    analyzer_name: str
+    repo_name: str
+    web_url: str
+
+
 class Analyzer(Protocol):
     metadata: AnalyzerMetadata
 
@@ -304,8 +319,131 @@ def get_registered_analyzers() -> list[Analyzer]:
     return deduplicated
 
 
+def select_requested_analyzers(
+    requested_modules: Iterable[str],
+    *,
+    auto_install: bool = False,
+    installer: Callable[[str], None] | None = None,
+) -> list[Analyzer]:
+    requested_names = [_normalize_analyzer_name(module) for module in requested_modules if module.strip()]
+    if not requested_names:
+        return []
+
+    resolved = _match_requested_analyzers(requested_names)
+    missing_names = [name for name in requested_names if name not in resolved]
+
+    if missing_names and auto_install:
+        install_fn = installer if installer is not None else install_analyzer_module
+        for missing_name in missing_names:
+            try:
+                install_fn(_derive_repo_name(missing_name))
+            except Exception as exc:
+                raise ValueError(f"Failed to install analyzer module '{missing_name}': {exc}") from exc
+        resolved = _match_requested_analyzers(requested_names)
+        missing_names = [name for name in requested_names if name not in resolved]
+
+    if missing_names:
+        missing_text = ", ".join(missing_names)
+        raise ValueError(f"Requested analyzer module(s) not available: {missing_text}")
+
+    selected: list[Analyzer] = []
+    seen: set[str] = set()
+    for name in requested_names:
+        if name in seen:
+            continue
+        seen.add(name)
+        selected.append(resolved[name])
+    return selected
+
+
+def install_analyzer_module(repo_name: str) -> None:
+    normalized_repo = _normalize_repo_name(repo_name)
+    module_url = f"git+{ANALYZER_SUBGROUP_BASE_URL}/{normalized_repo}.git"
+    logger.info("Installing analyzer module from %s", module_url)
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", module_url],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _match_requested_analyzers(requested_names: Iterable[str]) -> dict[str, Analyzer]:
+    available = {analyzer.name: analyzer for analyzer in get_registered_analyzers()}
+    return {name: available[name] for name in requested_names if name in available}
+
+
+def _normalize_analyzer_name(module: str) -> str:
+    normalized = module.strip().lower().removesuffix(".git")
+    if normalized.startswith(ANALYZER_SUBGROUP_PREFIX):
+        normalized = normalized[len(ANALYZER_SUBGROUP_PREFIX) :]
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    if normalized.startswith("attackmap-analyzer-"):
+        normalized = normalized.removeprefix("attackmap-analyzer-")
+    return normalized
+
+
+def _normalize_repo_name(repo_name: str) -> str:
+    normalized = repo_name.strip().lower().removesuffix(".git")
+    if normalized.startswith(ANALYZER_SUBGROUP_PREFIX):
+        normalized = normalized[len(ANALYZER_SUBGROUP_PREFIX) :]
+    if "/" in normalized:
+        normalized = normalized.rsplit("/", 1)[-1]
+    if normalized.startswith("attackmap-analyzer-"):
+        return normalized
+    return f"attackmap-analyzer-{normalized}"
+
+
+def _derive_repo_name(analyzer_name: str) -> str:
+    return _normalize_repo_name(analyzer_name)
+
+
 def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
     return analyzer.metadata
+
+
+def get_available_modules() -> list[AnalyzerMetadata]:
+    return [get_analyzer_metadata(analyzer) for analyzer in get_registered_analyzers()]
+
+
+def get_available_repository_modules(
+    *,
+    fetcher: Callable[[str], list[dict[str, object]]] | None = None,
+) -> list[AnalyzerRepositoryModule]:
+    fetch_fn = fetcher if fetcher is not None else _fetch_subgroup_projects
+    projects = fetch_fn(ANALYZER_SUBGROUP_API_URL)
+    modules: list[AnalyzerRepositoryModule] = []
+    for project in projects:
+        repo_name = str(project.get("path", "")).strip()
+        if not repo_name.startswith("attackmap-analyzer-"):
+            continue
+        analyzer_name = _normalize_analyzer_name(repo_name)
+        web_url = str(project.get("web_url", f"{ANALYZER_SUBGROUP_BASE_URL}/{repo_name}")).strip()
+        modules.append(
+            AnalyzerRepositoryModule(
+                analyzer_name=analyzer_name,
+                repo_name=repo_name,
+                web_url=web_url,
+            )
+        )
+    modules.sort(key=lambda module: module.analyzer_name)
+    return modules
+
+
+def _fetch_subgroup_projects(api_url: str) -> list[dict[str, object]]:
+    try:
+        with urlopen(api_url, timeout=10) as response:
+            payload = response.read().decode("utf-8")
+    except URLError as exc:
+        raise ValueError(f"Unable to reach analyzer module registry: {exc}") from exc
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid analyzer module registry response: {exc}") from exc
+    if not isinstance(decoded, list):
+        raise ValueError("Unexpected analyzer module registry response shape.")
+    return [item for item in decoded if isinstance(item, dict)]
 
 
 def analyze_repository(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> AnalyzerResult:
