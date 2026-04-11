@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+from .recon_models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 
 CODE_EXTENSIONS = {
     ".py": "python",
@@ -300,11 +300,13 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
             continue
 
         relative = str(file_path.relative_to(root_path))
-        result.routes.extend(extract_routes(content, relative, file_path.suffix))
+        file_routes = extract_routes(content, relative, file_path.suffix)
+        result.routes.extend(file_routes)
 
         for pattern in EXTERNAL_CALL_PATTERNS:
             for match in pattern.finditer(content):
-                result.external_calls.append(ExternalCall(target=match.groups()[-1], file=relative))
+                target = match.groups()[-1]
+                result.external_calls.append(ExternalCall(target=target, file=relative))
 
         lowered = content.lower()
         _append_unique_database_hints(result, relative, content, lowered)

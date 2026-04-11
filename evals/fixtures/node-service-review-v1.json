@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "node-service-review-v1",
+  "target": {
+    "repo": "local fixture",
+    "ecosystem": "node-service",
+    "notes": "Defensive review quality expectations for generic distributed Node/TypeScript service repositories."
+  },
+  "review_file": "node-service-good-review.md",
+  "expectations": {
+    "grounding": {
+      "citation_pattern": "(?:surface|finding|path):\\d+",
+      "allowed_ids": [
+        "surface:1",
+        "surface:2",
+        "surface:3",
+        "finding:1",
+        "finding:2",
+        "path:1"
+      ],
+      "min_citations": 4
+    },
+    "observed_inferred": {
+      "observed_token": "\\bOBSERVED\\b",
+      "inferred_token": "\\bINFERRED\\b",
+      "min_observed": 3,
+      "min_inferred": 1
+    },
+    "strengths": {
+      "min_items": 2,
+      "required_keywords": [
+        "service",
+        "auth"
+      ]
+    },
+    "weaknesses_hotspots": {
+      "min_items": 3,
+      "required_terms": [
+        "hotspot",
+        "edge",
+        "trust boundary"
+      ]
+    },
+    "recommendations": {
+      "min_items": 3,
+      "action_verbs": [
+        "enforce",
+        "validate",
+        "constrain"
+      ]
+    },
+    "false_positive_control": {
+      "banned_phrases": [
+        "definite remote code execution",
+        "guaranteed compromise"
+      ],
+      "required_cautions": [
+        "low-quality",
+        "heuristic"
+      ]
+    }
+  }
+}

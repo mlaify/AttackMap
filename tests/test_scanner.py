@@ -192,3 +192,51 @@ def endpoint(token: str = Depends(oauth2_scheme)):
     assert ("oauth", "service.py") in hints
     assert ("depends_auth", "service.py") in hints
     assert len([hint for hint in result.auth_hints if hint.file == "service.py" and hint.hint == "oauth"]) == 1
+
+
+def test_scan_repo_keeps_javascript_typescript_extraction_generic(tmp_path: Path) -> None:
+    api_file = tmp_path / "services" / "api" / "src" / "server.ts"
+    api_file.parent.mkdir(parents=True, exist_ok=True)
+    api_file.write_text(
+        """
+import express from "express";
+const app = express();
+const relayBaseUrl = process.env.RELAY_URL;
+const signingKey = process.env.SERVICE_SIGNING_KEY;
+
+app.post("/xrpc/com.atproto.server.createSession", async (_req, res) => {
+  await fetch("https://relay.example.net/xrpc/com.atproto.sync.subscribeRepos");
+  return res.json({ ok: true, relayBaseUrl });
+});
+""",
+        encoding="utf-8",
+    )
+
+    worker_file = tmp_path / "services" / "relay" / "src" / "consumer.ts"
+    worker_file.parent.mkdir(parents=True, exist_ok=True)
+    worker_file.write_text(
+        """
+export async function startConsumer(queue: { subscribe: (topic: string) => Promise<void> }) {
+  await queue.subscribe("sync.events");
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = scan_repo(tmp_path)
+    hints = {(hint.hint, hint.file) for hint in result.auth_hints}
+    calls = {(call.target, call.file) for call in result.external_calls}
+    routes = {(route.path, route.method, route.file) for route in result.routes}
+    secrets = {(secret.name, secret.file) for secret in result.secret_hints}
+
+    assert ("/xrpc/com.atproto.server.createSession", "POST", "services/api/src/server.ts") in routes
+    assert ("https://relay.example.net/xrpc/com.atproto.sync.subscribeRepos", "services/api/src/server.ts") in calls
+    assert ("SERVICE_SIGNING_KEY", "services/api/src/server.ts") in secrets
+
+    # Scanner remains generic and no longer emits node-service/atproto overlays.
+    assert not any(hint.startswith("service_name:") for hint, _ in hints)
+    assert not any(hint.startswith("service_role:") for hint, _ in hints)
+    assert not any(hint.startswith("handler_type:") for hint, _ in hints)
+    assert not any(hint.startswith("handler_visibility:") for hint, _ in hints)
+    assert not any(hint.startswith("edge:") for hint, _ in hints)
+    assert not any(hint.startswith("atproto_") for hint, _ in hints)
