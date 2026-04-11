@@ -27,6 +27,31 @@ class AuthHint(BaseModel):
     file: str
 
 
+class ServiceHint(BaseModel):
+    hint: str
+    file: str
+
+
+class EdgeHint(BaseModel):
+    hint: str
+    file: str
+
+
+class EntrypointHint(BaseModel):
+    hint: str
+    file: str
+
+
+class ProtocolHint(BaseModel):
+    hint: str
+    file: str
+
+
+class FrameworkHint(BaseModel):
+    hint: str
+    file: str
+
+
 class SecretHint(BaseModel):
     name: str
     file: str
@@ -66,6 +91,11 @@ class ScanResult(BaseModel):
     external_calls: list[ExternalCall] = Field(default_factory=list)
     databases: list[DatabaseHint] = Field(default_factory=list)
     auth_hints: list[AuthHint] = Field(default_factory=list)
+    service_hints: list[ServiceHint] = Field(default_factory=list)
+    edge_hints: list[EdgeHint] = Field(default_factory=list)
+    entrypoint_hints: list[EntrypointHint] = Field(default_factory=list)
+    protocol_hints: list[ProtocolHint] = Field(default_factory=list)
+    framework_hints: list[FrameworkHint] = Field(default_factory=list)
     secret_hints: list[SecretHint] = Field(default_factory=list)
     files_scanned: int = 0
 

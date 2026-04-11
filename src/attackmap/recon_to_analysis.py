@@ -63,7 +63,21 @@ def _auth_filtered_scan(scan: ScanResult) -> ScanResult:
     (service names, edges, protocol notes). For attack-surface and finding
     generation, treat only likely auth signals as auth to avoid overconfidence.
     """
-    filtered_auth_hints = [hint for hint in scan.auth_hints if _is_likely_auth_signal(hint.hint)]
+    migrated_non_auth_hints = {
+        (hint.hint, hint.file)
+        for hint in [
+            *scan.service_hints,
+            *scan.edge_hints,
+            *scan.entrypoint_hints,
+            *scan.protocol_hints,
+            *scan.framework_hints,
+        ]
+    }
+    filtered_auth_hints = [
+        hint
+        for hint in scan.auth_hints
+        if (hint.hint, hint.file) not in migrated_non_auth_hints and _is_likely_auth_signal(hint.hint)
+    ]
     return scan.model_copy(update={"auth_hints": [AuthHint(hint=hint.hint, file=hint.file) for hint in filtered_auth_hints]})
 
 
@@ -80,14 +94,14 @@ def to_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = 
     return generate_findings(auth_filtered_scan)
 
 
-def to_attack_paths(scan: ScanResult) -> list[AttackPath]:
+def to_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[AttackPath]:
     """
     Translate recon signals into plausible, heuristic attack paths.
 
     Keep full hints for path generation so temporary overloaded hints still
     support chain-linking while migration is in progress.
     """
-    return generate_attack_paths(scan)
+    return generate_attack_paths(scan, attack_surfaces=attack_surfaces)
 
 
 def translate_recon(scan: ScanResult) -> AnalysisOutputs:

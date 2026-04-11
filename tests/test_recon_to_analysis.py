@@ -1,4 +1,4 @@
-from attackmap.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult
+from attackmap.models import AttackSurface, AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, ServiceHint
 from attackmap.recon_to_analysis import to_attack_paths, to_attack_surface, to_findings, translate_recon
 
 
@@ -82,3 +82,45 @@ def test_translate_recon_preserves_chain_hints_for_attack_paths() -> None:
     outputs = translate_recon(scan)
 
     assert any(path.name == "Distributed service trust-chain abuse" for path in outputs.attack_paths)
+
+
+def test_to_attack_paths_accepts_precomputed_surfaces() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/admin/reindex", method="POST", file="app/admin.py")],
+    )
+    provided_surfaces = [
+        AttackSurface(
+            route="/admin/reindex",
+            method="POST",
+            file="app/admin.py",
+            category="admin",
+            exposure="public",
+            risk="high",
+            auth_signals=[],
+            data_store_interaction=False,
+            outbound_integration=False,
+            rationale=["test surface"],
+        )
+    ]
+
+    paths = to_attack_paths(scan, attack_surfaces=provided_surfaces)
+
+    assert len(paths) == 1
+    assert paths[0].name == "Administrative route abuse"
+
+
+def test_translation_prefers_migrated_non_auth_hints_outside_auth_bucket() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/login", method="POST", file="services/api/src/server.ts")],
+        auth_hints=[AuthHint(hint="service_name:api", file="services/api/src/server.ts")],
+        service_hints=[ServiceHint(hint="service_name:api", file="services/api/src/server.ts")],
+    )
+
+    findings = to_findings(scan)
+
+    assert any(
+        finding.title == "Authentication routes were detected without strong nearby auth controls"
+        for finding in findings
+    )
