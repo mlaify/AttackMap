@@ -12,9 +12,12 @@ from attackmap.analyzers import (
     analyze_repository,
     discover_installed_analyzers,
     get_analyzer_metadata,
+    get_available_modules,
+    get_available_repository_modules,
     get_builtin_repository_analyzers,
     get_registered_analyzers,
     merge_analyzer_results,
+    select_requested_analyzers,
 )
 from attackmap.models import AuthHint, ExternalCall, Route, ScanResult, SecretHint
 
@@ -113,6 +116,78 @@ def test_discover_installed_analyzers_includes_php_web_when_installed() -> None:
     assert any(analyzer.name == "php-web" for analyzer in analyzers)
 
 
+def test_select_requested_analyzers_matches_builtin_and_external_names(monkeypatch) -> None:
+    class ExternalPhpAnalyzer:
+        metadata = AnalyzerMetadata(
+            name="php-web",
+            description="php analyzer",
+            scope="external test analyzer",
+            ecosystems=("php",),
+        )
+
+        @property
+        def name(self) -> str:
+            return "php-web"
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    monkeypatch.setattr("attackmap.analyzers.get_registered_analyzers", lambda: [ExternalPhpAnalyzer()])
+
+    selected = select_requested_analyzers(
+        [
+            "php-web",
+            "attackmap-analyzer-php-web",
+            "matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-web",
+        ]
+    )
+
+    assert [analyzer.name for analyzer in selected] == ["php-web"]
+
+
+def test_select_requested_analyzers_installs_missing_modules_when_enabled(monkeypatch) -> None:
+    class ExternalPhpAnalyzer:
+        metadata = AnalyzerMetadata(
+            name="php-web",
+            description="php analyzer",
+            scope="external test analyzer",
+            ecosystems=("php",),
+        )
+
+        @property
+        def name(self) -> str:
+            return "php-web"
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    calls: list[str] = []
+    registry_state = {"ready": False}
+
+    def fake_registry() -> list[object]:
+        if registry_state["ready"]:
+            return [ExternalPhpAnalyzer()]
+        return []
+
+    def fake_installer(repo_name: str) -> None:
+        calls.append(repo_name)
+        registry_state["ready"] = True
+
+    monkeypatch.setattr("attackmap.analyzers.get_registered_analyzers", fake_registry)
+
+    selected = select_requested_analyzers(["php-web"], auto_install=True, installer=fake_installer)
+
+    assert calls == ["attackmap-analyzer-php-web"]
+    assert [analyzer.name for analyzer in selected] == ["php-web"]
+
+
+def test_select_requested_analyzers_errors_when_missing_without_install(monkeypatch) -> None:
+    monkeypatch.setattr("attackmap.analyzers.get_registered_analyzers", lambda: [])
+
+    with pytest.raises(ValueError, match="not available"):
+        select_requested_analyzers(["php-web"], auto_install=False)
+
+
 def test_get_registered_analyzers_skips_duplicate_names(monkeypatch) -> None:
     class DuplicatePythonAnalyzer:
         metadata = get_analyzer_metadata(BuiltinPythonWebAnalyzer())
@@ -148,6 +223,55 @@ def test_builtin_analyzers_expose_metadata() -> None:
     assert default_metadata.name == "default"
     assert "Fallback" in default_metadata.description
     assert default_metadata.ecosystems == ("typescript",)
+
+
+def test_get_available_modules_returns_registered_metadata(monkeypatch) -> None:
+    class ExternalAnalyzer:
+        metadata = AnalyzerMetadata(
+            name="php-web",
+            description="php analyzer",
+            scope="external test analyzer",
+            ecosystems=("php",),
+        )
+
+        @property
+        def name(self) -> str:
+            return "php-web"
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    monkeypatch.setattr("attackmap.analyzers.get_registered_analyzers", lambda: [ExternalAnalyzer()])
+
+    modules = get_available_modules()
+
+    assert len(modules) == 1
+    assert modules[0].name == "php-web"
+    assert modules[0].ecosystems == ("php",)
+
+
+def test_get_available_repository_modules_filters_and_normalizes() -> None:
+    modules = get_available_repository_modules(
+        fetcher=lambda _url: [
+            {
+                "path": "attackmap-analyzer-php-web",
+                "web_url": "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-web",
+            },
+            {"path": "random-repo", "web_url": "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers/random-repo"},
+            {
+                "path": "attackmap-analyzer-node-express",
+                "web_url": "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-node-express",
+            },
+        ]
+    )
+
+    assert [module.analyzer_name for module in modules] == ["node-express", "php-web"]
+    assert [module.repo_name for module in modules] == ["attackmap-analyzer-node-express", "attackmap-analyzer-php-web"]
+
+
+def test_get_available_repository_modules_passes_through_fetch_errors() -> None:
+    with pytest.raises(ValueError, match="registry is unavailable"):
+        get_available_repository_modules(fetcher=lambda _url: (_ for _ in ()).throw(ValueError("registry is unavailable")))
 
 
 def test_merge_analyzer_results_combines_languages_and_deduplicates_signals() -> None:
