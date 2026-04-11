@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://attackmap.dev/schemas/defensive-review.schema.json",
+  "title": "AttackMap Defensive Review",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "target_metadata",
+    "system_overview",
+    "attack_surface",
+    "strengths",
+    "weaknesses_risk_hotspots",
+    "evidence_chains",
+    "recommendations",
+    "raw_structured_signals",
+    "limitations_meta"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "target_metadata": {
+      "type": "object"
+    },
+    "system_overview": {
+      "type": "object"
+    },
+    "attack_surface": {
+      "type": "object"
+    },
+    "strengths": {
+      "type": "array"
+    },
+    "weaknesses_risk_hotspots": {
+      "type": "object"
+    },
+    "evidence_chains": {
+      "type": "array"
+    },
+    "recommendations": {
+      "type": "array"
+    },
+    "raw_structured_signals": {
+      "type": "object"
+    },
+    "limitations_meta": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

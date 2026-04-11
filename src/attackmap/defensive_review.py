@@ -104,6 +104,8 @@ def _provenance_counts(surfaces: list[AttackSurface]) -> dict[str, int]:
 
 
 def _recommendation_basis_label(surfaces: list[AttackSurface]) -> str:
+    if not surfaces:
+        return "inferred-weak"
     counts = _provenance_counts(surfaces)
     total = max(sum(counts.values()), 1)
     observed_pct = (counts["observed_runtime"] / total) * 100
@@ -149,6 +151,10 @@ def _surface_priority(surface: AttackSurface) -> tuple[float, dict[str, float]]:
     }
     if _is_low_quality_source(surface.file):
         weighted["source_quality_penalty"] = -8.0
+    elif _is_protocol_derived_surface(surface):
+        weighted["source_quality_penalty"] = -3.0
+    elif surface.exposure == "public":
+        weighted["source_quality_bonus"] = 1.0
     return round(sum(weighted.values()), 2), weighted
 
 
@@ -192,7 +198,7 @@ def _related_surfaces_for_finding(finding: Finding, attack_surfaces: list[Attack
         or surface.file.lower() in combined
         or surface.category.lower() in combined
     ]
-    return related or attack_surfaces
+    return related
 
 
 def _related_paths_for_finding(finding: Finding, attack_paths: list[AttackPath], surfaces: list[AttackSurface]) -> list[AttackPath]:
@@ -207,7 +213,7 @@ def _related_paths_for_finding(finding: Finding, attack_paths: list[AttackPath],
         or any(step.lower() in combined for step in path.steps[:2])
         or any(token in " ".join(path.steps).lower() for token in surface_tokens)
     ]
-    return related or attack_paths
+    return related
 
 
 def _finding_priority(finding: Finding, attack_surfaces: list[AttackSurface], attack_paths: list[AttackPath]) -> tuple[float, dict[str, float]]:
@@ -236,7 +242,7 @@ def _finding_priority(finding: Finding, attack_surfaces: list[AttackSurface], at
         ),
         default=1.0,
     )
-    chain_depth_score = max((min(len(path.steps), 8) / 2.0 for path in paths), default=1.0)
+    chain_depth_score = max((min(len(path.steps), 8) / 2.0 for path in paths), default=0.5)
     numeric_confidence = max(
         (
             value
@@ -255,6 +261,18 @@ def _finding_priority(finding: Finding, attack_surfaces: list[AttackSurface], at
         "chain_depth": 1.2 * chain_depth_score,
         "confidence": 1.5 * confidence_score,
     }
+    if not surfaces:
+        weighted["evidence_linkage_penalty"] = -8.0
+    elif len(surfaces) == 1:
+        weighted["evidence_linkage_bonus"] = 0.5
+    else:
+        weighted["evidence_linkage_bonus"] = min(2.0, 0.5 * len(surfaces))
+    provenance = _provenance_counts(surfaces)
+    weighted["source_quality"] = (
+        1.5 * provenance["observed_runtime"]
+        - 0.5 * provenance["protocol_derived"]
+        - 3.0 * provenance["low_quality"]
+    )
     evidence_blob = f"{finding.title} {' '.join(finding.evidence)}"
     if _is_low_quality_source(evidence_blob) and all(_is_low_quality_source(surface.file) for surface in surfaces):
         weighted["source_quality_penalty"] = -10.0
@@ -319,15 +337,32 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
         items.append(f"- Reason: {_top_score_reasons(factors, top_n=3)}")
         items.append(f"- Provenance: {_provenance_breakdown(related_surfaces)}")
 
+    hotspot_surfaces = [surface for surface in attack_surfaces if not _is_low_quality_source(surface.file)]
+    if not hotspot_surfaces:
+        hotspot_surfaces = list(attack_surfaces)
+
     hotspot_scores = sorted(
         (
             (_surface_priority(surface), surface)
-            for surface in attack_surfaces
+            for surface in hotspot_surfaces
         ),
         key=lambda item: (item[0][0], -_surface_risk_rank(item[1].risk), item[1].route),
         reverse=True,
     )
-    for (score, factors), surface in hotspot_scores[:2]:
+    # Avoid duplicate hotspot rows for the same logical surface (e.g., ANY/SUBSCRIBE variants in one lexicon file).
+    deduped_hotspots: list[tuple[tuple[float, dict[str, float]], AttackSurface]] = []
+    seen_hotspot_keys: set[tuple[str, str, str, str]] = set()
+    for scored_surface in hotspot_scores:
+        (_score, _factors), surface = scored_surface
+        key = (surface.route, surface.file, surface.category, surface.exposure)
+        if key in seen_hotspot_keys:
+            continue
+        seen_hotspot_keys.add(key)
+        deduped_hotspots.append(scored_surface)
+        if len(deduped_hotspots) >= 2:
+            break
+
+    for (score, factors), surface in deduped_hotspots:
         items.append(
             f"- Hotspot [score {score:.1f}]: {surface.method} {surface.route} ({surface.file}) -> {surface.category} / {surface.risk}"
         )
