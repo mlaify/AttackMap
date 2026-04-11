@@ -5,9 +5,9 @@ from pathlib import Path
 import typer
 
 from .analyzer import identify_attack_surfaces, summarize_architecture, summarize_attack_surface
+from .analyzers import analyze_repository
 from .graph import build_graph
 from .report import render_console_summary, write_reports
-from .scanner import scan_repo
 from .threat_model import generate_attack_paths, generate_findings
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
@@ -23,7 +23,7 @@ def analyze(
     if not repo_path.exists():
         raise typer.BadParameter(f"Path does not exist: {repo_path}")
 
-    scan = scan_repo(repo_path)
+    scan = analyze_repository(repo_path)
     graph = build_graph(scan)
     attack_surfaces = identify_attack_surfaces(scan)
     architecture_md = summarize_architecture(scan, graph)
