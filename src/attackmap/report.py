@@ -15,6 +15,7 @@ def write_reports(
     scan: ScanResult,
     architecture_md: str,
     attack_surface_md: str,
+    defensive_review_md: str,
     attack_surfaces: list[AttackSurface],
     findings: list[Finding],
     attack_paths: list[AttackPath],
@@ -24,11 +25,13 @@ def write_reports(
 
     (out / "architecture.md").write_text(architecture_md + "\n", encoding="utf-8")
     (out / "attack-surface.md").write_text(attack_surface_md + "\n", encoding="utf-8")
+    (out / "defensive-review.md").write_text(defensive_review_md + "\n", encoding="utf-8")
 
     json_report = {
         "scan": scan.model_dump(),
         "architecture_summary": architecture_md,
         "attack_surface_summary": attack_surface_md,
+        "defensive_review": defensive_review_md,
         "attack_surfaces": [surface.model_dump() for surface in attack_surfaces],
         "findings": [finding.model_dump() for finding in findings],
         "attack_paths": [path.model_dump() for path in attack_paths],
