@@ -212,17 +212,38 @@ def test_builtin_analyzers_expose_metadata() -> None:
     default_metadata = get_analyzer_metadata(DefaultAnalyzer())
 
     assert python_metadata.name == "python-web"
+    assert python_metadata.display_name == "Python Web Analyzer"
+    assert python_metadata.version == "0.1.0"
     assert "Python web frameworks" in python_metadata.description
     assert python_metadata.scope.startswith("Python source files")
     assert python_metadata.ecosystems == ("python", "fastapi", "flask")
+    assert python_metadata.enabled_by_default is True
 
     assert javascript_metadata.name == "javascript-web"
+    assert javascript_metadata.display_name == "JavaScript Web Analyzer"
     assert "JavaScript web frameworks" in javascript_metadata.description
     assert javascript_metadata.ecosystems == ("javascript", "express", "node")
+    assert javascript_metadata.enabled_by_default is True
 
     assert default_metadata.name == "default"
+    assert default_metadata.display_name == "Default Analyzer"
     assert "Fallback" in default_metadata.description
     assert default_metadata.ecosystems == ("typescript",)
+    assert default_metadata.enabled_by_default is True
+
+
+def test_analyzer_metadata_remains_backward_compatible_with_legacy_ecosystems_input() -> None:
+    metadata = AnalyzerMetadata(
+        name="php-web",
+        description="php analyzer",
+        scope="legacy compatibility test",
+        ecosystems=("php", "laminas"),
+    )
+
+    assert metadata.name == "php-web"
+    assert metadata.display_name == "php-web"
+    assert metadata.languages == ["php", "laminas"]
+    assert metadata.ecosystems == ("php", "laminas")
 
 
 def test_get_available_modules_returns_registered_metadata(monkeypatch) -> None:
@@ -361,6 +382,53 @@ def test_analyze_repository_merges_and_deduplicates_multiple_analyzer_results() 
     assert len(result.external_calls) == 1
     assert len(result.auth_hints) == 1
     assert len(result.secret_hints) == 1
+
+
+def test_analyze_repository_keeps_specialized_overlay_signals_analyzer_driven(tmp_path: Path) -> None:
+    server_file = tmp_path / "services" / "api" / "src" / "server.js"
+    server_file.parent.mkdir(parents=True, exist_ok=True)
+    server_file.write_text(
+        """
+const express = require("express");
+const app = express();
+app.post("/xrpc/com.atproto.server.createSession", (_req, res) => res.json({ ok: true }));
+""",
+        encoding="utf-8",
+    )
+
+    class SyntheticOverlayAnalyzer:
+        metadata = AnalyzerMetadata(
+            name="synthetic-overlay",
+            description="synthetic test overlay",
+            scope="tests analyzer-driven specialization",
+            ecosystems=("typescript",),
+        )
+
+        @property
+        def name(self) -> str:
+            return "synthetic-overlay"
+
+        def detect(self, root: str | Path) -> bool:
+            return True
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(
+                    root=str(root),
+                    auth_hints=[
+                        AuthHint(hint="service_name:api", file="services/api/src/server.js"),
+                        AuthHint(hint="edge:api->relay", file="services/api/src/server.js"),
+                        AuthHint(hint="atproto_protocol:xrpc", file="services/api/src/server.js"),
+                    ],
+                )
+
+    result = analyze_repository(tmp_path, analyzers=[BuiltinJavaScriptWebAnalyzer(), SyntheticOverlayAnalyzer()])
+    hint_values = {hint.hint for hint in result.auth_hints}
+    route_values = {(route.path, route.method) for route in result.routes}
+
+    assert ("/xrpc/com.atproto.server.createSession", "POST") in route_values
+    assert "service_name:api" in hint_values
+    assert "edge:api->relay" in hint_values
+    assert "atproto_protocol:xrpc" in hint_values
 
 
 def test_analyze_repository_respects_optional_detect() -> None:

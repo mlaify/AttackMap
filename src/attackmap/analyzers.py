@@ -14,7 +14,21 @@ from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
-from .models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+from .analyzer_contracts import (
+    AnalyzerMetadata,
+    AnalyzerProtocol,
+    AnalyzerRepositoryModule,
+    AnalyzerResult,
+    normalize_analyzer_metadata,
+)
+from .recon_models import (
+    AuthHint,
+    DatabaseHint,
+    ExternalCall,
+    Route,
+    ScanResult,
+    SecretHint,
+)
 from .scanner import (
     AUTH_KEYWORDS,
     AUTH_PATTERNS,
@@ -163,42 +177,22 @@ def merge_analyzer_signals(scan: ScanResult, signals: AnalyzerSignals) -> None:
             seen_auth_hints.add(key)
 
 
-# Repository-level analyzer contract used by the newer analyzer architecture.
-AnalyzerResult = ScanResult
-
-
-@dataclass(frozen=True)
-class AnalyzerMetadata:
-    name: str
-    description: str
-    scope: str
-    ecosystems: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class AnalyzerRepositoryModule:
-    analyzer_name: str
-    repo_name: str
-    web_url: str
-
-
-class Analyzer(Protocol):
-    metadata: AnalyzerMetadata
-
-    @property
-    def name(self) -> str: ...
-
-    def detect(self, root: str | Path) -> bool: ...
-
-    def analyze(self, root: str | Path) -> AnalyzerResult: ...
+# Backward-compatible alias for existing imports from attackmap.analyzers.
+Analyzer = AnalyzerProtocol
 
 
 class DefaultAnalyzer:
     metadata = AnalyzerMetadata(
         name="default",
+        display_name="Default Analyzer",
+        version="0.1.0",
         description="Fallback built-in analyzer for the remaining scanner-backed ecosystems.",
         scope="Fallback scanner coverage for supported TypeScript code paths not yet handled by a specialized analyzer.",
-        ecosystems=("typescript",),
+        targets=[],
+        languages=["typescript"],
+        priority=100,
+        experimental=False,
+        enabled_by_default=True,
     )
 
     @property
@@ -212,9 +206,15 @@ class DefaultAnalyzer:
 class BuiltinPythonWebAnalyzer:
     metadata = AnalyzerMetadata(
         name="python-web",
+        display_name="Python Web Analyzer",
+        version="0.1.0",
         description="Built-in analyzer for Python web frameworks and related security signals.",
         scope="Python source files handled by the current scanner-backed web heuristics.",
-        ecosystems=("python", "fastapi", "flask"),
+        targets=["fastapi", "flask"],
+        languages=["python"],
+        priority=20,
+        experimental=False,
+        enabled_by_default=True,
     )
 
     @property
@@ -228,9 +228,15 @@ class BuiltinPythonWebAnalyzer:
 class BuiltinJavaScriptWebAnalyzer:
     metadata = AnalyzerMetadata(
         name="javascript-web",
+        display_name="JavaScript Web Analyzer",
+        version="0.1.0",
         description="Built-in analyzer for JavaScript web frameworks and related security signals.",
         scope="JavaScript source files handled by the current scanner-backed web heuristics.",
-        ecosystems=("javascript", "express", "node"),
+        targets=["express", "node"],
+        languages=["javascript"],
+        priority=20,
+        experimental=False,
+        enabled_by_default=True,
     )
 
     @property
@@ -275,6 +281,17 @@ def _load_discovered_analyzer(analyzer_entry_point: object) -> Analyzer | None:
         logger.warning("Failed to initialize analyzer entry point '%s': %s", entry_name, exc)
         return None
 
+    try:
+        canonical_metadata = normalize_analyzer_metadata(getattr(analyzer, "metadata", None))
+    except Exception as exc:
+        logger.warning("Failed to normalize analyzer metadata for '%s': %s", entry_name, exc)
+        return None
+    try:
+        setattr(analyzer, "metadata", canonical_metadata)
+    except Exception:
+        # Some analyzers may expose read-only metadata attributes; normalization is still validated.
+        pass
+
     if not _is_valid_analyzer(analyzer):
         logger.warning("Skipping entry point '%s': loaded object is not a valid analyzer.", entry_name)
         return None
@@ -299,9 +316,11 @@ def _is_valid_analyzer(candidate: object) -> bool:
     if not isinstance(candidate_name, str) or not candidate_name.strip():
         return False
 
-    metadata = getattr(candidate, "metadata")
-    metadata_name = getattr(metadata, "name", None)
-    return isinstance(metadata_name, str) and bool(metadata_name.strip())
+    try:
+        metadata = normalize_analyzer_metadata(getattr(candidate, "metadata"))
+    except Exception:
+        return False
+    return isinstance(metadata.name, str) and bool(metadata.name.strip())
 
 
 def get_registered_analyzers() -> list[Analyzer]:
@@ -400,7 +419,7 @@ def _derive_repo_name(analyzer_name: str) -> str:
 
 
 def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
-    return analyzer.metadata
+    return normalize_analyzer_metadata(analyzer.metadata)
 
 
 def get_available_modules() -> list[AnalyzerMetadata]:

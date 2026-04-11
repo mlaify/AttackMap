@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "laminas-omeka-review-v1",
+  "target": {
+    "repo": "https://github.com/omeka/omeka-s",
+    "ecosystem": "php-laminas + omeka-s",
+    "notes": "Defensive review quality expectations for config-driven Laminas/Omeka-style MVC applications."
+  },
+  "review_file": "laminas-omeka-good-review.md",
+  "expectations": {
+    "grounding": {
+      "citation_pattern": "(?:surface|finding|path):\\d+",
+      "allowed_ids": [
+        "surface:1",
+        "surface:2",
+        "surface:3",
+        "finding:1",
+        "finding:2",
+        "path:1"
+      ],
+      "min_citations": 4
+    },
+    "observed_inferred": {
+      "observed_token": "\\bOBSERVED\\b",
+      "inferred_token": "\\bINFERRED\\b",
+      "min_observed": 2,
+      "min_inferred": 2
+    },
+    "strengths": {
+      "min_items": 2,
+      "required_keywords": [
+        "authorization",
+        "module"
+      ]
+    },
+    "weaknesses_hotspots": {
+      "min_items": 3,
+      "required_terms": [
+        "hotspot",
+        "route config",
+        "trust boundary"
+      ]
+    },
+    "recommendations": {
+      "min_items": 3,
+      "action_verbs": [
+        "enforce",
+        "validate",
+        "constrain"
+      ]
+    },
+    "false_positive_control": {
+      "banned_phrases": [
+        "definite remote code execution",
+        "guaranteed compromise"
+      ],
+      "required_cautions": [
+        "low-quality",
+        "heuristic"
+      ]
+    }
+  }
+}

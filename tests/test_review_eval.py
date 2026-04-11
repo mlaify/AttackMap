@@ -58,3 +58,11 @@ def test_review_eval_suite_reports_pass_and_fail_cases(tmp_path: Path) -> None:
     assert result["suite"]["passed"] == 1
     assert result["suite"]["failed"] == 1
     assert result["suite"]["status"] == "fail"
+
+
+def test_review_eval_suite_passes_for_shipped_corpus_samples() -> None:
+    result = run_evaluation_suite(Path("evals/fixtures"), Path("evals/samples"))
+
+    assert result["suite"]["fixture_count"] >= 3
+    assert result["suite"]["failed"] == 0
+    assert result["suite"]["status"] == "pass"
