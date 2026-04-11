@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .analyzer import identify_attack_surfaces
-from .models import AttackPath, AttackSurface, Finding, ScanResult
+from .models import AttackPath, AttackSurface, Finding, Route, ScanResult
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -86,6 +86,10 @@ def _is_low_quality_source(path_or_text: str) -> bool:
     return any(segment in f"/{normalized}/" for segment in LOW_QUALITY_SEGMENTS)
 
 
+def _runtime_routes(scan: ScanResult) -> list[Route]:
+    return [route for route in scan.routes if not _is_low_quality_source(route.file)]
+
+
 def _extract_edge_hints(scan: ScanResult) -> list[tuple[str, str, str]]:
     edges: list[tuple[str, str, str]] = []
     for hint in scan.auth_hints:
@@ -155,7 +159,7 @@ def _build_service_chains(scan: ScanResult) -> list[ServiceChain]:
         outbound_by_service.setdefault(service, call)
 
     chains: list[ServiceChain] = []
-    for route in scan.routes:
+    for route in _runtime_routes(scan):
         evidence = [f"route {route.method} {route.path} in {route.file}"]
         confidence = 0.35
         entry_service = file_service.get(route.file) or _infer_service_name_from_file(route.file) or "entry-service"
@@ -272,7 +276,7 @@ def _build_atproto_chains(scan: ScanResult) -> list[AtprotoChain]:
         outbound_by_service.setdefault(service, (call.target, call.file))
 
     chains: list[AtprotoChain] = []
-    for route in scan.routes:
+    for route in _runtime_routes(scan):
         namespace = _extract_xrpc_namespace(route.path)
         if namespace is None:
             continue
@@ -401,7 +405,7 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
     external_by_module = {_file_module_key(call.file): call for call in scan.external_calls}
 
     chains: list[ProbableChain] = []
-    for route in scan.routes:
+    for route in _runtime_routes(scan):
         module_key = _file_module_key(route.file)
         evidence = [f"route {route.method} {route.path} in {route.file}"]
         confidence = 0.35
@@ -636,7 +640,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
 
 
 def generate_attack_paths(scan: ScanResult) -> list[AttackPath]:
-    surfaces = identify_attack_surfaces(scan)
+    surfaces = [surface for surface in identify_attack_surfaces(scan) if not _is_low_quality_source(surface.file)]
     atproto_chains = _build_atproto_chains(scan)
     service_chains = _build_service_chains(scan)
     chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []

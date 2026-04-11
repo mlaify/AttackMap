@@ -262,3 +262,98 @@ def test_recommendations_prefer_observed_evidence_over_low_quality_only_sources(
     assert review.index("[observed] Enforce admin policy checks.") < review.index(
         "[low-quality-evidence] Fix fixture route handling."
     )
+
+
+def test_hotspots_prefer_observed_runtime_over_protocol_only_surfaces() -> None:
+    scan = ScanResult(
+        root=".",
+        languages=["typescript"],
+        routes=[
+            Route(path="/admin/reindex", method="POST", file="services/api/src/admin.ts"),
+            Route(path="/xrpc/com.atproto.repo.putRecord", method="ANY", file="lexicons/com/atproto/repo/putRecord.json"),
+        ],
+        files_scanned=6,
+    )
+    surfaces = [
+        AttackSurface(
+            route="/admin/reindex",
+            method="POST",
+            file="services/api/src/admin.ts",
+            category="public_api",
+            exposure="public",
+            risk="high",
+            data_store_interaction=True,
+        ),
+        AttackSurface(
+            route="/xrpc/com.atproto.repo.putRecord",
+            method="ANY",
+            file="lexicons/com/atproto/repo/putRecord.json",
+            category="public_api",
+            exposure="public",
+            risk="high",
+            outbound_integration=True,
+            auth_signals=["atproto_namespace:com.atproto"],
+        ),
+    ]
+    findings = [
+        Finding(
+            title="Observed admin route reaches sensitive sink",
+            severity="high",
+            mitigation="Harden admin authz.",
+            confidence="high",
+            evidence=["route POST /admin/reindex in services/api/src/admin.ts"],
+        )
+    ]
+    attack_paths = [AttackPath(name="Admin path", steps=["Entry: /admin/reindex"], impact="Privileged effect")]
+
+    review = render_defensive_review(scan, surfaces, findings, attack_paths)
+
+    observed_idx = review.index("POST /admin/reindex (services/api/src/admin.ts)")
+    inferred_idx = review.index("ANY /xrpc/com.atproto.repo.putRecord (lexicons/com/atproto/repo/putRecord.json)")
+    assert observed_idx < inferred_idx
+
+
+def test_recommendations_downrank_weakly_linked_findings_without_surface_evidence() -> None:
+    scan = ScanResult(
+        root=".",
+        languages=["python"],
+        routes=[Route(path="/admin/reindex", method="POST", file="services/api/src/admin.py")],
+        files_scanned=3,
+    )
+    surfaces = [
+        AttackSurface(
+            route="/admin/reindex",
+            method="POST",
+            file="services/api/src/admin.py",
+            category="admin",
+            exposure="public",
+            risk="high",
+            auth_signals=["jwt"],
+            data_store_interaction=True,
+        )
+    ]
+    findings = [
+        Finding(
+            title="Speculative issue with no concrete linkage",
+            severity="high",
+            mitigation="Apply broad hardening pass.",
+            confidence="high",
+            evidence=["generic concern without route or file evidence"],
+        ),
+        Finding(
+            title="Observed admin control gap",
+            severity="medium",
+            mitigation="Enforce per-action admin authorization checks.",
+            confidence="high",
+            evidence=["route POST /admin/reindex in services/api/src/admin.py"],
+        ),
+    ]
+    attack_paths = [AttackPath(name="Admin path", steps=["Entry: /admin/reindex"], impact="Privileged effect")]
+
+    review = render_defensive_review(scan, surfaces, findings, attack_paths)
+
+    assert "[observed] Enforce per-action admin authorization checks." in review
+    assert "[inferred-weak] Apply broad hardening pass." in review
+    assert review.index("[observed] Enforce per-action admin authorization checks.") < review.index(
+        "[inferred-weak] Apply broad hardening pass."
+    )

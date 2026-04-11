@@ -106,3 +106,27 @@ def test_atproto_chain_linker_generates_namespace_aware_attack_path() -> None:
     assert any(step.startswith("Namespace:") for step in attack_paths[0].steps)
     assert any(step.startswith("Propagation:") for step in attack_paths[0].steps)
     assert any(step.startswith("Config risk:") for step in attack_paths[0].steps)
+
+
+def test_chain_generation_ignores_test_only_routes() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[
+            Route(path="/xrpc/com.atproto.server.createSession", method="ANY", file="tests/pds/api.test.ts"),
+        ],
+        auth_hints=[
+            AuthHint(hint="service_name:pds", file="tests/pds/api.test.ts"),
+            AuthHint(hint="service_name:relay", file="services/relay/src/store.ts"),
+            AuthHint(hint="edge:pds->relay", file="tests/pds/api.test.ts"),
+            AuthHint(hint="atproto_namespace:com.atproto", file="tests/pds/api.test.ts"),
+            AuthHint(hint="atproto_lexicon:com.atproto.server.createSession", file="lexicons/com/atproto/server/createSession.json"),
+            AuthHint(hint="atproto_service_note:pds", file="tests/pds/api.test.ts"),
+        ],
+        databases=[DatabaseHint(kind="postgresql", file="services/relay/src/store.ts")],
+    )
+
+    findings = generate_findings(scan)
+    attack_paths = generate_attack_paths(scan)
+
+    assert not any(f.title == "AT Protocol XRPC surface chains into a downstream trust boundary" for f in findings)
+    assert not any(path.name == "AT Protocol namespace trust-chain abuse" for path in attack_paths)

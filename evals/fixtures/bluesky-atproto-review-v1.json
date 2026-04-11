@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "bluesky-atproto-review-v1",
+  "target": {
+    "repo": "https://github.com/bluesky-social/atproto",
+    "ecosystem": "node-service + atproto",
+    "notes": "Grounding and defensive-review quality expectations for AT Protocol-style distributed services."
+  },
+  "review_file": "bluesky-atproto-good-review.md",
+  "expectations": {
+    "grounding": {
+      "citation_pattern": "(?:surface|finding|path):\\d+",
+      "allowed_ids": [
+        "surface:1",
+        "surface:2",
+        "surface:3",
+        "finding:1",
+        "finding:2",
+        "path:1"
+      ],
+      "min_citations": 4
+    },
+    "observed_inferred": {
+      "observed_token": "\\bOBSERVED\\b",
+      "inferred_token": "\\bINFERRED\\b",
+      "min_observed": 3,
+      "min_inferred": 2
+    },
+    "strengths": {
+      "min_items": 2,
+      "required_keywords": [
+        "signing",
+        "service"
+      ]
+    },
+    "weaknesses_hotspots": {
+      "min_items": 3,
+      "required_terms": [
+        "trust boundary",
+        "xrpc",
+        "hotspot"
+      ]
+    },
+    "recommendations": {
+      "min_items": 3,
+      "action_verbs": [
+        "enforce",
+        "validate",
+        "constrain"
+      ]
+    },
+    "false_positive_control": {
+      "banned_phrases": [
+        "definite remote code execution",
+        "guaranteed compromise"
+      ],
+      "required_cautions": [
+        "low-quality",
+        "heuristic"
+      ]
+    }
+  }
+}
