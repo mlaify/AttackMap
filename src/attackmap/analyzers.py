@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from .models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
-from .scanner import scan_repo
+from .scanner import CODE_EXTENSIONS, scan_repo
 
 # For the first migration step, analyzers emit the existing ScanResult shape.
 # This keeps the core pipeline stable while creating a clear contract for future
 # external analyzers published under the matthewd.xyzAI/attackmap-analyzers subgroup.
 AnalyzerResult = ScanResult
+
+
+@dataclass(frozen=True)
+class AnalyzerMetadata:
+    """Minimal metadata that describes an analyzer's purpose and scope."""
+
+    name: str
+    description: str
+    scope: str
+    ecosystems: tuple[str, ...]
 
 
 class Analyzer(Protocol):
@@ -20,27 +31,48 @@ class Analyzer(Protocol):
     Analyzers only inspect the repository and return structured data.
     """
 
-    name: str
+    metadata: AnalyzerMetadata
+
+    @property
+    def name(self) -> str: ...
 
     def analyze(self, root: str | Path) -> AnalyzerResult: ...
+
+
+class DefaultAnalyzer:
+    """Fallback built-in analyzer for supported code not owned by specialized analyzers."""
+
+    metadata = AnalyzerMetadata(
+        name="default",
+        description="Fallback built-in analyzer for the remaining scanner-backed web ecosystems.",
+        scope="Fallback scanner coverage for supported non-Python code paths.",
+        ecosystems=("javascript", "typescript"),
+    )
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
+
+    def analyze(self, root: str | Path) -> AnalyzerResult:
+        return scan_repo(root, suffixes=set(CODE_EXTENSIONS) - {".py"})
 
 
 class BuiltinPythonWebAnalyzer:
     """Built-in analyzer for Python web repositories and signals."""
 
-    name = "python-web"
+    metadata = AnalyzerMetadata(
+        name="python-web",
+        description="Built-in analyzer for Python web frameworks and related security signals.",
+        scope="Python source files handled by the current scanner-backed web heuristics.",
+        ecosystems=("python", "fastapi", "flask"),
+    )
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
 
     def analyze(self, root: str | Path) -> AnalyzerResult:
         return scan_repo(root, suffixes={".py"})
-
-
-class BuiltinJavaScriptWebAnalyzer:
-    """Built-in analyzer for JavaScript and TypeScript web repositories."""
-
-    name = "javascript-web"
-
-    def analyze(self, root: str | Path) -> AnalyzerResult:
-        return scan_repo(root, suffixes={".js", ".ts", ".tsx"})
 
 
 def get_registered_analyzers() -> list[Analyzer]:
@@ -50,7 +82,15 @@ def get_registered_analyzers() -> list[Analyzer]:
     analyzer directly and will gain installed-analyzer discovery later.
     """
 
-    return [BuiltinPythonWebAnalyzer(), BuiltinJavaScriptWebAnalyzer()]
+    # Order matters: specialized analyzers run first, then the fallback analyzer
+    # covers any remaining built-in ecosystems that core still understands.
+    return [BuiltinPythonWebAnalyzer(), DefaultAnalyzer()]
+
+
+def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
+    """Return the minimal metadata exposed by an analyzer."""
+
+    return analyzer.metadata
 
 
 def analyze_repository(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> AnalyzerResult:

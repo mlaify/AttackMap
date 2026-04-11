@@ -60,12 +60,19 @@ Analyzers are responsible for inspecting a repository and emitting structured da
 
 ### Built-in analyzer
 
-The current heuristic scanner behavior is now split across small built-in analyzers by ecosystem:
+The current heuristic scanner behavior is now split across:
 
-- `python-web`
-- `javascript-web`
+- `python-web` as the first specialized built-in analyzer
+- `default` as the fallback analyzer for the rest of the current built-in scanner coverage
 
 CLI behavior stays the same, but core now has a clearer seam for future installed analyzers with narrower responsibilities.
+
+Each analyzer now exposes lightweight metadata:
+
+- `name`
+- `description`
+- `scope`
+- supported `ecosystems`
 
 ### What an external analyzer would implement
 
@@ -79,7 +86,16 @@ from attackmap.models import Route
 
 
 class PhpLaminasAnalyzer(Analyzer):
-    name = "php-laminas"
+    metadata = AnalyzerMetadata(
+        name="php-laminas",
+        description="Analyzer for Laminas MVC route and controller configuration.",
+        scope="PHP Laminas and Omeka-style application structure.",
+        ecosystems=("php", "laminas", "omeka-s"),
+    )
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
 
     def analyze(self, root: str | Path) -> AnalyzerResult:
         result = AnalyzerResult(root=str(Path(root).resolve()))

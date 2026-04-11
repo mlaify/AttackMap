@@ -2,9 +2,10 @@ from pathlib import Path
 
 from attackmap.analyzers import (
     AnalyzerResult,
-    BuiltinJavaScriptWebAnalyzer,
     BuiltinPythonWebAnalyzer,
+    DefaultAnalyzer,
     analyze_repository,
+    get_analyzer_metadata,
     get_registered_analyzers,
     merge_analyzer_results,
 )
@@ -22,8 +23,22 @@ def test_get_registered_analyzers_exposes_builtin_web_analyzers() -> None:
 
     assert len(analyzers) == 2
     assert isinstance(analyzers[0], BuiltinPythonWebAnalyzer)
-    assert isinstance(analyzers[1], BuiltinJavaScriptWebAnalyzer)
-    assert [analyzer.name for analyzer in analyzers] == ["python-web", "javascript-web"]
+    assert isinstance(analyzers[1], DefaultAnalyzer)
+    assert [analyzer.name for analyzer in analyzers] == ["python-web", "default"]
+
+
+def test_builtin_analyzers_expose_metadata() -> None:
+    python_metadata = get_analyzer_metadata(BuiltinPythonWebAnalyzer())
+    default_metadata = get_analyzer_metadata(DefaultAnalyzer())
+
+    assert python_metadata.name == "python-web"
+    assert "Python web frameworks" in python_metadata.description
+    assert python_metadata.scope.startswith("Python source files")
+    assert python_metadata.ecosystems == ("python", "fastapi", "flask")
+
+    assert default_metadata.name == "default"
+    assert "Fallback" in default_metadata.description
+    assert default_metadata.ecosystems == ("javascript", "typescript")
 
 
 def test_merge_analyzer_results_combines_languages_and_deduplicates_signals() -> None:
