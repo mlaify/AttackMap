@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+from .models import ScanResult
 from .scanner import CODE_EXTENSIONS, scan_repo
 
 # For the first migration step, analyzers emit the existing ScanResult shape.
@@ -44,9 +44,9 @@ class DefaultAnalyzer:
 
     metadata = AnalyzerMetadata(
         name="default",
-        description="Fallback built-in analyzer for the remaining scanner-backed web ecosystems.",
-        scope="Fallback scanner coverage for supported non-Python code paths.",
-        ecosystems=("javascript", "typescript"),
+        description="Fallback built-in analyzer for the remaining scanner-backed ecosystems.",
+        scope="Fallback scanner coverage for supported TypeScript code paths not yet handled by a specialized analyzer.",
+        ecosystems=("typescript",),
     )
 
     @property
@@ -54,7 +54,7 @@ class DefaultAnalyzer:
         return self.metadata.name
 
     def analyze(self, root: str | Path) -> AnalyzerResult:
-        return scan_repo(root, suffixes=set(CODE_EXTENSIONS) - {".py"})
+        return scan_repo(root, suffixes=set(CODE_EXTENSIONS) - {".py", ".js"})
 
 
 class BuiltinPythonWebAnalyzer:
@@ -75,6 +75,24 @@ class BuiltinPythonWebAnalyzer:
         return scan_repo(root, suffixes={".py"})
 
 
+class BuiltinJavaScriptWebAnalyzer:
+    """Built-in analyzer for JavaScript web repositories and signals."""
+
+    metadata = AnalyzerMetadata(
+        name="javascript-web",
+        description="Built-in analyzer for JavaScript web frameworks and related security signals.",
+        scope="JavaScript source files handled by the current scanner-backed web heuristics.",
+        ecosystems=("javascript", "express", "node"),
+    )
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
+
+    def analyze(self, root: str | Path) -> AnalyzerResult:
+        return scan_repo(root, suffixes={".js"})
+
+
 def get_registered_analyzers() -> list[Analyzer]:
     """Return analyzers known to core.
 
@@ -84,7 +102,7 @@ def get_registered_analyzers() -> list[Analyzer]:
 
     # Order matters: specialized analyzers run first, then the fallback analyzer
     # covers any remaining built-in ecosystems that core still understands.
-    return [BuiltinPythonWebAnalyzer(), DefaultAnalyzer()]
+    return [BuiltinPythonWebAnalyzer(), BuiltinJavaScriptWebAnalyzer(), DefaultAnalyzer()]
 
 
 def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
@@ -108,6 +126,19 @@ def merge_analyzer_results(
     results: Iterable[AnalyzerResult],
     root: str | Path | None = None,
 ) -> AnalyzerResult:
+    """Merge analyzer results into the single normalized shape used by core.
+
+    Strategy:
+    - keep the provided root, or fall back to the first analyzer result root
+    - combine `files_scanned` by summing analyzer contributions
+    - deduplicate obvious duplicate signals by exact structural keys
+    - preserve analyzer order for first-seen items
+
+    This stays intentionally simple so the current reporting pipeline can keep
+    consuming a single ScanResult without knowing which analyzer contributed
+    which signal.
+    """
+
     result_list = list(results)
     if not result_list:
         resolved_root = Path(root).resolve() if root is not None else Path(".").resolve()
@@ -126,74 +157,24 @@ def merge_analyzer_results(
         for language in result.languages:
             if language not in merged.languages:
                 merged.languages.append(language)
-        _extend_unique_routes(merged.routes, route_keys, result.routes)
-        _extend_unique_external_calls(merged.external_calls, external_keys, result.external_calls)
-        _extend_unique_database_hints(merged.databases, database_keys, result.databases)
-        _extend_unique_auth_hints(merged.auth_hints, auth_keys, result.auth_hints)
-        _extend_unique_secret_hints(merged.secret_hints, secret_keys, result.secret_hints)
+        _merge_unique_items(merged.routes, route_keys, result.routes, lambda item: (item.path, item.method, item.file))
+        _merge_unique_items(merged.external_calls, external_keys, result.external_calls, lambda item: (item.target, item.file))
+        _merge_unique_items(merged.databases, database_keys, result.databases, lambda item: (item.kind, item.file))
+        _merge_unique_items(merged.auth_hints, auth_keys, result.auth_hints, lambda item: (item.hint, item.file))
+        _merge_unique_items(merged.secret_hints, secret_keys, result.secret_hints, lambda item: (item.name, item.file))
 
+    merged.languages.sort()
     return merged
 
 
-def _extend_unique_routes(
-    destination: list[Route],
-    seen: set[tuple[str, str, str]],
-    items: Iterable[Route],
+def _merge_unique_items[T, K](
+    destination: list[T],
+    seen: set[K],
+    items: Iterable[T],
+    key_fn: Callable[[T], K],
 ) -> None:
     for item in items:
-        key = (item.path, item.method, item.file)
-        if key in seen:
-            continue
-        seen.add(key)
-        destination.append(item)
-
-
-def _extend_unique_external_calls(
-    destination: list[ExternalCall],
-    seen: set[tuple[str, str]],
-    items: Iterable[ExternalCall],
-) -> None:
-    for item in items:
-        key = (item.target, item.file)
-        if key in seen:
-            continue
-        seen.add(key)
-        destination.append(item)
-
-
-def _extend_unique_database_hints(
-    destination: list[DatabaseHint],
-    seen: set[tuple[str, str]],
-    items: Iterable[DatabaseHint],
-) -> None:
-    for item in items:
-        key = (item.kind, item.file)
-        if key in seen:
-            continue
-        seen.add(key)
-        destination.append(item)
-
-
-def _extend_unique_auth_hints(
-    destination: list[AuthHint],
-    seen: set[tuple[str, str]],
-    items: Iterable[AuthHint],
-) -> None:
-    for item in items:
-        key = (item.hint, item.file)
-        if key in seen:
-            continue
-        seen.add(key)
-        destination.append(item)
-
-
-def _extend_unique_secret_hints(
-    destination: list[SecretHint],
-    seen: set[tuple[str, str]],
-    items: Iterable[SecretHint],
-) -> None:
-    for item in items:
-        key = (item.name, item.file)
+        key = key_fn(item)
         if key in seen:
             continue
         seen.add(key)
