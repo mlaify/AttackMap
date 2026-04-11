@@ -10,6 +10,8 @@ from .analyzers import (
     analyze_repository,
     get_available_modules,
     get_available_repository_modules,
+    get_analyzer_metadata,
+    resolve_run_analyzers,
     select_requested_analyzers,
 )
 from .graph import build_graph
@@ -42,7 +44,8 @@ def analyze(
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
 
-    scan = analyze_repository(repo_path, analyzers=selected_analyzers)
+    active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
+    scan = analyze_repository(repo_path, analyzers=active_analyzers)
     graph = build_graph(scan)
     attack_surfaces = identify_attack_surfaces(scan)
     architecture_md = summarize_architecture(scan, graph)
@@ -51,7 +54,25 @@ def analyze(
     attack_paths = generate_attack_paths(scan)
     defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
 
-    write_reports(output, scan, architecture_md, attack_surface_md, defensive_review_md, attack_surfaces, findings, attack_paths)
+    write_reports(
+        output,
+        scan,
+        architecture_md,
+        attack_surface_md,
+        defensive_review_md,
+        attack_surfaces,
+        findings,
+        attack_paths,
+        analyzer_metadata=[
+            {
+                "name": metadata.name,
+                "description": metadata.description,
+                "scope": metadata.scope,
+                "ecosystems": list(metadata.ecosystems),
+            }
+            for metadata in (get_analyzer_metadata(analyzer) for analyzer in active_analyzers)
+        ],
+    )
     typer.echo(render_console_summary(scan, findings, attack_paths))
     typer.echo("")
     typer.echo(f"Reports written to: {Path(output).resolve()}")

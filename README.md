@@ -51,7 +51,39 @@ attackmap modules
 
 - `architecture.md`
 - `attack-surface.md`
+- `defensive-review.md`
+- `defensive-review.json`
+- `review-context-pack.json`
 - `attackmap-report.json`
+
+## LLM Review Evaluation Harness
+
+AttackMap includes a lightweight local evaluation harness for defensive-review quality checks.
+
+Run the Bluesky/ATProto fixture against a sample review:
+
+```bash
+python -m attackmap.review_eval \
+  --fixture evals/fixtures/bluesky-atproto-review-v1.json \
+  --review evals/samples/bluesky-atproto-good-review.md
+```
+
+Show full machine-readable evaluation output:
+
+```bash
+python -m attackmap.review_eval \
+  --fixture evals/fixtures/bluesky-atproto-review-v1.json \
+  --review evals/samples/bluesky-atproto-good-review.md \
+  --json
+```
+
+Run fixture suites in batch mode:
+
+```bash
+python -m attackmap.review_eval \
+  --fixtures-dir evals/fixtures \
+  --reviews-dir evals/samples
+```
 
 ## Analyzer Architecture
 

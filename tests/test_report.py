@@ -44,5 +44,9 @@ def test_write_reports_includes_defensive_review_file_and_json_field(tmp_path: P
     )
 
     assert (tmp_path / "defensive-review.md").exists()
+    assert (tmp_path / "defensive-review.json").exists()
+    assert (tmp_path / "review-context-pack.json").exists()
     payload = json.loads((tmp_path / "attackmap-report.json").read_text(encoding="utf-8"))
     assert payload["defensive_review"] == defensive_review_md
+    assert payload["defensive_review_json"]["schema_version"] == "1.0.0"
+    assert payload["review_context_pack"]["artifact_type"] == "attackmap_review_context_pack"

@@ -448,11 +448,17 @@ def _fetch_subgroup_projects(api_url: str) -> list[dict[str, object]]:
 
 def analyze_repository(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> AnalyzerResult:
     repo_root = Path(root).resolve()
-    active_analyzers = list(analyzers) if analyzers is not None else get_registered_analyzers()
-    results = [analyzer.analyze(repo_root) for analyzer in active_analyzers if _should_run_analyzer(analyzer, repo_root)]
+    active_analyzers = resolve_run_analyzers(repo_root, analyzers=analyzers)
+    results = [analyzer.analyze(repo_root) for analyzer in active_analyzers]
     if not results:
         return AnalyzerResult(root=str(repo_root))
     return merge_analyzer_results(results, root=repo_root)
+
+
+def resolve_run_analyzers(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> list[Analyzer]:
+    repo_root = Path(root).resolve()
+    registered = list(analyzers) if analyzers is not None else get_registered_analyzers()
+    return [analyzer for analyzer in registered if _should_run_analyzer(analyzer, repo_root)]
 
 
 def _should_run_analyzer(analyzer: Analyzer, repo_root: Path) -> bool:
