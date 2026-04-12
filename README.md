@@ -1,29 +1,97 @@
 # AttackMap
 
-**Understand your system. Map your attack surface.**
+AttackMap is a defensive security analysis engine that helps engineers answer:
 
-AttackMap analyzes a codebase, infers a lightweight architecture model, highlights likely attack surfaces, and generates an initial threat model with concrete mitigations.
+1. What is exposed in this codebase?
+2. What trust boundaries are implied?
+3. How could an attacker plausibly move through the system?
+4. What should we fix first?
 
-## Why AttackMap?
+It is not a generic code explainer and not a full static-analysis platform. The core value is attacker-path-oriented defensive triage.
 
-Most tools focus on isolated findings. AttackMap is designed to answer a more useful question:
+## What problem it solves
 
-> If I were attacking this system, where would I start, what could I reach, and what should the team fix first?
+Most code security tooling produces isolated checks. AttackMap focuses on system-level security reasoning from repository evidence:
 
-## Current MVP features
+- entry points
+- boundary crossings (service/external/data)
+- likely attack chains
+- prioritized defensive recommendations
 
-- Detects common web routes in Python and JavaScript projects
-- Flags likely databases, external HTTP calls, auth hints, and secrets-like environment variables
-- Builds a simple system graph
-- Generates:
-  - architecture summary
-  - attack surface summary
-  - findings
-  - attack paths
-  - mitigations
-- Writes both Markdown and JSON reports
+This is useful for early threat review, architecture-oriented security triage, and “unknown repo” onboarding.
 
-## Installation
+## High-level architecture
+
+AttackMap core (`src/attackmap`) owns orchestration and higher-level reasoning:
+
+- CLI orchestration (`cli.py`)
+- analyzer discovery/selection/install/run/merge (`analyzers.py`)
+- generic scanner (`scanner.py`)
+- formal recon-to-analysis gateway (`recon_to_analysis.py`)
+- attack-surface classification (`analyzer.py`)
+- findings and attack paths (`threat_model.py`)
+- defensive review synthesis and scoring (`defensive_review.py`)
+- report/json/context artifacts (`report.py`, `review_json.py`, `context_pack.py`)
+
+External analyzers (plugin packages) emit structured signals and are discovered through Python entry points (`attackmap.analyzers`).
+
+## Pipeline stages
+
+Current runtime pipeline (`attackmap analyze ...`) is:
+
+1. Recon collection: analyzers emit/merge `ScanResult`
+2. Attack surface: routes are classified into `AttackSurface`
+3. Findings: prioritized `Finding` objects are generated
+4. Attack paths: plausible `AttackPath` chains are generated
+5. Defensive review: markdown + JSON triage outputs are rendered
+
+The canonical translation boundary is `translate_recon(scan)` in `src/attackmap/recon_to_analysis.py`.
+
+## Analyzer model
+
+There are three layers:
+
+1. Generic scanner logic (`scanner.py`)
+- Generic route/external/db/auth/secret extraction only.
+- Intentionally avoids ecosystem-specific overlays.
+
+2. Built-in analyzers (`analyzers.py`)
+- `python-web`
+- `javascript-web`
+- `default` (fallback)
+
+3. External/plugin analyzers
+- discovered by entry points
+- optionally auto-installed from:
+  - `https://gitlab.com/matthewd.xyzAI/attackmap-analyzers`
+
+Analyzer contracts:
+- canonical: `src/attackmap/analyzer_contracts.py`
+- SDK import surface: `src/attackmap/sdk/`
+
+Current result contract:
+- `AnalyzerResult` aliases `ScanResult` (intentional staged compatibility).
+
+## Current status / maturity
+
+What is strong today:
+
+- modular analyzer execution + merge pipeline
+- scanner-backed FastAPI/Flask/Express route extraction
+- chain-aware threat modeling (framework/service/ATProto-aware heuristics)
+- defensive review prioritization with source-quality weighting
+- stable machine-readable review artifacts + local eval harness
+
+What is still maturing:
+
+- hint taxonomy migration (reducing legacy non-auth use of `auth_hints`)
+- deeper control/asset modeling
+- detection-opportunity outputs
+- richer service topology graphing
+
+In short: strong for defensive code-level triage, not yet a complete threat-ops platform.
+
+## Install
 
 ```bash
 python -m venv .venv
@@ -31,23 +99,22 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## Usage
+## Run
 
 ```bash
 attackmap analyze .
 attackmap analyze . --output reports
-attackmap analyze . --format json
-attackmap analyze . --module php-web
+attackmap analyze . --module php-web --module javascript-web
 attackmap modules
 ```
 
-`--module` can be repeated to select multiple analyzers. When a requested external analyzer is not installed, AttackMap will attempt to install it automatically from the GitLab subgroup at `https://gitlab.com/matthewd.xyzAI/attackmap-analyzers`.
+Notes:
+- `--module` is repeatable.
+- Missing requested external analyzers are auto-installed (when possible) from the analyzer subgroup.
 
-`attackmap modules` now lists:
-- analyzers currently available in your environment
-- analyzer module repositories available in `matthewd.xyzAI/attackmap-analyzers`
+## Generated artifacts
 
-## Example output files
+By default, AttackMap writes:
 
 - `architecture.md`
 - `attack-surface.md`
@@ -56,11 +123,9 @@ attackmap modules
 - `review-context-pack.json`
 - `attackmap-report.json`
 
-## LLM Review Evaluation Harness
+## Evaluation harness
 
-AttackMap includes a lightweight local evaluation harness for defensive-review quality checks.
-
-Run the Bluesky/ATProto fixture against a sample review:
+AttackMap ships a local review-quality eval harness:
 
 ```bash
 python -m attackmap.review_eval \
@@ -68,16 +133,7 @@ python -m attackmap.review_eval \
   --review evals/samples/bluesky-atproto-good-review.md
 ```
 
-Show full machine-readable evaluation output:
-
-```bash
-python -m attackmap.review_eval \
-  --fixture evals/fixtures/bluesky-atproto-review-v1.json \
-  --review evals/samples/bluesky-atproto-good-review.md \
-  --json
-```
-
-Run fixture suites in batch mode:
+Suite mode:
 
 ```bash
 python -m attackmap.review_eval \
@@ -85,89 +141,26 @@ python -m attackmap.review_eval \
   --reviews-dir evals/samples
 ```
 
-## Analyzer Architecture
+## Where to look next
 
-AttackMap is the core engine. It remains responsible for:
+Repository docs:
+- `AGENTS.md`
+- `VISION.md`
+- `old_docs/` (historical generated design docs)
 
-- CLI orchestration
-- running registered analyzers
-- merging analyzer output
-- graph construction
-- findings and attack path generation
-- report rendering
+Primary maintainer documentation now lives in the GitLab wiki:
+- <https://gitlab.com/matthewd.xyzAI/attackmap/-/wikis/home>
 
-Analyzers are responsible for inspecting a repository and emitting structured data. For the first migration step, the analyzer contract reuses the existing `ScanResult` model so the rest of core can stay stable.
-
-### Built-in analyzer
-
-The current heuristic scanner behavior is now split across:
-
-- `python-web` as the first specialized built-in analyzer
-- `default` as the fallback analyzer for the rest of the current built-in scanner coverage
-
-CLI behavior stays the same, but core now has a clearer seam for future installed analyzers with narrower responsibilities.
-
-Each analyzer now exposes lightweight metadata:
-
-- `name`
-- `description`
-- `scope`
-- supported `ecosystems`
-
-### What an external analyzer would implement
-
-An external repository such as `attackmap-analyzer-php-laminas` in `matthewd.xyzAI/attackmap-analyzers` only needs to implement the analyzer contract and return structured data:
-
-```python
-from pathlib import Path
-
-from attackmap.analyzers import Analyzer, AnalyzerResult
-from attackmap.models import Route
-
-
-class PhpLaminasAnalyzer(Analyzer):
-    metadata = AnalyzerMetadata(
-        name="php-laminas",
-        description="Analyzer for Laminas MVC route and controller configuration.",
-        scope="PHP Laminas and Omeka-style application structure.",
-        ecosystems=("php", "laminas", "omeka-s"),
-    )
-
-    @property
-    def name(self) -> str:
-        return self.metadata.name
-
-    def analyze(self, root: str | Path) -> AnalyzerResult:
-        result = AnalyzerResult(root=str(Path(root).resolve()))
-        result.languages.append("php")
-        result.routes.append(Route(path="/admin", method="GET", file="module/Application/config/module.config.php"))
-        return result
-```
-
-### Follow-up work for external analyzers
-
-- Installed packages can now register analyzers via Python entry points under `attackmap.analyzers`
-- Define analyzer metadata such as supported ecosystems and confidence
-- Evolve `ScanResult` into a richer analyzer result model when framework-specific analyzers need more structure
-
-Example `pyproject.toml` for an external analyzer package:
-
-```toml
-[project.entry-points."attackmap.analyzers"]
-php_web = "attackmap_analyzer_php_web:PhpWebAnalyzer"
-```
-
-## Roadmap
-
-- Tree-sitter based parsing
-- Terraform / Docker / Kubernetes support
-- GitLab MR diff-aware attack surface analysis
-- LLM provider abstraction
-- Confidence scoring per finding
-
-## GitLab
-
-This project is structured to be GitLab-friendly out of the box with a simple CI pipeline in `.gitlab-ci.yml`.
+Recommended wiki pages:
+- `docs/ARCHITECTURE_OVERVIEW`
+- `docs/DATA_FLOW`
+- `docs/ANALYZER_ECOSYSTEM`
+- `docs/ANALYZER_CONTRACT`
+- `docs/HINT_TAXONOMY`
+- `docs/FILE_GUIDE`
+- `docs/TEST_STRATEGY`
+- `docs/BEHAVIOR_GUARANTEES`
+- `docs/THREAT_OPS_POSITIONING`
 
 ## License
 
