@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import re
 
-from .models import AttackPath, AttackSurface, Finding, ScanResult
+from .models import (
+    Asset,
+    AttackPath,
+    AttackSurface,
+    Control,
+    DetectionOpportunity,
+    Finding,
+    Insight,
+    ScanResult,
+)
+from .security_overlay import SecurityOverlay, build_security_overlay
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -364,7 +374,7 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
 
     for (score, factors), surface in deduped_hotspots:
         items.append(
-            f"- Hotspot [score {score:.1f}]: {surface.method} {surface.route} ({surface.file}) -> {surface.category} / {surface.risk}"
+            f"- Hotspot [score {score:.1f}]: {surface.method} {surface.route} ({surface.location()}) -> {surface.category} / {surface.risk}"
         )
         items.append(f"- Reason: {_top_score_reasons(factors, top_n=2)}")
         items.append(f"- Provenance: {_provenance_breakdown([surface])}")
@@ -433,6 +443,100 @@ def _recommendations(findings: list[Finding], attack_paths: list[AttackPath], at
     return recommendations[:5]
 
 
+def _render_assets_section(assets: list[Asset]) -> list[str]:
+    if not assets:
+        return ["- No high-value assets identified from code signals."]
+    lines: list[str] = []
+    for asset in assets[:8]:
+        head = f"- **{asset.name}** ({asset.kind}, criticality={asset.criticality})"
+        evidence_inline = "; ".join(asset.evidence[:3]) if asset.evidence else ""
+        if evidence_inline:
+            head = f"{head} — {evidence_inline}"
+        lines.append(head)
+    if len(assets) > 8:
+        lines.append(f"- …and {len(assets) - 8} more.")
+    return lines
+
+
+def _render_controls_section(controls: list[Control]) -> list[str]:
+    if not controls:
+        return ["- No defensive controls observed from code signals."]
+    present = [c for c in controls if c.strength != "absent"]
+    absent = [c for c in controls if c.strength == "absent"]
+    lines: list[str] = []
+    if present:
+        lines.append("**Observed:**")
+        for control in present[:8]:
+            placement = f" — placements: {len(control.placements)}" if control.placements else ""
+            lines.append(f"- `{control.kind}` · {control.name} (strength={control.strength}){placement}")
+        if len(present) > 8:
+            lines.append(f"- …and {len(present) - 8} more.")
+    if absent:
+        lines.append("")
+        lines.append("**Expected but not observed (control absences):**")
+        for control in absent[:6]:
+            note = f" — {control.notes}" if control.notes else ""
+            lines.append(f"- `{control.kind}` · {control.name}{note}")
+    return lines
+
+
+def _render_notable_observations(insights: list[Insight]) -> list[str]:
+    if not insights:
+        return ["- No notable cross-cutting observations were generated for this scan."]
+    lines: list[str] = []
+    for insight in insights[:6]:
+        head = f"- **[{insight.severity.upper()}]** {insight.title} _(confidence={insight.confidence}, kind={insight.kind})_"
+        lines.append(head)
+        lines.append(f"  - {insight.narrative}")
+        if insight.suggested_action:
+            lines.append(f"  - _Suggested action:_ {insight.suggested_action}")
+        if insight.attack_techniques:
+            techniques_text = ", ".join(
+                f"`{t.technique_id}` {t.name}" for t in insight.attack_techniques[:4]
+            )
+            lines.append(f"  - _ATT&CK:_ {techniques_text}")
+        if insight.evidence:
+            lines.append(f"  - _Evidence:_ {'; '.join(insight.evidence[:3])}")
+    if len(insights) > 6:
+        lines.append(f"- …and {len(insights) - 6} more notable observations in JSON output.")
+    return lines
+
+
+def _render_detection_opportunities(opportunities: list[DetectionOpportunity]) -> list[str]:
+    if not opportunities:
+        return ["- No detection opportunities were generated for this scan."]
+    lines: list[str] = []
+    for opp in opportunities[:5]:
+        lines.append(f"- **{opp.title}** _(signal={opp.signal_kind})_")
+        lines.append(f"  - _Why:_ {opp.rationale}")
+        lines.append(f"  - _Suggested rule:_ {opp.suggested_rule}")
+        if opp.attack_techniques:
+            techniques_text = ", ".join(
+                f"`{t.technique_id}`" for t in opp.attack_techniques[:4]
+            )
+            lines.append(f"  - _ATT&CK:_ {techniques_text}")
+    if len(opportunities) > 5:
+        lines.append(f"- …and {len(opportunities) - 5} more detection opportunities in JSON output.")
+    return lines
+
+
+def _render_attack_techniques_summary(overlay: SecurityOverlay) -> list[str]:
+    by_id: dict[str, tuple[str, str]] = {}
+    for insight in overlay.insights:
+        for t in insight.attack_techniques:
+            by_id.setdefault(t.technique_id, (t.name, t.tactic))
+    for finding in overlay.findings:
+        for t in finding.attack_techniques:
+            by_id.setdefault(t.technique_id, (t.name, t.tactic))
+    if not by_id:
+        return ["- No ATT&CK techniques were mapped from the current findings/insights."]
+    lines: list[str] = []
+    for tid in sorted(by_id):
+        name, tactic = by_id[tid]
+        lines.append(f"- `{tid}` **{name}** — _{tactic}_")
+    return lines
+
+
 def render_defensive_review(
     scan: ScanResult,
     attack_surfaces: list[AttackSurface],
@@ -440,6 +544,7 @@ def render_defensive_review(
     attack_paths: list[AttackPath],
 ) -> str:
     observed_runtime_public, protocol_derived, internal_only, low_quality = _entrypoint_counts(attack_surfaces)
+    overlay = build_security_overlay(scan, attack_surfaces, findings, attack_paths)
     lines = [
         "# Defensive Review",
         "",
@@ -453,6 +558,24 @@ def render_defensive_review(
         f"- Languages: {', '.join(scan.languages) if scan.languages else 'none'}",
         f"- Datastores: {', '.join(sorted({db.kind for db in scan.databases})) if scan.databases else 'none'}",
         f"- External dependencies observed: {len(scan.external_calls)}",
+        f"- Identified assets: {len(overlay.assets)} | controls observed: "
+        f"{sum(1 for c in overlay.controls if c.strength != 'absent')} | "
+        f"control absences: {sum(1 for c in overlay.controls if c.strength == 'absent')}",
+        "",
+        "## Notable Observations",
+        *_render_notable_observations(overlay.insights),
+        "",
+        "## ATT&CK Techniques Mapped",
+        *_render_attack_techniques_summary(overlay),
+        "",
+        "## Detection Opportunities",
+        *_render_detection_opportunities(overlay.detection_opportunities),
+        "",
+        "## Asset Inventory",
+        *_render_assets_section(overlay.assets),
+        "",
+        "## Defensive Controls",
+        *_render_controls_section(overlay.controls),
         "",
         "## Strengths",
         *_strengths(scan, attack_surfaces),
@@ -469,5 +592,6 @@ def render_defensive_review(
         "## Analyst Notes",
         "- This defensive review is heuristic and intended as an engineering triage starting point.",
         "- Validate top risks with repository-specific architecture context and runtime controls.",
+        "- Notable observations are cross-cutting hypotheses; treat them as triage prompts, not verdicts.",
     ]
     return "\n".join(lines)

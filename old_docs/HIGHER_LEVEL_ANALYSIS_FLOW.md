@@ -5,13 +5,13 @@
 ### Production code
 
 - `AttackSurface(...)`
-  - [`src/attackmap/analyzer.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzer.py)
+  - [`src/attackmap/analyzer.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/analyzer.py)
   - Function: `identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]`
 - `Finding(...)`
-  - [`src/attackmap/threat_model.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/threat_model.py)
+  - [`src/attackmap/threat_model.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/threat_model.py)
   - Function: `generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[Finding]`
 - `AttackPath(...)`
-  - [`src/attackmap/threat_model.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/threat_model.py)
+  - [`src/attackmap/threat_model.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/threat_model.py)
   - Function: `generate_attack_paths(scan: ScanResult) -> list[AttackPath]`
 
 ### Test-only constructor usage
@@ -28,14 +28,14 @@ Tests instantiate these models directly for fixtures/expected behavior in:
 ### Upstream recon production
 
 1. Analyzer execution produces `ScanResult`:
-   - `analyze_repository(...)` in [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py)
+   - `analyze_repository(...)` in [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/analyzers.py)
    - via built-ins + discovered analyzers, merged by `merge_analyzer_results(...)`.
 
 ### Formal translation entrypoint
 
 2. CLI invokes translation layer:
-   - [`src/attackmap/cli.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/cli.py)
-   - `analysis = translate_recon(scan)` from [`src/attackmap/recon_to_analysis.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/recon_to_analysis.py)
+   - [`src/attackmap/cli.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/cli.py)
+   - `analysis = translate_recon(scan)` from [`src/attackmap/recon_to_analysis.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/recon_to_analysis.py)
 
 3. `translate_recon(scan)` delegates:
    - `to_attack_surface(scan)` -> `identify_attack_surfaces(...)`
@@ -46,8 +46,8 @@ Tests instantiate these models directly for fixtures/expected behavior in:
 
 4. The produced lists are consumed by:
    - `summarize_attack_surface(...)` in `analyzer.py`
-   - `render_defensive_review(...)` in [`src/attackmap/defensive_review.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/defensive_review.py)
-   - report writers in [`src/attackmap/report.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/report.py)
+   - `render_defensive_review(...)` in [`src/attackmap/defensive_review.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/defensive_review.py)
+   - report writers in [`src/attackmap/report.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/report.py)
    - review JSON/prompt layers.
 
 ## Key Relationship Notes

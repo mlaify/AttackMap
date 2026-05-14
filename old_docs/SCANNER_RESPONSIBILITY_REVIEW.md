@@ -2,10 +2,10 @@
 
 ## Scope Reviewed
 
-- Core scanner: [scanner.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/scanner.py)
+- Core scanner: [scanner.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/scanner.py)
 - Specialized analyzers:
-  - [node-service analyzer](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-node-service/src/attackmap_analyzer_node_service/analyzer.py)
-  - [atproto analyzer](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-atproto/src/attackmap_analyzer_atproto/analyzer.py)
+  - [node-service analyzer](/Volumes/Dev/repos/GitHub/mlaify/attackmap/attackmap-analyzer-node-service/src/attackmap_analyzer_node_service/analyzer.py)
+  - [atproto analyzer](/Volumes/Dev/repos/GitHub/mlaify/attackmap/attackmap-analyzer-atproto/src/attackmap_analyzer_atproto/analyzer.py)
 
 ## 1) Ecosystem-Specific Logic Embedded in `scanner.py`
 

@@ -98,6 +98,7 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
                 route=route.path,
                 method=route.method,
                 file=route.file,
+                line=route.line,
                 category=category,
                 exposure=exposure,
                 risk=risk,

@@ -63,7 +63,7 @@ There are three layers:
 3. External/plugin analyzers
 - discovered by entry points
 - optionally auto-installed from:
-  - `https://gitlab.com/matthewd.xyzAI/attackmap-analyzers`
+  - `https://github.com/mlaify`
 
 Analyzer contracts:
 - canonical: `src/attackmap/analyzer_contracts.py`
@@ -110,7 +110,7 @@ attackmap modules
 
 Notes:
 - `--module` is repeatable.
-- Missing requested external analyzers are auto-installed (when possible) from the analyzer subgroup.
+- Missing requested external analyzers are auto-installed (when possible) from the `mlaify` GitHub organization.
 
 ## Generated artifacts
 
@@ -148,8 +148,8 @@ Repository docs:
 - `VISION.md`
 - `old_docs/` (historical generated design docs)
 
-Primary maintainer documentation now lives in the GitLab wiki:
-- <https://gitlab.com/matthewd.xyzAI/attackmap/-/wikis/home>
+Primary maintainer documentation now lives in the GitHub wiki:
+- <https://github.com/mlaify/AttackMap/wiki>
 
 Recommended wiki pages:
 - `docs/ARCHITECTURE_OVERVIEW`

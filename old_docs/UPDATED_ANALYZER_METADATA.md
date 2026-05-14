@@ -3,7 +3,7 @@
 AttackMap now uses one canonical `AnalyzerMetadata` model across built-in and plugin analyzers.
 
 Canonical model location:
-- [`src/attackmap/analyzer_contracts.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzer_contracts.py)
+- [`src/attackmap/analyzer_contracts.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/analyzer_contracts.py)
 
 ## Canonical fields
 - `name`

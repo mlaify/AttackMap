@@ -18,6 +18,11 @@ dependencies = [
   "networkx>=3.3",
 ]
 
+[project.optional-dependencies]
+llm = [
+  "anthropic>=0.40.0",
+]
+
 [project.scripts]
 attackmap = "attackmap.cli:app"
 

@@ -3,40 +3,40 @@
 ## High-Level Pipeline
 
 1. Recon collection:
-- `scan_repo(...)` in [scanner.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/scanner.py) provides generic extraction only.
-- Built-in and plugin analyzers run via [analyzers.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py) and each return `ScanResult`-compatible output.
+- `scan_repo(...)` in [scanner.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/scanner.py) provides generic extraction only.
+- Built-in and plugin analyzers run via [analyzers.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/analyzers.py) and each return `ScanResult`-compatible output.
 
 2. Recon merge:
 - `analyze_repository(...)` merges analyzer outputs with `merge_analyzer_results(...)` into one `ScanResult`.
 
 3. Recon -> higher-level translation:
-- `translate_recon(scan)` in [recon_to_analysis.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/recon_to_analysis.py) is the canonical gateway.
+- `translate_recon(scan)` in [recon_to_analysis.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/recon_to_analysis.py) is the canonical gateway.
 - It produces:
   - `AttackSurface` via `identify_attack_surfaces(...)`
   - `Finding` via `generate_findings(...)`
   - `AttackPath` via `generate_attack_paths(...)`
 
 4. Downstream reporting/prioritization:
-- [defensive_review.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/defensive_review.py), [review_json.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/review_json.py), [report.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/report.py) consume translated models.
+- [defensive_review.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/defensive_review.py), [review_json.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/review_json.py), [report.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/report.py) consume translated models.
 
 ## Contracts and Model Sources of Truth
 
 ### Analyzer/plugin contract
-- Canonical module: [analyzer_contracts.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzer_contracts.py)
+- Canonical module: [analyzer_contracts.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/analyzer_contracts.py)
   - `AnalyzerProtocol`
   - `AnalyzerMetadata`
   - `AnalyzerRepositoryModule`
   - `AnalyzerResult = ScanResult`
 
 ### Recon/result contract
-- Canonical recon exports: [recon_models.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/recon_models.py)
-- Base model definitions: [models.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/models.py)
+- Canonical recon exports: [recon_models.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/recon_models.py)
+- Base model definitions: [models.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/models.py)
   - `Route`, `ExternalCall`, `DatabaseHint`, `AuthHint`, `SecretHint`, `ScanResult`
   - higher-level `AttackSurface`, `Finding`, `AttackPath`
 
 ### SDK import surface
-- [sdk/contracts.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/sdk/contracts.py)
-- [sdk/models.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/sdk/models.py)
+- [sdk/contracts.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/sdk/contracts.py)
+- [sdk/models.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/sdk/models.py)
 
 ## Current Module Responsibilities
 
@@ -74,7 +74,7 @@
 
 ## Call Relationship (CLI path)
 
-- [cli.py](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/cli.py)
+- [cli.py](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/cli.py)
   - `scan = analyze_repository(...)`
   - `analysis = translate_recon(scan)`
   - downstream rendering consumes `analysis.attack_surfaces/findings/attack_paths`

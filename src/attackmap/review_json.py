@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
+from .security_overlay import build_security_overlay
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.2.0"
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
 
@@ -67,7 +68,7 @@ def _strengths(scan: ScanResult, attack_surfaces: list[AttackSurface]) -> list[d
             {
                 "statement": "Some inferred entry points appear internal-only, reducing direct internet exposure when network boundaries are correctly enforced.",
                 "evidence_basis": "inferred",
-                "evidence": [f"{surface.method} {surface.route} ({surface.file})" for surface in internal_surfaces[:6]],
+                "evidence": [f"{surface.method} {surface.route} ({surface.location()})" for surface in internal_surfaces[:6]],
             }
         )
     if scan.secret_hints:
@@ -130,6 +131,7 @@ def _weaknesses_and_hotspots(
                 "evidence_basis": _basis_label_for_surfaces(related),
                 "evidence": finding.evidence[:10],
                 "mitigation": finding.mitigation,
+                "attack_techniques": [t.model_dump() for t in finding.attack_techniques],
             }
         )
 
@@ -207,7 +209,8 @@ def build_defensive_review_json(
     attack_paths: list[AttackPath],
 ) -> dict:
     evidence_counts = _evidence_class_counts(attack_surfaces)
-    weaknesses, hotspots = _weaknesses_and_hotspots(attack_surfaces, findings)
+    overlay = build_security_overlay(scan, attack_surfaces, findings, attack_paths)
+    weaknesses, hotspots = _weaknesses_and_hotspots(attack_surfaces, overlay.findings)
     return {
         "schema_version": SCHEMA_VERSION,
         "target_metadata": {
@@ -222,6 +225,12 @@ def build_defensive_review_json(
             "database_count": len(scan.databases),
             "auth_hint_count": len(scan.auth_hints),
             "secret_hint_count": len(scan.secret_hints),
+            "asset_count": len(overlay.assets),
+            "control_count_present": sum(1 for c in overlay.controls if c.strength != "absent"),
+            "control_count_absent": sum(1 for c in overlay.controls if c.strength == "absent"),
+            "notable_observation_count": len(overlay.insights),
+            "detection_opportunity_count": len(overlay.detection_opportunities),
+            "attack_techniques_observed_count": len(_flatten_attack_techniques(overlay)),
         },
         "attack_surface": {
             "total_surfaces": len(attack_surfaces),
@@ -231,6 +240,7 @@ def build_defensive_review_json(
                     "method": surface.method,
                     "route": surface.route,
                     "file": surface.file,
+                    "line": surface.line,
                     "category": surface.category,
                     "exposure": surface.exposure,
                     "risk": surface.risk,
@@ -242,18 +252,27 @@ def build_defensive_review_json(
                 for surface in attack_surfaces[:60]
             ],
         },
+        "assets": [asset.model_dump() for asset in overlay.assets],
+        "controls": [control.model_dump() for control in overlay.controls],
+        "notable_observations": [insight.model_dump() for insight in overlay.insights],
+        "detection_opportunities": [opp.model_dump() for opp in overlay.detection_opportunities],
+        "attack_techniques_observed": _flatten_attack_techniques(overlay),
         "strengths": _strengths(scan, attack_surfaces),
         "weaknesses_risk_hotspots": {
             "weaknesses": weaknesses,
             "risk_hotspots": hotspots,
         },
         "evidence_chains": _evidence_chains(attack_paths),
-        "recommendations": _recommendations(findings, attack_surfaces),
+        "recommendations": _recommendations(overlay.findings, attack_surfaces),
         "raw_structured_signals": {
             "scan": scan.model_dump(),
             "attack_surfaces": [surface.model_dump() for surface in attack_surfaces],
-            "findings": [finding.model_dump() for finding in findings],
+            "findings": [finding.model_dump() for finding in overlay.findings],
             "attack_paths": [path.model_dump() for path in attack_paths],
+            "assets": [asset.model_dump() for asset in overlay.assets],
+            "controls": [control.model_dump() for control in overlay.controls],
+            "notable_observations": [insight.model_dump() for insight in overlay.insights],
+            "detection_opportunities": [opp.model_dump() for opp in overlay.detection_opportunities],
         },
         "limitations_meta": {
             "analysis_mode": "heuristic",
@@ -262,6 +281,20 @@ def build_defensive_review_json(
                 "Observed vs inferred classifications are heuristic and based on route, file, and signal patterns.",
                 "Low-quality paths (tests/fixtures/mocks/examples) are retained in raw signals but separated in evidence class counts.",
                 "Use this artifact as a triage source-of-truth; validate high-priority items with repository context and runtime controls.",
+                "Assets, controls, and notable observations are heuristic overlays; absent-control entries indicate scanner did not find evidence, not necessarily that the control is missing in production.",
+                "ATT&CK technique mappings and detection opportunities are derived from insight kinds and finding-title keywords; treat them as triage hooks for SIEM/detection-engineering work, not authoritative MITRE mappings.",
             ],
         },
     }
+
+
+def _flatten_attack_techniques(overlay) -> list[dict]:
+    """Deduplicated list of ATT&CK techniques observed across insights and findings."""
+    by_id: dict[str, dict] = {}
+    for insight in overlay.insights:
+        for technique in insight.attack_techniques:
+            by_id.setdefault(technique.technique_id, technique.model_dump())
+    for finding in overlay.findings:
+        for technique in finding.attack_techniques:
+            by_id.setdefault(technique.technique_id, technique.model_dump())
+    return sorted(by_id.values(), key=lambda t: t["technique_id"])

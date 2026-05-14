@@ -74,8 +74,8 @@ Prefer small, reviewable improvements over broad rewrites.
 ## Current architecture
 AttackMap is organized as:
 - `attackmap` = core engine
-- external analyzers live under GitLab subgroup:
-  - `matthewd.xyzAI/attackmap-analyzers`
+- external analyzers live under the GitHub organization:
+  - `github.com/mlaify`
 
 Core owns:
 - CLI orchestration

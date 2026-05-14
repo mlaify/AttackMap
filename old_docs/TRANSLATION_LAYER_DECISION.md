@@ -6,7 +6,7 @@
 
 Yes, partially.
 
-- Formal module exists: [`src/attackmap/recon_to_analysis.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/recon_to_analysis.py)
+- Formal module exists: [`src/attackmap/recon_to_analysis.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/recon_to_analysis.py)
 - Formal entrypoint exists: `translate_recon(scan) -> AnalysisOutputs`
 - CLI uses it as the translation stage before downstream reporting.
 

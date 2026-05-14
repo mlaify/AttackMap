@@ -49,9 +49,9 @@ from .scanner import (
 logger = logging.getLogger(__name__)
 
 ANALYZER_ENTRYPOINT_GROUP = "attackmap.analyzers"
-ANALYZER_SUBGROUP_PREFIX = "matthewd.xyzai/attackmap-analyzers/"
-ANALYZER_SUBGROUP_BASE_URL = "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers"
-ANALYZER_SUBGROUP_API_URL = "https://gitlab.com/api/v4/groups/matthewd.xyzAI%2Fattackmap-analyzers/projects?simple=true&per_page=100"
+ANALYZER_ORG_PREFIX = "mlaify/"
+ANALYZER_ORG_BASE_URL = "https://github.com/mlaify"
+ANALYZER_ORG_API_URL = "https://api.github.com/orgs/mlaify/repos?per_page=100&type=public"
 
 # Backward-compatible structured signal contract used by the lower-level scanner tests.
 class AnalyzerSignals(BaseModel):
@@ -382,7 +382,7 @@ def select_requested_analyzers(
 
 def install_analyzer_module(repo_name: str) -> None:
     normalized_repo = _normalize_repo_name(repo_name)
-    module_url = f"git+{ANALYZER_SUBGROUP_BASE_URL}/{normalized_repo}.git"
+    module_url = f"git+{ANALYZER_ORG_BASE_URL}/{normalized_repo}.git"
     logger.info("Installing analyzer module from %s", module_url)
     subprocess.run(
         [sys.executable, "-m", "pip", "install", module_url],
@@ -399,8 +399,8 @@ def _match_requested_analyzers(requested_names: Iterable[str]) -> dict[str, Anal
 
 def _normalize_analyzer_name(module: str) -> str:
     normalized = module.strip().lower().removesuffix(".git")
-    if normalized.startswith(ANALYZER_SUBGROUP_PREFIX):
-        normalized = normalized[len(ANALYZER_SUBGROUP_PREFIX) :]
+    if normalized.startswith(ANALYZER_ORG_PREFIX):
+        normalized = normalized[len(ANALYZER_ORG_PREFIX) :]
     if "/" in normalized:
         normalized = normalized.rsplit("/", 1)[-1]
     if normalized.startswith("attackmap-analyzer-"):
@@ -410,8 +410,8 @@ def _normalize_analyzer_name(module: str) -> str:
 
 def _normalize_repo_name(repo_name: str) -> str:
     normalized = repo_name.strip().lower().removesuffix(".git")
-    if normalized.startswith(ANALYZER_SUBGROUP_PREFIX):
-        normalized = normalized[len(ANALYZER_SUBGROUP_PREFIX) :]
+    if normalized.startswith(ANALYZER_ORG_PREFIX):
+        normalized = normalized[len(ANALYZER_ORG_PREFIX) :]
     if "/" in normalized:
         normalized = normalized.rsplit("/", 1)[-1]
     if normalized.startswith("attackmap-analyzer-"):
@@ -435,15 +435,15 @@ def get_available_repository_modules(
     *,
     fetcher: Callable[[str], list[dict[str, object]]] | None = None,
 ) -> list[AnalyzerRepositoryModule]:
-    fetch_fn = fetcher if fetcher is not None else _fetch_subgroup_projects
-    projects = fetch_fn(ANALYZER_SUBGROUP_API_URL)
+    fetch_fn = fetcher if fetcher is not None else _fetch_org_repositories
+    projects = fetch_fn(ANALYZER_ORG_API_URL)
     modules: list[AnalyzerRepositoryModule] = []
     for project in projects:
-        repo_name = str(project.get("path", "")).strip()
+        repo_name = str(project.get("name", "")).strip()
         if not repo_name.startswith("attackmap-analyzer-"):
             continue
         analyzer_name = _normalize_analyzer_name(repo_name)
-        web_url = str(project.get("web_url", f"{ANALYZER_SUBGROUP_BASE_URL}/{repo_name}")).strip()
+        web_url = str(project.get("html_url", f"{ANALYZER_ORG_BASE_URL}/{repo_name}")).strip()
         modules.append(
             AnalyzerRepositoryModule(
                 analyzer_name=analyzer_name,
@@ -455,7 +455,7 @@ def get_available_repository_modules(
     return modules
 
 
-def _fetch_subgroup_projects(api_url: str) -> list[dict[str, object]]:
+def _fetch_org_repositories(api_url: str) -> list[dict[str, object]]:
     try:
         with urlopen(api_url, timeout=10) as response:
             payload = response.read().decode("utf-8")

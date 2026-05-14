@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
+from .security_overlay import build_security_overlay
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -17,18 +18,30 @@ Operating rules:
 - Keep output defensive and remediation-oriented. Do not provide offensive exploitation instructions.
 - If evidence is weak or partial, say so directly.
 
+The evidence pack now includes five layers you must reason over:
+- `assets` — value-at-risk inventory (with criticality)
+- `controls` — defensive controls observed AND expected-but-absent
+- `notable_observations` — pre-computed cross-cutting insights connecting assets, controls, surfaces, and chains
+- `attack_techniques_observed` — MITRE ATT&CK technique mappings for findings and insights
+- `detection_opportunities` — defender-facing detection-engineering hints (Sigma/KQL-style rule sketches)
+
+When writing the review, lead with the highest-severity notable_observations and connect them to specific assets, controls, and ATT&CK techniques. Tell the story — do not just enumerate findings. Explicitly call out where a defense gap meets a critical asset, and reference the relevant ATT&CK technique(s) and any detection opportunity that would catch the same condition at runtime.
+
 Output sections (in order):
 1. System Overview
-2. Strengths
-3. Weaknesses / Risk Hotspots
-4. Key Evidence Chains
-5. Prioritized Recommendations
-6. Analyst Confidence and Limitations
+2. Notable Observations (top 3, each as a 2–4 sentence story citing surface/finding/asset/control IDs and the ATT&CK technique it maps to)
+3. Asset and Control Map (which crown jewels exist, what protects them, what is missing)
+4. Detection Opportunities (top 3 — for each, name the runtime signal that would catch the static finding)
+5. Strengths
+6. Weaknesses / Risk Hotspots
+7. Key Evidence Chains
+8. Prioritized Recommendations
+9. Analyst Confidence and Limitations
 
 Formatting constraints:
 - Use concise, human-readable language for engineers and defenders.
 - For each weakness and recommendation, include why it is prioritized.
-- Cite evidence IDs from the provided evidence pack where practical.
+- Cite evidence IDs from the provided evidence pack where practical (surface:N, finding:N, path:N, asset:*, control:*, insight:*).
 """
 
 
@@ -143,6 +156,21 @@ def _evidence_pack(
         "low_quality": sum(1 for item in surfaces_payload if item["evidence_class"] == "low_quality"),
     }
 
+    overlay = build_security_overlay(scan, attack_surfaces, findings, attack_paths)
+    assets_payload = [asset.model_dump() for asset in overlay.assets]
+    controls_payload = [control.model_dump() for control in overlay.controls]
+    insights_payload = [insight.model_dump() for insight in overlay.insights]
+    detection_payload = [opp.model_dump() for opp in overlay.detection_opportunities]
+
+    techniques_observed: dict[str, dict] = {}
+    for insight in overlay.insights:
+        for tech in insight.attack_techniques:
+            techniques_observed.setdefault(tech.technique_id, tech.model_dump())
+    for finding in overlay.findings:
+        for tech in finding.attack_techniques:
+            techniques_observed.setdefault(tech.technique_id, tech.model_dump())
+    techniques_payload = sorted(techniques_observed.values(), key=lambda t: t["technique_id"])
+
     return {
         "scan_summary": {
             "root": scan.root,
@@ -153,11 +181,22 @@ def _evidence_pack(
             "database_count": len(scan.databases),
             "auth_hint_count": len(scan.auth_hints),
             "secret_hint_count": len(scan.secret_hints),
+            "asset_count": len(assets_payload),
+            "control_count_present": sum(1 for c in controls_payload if c["strength"] != "absent"),
+            "control_count_absent": sum(1 for c in controls_payload if c["strength"] == "absent"),
+            "notable_observation_count": len(insights_payload),
+            "detection_opportunity_count": len(detection_payload),
+            "attack_techniques_observed_count": len(techniques_payload),
         },
         "evidence_counts": evidence_counts,
         "attack_surfaces": surfaces_payload,
         "findings": findings_payload,
         "attack_paths": attack_paths_payload,
+        "assets": assets_payload,
+        "controls": controls_payload,
+        "notable_observations": insights_payload,
+        "detection_opportunities": detection_payload,
+        "attack_techniques_observed": techniques_payload,
     }
 
 

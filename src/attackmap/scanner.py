@@ -121,6 +121,28 @@ SECRET_PATTERNS = [
 ]
 
 
+_SNIPPET_MAX_CHARS = 160
+
+
+def _line_of(content: str, offset: int) -> int:
+    """1-indexed line number for a character offset within content."""
+    if offset <= 0:
+        return 1
+    return content.count("\n", 0, offset) + 1
+
+
+def _line_snippet(content: str, offset: int, *, max_chars: int = _SNIPPET_MAX_CHARS) -> str:
+    """Return the line containing `offset`, stripped and length-capped."""
+    line_start = content.rfind("\n", 0, offset) + 1
+    line_end = content.find("\n", offset)
+    if line_end == -1:
+        line_end = len(content)
+    line = content[line_start:line_end].strip()
+    if len(line) > max_chars:
+        line = line[: max_chars - 1] + "…"
+    return line
+
+
 def should_scan(path: Path) -> bool:
     if path.name.startswith("."):
         return False
@@ -198,19 +220,28 @@ def _extract_python_routes(content: str, file: str) -> list[Route]:
 
     for match in FASTAPI_DECORATOR_PATTERN.finditer(content):
         router_name, method, route_path = match.groups()
-        routes.append(Route(path=_join_route_parts(prefixes.get(router_name, ""), route_path), method=method.upper(), file=file))
+        routes.append(
+            Route(
+                path=_join_route_parts(prefixes.get(router_name, ""), route_path),
+                method=method.upper(),
+                file=file,
+                line=_line_of(content, match.start()),
+            )
+        )
 
     for match in FASTAPI_API_ROUTE_PATTERN.finditer(content):
         router_name, route_path, args = match.group(1), match.group(2), match.group("args")
         full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
+        line = _line_of(content, match.start())
         for method in _extract_methods(args, default_method="ANY"):
-            routes.append(Route(path=full_path, method=method, file=file))
+            routes.append(Route(path=full_path, method=method, file=file, line=line))
 
     for match in FLASK_ROUTE_PATTERN.finditer(content):
         router_name, route_path, args = match.group(1), match.group(2), match.group("args")
         full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
+        line = _line_of(content, match.start())
         for method in _extract_methods(args, default_method="GET"):
-            routes.append(Route(path=full_path, method=method, file=file))
+            routes.append(Route(path=full_path, method=method, file=file, line=line))
 
     return routes
 
@@ -242,13 +273,28 @@ def _extract_javascript_routes(content: str, file: str) -> list[Route]:
     for match in EXPRESS_DIRECT_ROUTE_PATTERN.finditer(content):
         router_name, method, route_path = match.groups()
         full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
-        routes.append(Route(path=full_path, method=method.upper(), file=file))
+        routes.append(
+            Route(
+                path=full_path,
+                method=method.upper(),
+                file=file,
+                line=_line_of(content, match.start()),
+            )
+        )
 
     for match in EXPRESS_CHAIN_ROUTE_PATTERN.finditer(content):
         router_name, route_path, chain = match.group(1), match.group(2), match.group("chain")
         full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
+        chain_offset = match.start("chain")
         for method_match in re.finditer(r"\.(get|post|put|delete|patch|options|head)\s*\(", chain, re.IGNORECASE):
-            routes.append(Route(path=full_path, method=method_match.group(1).upper(), file=file))
+            routes.append(
+                Route(
+                    path=full_path,
+                    method=method_match.group(1).upper(),
+                    file=file,
+                    line=_line_of(content, chain_offset + method_match.start()),
+                )
+            )
 
     return routes
 
@@ -265,13 +311,29 @@ def _append_unique_database_hints(result: ScanResult, relative: str, content: st
     seen = {(hint.kind, hint.file) for hint in result.databases}
 
     for pattern, kind in DB_PATTERNS:
-        if pattern.search(content) and (kind, relative) not in seen:
-            result.databases.append(DatabaseHint(kind=kind, file=relative))
+        match = pattern.search(content)
+        if match and (kind, relative) not in seen:
+            result.databases.append(
+                DatabaseHint(
+                    kind=kind,
+                    file=relative,
+                    line=_line_of(content, match.start()),
+                    evidence_text=_line_snippet(content, match.start()),
+                )
+            )
             seen.add((kind, relative))
 
     for keyword, kind in DB_KEYWORDS.items():
-        if keyword in lowered and (kind, relative) not in seen:
-            result.databases.append(DatabaseHint(kind=kind, file=relative))
+        idx = lowered.find(keyword)
+        if idx != -1 and (kind, relative) not in seen:
+            result.databases.append(
+                DatabaseHint(
+                    kind=kind,
+                    file=relative,
+                    line=_line_of(content, idx),
+                    evidence_text=_line_snippet(content, idx),
+                )
+            )
             seen.add((kind, relative))
 
 
@@ -279,13 +341,31 @@ def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, l
     seen = {(hint.hint, hint.file) for hint in result.auth_hints}
 
     for pattern, hint in AUTH_PATTERNS:
-        if pattern.search(content) and (hint, relative) not in seen:
-            result.auth_hints.append(AuthHint(hint=hint, file=relative))
+        match = pattern.search(content)
+        if match and (hint, relative) not in seen:
+            result.auth_hints.append(
+                AuthHint(
+                    hint=hint,
+                    file=relative,
+                    line=_line_of(content, match.start()),
+                    evidence_text=_line_snippet(content, match.start()),
+                    confidence=0.85,
+                )
+            )
             seen.add((hint, relative))
 
     for keyword in AUTH_KEYWORDS:
-        if keyword in lowered and (keyword, relative) not in seen:
-            result.auth_hints.append(AuthHint(hint=keyword, file=relative))
+        idx = lowered.find(keyword)
+        if idx != -1 and (keyword, relative) not in seen:
+            result.auth_hints.append(
+                AuthHint(
+                    hint=keyword,
+                    file=relative,
+                    line=_line_of(content, idx),
+                    evidence_text=_line_snippet(content, idx),
+                    confidence=0.5,
+                )
+            )
             seen.add((keyword, relative))
 
 
@@ -314,7 +394,14 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
         for pattern in EXTERNAL_CALL_PATTERNS:
             for match in pattern.finditer(content):
                 target = match.groups()[-1]
-                result.external_calls.append(ExternalCall(target=target, file=relative))
+                result.external_calls.append(
+                    ExternalCall(
+                        target=target,
+                        file=relative,
+                        line=_line_of(content, match.start()),
+                        evidence_text=_line_snippet(content, match.start()),
+                    )
+                )
 
         lowered = content.lower()
         _append_unique_database_hints(result, relative, content, lowered)
@@ -322,7 +409,14 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
 
         for pattern in SECRET_PATTERNS:
             for match in pattern.finditer(content):
-                result.secret_hints.append(SecretHint(name=match.groups()[0], file=relative))
+                result.secret_hints.append(
+                    SecretHint(
+                        name=match.groups()[0],
+                        file=relative,
+                        line=_line_of(content, match.start()),
+                        evidence_text=_line_snippet(content, match.start()),
+                    )
+                )
 
     result.languages.sort()
     return result

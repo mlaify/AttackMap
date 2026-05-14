@@ -149,7 +149,7 @@ def test_select_requested_analyzers_matches_builtin_and_external_names(monkeypat
         [
             "php-web",
             "attackmap-analyzer-php-web",
-            "matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-web",
+            "mlaify/attackmap-analyzer-php-web",
         ]
     )
 
@@ -349,13 +349,13 @@ def test_get_available_repository_modules_filters_and_normalizes() -> None:
     modules = get_available_repository_modules(
         fetcher=lambda _url: [
             {
-                "path": "attackmap-analyzer-php-web",
-                "web_url": "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-php-web",
+                "name": "attackmap-analyzer-php-web",
+                "html_url": "https://github.com/mlaify/attackmap-analyzer-php-web",
             },
-            {"path": "random-repo", "web_url": "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers/random-repo"},
+            {"name": "random-repo", "html_url": "https://github.com/mlaify/random-repo"},
             {
-                "path": "attackmap-analyzer-node-express",
-                "web_url": "https://gitlab.com/matthewd.xyzAI/attackmap-analyzers/attackmap-analyzer-node-express",
+                "name": "attackmap-analyzer-node-express",
+                "html_url": "https://github.com/mlaify/attackmap-analyzer-node-express",
             },
         ]
     )
@@ -633,7 +633,9 @@ app.get("/healthz", (_req, res) => res.send("ok"));
         encoding="utf-8",
     )
 
-    result = analyze_repository(tmp_path)
+    # Explicitly pass the built-in analyzers so this test is robust to entry-point
+    # plugins (e.g. attackmap-analyzer-python) being installed in the same env.
+    result = analyze_repository(tmp_path, analyzers=get_builtin_repository_analyzers())
 
     assert result.files_scanned == 2
     assert result.languages == ["javascript", "python"]

@@ -28,6 +28,31 @@
     "attack_surface": {
       "type": "object"
     },
+    "assets": {
+      "type": "array",
+      "description": "Inferred high-value assets and their locations.",
+      "items": { "type": "object" }
+    },
+    "controls": {
+      "type": "array",
+      "description": "Defensive controls observed in code and expected-but-absent controls.",
+      "items": { "type": "object" }
+    },
+    "notable_observations": {
+      "type": "array",
+      "description": "Cross-cutting insights connecting assets, controls, surfaces, and chains.",
+      "items": { "type": "object" }
+    },
+    "detection_opportunities": {
+      "type": "array",
+      "description": "Defender-facing detection-engineering hints derived from insights and findings.",
+      "items": { "type": "object" }
+    },
+    "attack_techniques_observed": {
+      "type": "array",
+      "description": "Deduplicated MITRE ATT&CK techniques observed across findings and insights.",
+      "items": { "type": "object" }
+    },
     "strengths": {
       "type": "array"
     },

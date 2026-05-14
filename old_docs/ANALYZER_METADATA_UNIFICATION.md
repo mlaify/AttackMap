@@ -8,7 +8,7 @@ AttackMap now uses a single canonical `AnalyzerMetadata` model for both:
 - plugin/discovered analyzers
 
 Canonical definition:
-- [`src/attackmap/analyzer_contracts.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzer_contracts.py)
+- [`src/attackmap/analyzer_contracts.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/analyzer_contracts.py)
 
 Fields preserved:
 
@@ -29,7 +29,7 @@ Derived compatibility property:
 ## Where It Is Applied
 
 - Built-ins instantiate canonical `AnalyzerMetadata` directly:
-  - [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitLab/matthewd.xyzAI/attackmap/src/attackmap/analyzers.py)
+  - [`src/attackmap/analyzers.py`](/Volumes/Dev/repos/GitHub/mlaify/attackmap/AttackMap/src/attackmap/analyzers.py)
 - Plugin/discovered analyzers are normalized through:
   - `normalize_analyzer_metadata(...)`
   - called during discovery/validation and metadata access paths in `analyzers.py`
