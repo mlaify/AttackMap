@@ -1,167 +1,199 @@
 # AttackMap
 
-AttackMap is a defensive security analysis engine that helps engineers answer:
+**AI-assisted defensive security analysis for codebases.** AttackMap reads your
+repository, models its assets and defensive controls, finds cross-cutting
+weaknesses that single-file scanners miss, and produces an evidence-grounded
+security review with MITRE ATT&CK mappings and detection-engineering hints.
 
-1. What is exposed in this codebase?
-2. What trust boundaries are implied?
-3. How could an attacker plausibly move through the system?
-4. What should we fix first?
+Built for AppSec engineers, SOC and detection-engineering teams, and engineering
+managers who need to triage an unfamiliar codebase.
 
-It is not a generic code explainer and not a full static-analysis platform. The core value is attacker-path-oriented defensive triage.
+> Story over checklist. Asset-aware. Control-absence-aware. Evidence-grounded.
 
-## What problem it solves
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 
-Most code security tooling produces isolated checks. AttackMap focuses on system-level security reasoning from repository evidence:
+---
 
-- entry points
-- boundary crossings (service/external/data)
-- likely attack chains
-- prioritized defensive recommendations
+## Quickstart
 
-This is useful for early threat review, architecture-oriented security triage, and “unknown repo” onboarding.
+Install with all bundled analyzers:
 
-## High-level architecture
+```bash
+pip install "attackmap[all]"
+```
 
-AttackMap core (`src/attackmap`) owns orchestration and higher-level reasoning:
+Run a review on a repository:
 
-- CLI orchestration (`cli.py`)
-- analyzer discovery/selection/install/run/merge (`analyzers.py`)
-- generic scanner (`scanner.py`)
-- formal recon-to-analysis gateway (`recon_to_analysis.py`)
-- attack-surface classification (`analyzer.py`)
-- findings and attack paths (`threat_model.py`)
-- defensive review synthesis and scoring (`defensive_review.py`)
-- report/json/context artifacts (`report.py`, `review_json.py`, `context_pack.py`)
+```bash
+attackmap analyze /path/to/repo --output reports
+```
 
-External analyzers (plugin packages) emit structured signals and are discovered through Python entry points (`attackmap.analyzers`).
+Optional: add an AI-narrated review using Claude. Either set an
+`ANTHROPIC_API_KEY`, or log in once with the [Claude Code CLI](https://docs.claude.com/claude-code)
+to use your existing Pro/Max subscription:
 
-## Pipeline stages
+```bash
+attackmap analyze /path/to/repo --output reports --llm
+```
 
-Current runtime pipeline (`attackmap analyze ...`) is:
+Read `reports/defensive-review.md` (heuristic) and `reports/defensive-review-llm.md`
+(LLM-narrated) side by side.
 
-1. Recon collection: analyzers emit/merge `ScanResult`
-2. Attack surface: routes are classified into `AttackSurface`
-3. Findings: prioritized `Finding` objects are generated
-4. Attack paths: plausible `AttackPath` chains are generated
-5. Defensive review: markdown + JSON triage outputs are rendered
-
-The canonical translation boundary is `translate_recon(scan)` in `src/attackmap/recon_to_analysis.py`.
-
-## Analyzer model
-
-There are three layers:
-
-1. Generic scanner logic (`scanner.py`)
-- Generic route/external/db/auth/secret extraction only.
-- Intentionally avoids ecosystem-specific overlays.
-
-2. Built-in analyzers (`analyzers.py`)
-- `python-web`
-- `javascript-web`
-- `default` (fallback)
-
-3. External/plugin analyzers
-- discovered by entry points
-- optionally auto-installed from:
-  - `https://github.com/mlaify`
-
-Analyzer contracts:
-- canonical: `src/attackmap/analyzer_contracts.py`
-- SDK import surface: `src/attackmap/sdk/`
-
-Current result contract:
-- `AnalyzerResult` aliases `ScanResult` (intentional staged compatibility).
-
-## Current status / maturity
-
-What is strong today:
-
-- modular analyzer execution + merge pipeline
-- scanner-backed FastAPI/Flask/Express route extraction
-- chain-aware threat modeling (framework/service/ATProto-aware heuristics)
-- defensive review prioritization with source-quality weighting
-- stable machine-readable review artifacts + local eval harness
-
-What is still maturing:
-
-- hint taxonomy migration (reducing legacy non-auth use of `auth_hints`)
-- deeper control/asset modeling
-- detection-opportunity outputs
-- richer service topology graphing
-
-In short: strong for defensive code-level triage, not yet a complete threat-ops platform.
+---
 
 ## Install
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-## Run
+### From PyPI
 
 ```bash
-attackmap analyze .
-attackmap analyze . --output reports
-attackmap analyze . --module php-web --module javascript-web
-attackmap modules
+pip install attackmap                  # core only
+pip install "attackmap[llm]"           # add LLM narrative support
+pip install "attackmap[all]"           # core + LLM + all 11 analyzer plugins
 ```
 
-Notes:
-- `--module` is repeatable.
-- Missing requested external analyzers are auto-installed (when possible) from the `mlaify` GitHub organization.
-
-## Generated artifacts
-
-By default, AttackMap writes:
-
-- `architecture.md`
-- `attack-surface.md`
-- `defensive-review.md`
-- `defensive-review.json`
-- `review-context-pack.json`
-- `attackmap-report.json`
-
-## Evaluation harness
-
-AttackMap ships a local review-quality eval harness:
+You can also install individual analyzer plugins on demand:
 
 ```bash
-python -m attackmap.review_eval \
-  --fixture evals/fixtures/bluesky-atproto-review-v1.json \
-  --review evals/samples/bluesky-atproto-good-review.md
+pip install attackmap-analyzer-python attackmap-analyzer-go
 ```
 
-Suite mode:
+### With Docker
 
 ```bash
-python -m attackmap.review_eval \
-  --fixtures-dir evals/fixtures \
-  --reviews-dir evals/samples
+docker run --rm -v "$PWD:/src" ghcr.io/mlaify/attackmap:latest analyze /src --output /src/reports
 ```
 
-## Where to look next
+### With Homebrew (macOS)
 
-Repository docs:
-- `AGENTS.md`
-- `VISION.md`
-- `old_docs/` (historical generated design docs)
+```bash
+brew install mlaify/tap/attackmap
+```
 
-Primary maintainer documentation now lives in the GitHub wiki:
-- <https://github.com/mlaify/AttackMap/wiki>
+### From source
 
-Recommended wiki pages:
-- `docs/ARCHITECTURE_OVERVIEW`
-- `docs/DATA_FLOW`
-- `docs/ANALYZER_ECOSYSTEM`
-- `docs/ANALYZER_CONTRACT`
-- `docs/HINT_TAXONOMY`
-- `docs/FILE_GUIDE`
-- `docs/TEST_STRATEGY`
-- `docs/BEHAVIOR_GUARANTEES`
-- `docs/THREAT_OPS_POSITIONING`
+```bash
+git clone https://github.com/mlaify/AttackMap.git
+cd AttackMap
+pip install -e ".[llm]"
+```
+
+---
+
+## What you get
+
+Every `attackmap analyze` run writes:
+
+| File | What it is |
+|---|---|
+| `architecture.md` | High-level summary of the repository |
+| `attack-surface.md` | Surfaces classified by category, exposure, and risk |
+| `defensive-review.md` | Notable Observations, Asset Inventory, Defensive Controls, Strengths, Weaknesses, Detection Opportunities, Recommendations |
+| `defensive-review.json` | Structured equivalent (schema v1.2.0) |
+| `review-context-pack.json` | Structured evidence pack consumed by the LLM stage |
+| `attackmap-report.json` | Everything bundled |
+| `defensive-review-llm.md` *(with `--llm`)* | Claude-narrated review |
+| `defensive-review-llm.meta.json` *(with `--llm`)* | Backend, model, token usage |
+
+---
+
+## How it works
+
+AttackMap is built as four layers, each grounded in the layer below.
+
+**1. Heuristic scanner + analyzer plugins.** Language-aware extraction of routes,
+databases, external calls, auth signals, secrets, frameworks, and entrypoints.
+Every signal carries a `file:line` citation, an evidence-text snippet, and a
+confidence score. Plugins are auto-discovered through the `attackmap.analyzers`
+entry-point group.
+
+**2. Asset and control overlay.** Identifies *what's at risk* (credentials,
+sessions, PII, payment records, internal secrets — with criticality tiers) and
+*what protects it* (authentication, authorization, input validation, rate
+limiting, CSRF, encryption, audit logging, RBAC, MFA), including detection of
+*absent* expected controls.
+
+**3. Cross-cutting insight engine.** Connects findings into narratives —
+sensitive-asset reachability, shared-secret blast radius, defense gaps in attack
+chains, control-strength mismatches, asymmetric protection, audit gaps,
+trust-boundary violations, and more.
+
+**4. LLM narrative review.** With `--llm`, Claude Opus generates a final review
+from the structured evidence pack. The model is forced to cite real
+surface/asset/control IDs, so it can't invent findings.
+
+Layered on top: **MITRE ATT&CK technique mappings** on every insight and
+**detection opportunities** (Sigma/KQL/Splunk-style hints) for each weakness.
+
+---
+
+## Supported ecosystems
+
+Eleven official analyzer plugins, each distributable as a separate package:
+
+| Plugin | Coverage |
+|---|---|
+| `attackmap-analyzer-python` | Django, Starlette, AIOHTTP, Sanic, Litestar, DRF; SQLAlchemy/asyncpg/motor; passlib/PyJWT/authlib; httpx/aiohttp |
+| `attackmap-analyzer-rust` | axum, actix-web, rocket; sqlx, diesel, sea-orm; jsonwebtoken, argon2; reqwest |
+| `attackmap-analyzer-go` | net/http, chi, gin, echo, fiber, gorilla/mux; database/sql, gorm, pgx; golang-jwt; resty |
+| `attackmap-analyzer-java-spring` | Java/Kotlin Spring Boot, JAX-RS, Ktor; Spring Data; Spring Security; jjwt |
+| `attackmap-analyzer-dotnet` | ASP.NET Core minimal APIs and attribute routing, EF Core, Identity, JwtBearer |
+| `attackmap-analyzer-terraform` | AWS, Azure, GCP resources; IAM wildcards; open SGs; secrets |
+| `attackmap-analyzer-c` | libmicrohttpd, civetweb, mongoose; libcurl; OpenSSL/libsodium; sqlite3/libpq/mysql |
+| `attackmap-analyzer-cpp` | Crow, Pistache, Drogon, cpprestsdk; libcurl/cpr; OpenSSL/Botan/libsodium; libpqxx/mongocxx |
+| `attackmap-analyzer-node-service` | Node.js / TypeScript service ecosystems |
+| `attackmap-analyzer-atproto` | AT Protocol (Bluesky) services |
+| `attackmap-analyzer-php-web` / `-php-laminas` / `-omeka-s` | Generic PHP web, Laminas/Zend MVC, Omeka-S |
+
+`pip install "attackmap[all]"` installs every official plugin.
+
+---
+
+## CLI reference
+
+```bash
+attackmap analyze <path>                 # run a review on a repository
+attackmap analyze <path> --output dir    # write outputs to `dir/`
+attackmap analyze <path> --module python --module rust   # only these analyzers
+attackmap analyze <path> --llm           # add LLM narrative (auto-resolve auth)
+attackmap analyze <path> --llm --llm-backend cli         # force Claude CLI
+attackmap modules                        # list installed analyzers
+```
+
+`--module` is repeatable. Missing requested external analyzers can be
+auto-installed (when possible) from the `mlaify` GitHub organization.
+
+---
+
+## What AttackMap is *not*
+
+- **A runtime detector.** AttackMap is static. The detection opportunities it
+  emits are *hints* for your SIEM team — they are not deployable rules.
+- **A vulnerability scanner.** AttackMap models architecture, assets, and
+  controls. It does not match known-CVE patterns.
+- **Exhaustive.** AttackMap is heuristic by design. Findings are confidence-tiered
+  with explicit guardrails for stale signals.
+
+---
+
+## Documentation
+
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development setup and PR process
+- [`SECURITY.md`](SECURITY.md) — vulnerability disclosure
+- [`AGENTS.md`](AGENTS.md) — agent-facing repo guide
+- [`VISION.md`](VISION.md) — project direction
+- [GitHub wiki](https://github.com/mlaify/AttackMap/wiki) — deeper architecture
+  and analyzer-contract references
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for setup, testing, and submission guidelines. By contributing you agree that
+your contributions will be MIT-licensed.
 
 ## License
 
-MIT
+[MIT](LICENSE). Copyright (c) 2026 Matthew Davis and AttackMap Contributors.

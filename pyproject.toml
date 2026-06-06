@@ -5,12 +5,47 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "attackmap"
 version = "0.1.0"
-description = "Analyze a codebase, infer architecture, and map likely attack paths."
+description = "AI-assisted defensive security analyzer for codebases — scans a repository, models assets and controls, finds cross-cutting weaknesses, and generates an evidence-grounded review with MITRE ATT&CK mappings and detection-engineering hints."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-  {name = "AttackMap Contributors"}
+  {name = "Matthew Davis", email = "matthewd@matthewd.xyz"},
+  {name = "AttackMap Contributors"},
+]
+maintainers = [
+  {name = "Matthew Davis", email = "matthewd@matthewd.xyz"},
+]
+keywords = [
+  "security",
+  "static-analysis",
+  "appsec",
+  "defensive-security",
+  "threat-modeling",
+  "attack-surface",
+  "mitre-attack",
+  "detection-engineering",
+  "code-review",
+  "llm",
+  "claude",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Security",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: Testing",
+  "Typing :: Typed",
 ]
 dependencies = [
   "typer>=0.12.3",
@@ -22,6 +57,33 @@ dependencies = [
 llm = [
   "anthropic>=0.40.0",
 ]
+all = [
+  "attackmap[llm]",
+  "attackmap-analyzer-python",
+  "attackmap-analyzer-rust",
+  "attackmap-analyzer-go",
+  "attackmap-analyzer-java-spring",
+  "attackmap-analyzer-dotnet",
+  "attackmap-analyzer-terraform",
+  "attackmap-analyzer-c",
+  "attackmap-analyzer-cpp",
+  "attackmap-analyzer-node-service",
+  "attackmap-analyzer-atproto",
+  "attackmap-analyzer-php-web",
+  "attackmap-analyzer-php-laminas",
+  "attackmap-analyzer-omeka-s",
+]
+dev = [
+  "pytest>=8.0.0",
+  "build>=1.2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/mlaify/AttackMap"
+Documentation = "https://github.com/mlaify/AttackMap/wiki"
+Repository = "https://github.com/mlaify/AttackMap"
+Issues = "https://github.com/mlaify/AttackMap/issues"
+Changelog = "https://github.com/mlaify/AttackMap/blob/main/CHANGELOG.md"
 
 [project.scripts]
 attackmap = "attackmap.cli:app"

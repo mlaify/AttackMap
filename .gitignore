@@ -1,11 +1,62 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+
+# Test / type / lint caches
 .pytest_cache/
 .mypy_cache/
-.DS_Store
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Virtual environments
 .venv/
-dist/
-build/
-*.egg-info/
+venv/
+env/
+ENV/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.history/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Xcode
+*.xcuserstate
+*.xcuserdata/
+xcuserdata/
+DerivedData/
+*.xcworkspace
+!default.xcworkspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Project-specific
 reports/
 .glab/

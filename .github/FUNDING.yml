@@ -1,0 +1,7 @@
+# Funding sources for AttackMap.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+github: [mdavistffhrtporg]
+# Replace with your real donation/sponsor URLs.
+custom:
+  - "https://matthewd.xyz"
