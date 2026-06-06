@@ -240,3 +240,188 @@ export async function startConsumer(queue: { subscribe: (topic: string) => Promi
     assert not any(hint.startswith("handler_visibility:") for hint, _ in hints)
     assert not any(hint.startswith("edge:") for hint, _ in hints)
     assert not any(hint.startswith("atproto_") for hint, _ in hints)
+
+
+# ---------------------------------------------------------------------------
+# Route detection improvements for issue #1:
+#   - Add detection for FastAPI, Flask, and Express
+#   - Normalize extracted routes: HTTP method + full path
+#   - Ensure consistent output format across frameworks
+# ---------------------------------------------------------------------------
+
+
+def test_scan_repo_normalizes_paths_without_leading_slash(tmp_path: Path) -> None:
+    """Routes written without a leading ``/`` are normalized to ``/foo`` form."""
+    app_file = tmp_path / "app.py"
+    app_file.write_text(
+        '''
+from fastapi import FastAPI, APIRouter
+from flask import Blueprint, Flask
+import express
+
+app = FastAPI()
+api = APIRouter(prefix="api")  # no leading slash on prefix
+fa = Flask(__name__)
+fa_admin = Blueprint("admin", __name__, url_prefix="admin")  # no leading slash
+
+@app.get("users")
+def list_users():
+    return []
+
+@api.post("create")
+def create():
+    return {}
+
+fa.register_blueprint(fa_admin, url_prefix="v1")  # no leading slash
+
+@fa_admin.route("audit", methods=["GET"])
+def audit():
+    return {}
+''',
+        encoding="utf-8",
+    )
+
+    result = scan_repo(tmp_path)
+    paths = {route.path for route in result.routes}
+
+    # FastAPI: path and prefix without leading slash are normalized.
+    assert "/users" in paths
+    assert "/api/create" in paths
+    # Flask: blueprint and register url_prefix without leading slash are normalized.
+    assert "/v1/admin/audit" in paths
+
+    # Every emitted route must start with a single forward slash.
+    for route in result.routes:
+        assert route.path.startswith("/"), f"Path not normalized: {route.path!r}"
+        assert "//" not in route.path, f"Path has double slash: {route.path!r}"
+
+
+def test_scan_repo_detects_express_app_all(tmp_path: Path) -> None:
+    """Express ``app.all``/``router.all`` is detected and emitted as method ``ANY``."""
+    app_file = tmp_path / "server.js"
+    app_file.write_text(
+        """
+const express = require("express");
+const app = express();
+const router = express.Router();
+
+app.all("/health", (_req, res) => res.send("ok"));
+router.all("/items", (_req, res) => res.send("any"));
+
+router.route("/probe")
+  .all((_req, res) => res.send("probe"))
+  .get((_req, res) => res.send("probe-get"));
+""",
+        encoding="utf-8",
+    )
+
+    result = scan_repo(tmp_path)
+    pairs = {(route.path, route.method) for route in result.routes}
+
+    assert ("/health", "ANY") in pairs
+    assert ("/items", "ANY") in pairs
+    assert ("/probe", "ANY") in pairs
+    assert ("/probe", "GET") in pairs
+
+
+def test_scan_repo_normalizes_express_double_slash_paths(tmp_path: Path) -> None:
+    """Paths containing ``//`` are collapsed to a single ``/`` for consistency."""
+    app_file = tmp_path / "server.js"
+    app_file.write_text(
+        """
+const express = require("express");
+const app = express();
+
+app.get("//users", (_req, res) => res.send("u"));
+app.get("/a//b//c", (_req, res) => res.send("x"));
+""",
+        encoding="utf-8",
+    )
+
+    result = scan_repo(tmp_path)
+    paths = [route.path for route in result.routes]
+
+    assert "/users" in paths
+    assert "/a/b/c" in paths
+
+
+def test_scan_repo_consistent_route_shape_across_frameworks(tmp_path: Path) -> None:
+    """All three frameworks emit the same (method, path) shape with leading ``/``."""
+    fastapi_file = tmp_path / "fa_app.py"
+    fastapi_file.write_text(
+        '''
+from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("ping")
+def ping():
+    return {"ok": True}
+''',
+        encoding="utf-8",
+    )
+
+    flask_file = tmp_path / "fl_app.py"
+    flask_file.write_text(
+        '''
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("ping", methods=["GET"])
+def ping():
+    return {"ok": True}
+''',
+        encoding="utf-8",
+    )
+
+    express_file = tmp_path / "ex_app.js"
+    express_file.write_text(
+        """
+const express = require("express");
+const app = express();
+app.get("ping", (_req, res) => res.send("ok"));
+""",
+        encoding="utf-8",
+    )
+
+    result = scan_repo(tmp_path)
+    paths_methods = [(route.path, route.method) for route in result.routes]
+
+    # Each framework's bare "/ping" GET route must produce the same canonical
+    # (path, method) pair, regardless of source language.
+    assert ("/ping", "GET") in paths_methods
+    assert paths_methods.count(("/ping", "GET")) >= 3
+
+    # Every emitted method is uppercase; every path is normalized.
+    for route in result.routes:
+        assert route.method == route.method.upper(), f"Lowercase method: {route.method!r}"
+        assert route.path.startswith("/"), f"Path missing leading slash: {route.path!r}"
+
+
+def test_scan_repo_detects_deeply_nested_express_app_use(tmp_path: Path) -> None:
+    """Three-level deep ``app.use`` nesting produces the fully-prefixed route path."""
+    app_file = tmp_path / "server.js"
+    app_file.write_text(
+        """
+const express = require("express");
+const app = express();
+const v1 = express.Router();
+const orgs = express.Router();
+const orgsUsers = express.Router();
+
+app.use("/api", v1);
+v1.use("/v1", orgs);
+orgs.use("/orgs/:orgId", orgsUsers);
+
+app.get("/health", (_req, res) => res.send("ok"));
+orgsUsers.get("/members", (_req, res) => res.send("members"));
+orgsUsers.post("/invite", (_req, res) => res.send("invite"));
+""",
+        encoding="utf-8",
+    )
+
+    result = scan_repo(tmp_path)
+    pairs = {(route.path, route.method) for route in result.routes}
+
+    assert ("/health", "GET") in pairs
+    assert ("/api/v1/orgs/:orgId/members", "GET") in pairs
+    assert ("/api/v1/orgs/:orgId/invite", "POST") in pairs
