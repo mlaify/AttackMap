@@ -312,7 +312,10 @@ def generate_llm_review(
     resolved_effort = effort or DEFAULT_EFFORT
 
     rendered = render_review_prompts(scan, attack_surfaces, findings, attack_paths)
-    chosen_backend = _resolve_backend(backend, api_key=api_key, client=client)
+    if backend == "cli" and cli_runner is not None:
+        chosen_backend: Literal["api", "cli"] = "cli"
+    else:
+        chosen_backend = _resolve_backend(backend, api_key=api_key, client=client)
 
     if chosen_backend == "api":
         return _run_via_sdk(
