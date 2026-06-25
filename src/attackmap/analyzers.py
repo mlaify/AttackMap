@@ -8,7 +8,10 @@ import logging
 from pathlib import Path
 import subprocess
 import sys
-from typing import Protocol
+from typing import Protocol, TypeVar
+
+_T = TypeVar("_T")
+_K = TypeVar("_K")
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -544,11 +547,11 @@ def merge_analyzer_results(
     return merged
 
 
-def _merge_unique_items[T, K](
-    destination: list[T],
-    seen: set[K],
-    items: Iterable[T],
-    key_fn: Callable[[T], K],
+def _merge_unique_items(
+    destination: list[_T],
+    seen: set[_K],
+    items: Iterable[_T],
+    key_fn: Callable[[_T], _K],
 ) -> None:
     for item in items:
         key = key_fn(item)
