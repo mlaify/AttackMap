@@ -49,7 +49,7 @@ FLASK_ROUTE_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 EXPRESS_DIRECT_ROUTE_PATTERN = re.compile(
-    r"\b(\w+)\.(get|post|put|delete|patch|options|head)\(\s*['\"]([^'\"]+)['\"]",
+    r"\b(\w+)\.(get|post|put|delete|patch|options|head|all)\(\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
 )
 EXPRESS_CHAIN_ROUTE_PATTERN = re.compile(
@@ -60,7 +60,7 @@ EXPRESS_USE_PATTERN = re.compile(
     r"\b(\w+)\.use\(\s*['\"]([^'\"]+)['\"]\s*,\s*(\w+)\s*\)",
     re.IGNORECASE,
 )
-METHOD_LIST_PATTERN = re.compile(r"['\"](GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)['\"]", re.IGNORECASE)
+METHOD_LIST_PATTERN = re.compile(r"['\"](GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|ALL)['\"]", re.IGNORECASE)
 
 EXTERNAL_CALL_PATTERNS = [
     re.compile(r"requests\.(get|post|put|delete|patch)\(['\"]([^'\"]+)['\"]"),
@@ -159,16 +159,31 @@ def should_scan_with_suffixes(path: Path, suffixes: set[str] | None = None) -> b
     return path.suffix in suffixes
 
 
-def _join_route_parts(prefix: str, path: str) -> str:
-    base = prefix.strip()
-    suffix = path.strip()
+def _normalize_path(path: str) -> str:
+    """Ensure path is non-empty and starts with a single forward slash.
 
-    if not base:
-        return suffix or "/"
-    if not suffix:
-        return base or "/"
+    This guarantees consistent path output across frameworks: FastAPI, Flask,
+    and Express can all be invoked with or without a leading ``/``, but
+    downstream consumers (path joining, prefix concatenation, attack-surface
+    display) rely on a canonical ``/foo/bar`` shape.
+    """
+    cleaned = (path or "").strip()
+    if not cleaned:
+        return "/"
+    if not cleaned.startswith("/"):
+        cleaned = f"/{cleaned}"
+    # Collapse runs of slashes so ``//a//b`` -> ``/a/b``.
+    while "//" in cleaned:
+        cleaned = cleaned.replace("//", "/")
+    return cleaned
+
+
+def _join_route_parts(prefix: str, path: str) -> str:
+    base = _normalize_path(prefix)
+    suffix = _normalize_path(path)
+
     if base == "/":
-        return suffix if suffix.startswith("/") else f"/{suffix}"
+        return suffix
     if suffix == "/":
         return base
     return f"{base.rstrip('/')}/{suffix.lstrip('/')}"
@@ -176,6 +191,9 @@ def _join_route_parts(prefix: str, path: str) -> str:
 
 def _extract_methods(args: str, default_method: str = "ANY") -> list[str]:
     methods = [match.upper() for match in METHOD_LIST_PATTERN.findall(args)]
+    # "ALL" is a non-standard alias sometimes used in API code; normalize it
+    # to the canonical Route(method="ANY") sentinel.
+    methods = ["ANY" if m == "ALL" else m for m in methods]
     return methods or [default_method]
 
 
@@ -272,11 +290,14 @@ def _extract_javascript_routes(content: str, file: str) -> list[Route]:
 
     for match in EXPRESS_DIRECT_ROUTE_PATTERN.finditer(content):
         router_name, method, route_path = match.groups()
+        method_normalized = method.upper()
+        if method_normalized == "ALL":
+            method_normalized = "ANY"
         full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
         routes.append(
             Route(
                 path=full_path,
-                method=method.upper(),
+                method=method_normalized,
                 file=file,
                 line=_line_of(content, match.start()),
             )
@@ -286,11 +307,14 @@ def _extract_javascript_routes(content: str, file: str) -> list[Route]:
         router_name, route_path, chain = match.group(1), match.group(2), match.group("chain")
         full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
         chain_offset = match.start("chain")
-        for method_match in re.finditer(r"\.(get|post|put|delete|patch|options|head)\s*\(", chain, re.IGNORECASE):
+        for method_match in re.finditer(r"\.(get|post|put|delete|patch|options|head|all)\s*\(", chain, re.IGNORECASE):
+            method = method_match.group(1).upper()
+            if method == "ALL":
+                method = "ANY"
             routes.append(
                 Route(
                     path=full_path,
-                    method=method_match.group(1).upper(),
+                    method=method,
                     file=file,
                     line=_line_of(content, chain_offset + method_match.start()),
                 )
