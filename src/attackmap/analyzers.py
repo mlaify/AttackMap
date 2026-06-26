@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib.metadata import entry_points
 import json
@@ -8,14 +8,13 @@ import logging
 from pathlib import Path
 import subprocess
 import sys
-from typing import Protocol, TypeVar
-
-_T = TypeVar("_T")
-_K = TypeVar("_K")
+from typing import Protocol
 from urllib.error import URLError
 from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
+
+from .merge import MERGE_SCHEMA, initial_seen, merge_into
 
 from .sdk.contracts import (
     AnalyzerMetadata,
@@ -166,23 +165,22 @@ def get_builtin_analyzers() -> tuple[FileAnalyzer, ...]:
 
 
 def merge_analyzer_signals(scan: ScanResult, signals: AnalyzerSignals) -> None:
+    """Apply file-by-file analyzer signals onto a running scan result.
+
+    `AnalyzerSignals` is the narrow per-file shape used by the built-in
+    micro-analyzers in this module. Dedup follows :data:`merge.MERGE_SCHEMA`
+    for the field families it covers; routes, external calls, and secrets
+    have always been straight extend (intentional: per-file analyzers emit
+    one batch per file, dedup happens at the result-level merge step).
+    """
     scan.routes.extend(signals.routes)
     scan.external_calls.extend(signals.external_calls)
     scan.secret_hints.extend(signals.secret_hints)
 
-    seen_databases = {(hint.kind, hint.file) for hint in scan.databases}
-    for hint in signals.databases:
-        key = (hint.kind, hint.file)
-        if key not in seen_databases:
-            scan.databases.append(hint)
-            seen_databases.add(key)
-
-    seen_auth_hints = {(hint.hint, hint.file) for hint in scan.auth_hints}
-    for hint in signals.auth_hints:
-        key = (hint.hint, hint.file)
-        if key not in seen_auth_hints:
-            scan.auth_hints.append(hint)
-            seen_auth_hints.add(key)
+    rules = {r.attr: r for r in MERGE_SCHEMA}
+    for attr in ("databases", "auth_hints"):
+        rule = rules[attr]
+        merge_into(scan, getattr(signals, attr), rule, initial_seen(scan, rule))
 
 
 # Backward-compatible alias for existing imports from attackmap.analyzers.
@@ -505,6 +503,11 @@ def merge_analyzer_results(
     results: Iterable[AnalyzerResult],
     root: str | Path | None = None,
 ) -> AnalyzerResult:
+    """Combine multiple whole-repo analyzer results into one.
+
+    Field-by-field merge behavior is declared in :data:`merge.MERGE_SCHEMA`
+    and applied uniformly here. See `merge.py` for the rules.
+    """
     result_list = list(results)
     if not result_list:
         resolved_root = Path(root).resolve() if root is not None else Path(".").resolve()
@@ -512,50 +515,15 @@ def merge_analyzer_results(
 
     resolved_root = Path(root).resolve() if root is not None else Path(result_list[0].root).resolve()
     merged = AnalyzerResult(root=str(resolved_root))
-    route_keys: set[tuple[str, str, str]] = set()
-    external_keys: set[tuple[str, str]] = set()
-    database_keys: set[tuple[str, str]] = set()
-    auth_keys: set[tuple[str, str]] = set()
-    service_keys: set[tuple[str, str]] = set()
-    edge_keys: set[tuple[str, str]] = set()
-    entrypoint_keys: set[tuple[str, str]] = set()
-    protocol_keys: set[tuple[str, str]] = set()
-    framework_keys: set[tuple[str, str]] = set()
-    secret_keys: set[tuple[str, str]] = set()
+    seen_by_attr: dict[str, set] = {rule.attr: set() for rule in MERGE_SCHEMA}
 
     for result in result_list:
         merged.files_scanned += result.files_scanned
         for language in result.languages:
             if language not in merged.languages:
                 merged.languages.append(language)
-        _merge_unique_items(merged.routes, route_keys, result.routes, lambda item: (item.path, item.method, item.file))
-        _merge_unique_items(merged.external_calls, external_keys, result.external_calls, lambda item: (item.target, item.file))
-        _merge_unique_items(merged.databases, database_keys, result.databases, lambda item: (item.kind, item.file))
-        _merge_unique_items(merged.auth_hints, auth_keys, result.auth_hints, lambda item: (item.hint, item.file))
-        _merge_unique_items(merged.service_hints, service_keys, result.service_hints, lambda item: (item.hint, item.file))
-        _merge_unique_items(merged.edge_hints, edge_keys, result.edge_hints, lambda item: (item.hint, item.file))
-        _merge_unique_items(
-            merged.entrypoint_hints, entrypoint_keys, result.entrypoint_hints, lambda item: (item.hint, item.file)
-        )
-        _merge_unique_items(merged.protocol_hints, protocol_keys, result.protocol_hints, lambda item: (item.hint, item.file))
-        _merge_unique_items(
-            merged.framework_hints, framework_keys, result.framework_hints, lambda item: (item.hint, item.file)
-        )
-        _merge_unique_items(merged.secret_hints, secret_keys, result.secret_hints, lambda item: (item.name, item.file))
+        for rule in MERGE_SCHEMA:
+            merge_into(merged, getattr(result, rule.attr), rule, seen_by_attr[rule.attr])
 
     merged.languages.sort()
     return merged
-
-
-def _merge_unique_items(
-    destination: list[_T],
-    seen: set[_K],
-    items: Iterable[_T],
-    key_fn: Callable[[_T], _K],
-) -> None:
-    for item in items:
-        key = key_fn(item)
-        if key in seen:
-            continue
-        seen.add(key)
-        destination.append(item)
