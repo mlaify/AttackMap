@@ -7,6 +7,13 @@ from .models import AttackPath, AttackSurface, Finding, Route, ScanResult
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
+# Cap on the number of basic-archetype attack paths emitted per scan.
+# Lifted from 1 in #24; capped here to keep reports focused — anything
+# beyond the top few is typically redundant with what findings already
+# surface. Chain-archetype paths (atproto / service / framework) emit
+# alone and don't count toward this cap.
+MAX_ATTACK_PATHS = 5
+
 
 def _surface_label(surface: AttackSurface) -> str:
     return f"{surface.method} {surface.route} in {surface.file}"
@@ -813,6 +820,10 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
             )
         ]
 
+    # Basic archetypes append rather than early-return. A single scan can
+    # surface multiple distinct attack-path archetypes — see #24. Each
+    # archetype consumes one surface; we dedup by surface identity so the
+    # same route doesn't anchor two paths.
     webhook_surface = next((surface for surface in surfaces if surface.category == "webhook"), None)
     admin_surface = next((surface for surface in surfaces if surface.category == "admin"), None)
     auth_surface = next((surface for surface in surfaces if surface.category == "auth"), None)
@@ -826,11 +837,31 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         None,
     )
 
-    if webhook_surface and (public_data_surface or integration_surface):
-        strongest_surface = webhook_surface
-        impact = "Unauthorized state changes can be triggered from the internet and then propagated into internal data or downstream systems."
+    paths: list[AttackPath] = []
+    consumed: set[tuple[str, str, str]] = set()
+
+    def _surface_key(surface: AttackSurface) -> tuple[str, str, str]:
+        return (surface.file, surface.route, surface.method)
+
+    def _claim(surface: AttackSurface | None) -> bool:
+        if surface is None:
+            return False
+        key = _surface_key(surface)
+        if key in consumed:
+            return False
+        consumed.add(key)
+        return True
+
+    if webhook_surface and (public_data_surface or integration_surface) and _claim(webhook_surface):
+        # Webhooks consume their downstream propagation surface so the
+        # public-data / integration archetypes don't also fire on the
+        # same route.
+        if public_data_surface:
+            _claim(public_data_surface)
+        if integration_surface:
+            _claim(integration_surface)
         steps = [
-            _action_step("Entry", f"An attacker reaches {strongest_surface.method} {strongest_surface.route} in {strongest_surface.file}, a webhook-style endpoint that accepts untrusted inbound events"),
+            _action_step("Entry", f"An attacker reaches {webhook_surface.method} {webhook_surface.route} in {webhook_surface.file}, a webhook-style endpoint that accepts untrusted inbound events"),
             _action_step("Weak point", "The endpoint is treated like a trusted integration boundary before its input is fully verified"),
         ]
         if public_data_surface:
@@ -838,16 +869,16 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         if integration_surface:
             steps.append(_action_step("Propagation", "The same request path can also influence outbound service calls, which widens the blast radius beyond the application itself"))
         steps.append(_action_step("Impact", "The attacker drives business actions that should only occur after a trusted event or validated request"))
-        return [
+        paths.append(
             AttackPath(
                 name="External event spoofing into internal state change",
                 steps=steps,
-                impact=impact,
+                impact="Unauthorized state changes can be triggered from the internet and then propagated into internal data or downstream systems.",
             )
-        ]
+        )
 
-    if admin_surface:
-        return [
+    if _claim(admin_surface):
+        paths.append(
             AttackPath(
                 name="Administrative route abuse",
                 steps=[
@@ -858,10 +889,10 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
                 ],
                 impact="Privilege escalation or destructive administrative actions from a route that should be tightly controlled.",
             )
-        ]
+        )
 
-    if auth_surface:
-        return [
+    if _claim(auth_surface):
+        paths.append(
             AttackPath(
                 name="Authentication boundary bypass",
                 steps=[
@@ -872,10 +903,10 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
                 ],
                 impact="Account takeover or a trusted session that opens access to additional internal actions.",
             )
-        ]
+        )
 
-    if upload_surface:
-        return [
+    if _claim(upload_surface):
+        paths.append(
             AttackPath(
                 name="Untrusted file handling abuse",
                 steps=[
@@ -886,10 +917,10 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
                 ],
                 impact="Stored malicious content, parser abuse, or denial of service from untrusted file input.",
             )
-        ]
+        )
 
-    if public_data_surface:
-        return [
+    if _claim(public_data_surface):
+        paths.append(
             AttackPath(
                 name="Public input into sensitive data path",
                 steps=[
@@ -900,10 +931,10 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
                 ],
                 impact="Unauthorized data access or modification through a public-facing application route.",
             )
-        ]
+        )
 
-    if integration_surface:
-        return [
+    if _claim(integration_surface):
+        paths.append(
             AttackPath(
                 name="Outbound trust boundary abuse",
                 steps=[
@@ -914,6 +945,9 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
                 ],
                 impact="Poisoned state or unsafe downstream actions caused by over-trusting an external dependency.",
             )
-        ]
+        )
 
-    return []
+    # Cap to keep report output focused; if more than this fires, the
+    # extras are usually redundant noise that downstream review surfaces
+    # via findings anyway.
+    return paths[:MAX_ATTACK_PATHS]
