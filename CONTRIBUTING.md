@@ -95,15 +95,10 @@ align on direction.
 
 ### Adding a new analyzer plugin
 
-Each language ecosystem lives in its own repo, named
-`attackmap-analyzer-<ecosystem>`. To add a new one:
-
-1. Use one of the existing plugin repos as a template (Python or Go are good
-   starting points — both are comprehensive).
-2. Register your analyzer under the `attackmap.analyzers` entry-point group in
-   your plugin's `pyproject.toml`.
-3. Emit Signal-v2 records (line numbers, evidence text, confidence).
-4. Add tests covering your framework and database/auth/HTTP-client detections.
+The full developer cookbook — scaffolding, the contract, testing, publishing
+to PyPI — is in [`docs/external-analyzers.md`](docs/external-analyzers.md).
+Use one of the existing plugin repos (Python or Go are the most thorough) as
+a working template.
 
 ## Reporting security issues
 
