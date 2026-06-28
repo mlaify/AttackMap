@@ -187,3 +187,95 @@ def test_generate_attack_paths_reuses_provided_attack_surfaces(monkeypatch) -> N
 
     assert len(attack_paths) == 1
     assert attack_paths[0].name == "Administrative route abuse"
+
+
+# ---------------------------------------------------------------------------
+# #24: a single scan can surface multiple distinct attack-path archetypes
+# when distinct archetypes are present in the same codebase.
+# ---------------------------------------------------------------------------
+
+
+def test_distinct_archetypes_in_one_scan_each_produce_their_own_path() -> None:
+    """Webhook + admin + auth surfaces on different routes → 3 paths."""
+    provided_surfaces = [
+        AttackSurface(
+            route="/webhook/stripe",
+            method="POST",
+            file="app/webhook.py",
+            category="webhook",
+            exposure="public",
+            risk="high",
+            auth_signals=[],
+            data_store_interaction=True,
+            outbound_integration=False,
+            rationale=["webhook surface"],
+        ),
+        AttackSurface(
+            route="/admin/refund",
+            method="POST",
+            file="app/admin.py",
+            category="admin",
+            exposure="public",
+            risk="high",
+            auth_signals=[],
+            data_store_interaction=False,
+            outbound_integration=False,
+            rationale=["admin surface"],
+        ),
+        AttackSurface(
+            route="/login",
+            method="POST",
+            file="app/auth.py",
+            category="auth",
+            exposure="public",
+            risk="medium",
+            auth_signals=[],
+            data_store_interaction=False,
+            outbound_integration=False,
+            rationale=["auth surface"],
+        ),
+    ]
+    scan = ScanResult(root=".")
+    paths = generate_attack_paths(scan, attack_surfaces=provided_surfaces)
+    names = [p.name for p in paths]
+    assert "External event spoofing into internal state change" in names
+    assert "Administrative route abuse" in names
+    assert "Authentication boundary bypass" in names
+    assert len(paths) == 3
+
+
+def test_same_surface_is_not_double_counted_across_archetypes() -> None:
+    """A webhook surface that propagates via data also matches public_data;
+    only one path should fire on that surface."""
+    surface = AttackSurface(
+        route="/webhook/stripe",
+        method="POST",
+        file="app/webhook.py",
+        category="webhook",
+        exposure="public",
+        risk="high",
+        auth_signals=[],
+        data_store_interaction=True,
+        outbound_integration=False,
+        rationale=["both archetypes"],
+    )
+    scan = ScanResult(root=".")
+    paths = generate_attack_paths(scan, attack_surfaces=[surface])
+    assert [p.name for p in paths] == ["External event spoofing into internal state change"]
+
+
+def test_max_attack_paths_cap_is_respected() -> None:
+    """At most MAX_ATTACK_PATHS basic paths emit, even with more matching surfaces."""
+    from attackmap.threat_model import MAX_ATTACK_PATHS
+
+    surfaces = [
+        AttackSurface(route="/webhook/a", method="POST", file="webhook.py", category="webhook", exposure="public", risk="high", auth_signals=[], data_store_interaction=True, outbound_integration=False, rationale=[]),
+        AttackSurface(route="/admin/a", method="POST", file="admin.py", category="admin", exposure="public", risk="high", auth_signals=[], data_store_interaction=False, outbound_integration=False, rationale=[]),
+        AttackSurface(route="/login", method="POST", file="auth.py", category="auth", exposure="public", risk="medium", auth_signals=[], data_store_interaction=False, outbound_integration=False, rationale=[]),
+        AttackSurface(route="/upload", method="POST", file="upload.py", category="upload", exposure="public", risk="medium", auth_signals=[], data_store_interaction=False, outbound_integration=False, rationale=[]),
+        AttackSurface(route="/api/items", method="GET", file="api.py", category="public_api", exposure="public", risk="medium", auth_signals=[], data_store_interaction=True, outbound_integration=False, rationale=[]),
+        AttackSurface(route="/api/proxy", method="GET", file="proxy.py", category="public_api", exposure="public", risk="medium", auth_signals=[], data_store_interaction=False, outbound_integration=True, rationale=[]),
+    ]
+    scan = ScanResult(root=".")
+    paths = generate_attack_paths(scan, attack_surfaces=surfaces)
+    assert len(paths) <= MAX_ATTACK_PATHS
