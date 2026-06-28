@@ -49,7 +49,7 @@ Read `reports/defensive-review.md` (heuristic) and `reports/defensive-review-llm
 ```bash
 pip install attackmap                  # core only
 pip install "attackmap[llm]"           # add LLM narrative support
-pip install "attackmap[all]"           # core + LLM + all 11 analyzer plugins
+pip install "attackmap[all]"           # core + LLM + all 13 analyzer plugins
 ```
 
 You can also install individual analyzer plugins on demand:
@@ -129,7 +129,7 @@ Layered on top: **MITRE ATT&CK technique mappings** on every insight and
 
 ## Supported ecosystems
 
-Eleven official analyzer plugins, each distributable as a separate package:
+Thirteen official analyzer plugins, each distributable as a separate package:
 
 | Plugin | Coverage |
 |---|---|
@@ -146,6 +146,13 @@ Eleven official analyzer plugins, each distributable as a separate package:
 | `attackmap-analyzer-php-web` / `-php-laminas` / `-omeka-s` | Generic PHP web, Laminas/Zend MVC, Omeka-S |
 
 `pip install "attackmap[all]"` installs every official plugin.
+
+### Building your own analyzer
+
+The plugin contract is documented in code at
+[`attackmap.sdk`](src/attackmap/sdk/__init__.py); the developer cookbook with
+scaffolding, testing, and publishing instructions is in
+[`docs/external-analyzers.md`](docs/external-analyzers.md).
 
 ---
 
