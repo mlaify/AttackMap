@@ -1,4 +1,4 @@
-from attackmap.models import AttackSurface, AuthHint, DatabaseHint, EdgeHint, ExternalCall, ProtocolHint, Route, ScanResult, ServiceHint
+from attackmap.models import AttackSurface, AuthHint, DatabaseHint, EdgeHint, ExternalCall, ProtocolHint, Route, ScanResult, SecretHint, ServiceHint
 from attackmap.threat_model import generate_attack_paths, generate_findings
 
 
@@ -279,3 +279,90 @@ def test_max_attack_paths_cap_is_respected() -> None:
     scan = ScanResult(root=".")
     paths = generate_attack_paths(scan, attack_surfaces=surfaces)
     assert len(paths) <= MAX_ATTACK_PATHS
+
+
+# ---------------------------------------------------------------------------
+# #15: basic-archetype attack paths cite file-local evidence when available.
+# ---------------------------------------------------------------------------
+
+
+def test_basic_archetype_path_appends_evidence_step_from_scan() -> None:
+    """When a scan has databases / externals / secrets in the same file as
+    the entry surface, the emitted path ends with an Evidence step naming
+    them — not a generic 4-step narrative."""
+    surface = AttackSurface(
+        route="/admin/reindex",
+        method="POST",
+        file="app/admin.py",
+        category="admin",
+        exposure="public",
+        risk="high",
+        auth_signals=[],
+        data_store_interaction=True,
+        outbound_integration=True,
+        rationale=["evidence test"],
+    )
+    scan = ScanResult(
+        root=".",
+        databases=[DatabaseHint(kind="postgresql", file="app/admin.py")],
+        external_calls=[ExternalCall(target="https://analytics.example.com/ingest", file="app/admin.py")],
+        secret_hints=[SecretHint(name="ANALYTICS_API_KEY", file="app/admin.py")],
+    )
+    paths = generate_attack_paths(scan, attack_surfaces=[surface])
+    assert len(paths) == 1
+    evidence_steps = [step for step in paths[0].steps if step.startswith("Evidence:")]
+    assert len(evidence_steps) == 1
+    body = evidence_steps[0]
+    assert "postgresql" in body
+    assert "analytics.example.com" in body
+    assert "ANALYTICS_API_KEY" in body
+
+
+def test_basic_archetype_path_omits_evidence_step_when_scan_is_empty() -> None:
+    """No file-local artifacts → no Evidence step. Existing 4-step shape is
+    preserved when there's nothing to cite (keeps CLI output stable)."""
+    surface = AttackSurface(
+        route="/admin/reindex",
+        method="POST",
+        file="app/admin.py",
+        category="admin",
+        exposure="public",
+        risk="high",
+        auth_signals=[],
+        data_store_interaction=False,
+        outbound_integration=False,
+        rationale=["no evidence"],
+    )
+    scan = ScanResult(root=".")
+    paths = generate_attack_paths(scan, attack_surfaces=[surface])
+    assert len(paths) == 1
+    assert not any(step.startswith("Evidence:") for step in paths[0].steps)
+    assert len(paths[0].steps) == 4
+
+
+def test_evidence_only_cites_signals_from_the_same_file_as_the_surface() -> None:
+    """Signals in unrelated files must not be pulled in — the evidence
+    step is a same-file citation, not a repo-wide summary."""
+    surface = AttackSurface(
+        route="/admin/reindex",
+        method="POST",
+        file="app/admin.py",
+        category="admin",
+        exposure="public",
+        risk="high",
+        auth_signals=[],
+        data_store_interaction=False,
+        outbound_integration=False,
+        rationale=["scoped evidence"],
+    )
+    scan = ScanResult(
+        root=".",
+        databases=[
+            DatabaseHint(kind="postgresql", file="app/admin.py"),      # same file — cited
+            DatabaseHint(kind="redis", file="app/cache/other.py"),     # different file — NOT cited
+        ],
+    )
+    paths = generate_attack_paths(scan, attack_surfaces=[surface])
+    evidence = next(step for step in paths[0].steps if step.startswith("Evidence:"))
+    assert "postgresql" in evidence
+    assert "redis" not in evidence

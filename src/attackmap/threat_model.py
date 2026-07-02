@@ -40,6 +40,29 @@ def _finding_evidence(surface: AttackSurface) -> str:
     return "; ".join(details)
 
 
+def _surface_evidence(surface: AttackSurface, scan: ScanResult, max_items: int = 4) -> list[str]:
+    """Collect concrete evidence tied to a surface — same-file signals only.
+
+    Used by basic-archetype attack paths to anchor their narrative in
+    specific databases, external calls, and secrets present in the same
+    file as the entry surface, rather than emitting a generic 4-step
+    story. Keeps the evidence chain narrow and defensible: if it's in
+    the same file as the vulnerable route, we can cite it without
+    speculating about how signals connect.
+    """
+    evidence: list[str] = []
+    for hint in scan.databases:
+        if hint.file == surface.file:
+            evidence.append(f"data store in same file: {hint.kind} ({hint.file})")
+    for call in scan.external_calls:
+        if call.file == surface.file:
+            evidence.append(f"external call in same file: {call.target} ({call.file})")
+    for secret in scan.secret_hints:
+        if secret.file == surface.file:
+            evidence.append(f"env-configured secret in same file: {secret.name} ({secret.file})")
+    return evidence[:max_items]
+
+
 @dataclass(frozen=True)
 class ProbableChain:
     route_method: str
@@ -852,6 +875,16 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         consumed.add(key)
         return True
 
+    def _with_evidence(surface: AttackSurface, base_steps: list[str]) -> list[str]:
+        # If we can cite concrete file-local artifacts (data stores,
+        # external calls, secrets), append an Evidence step so the path
+        # narrative is anchored in specific code, not just archetype-level
+        # generalities. See #15.
+        evidence = _surface_evidence(surface, scan)
+        if evidence:
+            return [*base_steps, _action_step("Evidence", "; ".join(evidence))]
+        return base_steps
+
     if webhook_surface and (public_data_surface or integration_surface) and _claim(webhook_surface):
         # Webhooks consume their downstream propagation surface so the
         # public-data / integration archetypes don't also fire on the
@@ -872,7 +905,7 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         paths.append(
             AttackPath(
                 name="External event spoofing into internal state change",
-                steps=steps,
+                steps=_with_evidence(webhook_surface, steps),
                 impact="Unauthorized state changes can be triggered from the internet and then propagated into internal data or downstream systems.",
             )
         )
@@ -881,12 +914,12 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         paths.append(
             AttackPath(
                 name="Administrative route abuse",
-                steps=[
+                steps=_with_evidence(admin_surface, [
                     _action_step("Entry", f"An attacker reaches {admin_surface.method} {admin_surface.route} in {admin_surface.file}, a route associated with privileged behavior"),
                     _action_step("Weak point", "Authentication or authorization around that route is bypassed, reused, or enforced too late"),
                     _action_step("Propagation", "Administrative actions execute with attacker influence and affect higher-value parts of the system"),
                     _action_step("Impact", "Privileged changes, sensitive data access, or configuration abuse follow from a single foothold"),
-                ],
+                ]),
                 impact="Privilege escalation or destructive administrative actions from a route that should be tightly controlled.",
             )
         )
@@ -895,12 +928,12 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         paths.append(
             AttackPath(
                 name="Authentication boundary bypass",
-                steps=[
+                steps=_with_evidence(auth_surface, [
                     _action_step("Entry", f"An attacker targets {auth_surface.method} {auth_surface.route} in {auth_surface.file}, which controls login, tokens, or session state"),
                     _action_step("Weak point", "Credential handling, token validation, or session establishment is weaker than the route implies"),
                     _action_step("Propagation", "The attacker converts that weakness into an authenticated foothold"),
                     _action_step("Impact", "The foothold becomes the starting point for deeper movement into protected application behavior"),
-                ],
+                ]),
                 impact="Account takeover or a trusted session that opens access to additional internal actions.",
             )
         )
@@ -909,12 +942,12 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         paths.append(
             AttackPath(
                 name="Untrusted file handling abuse",
-                steps=[
+                steps=_with_evidence(upload_surface, [
                     _action_step("Entry", f"An attacker submits content to {upload_surface.method} {upload_surface.route} in {upload_surface.file}"),
                     _action_step("Weak point", "The application accepts or parses attacker-controlled files too broadly"),
                     _action_step("Propagation", "Storage, parsing, or downstream consumers treat that content as safer than it is"),
                     _action_step("Impact", "The result is execution, persistence of malicious content, or operational disruption"),
-                ],
+                ]),
                 impact="Stored malicious content, parser abuse, or denial of service from untrusted file input.",
             )
         )
@@ -923,12 +956,12 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         paths.append(
             AttackPath(
                 name="Public input into sensitive data path",
-                steps=[
+                steps=_with_evidence(public_data_surface, [
                     _action_step("Entry", f"An attacker uses {public_data_surface.method} {public_data_surface.route} in {public_data_surface.file} as a public foothold"),
                     _action_step("Weak point", "Input validation or authorization is weaker than the route exposure suggests"),
                     _action_step("Propagation", "Attacker-controlled data reaches code operating close to the data store"),
                     _action_step("Impact", "Confidentiality, integrity, or authorization guarantees around application data are weakened"),
-                ],
+                ]),
                 impact="Unauthorized data access or modification through a public-facing application route.",
             )
         )
@@ -937,12 +970,12 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         paths.append(
             AttackPath(
                 name="Outbound trust boundary abuse",
-                steps=[
+                steps=_with_evidence(integration_surface, [
                     _action_step("Entry", f"An attacker influences {integration_surface.method} {integration_surface.route} in {integration_surface.file}, which sits near an outbound integration"),
                     _action_step("Weak point", "The application assumes too much trust in external calls or responses"),
                     _action_step("Propagation", "Spoofed, replayed, or attacker-steered third-party interactions affect internal logic"),
                     _action_step("Impact", "Unsafe business decisions or downstream actions follow from a weak external trust boundary"),
-                ],
+                ]),
                 impact="Poisoned state or unsafe downstream actions caused by over-trusting an external dependency.",
             )
         )
