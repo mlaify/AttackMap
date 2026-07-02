@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-25
+
+### Changed
+
+- **`[all]` extra now pins each analyzer to a minimum version.** All
+  bundled plugins carry `>=0.1.0`; `attackmap-analyzer-node-service` is
+  bumped to `>=0.2.0` to guarantee users installing `attackmap[all]`
+  pick up the deepened TS/Node service coverage (NestJS decorators,
+  NextJS routes, tRPC, XRPC handlers, workspaces, BullMQ/Kafka workers,
+  `EXPO_PUBLIC_*` client-bundled secret rule).
+
+No core code changes. Users who `pip install --upgrade attackmap[all]`
+are now guaranteed the newer analyzer bundle.
+
 ## [0.1.0] - 2026-06-04
 
 Initial public release of AttackMap — an AI-assisted defensive security analyzer
@@ -59,5 +73,6 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/mlaify/AttackMap/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mlaify/AttackMap/releases/tag/v0.1.0
