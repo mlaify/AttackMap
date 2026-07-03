@@ -474,10 +474,29 @@ def _fetch_org_repositories(api_url: str) -> list[dict[str, object]]:
 def analyze_repository(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> AnalyzerResult:
     repo_root = Path(root).resolve()
     active_analyzers = resolve_run_analyzers(repo_root, analyzers=analyzers)
-    results = [analyzer.analyze(repo_root) for analyzer in active_analyzers]
+    results: list[AnalyzerResult] = []
+    for analyzer in active_analyzers:
+        result = analyzer.analyze(repo_root)
+        _stamp_provenance(result, analyzer.name)
+        results.append(result)
     if not results:
         return AnalyzerResult(root=str(repo_root))
     return merge_analyzer_results(results, root=repo_root)
+
+
+def _stamp_provenance(result: AnalyzerResult, analyzer_name: str) -> None:
+    """Tag every signal in `result` with the analyzer that produced it.
+
+    Done in core rather than in each analyzer so the 13 published plugins
+    don't need to know about the field — they emit signals as they always
+    have, and core stamps provenance on the way to the merge. Only stamps
+    signals that don't already carry a source (plugins that want to attribute
+    a signal to something more specific can pre-populate the field).
+    """
+    for rule in MERGE_SCHEMA:
+        for item in getattr(result, rule.attr):
+            if item.source_analyzer is None:
+                item.source_analyzer = analyzer_name
 
 
 def resolve_run_analyzers(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> list[Analyzer]:

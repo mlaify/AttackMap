@@ -6,11 +6,20 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# Provenance field. Present on every analyzer-emitted signal so downstream
+# consumers can trace a signal back to the analyzer that produced it.
+# Excluded from serialization by default (see #14) so JSON/CLI reports are
+# byte-for-byte unchanged; access it via Python attribute for debugging,
+# confidence scoring, or future finder logic.
+_PROVENANCE_FIELD = Field(default=None, exclude=True, repr=False)
+
+
 class Route(BaseModel):
     path: str
     method: str = "ANY"
     file: str
     line: int | None = None
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class ExternalCall(BaseModel):
@@ -18,6 +27,7 @@ class ExternalCall(BaseModel):
     file: str
     line: int | None = None
     evidence_text: str | None = None
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class DatabaseHint(BaseModel):
@@ -25,6 +35,7 @@ class DatabaseHint(BaseModel):
     file: str
     line: int | None = None
     evidence_text: str | None = None
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class AuthHint(BaseModel):
@@ -33,6 +44,7 @@ class AuthHint(BaseModel):
     line: int | None = None
     evidence_text: str | None = None
     confidence: float = 0.7
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class ServiceHint(BaseModel):
@@ -41,6 +53,7 @@ class ServiceHint(BaseModel):
     line: int | None = None
     evidence_text: str | None = None
     confidence: float = 0.7
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class EdgeHint(BaseModel):
@@ -49,6 +62,7 @@ class EdgeHint(BaseModel):
     line: int | None = None
     evidence_text: str | None = None
     confidence: float = 0.7
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class EntrypointHint(BaseModel):
@@ -57,6 +71,7 @@ class EntrypointHint(BaseModel):
     line: int | None = None
     evidence_text: str | None = None
     confidence: float = 0.7
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class ProtocolHint(BaseModel):
@@ -65,6 +80,7 @@ class ProtocolHint(BaseModel):
     line: int | None = None
     evidence_text: str | None = None
     confidence: float = 0.7
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class FrameworkHint(BaseModel):
@@ -73,6 +89,7 @@ class FrameworkHint(BaseModel):
     line: int | None = None
     evidence_text: str | None = None
     confidence: float = 0.7
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 class SecretHint(BaseModel):
@@ -81,6 +98,7 @@ class SecretHint(BaseModel):
     line: int | None = None
     evidence_text: str | None = None
     confidence: float = 0.85
+    source_analyzer: str | None = _PROVENANCE_FIELD
 
 
 SignalKind = Literal[
