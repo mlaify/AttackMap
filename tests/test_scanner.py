@@ -425,3 +425,220 @@ orgsUsers.post("/invite", (_req, res) => res.send("invite"));
     assert ("/health", "GET") in pairs
     assert ("/api/v1/orgs/:orgId/members", "GET") in pairs
     assert ("/api/v1/orgs/:orgId/invite", "POST") in pairs
+
+
+# ---------------------------------------------------------------------------
+# #2: deeper datastore + auth signal detection.
+# ---------------------------------------------------------------------------
+
+
+def _scan_source(tmp_path: Path, source: str, name: str = "app.py") -> ScanResult:
+    (tmp_path / name).write_text(source, encoding="utf-8")
+    return scan_repo(tmp_path)
+
+
+def test_sqlalchemy_sessionmaker_declarative_base_are_detected_as_sql(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+Base = declarative_base()
+SessionLocal = sessionmaker(bind=engine)
+""",
+    )
+    kinds = {(hint.kind, hint.file) for hint in scan.databases}
+    assert ("sql", "app.py") in kinds
+
+
+def test_sqlalchemy_async_engine_and_session_are_detected(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
+engine = create_async_engine("postgresql+asyncpg://user@localhost/db")
+async_session = AsyncSession(engine)
+""",
+    )
+    kinds = {hint.kind for hint in scan.databases}
+    assert "sql" in kinds
+
+
+def test_raw_sql_execute_with_sql_verb_string_is_detected(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+import sqlite3
+db = sqlite3.connect("orders.db")
+cursor = db.cursor()
+cursor.execute("SELECT id, sku FROM orders WHERE customer_id = ?", (cid,))
+""",
+    )
+    kinds = {hint.kind for hint in scan.databases}
+    # Both sqlite (from connect) and sql (from raw execute) should fire
+    assert "sqlite" in kinds
+    assert "sql" in kinds
+
+
+def test_pymongo_and_asyncio_motor_are_detected_as_mongodb(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
+
+client = pymongo.MongoClient("mongodb://localhost:27017")
+async_client = AsyncIOMotorClient("mongodb://localhost:27017")
+""",
+    )
+    kinds = {hint.kind for hint in scan.databases}
+    assert "mongodb" in kinds
+
+
+def test_redis_from_url_is_detected(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+import redis
+client = redis.from_url("redis://localhost:6379/0")
+""",
+    )
+    assert any(h.kind == "redis" for h in scan.databases)
+
+
+# --- Auth detection improvements ------------------------------------------
+
+
+def test_jwt_decode_call_produces_jwt_auth_hint(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+import jwt
+
+def get_user(token):
+    payload = jwt.decode(token, key, algorithms=["HS256"])
+    return payload
+""",
+    )
+    hints = {(h.hint, h.file) for h in scan.auth_hints}
+    assert ("jwt", "app.py") in hints
+
+
+def test_python_authorization_header_access_produces_authorization_hint(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+def get_user(request):
+    header = request.headers.get("authorization")
+    return header
+""",
+    )
+    hints = {h.hint for h in scan.auth_hints}
+    assert "authorization" in hints
+
+
+def test_js_authorization_header_access_produces_authorization_hint(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+app.get("/me", (req, res) => {
+  const header = req.headers["authorization"];
+  res.json({ header });
+});
+""",
+        name="app.js",
+    )
+    hints = {h.hint for h in scan.auth_hints}
+    assert "authorization" in hints
+
+
+def test_common_middleware_names_are_recognized(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+app.get("/admin", requireAuth(), isAuthenticated(), (req, res) => res.send("ok"));
+""",
+        name="app.js",
+    )
+    hints = {h.hint for h in scan.auth_hints}
+    assert "auth_middleware" in hints
+
+
+def test_express_session_middleware_and_req_session_produce_session_hints(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+const session = require("express-session");
+app.use(session({ secret: "s" }));
+app.get("/me", (req, res) => res.json(req.session.user));
+""",
+        name="app.js",
+    )
+    hints = {h.hint for h in scan.auth_hints}
+    assert "session_middleware" in hints
+    assert "session_state" in hints
+
+
+def test_naked_noisy_keywords_no_longer_produce_auth_hints(tmp_path: Path) -> None:
+    """The bare words `session`, `password`, `token`, `mfa`, `bearer` used to
+    fire everywhere via AUTH_KEYWORDS; #2 removed them from that list to
+    fix the file-scoped-noise problem documented in Bluesky FINDINGS §55.
+    Only specific compound patterns (session_middleware, session_state,
+    password_flow, etc.) should fire now."""
+    scan = _scan_source(
+        tmp_path,
+        """
+# Words used in non-auth context — should NOT emit bare auth hints.
+def parse(session_name, password_field, token_length, bearer_kind, mfa_days):
+    return f"{session_name}/{password_field}/{token_length}/{bearer_kind}/{mfa_days}"
+""",
+    )
+    hints = {h.hint for h in scan.auth_hints}
+    for noisy in ("session", "password", "token", "mfa", "bearer"):
+        assert noisy not in hints, (
+            f"{noisy!r} should not be a bare AUTH_KEYWORD anymore (was noisy)"
+        )
+
+
+def test_password_flow_compound_patterns_still_fire(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+def register(user, pw):
+    user.password_hash = bcrypt.hash(pw, salt)
+    return user
+""",
+    )
+    hints = {h.hint for h in scan.auth_hints}
+    assert "password_flow" in hints
+
+
+def test_mfa_compound_patterns_still_fire(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        """
+def sensitive_action(user):
+    if user.mfa_required and totp_verify(user.otp):
+        return True
+    return False
+""",
+    )
+    hints = {h.hint for h in scan.auth_hints}
+    assert "mfa" in hints
+
+
+def test_auth_hint_dedup_at_kind_file_level(tmp_path: Path) -> None:
+    """Same auth hint kind + file should appear only once even if the
+    pattern matches multiple times in the file."""
+    scan = _scan_source(
+        tmp_path,
+        """
+import jwt
+a = jwt.decode(t1, k)
+b = jwt.decode(t2, k)
+c = jwt.encode({}, k)
+""",
+    )
+    hints = [h for h in scan.auth_hints if h.hint == "jwt" and h.file == "app.py"]
+    assert len(hints) == 1
