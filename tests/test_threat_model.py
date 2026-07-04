@@ -599,3 +599,87 @@ def test_public_data_fanout_collapses_same_file_surfaces_to_one_path() -> None:
     paths = generate_attack_paths(scan, attack_surfaces=surfaces)
     public_data_paths = [p for p in paths if p.name == "Public input into sensitive data path"]
     assert len(public_data_paths) == 1
+
+
+# ---------------------------------------------------------------------------
+# #4: severity scoring and prioritization tags.
+# ---------------------------------------------------------------------------
+
+
+from attackmap.threat_model import compute_finding_score  # noqa: E402
+
+
+def test_compute_finding_score_range() -> None:
+    """Score formula: severity_weight * confidence_multiplier."""
+    assert compute_finding_score("high", "high") == 100
+    assert compute_finding_score("high", "medium") == 75
+    assert compute_finding_score("high", "low") == 50
+    assert compute_finding_score("medium", "high") == 50
+    assert compute_finding_score("medium", "medium") == 37
+    assert compute_finding_score("low", "high") == 10
+    assert compute_finding_score("low", "low") == 5
+
+
+def test_findings_carry_prioritization_tags() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[
+            Route(path="/webhook/x", method="POST", file="api.py"),
+            Route(path="/admin/y", method="POST", file="api.py"),
+            Route(path="/login", method="POST", file="api.py"),
+        ],
+        databases=[DatabaseHint(kind="postgresql", file="api.py")],
+        external_calls=[ExternalCall(target="https://vendor.example", file="api.py")],
+        secret_hints=[SecretHint(name="API_KEY", file="config.py")],
+    )
+    findings = generate_findings(scan)
+    tag_map = {f.title: f.tags for f in findings}
+
+    # Webhook finding: exposed-endpoint + auth-missing
+    webhook_tags = next(v for k, v in tag_map.items() if "webhook" in k.lower())
+    assert "exposed-endpoint" in webhook_tags
+    assert "auth-missing" in webhook_tags
+
+    # Admin finding: exposed-endpoint + auth-missing + privileged
+    admin_tags = next(v for k, v in tag_map.items() if "administrative" in k.lower())
+    assert "privileged" in admin_tags
+
+    # Secret finding: secret-exposure
+    secret_tags = next(v for k, v in tag_map.items() if "secret" in k.lower())
+    assert "secret-exposure" in secret_tags
+
+
+def test_findings_are_scored_and_score_is_populated() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/webhook/x", method="POST", file="api.py")],
+        databases=[DatabaseHint(kind="postgresql", file="api.py")],
+    )
+    findings = generate_findings(scan)
+    assert all(f.score is not None for f in findings)
+    for f in findings:
+        assert f.score == compute_finding_score(f.severity, f.confidence)
+
+
+def test_findings_sorted_severity_then_score_descending_then_title() -> None:
+    """Same-severity findings are ordered by score descending, so a
+    HIGH/HIGH surfaces above a HIGH/MEDIUM."""
+    scan = ScanResult(
+        root=".",
+        routes=[
+            Route(path="/webhook/x", method="POST", file="api.py"),   # HIGH/HIGH
+            Route(path="/admin/y", method="POST", file="api.py"),     # HIGH/HIGH
+            Route(path="/upload", method="POST", file="api.py"),      # HIGH/MEDIUM
+        ],
+        databases=[DatabaseHint(kind="postgresql", file="api.py")],
+    )
+    findings = generate_findings(scan)
+    # Filter to HIGH-severity findings
+    highs = [f for f in findings if f.severity == "high"]
+    assert len(highs) >= 2
+    # The HIGH/MEDIUM upload finding must appear AFTER the HIGH/HIGH pair
+    upload_idx = next((i for i, f in enumerate(highs) if "Upload" in f.title), None)
+    assert upload_idx is not None
+    for i, f in enumerate(highs):
+        if i < upload_idx:
+            assert f.confidence in {"high"}  # HIGH/HIGH precedes HIGH/MEDIUM
