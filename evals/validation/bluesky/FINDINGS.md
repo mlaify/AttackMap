@@ -110,6 +110,11 @@ There is also a **fixture-scope** issue: the same `bluesky-atproto-review-v1.jso
 
 ## 4. Suggested follow-up work
 
+**Update 2026-06-25:** issues #17, #24, #15, #13, #5, #4, #14 have all landed;
+[#19 architectural decision documented in `docs/decisions/atproto-analyzer.md`](../../../docs/decisions/atproto-analyzer.md).
+The remaining gaps below stay tracked but move from "issue-level" to
+"pattern additions to existing analyzers."
+
 Tagged for the existing sibling issues where they exist:
 
 - **[#17 — JavaScript/TypeScript analyzer for Node service architectures](https://github.com/mlaify/AttackMap/issues/17):**
