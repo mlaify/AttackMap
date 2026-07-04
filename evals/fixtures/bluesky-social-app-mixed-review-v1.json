@@ -1,0 +1,93 @@
+{
+  "schema_version": "2.0.0",
+  "fixture_id": "bluesky-social-app-mixed-review-v1",
+  "target": {
+    "repo": "https://github.com/bluesky-social/social-app",
+    "ecosystem": "react-native + expo + node-service (mixed monorepo)",
+    "notes": "Mixed client + Express servers monorepo. Reviews here should distinguish client-bundled secrets (EXPO_PUBLIC_*), Express handlers in bskylink/ and bskyogcard/, and monorepo subproject enumeration. See FINDINGS.md §3 and #44 for the split rationale."
+  },
+  "review_file": "bluesky-social-app-good-review.md",
+  "expectations": {
+    "grounding": {
+      "citation_pattern": "(?:asset|insight|control|detect|path|surface|finding):[A-Za-z0-9_:.-]+",
+      "allowed_id_pattern": "(?:asset|insight|control|detect|path|surface|finding):[A-Za-z0-9_:.-]+",
+      "min_citations": 3
+    },
+    "observed_inferred": {
+      "observed_token": "\\bOBSERVED\\b",
+      "inferred_token": "\\bINFERRED\\b",
+      "min_observed": 3,
+      "min_inferred": 2
+    },
+    "strengths": {
+      "min_items": 2,
+      "required_keyword_groups": [
+        ["react-native", "expo", "mobile"],
+        ["monorepo", "workspace", "subproject", "package"]
+      ]
+    },
+    "weaknesses_hotspots": {
+      "min_items": 3,
+      "required_term_groups": [
+        [
+          "expo_public",
+          "expo-public",
+          "client-bundled secret",
+          "client bundle",
+          "bundle-inlined",
+          "public build"
+        ],
+        [
+          "express",
+          "bskylink",
+          "bskyogcard",
+          "bskyembed",
+          "handler"
+        ],
+        [
+          "test file",
+          "test fixture",
+          "e2e",
+          "__e2e__",
+          "test harness",
+          "down-weight",
+          "downweight"
+        ]
+      ]
+    },
+    "recommendations": {
+      "min_items": 3,
+      "action_verbs": [
+        "audit",
+        "isolate",
+        "annotate",
+        "confirm",
+        "verify",
+        "add",
+        "implement",
+        "document",
+        "constrain",
+        "restrict"
+      ]
+    },
+    "false_positive_control": {
+      "banned_phrases": [
+        "definite remote code execution",
+        "guaranteed compromise"
+      ],
+      "required_caution_groups": [
+        [
+          "client-bundled",
+          "bundle-inlined",
+          "public build",
+          "mixed monorepo",
+          "test fixture",
+          "test harness",
+          "INFERRED",
+          "scanner artifact",
+          "source-quality caveat"
+        ]
+      ]
+    }
+  }
+}

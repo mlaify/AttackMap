@@ -1,0 +1,62 @@
+{
+  "schema_version": "2.0.0",
+  "fixture_id": "bluesky-pds-deployment-review-v1",
+  "target": {
+    "repo": "https://github.com/bluesky-social/pds",
+    "ecosystem": "deployment / operations",
+    "notes": "Deployment-repo rubric — the PDS distribution is Dockerfile + docker-compose + installer.sh + sample.env + GitHub Actions, not application source. XRPC / signing-key expectations from the atproto rubric don't apply here. See FINDINGS.md §3 and #44 for the split rationale."
+  },
+  "review_file": "bluesky-pds-good-review.md",
+  "expectations": {
+    "grounding": {
+      "citation_pattern": "(?:asset|insight|control|detect|path|surface|finding):[A-Za-z0-9_:.-]+",
+      "allowed_id_pattern": "(?:asset|insight|control|detect|path|surface|finding):[A-Za-z0-9_:.-]+",
+      "min_citations": 2
+    },
+    "observed_inferred": {
+      "observed_token": "\\bOBSERVED\\b",
+      "inferred_token": "\\bINFERRED\\b",
+      "min_observed": 2,
+      "min_inferred": 1
+    },
+    "strengths": {
+      "min_items": 1,
+      "required_keyword_groups": [
+        ["dockerfile", "container", "image", "compose"],
+        ["operator", "operational", "runtime", "deployment"]
+      ]
+    },
+    "weaknesses_hotspots": {
+      "min_items": 2,
+      "required_term_groups": [
+        ["installer", "installer.sh", "shell script", "curl | bash", "curl|bash", "sudo"],
+        ["env template", "sample.env", ".env", "env-template", "env-driven"],
+        ["compose service graph", "docker-compose", "service composition", "compose"]
+      ]
+    },
+    "recommendations": {
+      "min_items": 2,
+      "action_verbs": [
+        "pin", "sign", "verify", "restrict",
+        "harden", "isolate", "add", "confirm", "audit", "document"
+      ]
+    },
+    "false_positive_control": {
+      "banned_phrases": [
+        "definite remote code execution",
+        "guaranteed compromise"
+      ],
+      "required_caution_groups": [
+        [
+          "deployment repo",
+          "operational surface",
+          "no application code",
+          "infra-layer",
+          "infra layer",
+          "not application code",
+          "INFERRED"
+        ]
+      ]
+    }
+  }
+}

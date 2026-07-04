@@ -34,6 +34,35 @@ def _count_matches(text: str, pattern: str) -> int:
     return len(re.findall(pattern, text, flags=re.IGNORECASE))
 
 
+def _missing_keyword_groups(text: str, groups: list[list[str]]) -> list[list[str]]:
+    """For each group, `text` must contain at least one member. Return
+    the groups that had *no* member present — those are the failures.
+
+    Enables the #44 fix: instead of requiring `["signing", "service"]`
+    literally (which fails when Claude legitimately writes `DPoP` or
+    `JWKS` for the same concept), the v2 rubric declares each concept
+    as a group of synonyms.
+    """
+    missing: list[list[str]] = []
+    lowered = text.lower()
+    for group in groups:
+        if not any(term.lower() in lowered for term in group):
+            missing.append(list(group))
+    return missing
+
+
+def _flat_keywords(*, groups: list[list[str]] | None, legacy: list[str] | None) -> list[list[str]]:
+    """Normalize either the v2 group shape or the v1 flat shape into
+    groups. A flat list of `["a", "b"]` becomes `[["a"], ["b"]]` —
+    each term is its own single-synonym group. Preserves v1 behavior
+    exactly while letting the same code drive both."""
+    if groups:
+        return [list(g) for g in groups]
+    if legacy:
+        return [[term] for term in legacy]
+    return []
+
+
 def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str, Any]:
     expectations = fixture.get("expectations", {})
     checks: list[dict[str, Any]] = []
@@ -41,8 +70,23 @@ def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str,
     grounding = expectations.get("grounding", {})
     citation_pattern = grounding.get("citation_pattern", r"(?:surface|finding|path):\d+")
     citations = sorted(set(re.findall(citation_pattern, review_text, flags=re.IGNORECASE)))
-    allowed_ids = set(grounding.get("allowed_ids", []))
-    unknown_citations = sorted(citation for citation in citations if citation not in allowed_ids) if allowed_ids else []
+    # Two ways to constrain which IDs are legitimate (see #44):
+    #   - `allowed_id_pattern`: regex — flexible, accepts any evidence-pack
+    #     ID shape (asset:*, insight:*, control:*, detect:*, plus higher
+    #     surface/finding indices). Preferred for v2 rubrics.
+    #   - `allowed_ids`: exact whitelist — v1 behavior, still supported.
+    # If both are set, the pattern wins.
+    allowed_id_pattern_raw = grounding.get("allowed_id_pattern")
+    if allowed_id_pattern_raw:
+        allowed_id_re = re.compile(allowed_id_pattern_raw, flags=re.IGNORECASE)
+        unknown_citations = sorted(c for c in citations if not allowed_id_re.fullmatch(c))
+    else:
+        allowed_ids = set(grounding.get("allowed_ids", []))
+        unknown_citations = (
+            sorted(citation for citation in citations if citation not in allowed_ids)
+            if allowed_ids
+            else []
+        )
     min_citations = int(grounding.get("min_citations", 0))
     grounding_pass = len(citations) >= min_citations and not unknown_citations
     checks.append(
@@ -81,11 +125,13 @@ def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str,
     strengths_expectation = expectations.get("strengths", {})
     strengths_section = _extract_section(review_text, "Strengths")
     strengths_items = _extract_bullets(strengths_section)
-    strengths_keywords = [keyword.lower() for keyword in strengths_expectation.get("required_keywords", [])]
-    strengths_text = strengths_section.lower()
-    missing_strengths_keywords = [keyword for keyword in strengths_keywords if keyword not in strengths_text]
+    strengths_groups = _flat_keywords(
+        groups=strengths_expectation.get("required_keyword_groups"),
+        legacy=strengths_expectation.get("required_keywords"),
+    )
+    missing_strengths_groups = _missing_keyword_groups(strengths_section, strengths_groups)
     min_strengths_items = int(strengths_expectation.get("min_items", 0))
-    strengths_pass = len(strengths_items) >= min_strengths_items and not missing_strengths_keywords
+    strengths_pass = len(strengths_items) >= min_strengths_items and not missing_strengths_groups
     checks.append(
         {
             "name": "strengths_coverage",
@@ -93,7 +139,7 @@ def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str,
             "details": {
                 "item_count": len(strengths_items),
                 "min_items_required": min_strengths_items,
-                "missing_keywords": missing_strengths_keywords,
+                "missing_keyword_groups": missing_strengths_groups,
             },
         }
     )
@@ -102,10 +148,12 @@ def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str,
     weakness_section = _extract_section(review_text, "Weaknesses / Risk Hotspots")
     weakness_items = _extract_bullets(weakness_section)
     min_weakness_items = int(weakness_expectation.get("min_items", 0))
-    weakness_terms = [term.lower() for term in weakness_expectation.get("required_terms", [])]
-    weakness_text = weakness_section.lower()
-    missing_weakness_terms = [term for term in weakness_terms if term not in weakness_text]
-    weakness_pass = len(weakness_items) >= min_weakness_items and not missing_weakness_terms
+    weakness_groups = _flat_keywords(
+        groups=weakness_expectation.get("required_term_groups"),
+        legacy=weakness_expectation.get("required_terms"),
+    )
+    missing_weakness_groups = _missing_keyword_groups(weakness_section, weakness_groups)
+    weakness_pass = len(weakness_items) >= min_weakness_items and not missing_weakness_groups
     checks.append(
         {
             "name": "weakness_hotspot_quality",
@@ -113,7 +161,7 @@ def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str,
             "details": {
                 "item_count": len(weakness_items),
                 "min_items_required": min_weakness_items,
-                "missing_terms": missing_weakness_terms,
+                "missing_term_groups": missing_weakness_groups,
             },
         }
     )
@@ -125,6 +173,9 @@ def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str,
     action_verbs = [verb.lower() for verb in recommendation_expectation.get("action_verbs", [])]
     recommendation_text = recommendation_section.lower()
     recommendation_verbs_present = [verb for verb in action_verbs if verb in recommendation_text]
+    # `action_verbs` is a single "at least one of these must appear" check —
+    # semantically already a group. Keep the flat list shape for
+    # backward-compat; a rubric can just widen it with synonyms.
     recommendation_pass = len(recommendation_items) >= min_recommendation_items and bool(recommendation_verbs_present)
     checks.append(
         {
@@ -142,16 +193,19 @@ def evaluate_review_text(review_text: str, fixture: dict[str, Any]) -> dict[str,
     banned_phrases = [phrase.lower() for phrase in false_positive_expectation.get("banned_phrases", [])]
     lowered_review = review_text.lower()
     found_banned = [phrase for phrase in banned_phrases if phrase in lowered_review]
-    required_cautions = [phrase.lower() for phrase in false_positive_expectation.get("required_cautions", [])]
-    missing_cautions = [phrase for phrase in required_cautions if phrase not in lowered_review]
-    false_positive_pass = not found_banned and not missing_cautions
+    caution_groups = _flat_keywords(
+        groups=false_positive_expectation.get("required_caution_groups"),
+        legacy=false_positive_expectation.get("required_cautions"),
+    )
+    missing_caution_groups = _missing_keyword_groups(review_text, caution_groups)
+    false_positive_pass = not found_banned and not missing_caution_groups
     checks.append(
         {
             "name": "false_positive_control",
             "passed": false_positive_pass,
             "details": {
                 "found_banned_phrases": found_banned,
-                "missing_required_cautions": missing_cautions,
+                "missing_required_caution_groups": missing_caution_groups,
             },
         }
     )

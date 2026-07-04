@@ -1,0 +1,63 @@
+{
+  "schema_version": "2.0.0",
+  "fixture_id": "bluesky-atproto-review-v2",
+  "target": {
+    "repo": "https://github.com/bluesky-social/atproto",
+    "ecosystem": "node-service + atproto",
+    "notes": "v2 of the AT Protocol rubric (see FINDINGS.md §3). Broadens allowed IDs to a pattern (any evidence-pack ID shape, not just surface/finding/path), and replaces flat required_keywords/required_terms/required_cautions with keyword *groups* — each group is a set of semantic equivalents; at least one member per group must be present. See #44 for the full rationale."
+  },
+  "review_file": "bluesky-atproto-good-review.md",
+  "expectations": {
+    "grounding": {
+      "citation_pattern": "(?:asset|insight|control|detect|path|surface|finding):[A-Za-z0-9_:.-]+",
+      "allowed_id_pattern": "(?:asset|insight|control|detect|path|surface|finding):[A-Za-z0-9_:.-]+",
+      "min_citations": 4
+    },
+    "observed_inferred": {
+      "observed_token": "\\bOBSERVED\\b",
+      "inferred_token": "\\bINFERRED\\b",
+      "min_observed": 3,
+      "min_inferred": 2
+    },
+    "strengths": {
+      "min_items": 2,
+      "required_keyword_groups": [
+        ["signing", "dpop", "jwks", "signing key", "token binding", "par"],
+        ["service", "service boundaries", "oauth provider", "microservice"]
+      ]
+    },
+    "weaknesses_hotspots": {
+      "min_items": 3,
+      "required_term_groups": [
+        ["trust boundary", "trust-boundary", "boundary crossing"],
+        ["xrpc", "nsid", "lexicon"],
+        ["hotspot", "concentration", "entry point concentration"]
+      ]
+    },
+    "recommendations": {
+      "min_items": 3,
+      "action_verbs": [
+        "enforce", "validate", "constrain",
+        "add", "verify", "confirm", "bind", "implement", "document", "audit", "annotate", "introduce"
+      ]
+    },
+    "false_positive_control": {
+      "banned_phrases": [
+        "definite remote code execution",
+        "guaranteed compromise"
+      ],
+      "required_caution_groups": [
+        [
+          "low-quality",
+          "heuristic",
+          "source-quality caveat",
+          "scanner artifact",
+          "scanner classification artifact",
+          "INFERRED to be",
+          "may be a misclassification",
+          "discoverability gap"
+        ]
+      ]
+    }
+  }
+}
