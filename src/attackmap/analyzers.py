@@ -51,6 +51,12 @@ from .scanner import (
 logger = logging.getLogger(__name__)
 
 ANALYZER_ENTRYPOINT_GROUP = "attackmap.analyzers"
+
+# Directories excluded from `detect()` walks in built-in analyzers.
+# Mirrors the scanner's own scan-time filter — anything below these
+# paths is vendored / generated and shouldn't count toward "this repo
+# looks like JS/TS."
+_SKIP_DIRS = {"node_modules", ".git", ".venv", "dist", "build", ".next", ".turbo", "out"}
 ANALYZER_ORG_PREFIX = "mlaify/"
 ANALYZER_ORG_BASE_URL = "https://github.com/mlaify"
 ANALYZER_ORG_API_URL = "https://api.github.com/orgs/mlaify/repos?per_page=100&type=public"
@@ -188,14 +194,24 @@ Analyzer = AnalyzerProtocol
 
 
 class DefaultAnalyzer:
+    """Catch-all for code file suffixes not claimed by a specialized
+    built-in analyzer. Currently a no-op since python-web + javascript-web
+    together cover every entry in CODE_EXTENSIONS — kept so future
+    additions (e.g. `.go`, `.rs`) get picked up automatically until a
+    dedicated built-in ships."""
+
+    # Suffixes owned by specialized built-in analyzers. Kept in sync
+    # with BuiltinPythonWebAnalyzer + BuiltinJavaScriptWebAnalyzer.
+    _CLAIMED_SUFFIXES = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+
     metadata = AnalyzerMetadata(
         name="default",
         display_name="Default Analyzer",
         version="0.1.0",
-        description="Fallback built-in analyzer for the remaining scanner-backed ecosystems.",
-        scope="Fallback scanner coverage for supported TypeScript code paths not yet handled by a specialized analyzer.",
+        description="Fallback built-in analyzer for code file suffixes not claimed by a specialized built-in.",
+        scope="Any CODE_EXTENSIONS suffix not covered by python-web or javascript-web.",
         targets=[],
-        languages=["typescript"],
+        languages=[],
         priority=100,
         experimental=False,
         enabled_by_default=True,
@@ -206,7 +222,7 @@ class DefaultAnalyzer:
         return self.metadata.name
 
     def analyze(self, root: str | Path) -> AnalyzerResult:
-        return scan_repo(root, suffixes=set(CODE_EXTENSIONS) - {".py", ".js"})
+        return scan_repo(root, suffixes=set(CODE_EXTENSIONS) - self._CLAIMED_SUFFIXES)
 
 
 class BuiltinPythonWebAnalyzer:
@@ -232,14 +248,40 @@ class BuiltinPythonWebAnalyzer:
 
 
 class BuiltinJavaScriptWebAnalyzer:
+    """Broad built-in JavaScript / TypeScript web analyzer.
+
+    Intentionally shallow — this is the *fallback* that any JS/TS repo
+    gets even when no plugin is installed. Deep coverage (NestJS, tRPC,
+    XRPC, workspaces, BullMQ/Kafka async workers) lives in the
+    ``attackmap-analyzer-node-service`` plugin and merges on top via
+    the existing merge pipeline. Keeping this analyzer thin means the
+    plugin has room to grow without stomping on core.
+    """
+
+    _JS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+    _WEB_DEPENDENCY_TOKENS = (
+        "express",
+        "fastify",
+        "koa",
+        "hapi",
+        "hono",
+        "elysia",
+        "next",
+        "nuxt",
+        "nestjs",
+        "@nestjs/",
+        "@trpc/",
+        "@atproto/xrpc-server",
+    )
+
     metadata = AnalyzerMetadata(
         name="javascript-web",
-        display_name="JavaScript Web Analyzer",
-        version="0.1.0",
-        description="Built-in analyzer for JavaScript web frameworks and related security signals.",
-        scope="JavaScript source files handled by the current scanner-backed web heuristics.",
-        targets=["express", "node"],
-        languages=["javascript"],
+        display_name="JavaScript / TypeScript Web Analyzer",
+        version="0.2.0",
+        description="Broad built-in analyzer for JavaScript and TypeScript web applications.",
+        scope="JavaScript/TypeScript source files (.js/.jsx/.mjs/.cjs/.ts/.tsx). Deep framework coverage lives in attackmap-analyzer-node-service; this is the fallback.",
+        targets=["express", "fastify", "koa", "node"],
+        languages=["javascript", "typescript"],
         priority=20,
         experimental=False,
         enabled_by_default=True,
@@ -249,8 +291,34 @@ class BuiltinJavaScriptWebAnalyzer:
     def name(self) -> str:
         return self.metadata.name
 
+    def detect(self, root: str | Path) -> bool:
+        """Return True when the repo looks JS/TS-shaped.
+
+        Signals (any one is sufficient):
+        - `package.json` at any depth,
+        - a JS/TS-family file at any depth (bounded by SKIP_DIRS),
+        - `package.json` referencing a known web framework (deeper
+          signal — costs one file read).
+        """
+        repo = Path(root)
+        if not repo.exists() or not repo.is_dir():
+            return False
+        try:
+            for candidate in repo.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                if any(part in _SKIP_DIRS for part in candidate.parts):
+                    continue
+                if candidate.name == "package.json":
+                    return True
+                if candidate.suffix in self._JS_SUFFIXES:
+                    return True
+        except OSError:
+            return False
+        return False
+
     def analyze(self, root: str | Path) -> AnalyzerResult:
-        return scan_repo(root, suffixes={".js"})
+        return scan_repo(root, suffixes=self._JS_SUFFIXES)
 
 
 def get_builtin_repository_analyzers() -> list[Analyzer]:

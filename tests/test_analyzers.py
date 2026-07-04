@@ -231,15 +231,15 @@ def test_builtin_analyzers_expose_metadata() -> None:
     assert python_metadata.enabled_by_default is True
 
     assert javascript_metadata.name == "javascript-web"
-    assert javascript_metadata.display_name == "JavaScript Web Analyzer"
-    assert "JavaScript web frameworks" in javascript_metadata.description
-    assert javascript_metadata.ecosystems == ("javascript", "express", "node")
+    assert javascript_metadata.display_name == "JavaScript / TypeScript Web Analyzer"
+    assert "JavaScript and TypeScript web applications" in javascript_metadata.description
+    assert javascript_metadata.ecosystems == ("javascript", "typescript", "express", "fastify", "koa", "node")
     assert javascript_metadata.enabled_by_default is True
 
     assert default_metadata.name == "default"
     assert default_metadata.display_name == "Default Analyzer"
     assert "Fallback" in default_metadata.description
-    assert default_metadata.ecosystems == ("typescript",)
+    assert default_metadata.ecosystems == ()
     assert default_metadata.enabled_by_default is True
 
 
@@ -641,3 +641,112 @@ app.get("/healthz", (_req, res) => res.send("ok"));
     assert result.languages == ["javascript", "python"]
     assert any(route.path == "/health" and route.method == "GET" for route in result.routes)
     assert any(route.path == "/healthz" and route.method == "GET" for route in result.routes)
+
+
+# ---------------------------------------------------------------------------
+# #9: broad built-in JavaScript / TypeScript web analyzer.
+#
+# Deep coverage (NestJS, tRPC, XRPC, workspaces, BullMQ/Kafka) lives in
+# the attackmap-analyzer-node-service plugin. These tests pin the
+# fallback behavior — what the core scanner picks up when no plugin is
+# installed.
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_javascript_analyzer_detects_repo_with_package_json(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text('{"name": "demo"}', encoding="utf-8")
+    assert BuiltinJavaScriptWebAnalyzer().detect(tmp_path) is True
+
+
+def test_builtin_javascript_analyzer_detects_repo_with_bare_js_file(tmp_path: Path) -> None:
+    (tmp_path / "server.js").write_text("const x = 1;\n", encoding="utf-8")
+    assert BuiltinJavaScriptWebAnalyzer().detect(tmp_path) is True
+
+
+def test_builtin_javascript_analyzer_detects_repo_with_bare_ts_file(tmp_path: Path) -> None:
+    (tmp_path / "server.ts").write_text("const x: number = 1;\n", encoding="utf-8")
+    assert BuiltinJavaScriptWebAnalyzer().detect(tmp_path) is True
+
+
+def test_builtin_javascript_analyzer_rejects_python_only_repo(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+    assert BuiltinJavaScriptWebAnalyzer().detect(tmp_path) is False
+
+
+def test_builtin_javascript_analyzer_ignores_node_modules_when_detecting(tmp_path: Path) -> None:
+    """A stray package.json inside node_modules must not falsely
+    identify a repo as JS-shaped."""
+    vendored = tmp_path / "node_modules" / "some-dep"
+    vendored.mkdir(parents=True)
+    (vendored / "package.json").write_text('{"name": "vendored"}', encoding="utf-8")
+    (vendored / "index.js").write_text("module.exports = {};\n", encoding="utf-8")
+    # No user code at repo root — should be rejected.
+    assert BuiltinJavaScriptWebAnalyzer().detect(tmp_path) is False
+
+
+def test_builtin_javascript_analyzer_scans_typescript_files(tmp_path: Path) -> None:
+    """The 0.2.0 metadata claims TypeScript; verify the analyzer's file
+    walk actually picks up .ts files (was .js-only before this change)."""
+    (tmp_path / "package.json").write_text('{"name": "demo"}', encoding="utf-8")
+    (tmp_path / "server.ts").write_text(
+        """
+import express from "express";
+const app = express();
+app.get("/api/health", (req, res) => res.send("ok"));
+app.post("/api/webhook", (req, res) => res.send("received"));
+""",
+        encoding="utf-8",
+    )
+    result = BuiltinJavaScriptWebAnalyzer().analyze(tmp_path)
+    paths = {(r.path, r.method) for r in result.routes}
+    assert ("/api/health", "GET") in paths
+    assert ("/api/webhook", "POST") in paths
+
+
+def test_builtin_javascript_analyzer_covers_the_signal_families_the_issue_lists(tmp_path: Path) -> None:
+    """Acceptance says: 'Tests cover route detection, auth hints,
+    datastore hints, and external calls'."""
+    (tmp_path / "package.json").write_text('{"name": "demo"}', encoding="utf-8")
+    (tmp_path / "server.js").write_text(
+        """
+const express = require("express");
+const { Pool } = require("pg");
+const jwt = require("jsonwebtoken");
+const axios = require("axios");
+
+const app = express();
+const pool = new Pool({ connectionString: process.env.DB_PASSWORD });
+
+app.get("/api/orders", async (req, res) => {
+  const auth = req.headers["authorization"];
+  const payload = jwt.decode(auth);
+  await axios.post("https://audit.internal.example/create", payload);
+  res.send("ok");
+});
+""",
+        encoding="utf-8",
+    )
+    result = BuiltinJavaScriptWebAnalyzer().analyze(tmp_path)
+
+    # routes
+    assert any(r.path == "/api/orders" and r.method == "GET" for r in result.routes)
+    # datastore hints — pg → postgresql (from the newly-added DB_PATTERNS in #2)
+    assert any(d.kind == "postgresql" for d in result.databases)
+    # auth hints — jwt.decode fires `jwt`, req.headers['authorization'] fires `authorization`
+    hints = {h.hint for h in result.auth_hints}
+    assert "jwt" in hints
+    assert "authorization" in hints
+    # external calls
+    assert any(c.target == "https://audit.internal.example/create" for c in result.external_calls)
+    # secret env var
+    assert any("DB_PASSWORD" in s.name for s in result.secret_hints)
+
+
+def test_builtin_javascript_analyzer_merges_alongside_default_without_double_counting_ts_files(tmp_path: Path) -> None:
+    """DefaultAnalyzer must not double-scan .ts files that javascript-web
+    now claims (regression guard for the CODE_EXTENSIONS split)."""
+    (tmp_path / "package.json").write_text('{"name": "demo"}', encoding="utf-8")
+    (tmp_path / "server.ts").write_text("const x = 1;\n", encoding="utf-8")
+    result = analyze_repository(tmp_path)
+    assert result.files_scanned == 1
