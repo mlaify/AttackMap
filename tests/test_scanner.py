@@ -642,3 +642,164 @@ c = jwt.encode({}, k)
     )
     hints = [h for h in scan.auth_hints if h.hint == "jwt" and h.file == "app.py"]
     assert len(hints) == 1
+
+
+# ---------------------------------------------------------------------------
+# #39: hard-coded secret detection.
+# ---------------------------------------------------------------------------
+
+
+def _has_kind(scan, kind: str) -> bool:
+    return any(h.kind == kind for h in scan.secret_hints)
+
+
+def _hint_of_kind(scan, kind: str):
+    return next(h for h in scan.secret_hints if h.kind == kind)
+
+
+# Tokens below are assembled at runtime from prefix + body fragments so
+# the *source file* checked into git never contains a full-length match
+# for GitHub's own push-protection secret patterns. The fixture files
+# written to tmp_path receive the concatenated form, so the scanner sees
+# a real pattern to detect.
+_AWS_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+_GH_PAT = "gh" + "p_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+_SLACK = "xox" + "b-" + "123456789012-987654321098-abcdefghijklmnopqrstuvwx"
+_STRIPE = "sk_" + "live_" + "51ABcdefghijklmnopqrstuvwx"
+_SENDGRID = "SG" + ".aaaaaaaaaaaaaaaaaaaaaa." + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+_GOOGLE = "AI" + "za" + "SyDDSb-abcdefghijklmnopqrstuvwx1234"  # 4 + 35 total
+_ANTHROPIC = "sk-" + "ant-" + "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ"
+_JWT = (
+    "ey" + "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    "." + "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0"
+    "." + "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+)
+
+
+def test_hardcoded_aws_access_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        f'const key = "{_AWS_KEY}";\n',
+        name="app.js",
+    )
+    assert _has_kind(scan, "aws_access_key")
+
+
+def test_hardcoded_github_pat_detected_and_redacted(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        f'TOKEN = "{_GH_PAT}"\n',
+    )
+    hint = _hint_of_kind(scan, "github_pat")
+    # Redaction — full literal must NOT appear in name; head/tail preserved.
+    assert _GH_PAT not in hint.name
+    assert hint.name.startswith("gh" + "p_")
+    assert hint.name.endswith("6789")
+    assert "…" in hint.name
+
+
+def test_hardcoded_slack_bot_token_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'slack = "{_SLACK}"\n')
+    assert _has_kind(scan, "slack_token")
+
+
+def test_hardcoded_stripe_live_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'STRIPE = "{_STRIPE}"\n')
+    assert _has_kind(scan, "stripe_key")
+
+
+def test_hardcoded_sendgrid_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'SG = "{_SENDGRID}"\n')
+    assert _has_kind(scan, "sendgrid_key")
+
+
+def test_hardcoded_google_api_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        f'const G = "{_GOOGLE}"\n',
+        name="app.js",
+    )
+    assert _has_kind(scan, "google_api_key")
+
+
+def test_hardcoded_anthropic_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'KEY = "{_ANTHROPIC}"\n')
+    assert _has_kind(scan, "anthropic_key")
+
+
+def test_hardcoded_pem_private_key_block_detected(tmp_path: Path) -> None:
+    # Assemble the PEM header from fragments so the checked-in test
+    # source never contains a full BEGIN/END block that a secret
+    # scanner might flag.
+    begin = "-----" + "BEGIN " + "RSA PRIVATE KEY" + "-----"
+    end = "-----" + "END " + "RSA PRIVATE KEY" + "-----"
+    body = "MIIEpAIBAAKCAQEAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    scan = _scan_source(tmp_path, f"PRIVATE_KEY = '''{begin}\n{body}\n{end}'''\n")
+    assert _has_kind(scan, "pem_private_key")
+
+
+def test_hardcoded_jwt_detected(tmp_path: Path) -> None:
+    # Real-ish JWT: {"alg":"HS256","typ":"JWT"} + payload + sig.
+    scan = _scan_source(tmp_path, f'const token = "{_JWT}";\n', name="app.js")
+    assert _has_kind(scan, "jwt")
+
+
+def test_shape_alone_without_valid_jwt_header_is_not_flagged(tmp_path: Path) -> None:
+    """Three dot-separated base64-ish segments where the header doesn't
+    decode to a JSON `{"alg":...}` object should NOT fire jwt."""
+    bogus = "ey" + "Jzb21ldGhpbmdxxxxx." + "eyJlbHNlxxxxx." + "aWxsZWdhbHBhcnR4xxxxx"
+    scan = _scan_source(tmp_path, f'x = "{bogus}"\n')
+    assert not _has_kind(scan, "jwt")
+
+
+def test_high_entropy_string_flagged_when_no_provider_matches(tmp_path: Path) -> None:
+    # 40 chars, random-looking, high entropy — no provider prefix.
+    body = "aB9x2z8Kq7Vn3W6yF1jH5tR4mE0uC" + "8pI6oXsL7dS"
+    scan = _scan_source(tmp_path, f'secret = "{body}"\n')
+    assert _has_kind(scan, "high_entropy")
+
+
+def test_hex_hash_does_not_trip_entropy_fallback(tmp_path: Path) -> None:
+    """A 40-char hex string looks high-entropy in Shannon terms but is
+    almost always a commit SHA / checksum, not a secret."""
+    scan = _scan_source(
+        tmp_path,
+        'sha = "0123456789abcdef0123456789abcdef01234567"\n',
+    )
+    assert not _has_kind(scan, "high_entropy")
+
+
+def test_url_does_not_trip_entropy_fallback(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        'homepage = "https://cdn.example.com/vendor/xyz/abcdefghij/config.json"\n',
+    )
+    assert not _has_kind(scan, "high_entropy")
+
+
+def test_env_reference_gets_kind_env_reference(tmp_path: Path) -> None:
+    """Regression: existing env-referenced secrets keep their kind
+    default so downstream code can distinguish them."""
+    scan = _scan_source(
+        tmp_path,
+        'API_KEY = os.getenv("API_KEY")\n',
+    )
+    env_hints = [h for h in scan.secret_hints if h.kind == "env_reference"]
+    assert env_hints
+    assert not any(h.kind == "high_entropy" for h in scan.secret_hints)
+
+
+def test_hardcoded_secret_appears_only_once_even_when_repeated(tmp_path: Path) -> None:
+    scan = _scan_source(
+        tmp_path,
+        f"""
+KEY = "{_AWS_KEY}"
+def refresh():
+    return "{_AWS_KEY}"
+""",
+    )
+    aws_hints = [h for h in scan.secret_hints if h.kind == "aws_access_key"]
+    # Two literal occurrences on distinct lines — both count (they're
+    # separate exposures). But the same line must not double-emit.
+    lines = [h.line for h in aws_hints]
+    assert len(lines) == len(set(lines))

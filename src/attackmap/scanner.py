@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import math
 import re
 from pathlib import Path
 
@@ -184,6 +187,62 @@ SECRET_PATTERNS = [
     re.compile(r"os\.getenv\(['\"]([^'\"]*(SECRET|TOKEN|KEY|PASSWORD)[^'\"]*)['\"]", re.IGNORECASE),
     re.compile(r"process\.env\.([A-Z0-9_]*(SECRET|TOKEN|KEY|PASSWORD)[A-Z0-9_]*)", re.IGNORECASE),
 ]
+
+# ---------------------------------------------------------------------------
+# Hard-coded secret literals (#39). Each entry is (regex, kind).
+# The regex captures the FULL secret in group 0 or its main group; the
+# `kind` becomes SecretHint.kind and the finder reads it as the display
+# name. Values are redacted before being included in evidence_text — the
+# raw secret must never appear in reports.
+# ---------------------------------------------------------------------------
+
+HARDCODED_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # AWS
+    (re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "aws_access_key"),
+    (re.compile(r"\b(ASIA[0-9A-Z]{16})\b"), "aws_temporary_key"),
+    # GitHub — classic PATs and the newer prefixes (fine-grained tokens,
+    # OAuth apps, server tokens, refresh tokens).
+    (re.compile(r"\b(ghp_[A-Za-z0-9]{36,})\b"), "github_pat"),
+    (re.compile(r"\b(gho_[A-Za-z0-9]{36,})\b"), "github_oauth_token"),
+    (re.compile(r"\b(ghu_[A-Za-z0-9]{36,})\b"), "github_user_token"),
+    (re.compile(r"\b(ghs_[A-Za-z0-9]{36,})\b"), "github_server_token"),
+    (re.compile(r"\b(ghr_[A-Za-z0-9]{36,})\b"), "github_refresh_token"),
+    # Slack bot / user / app tokens
+    (re.compile(r"\b(xox[bpsare]-[0-9A-Za-z-]{10,})\b"), "slack_token"),
+    # Stripe live / test keys
+    (re.compile(r"\b((?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,})\b"), "stripe_key"),
+    # SendGrid
+    (re.compile(r"\b(SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})\b"), "sendgrid_key"),
+    # Mailgun
+    (re.compile(r"\b(key-[a-f0-9]{32})\b"), "mailgun_key"),
+    # Twilio account SID — AC followed by 32 hex. Narrow enough to avoid
+    # false-positives on random 34-char strings starting with AC.
+    (re.compile(r"\b(AC[a-f0-9]{32})\b"), "twilio_account_sid"),
+    # Google API key — most are 35 chars after AIza; some Cloud variants
+    # run slightly longer.
+    (re.compile(r"\b(AIza[A-Za-z0-9_-]{35,42})\b"), "google_api_key"),
+    # Anthropic API key (long, characteristic prefix)
+    (re.compile(r"\b(sk-ant-[A-Za-z0-9_-]{40,})\b"), "anthropic_key"),
+    # PEM private-key block — match `-----BEGIN [<algo> ]PRIVATE KEY-----`,
+    # covering both bare `-----BEGIN PRIVATE KEY-----` and prefixed forms
+    # (`RSA`, `EC`, `DSA`, `OPENSSH`, `ENCRYPTED`). Capture just the header
+    # line as evidence; never emit key material.
+    (re.compile(r"(-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----)"), "pem_private_key"),
+    # JWT — three base64url segments separated by dots, first decoding
+    # to a JSON header. Recognized by shape here; verified for shape
+    # (base64url + non-trivial length) in the extractor below.
+    (re.compile(r"\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b"), "jwt"),
+]
+
+# Minimum length for the high-entropy fallback. Under this, entropy
+# calculations aren't statistically meaningful, and shorter secrets
+# tend to be caught by explicit provider patterns anyway.
+_ENTROPY_MIN_LENGTH = 32
+_ENTROPY_MAX_LENGTH = 256  # very long strings are usually inline assets
+_ENTROPY_THRESHOLD = 4.5   # bits per character
+# Extracts quoted string literals (single or double quoted) for entropy
+# fallback. Kept intentionally narrow: no multi-line strings.
+_QUOTED_LITERAL = re.compile(r"['\"]([A-Za-z0-9+/_=-]{32,256})['\"]")
 
 
 _SNIPPET_MAX_CHARS = 160
@@ -504,8 +563,144 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
                         file=relative,
                         line=_line_of(content, match.start()),
                         evidence_text=_line_snippet(content, match.start()),
+                        kind="env_reference",
                     )
                 )
 
+        _append_hardcoded_secret_hints(result, relative, content)
+
     result.languages.sort()
     return result
+
+
+def _redact_secret(value: str) -> str:
+    """Show first 4 and last 4 characters of a secret literal, mask the
+    middle. Never emit the raw value to reports."""
+    if len(value) <= 8:
+        return "…"
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def _shannon_entropy(value: str) -> float:
+    if not value:
+        return 0.0
+    frequencies: dict[str, int] = {}
+    for ch in value:
+        frequencies[ch] = frequencies.get(ch, 0) + 1
+    length = len(value)
+    entropy = 0.0
+    for count in frequencies.values():
+        p = count / length
+        entropy -= p * math.log2(p)
+    return entropy
+
+
+def _looks_like_secret_candidate(value: str) -> bool:
+    """Reject obvious non-secret shapes that would otherwise clear the
+    entropy bar (hex hashes in comments, URLs, etc.)."""
+    if len(value) < _ENTROPY_MIN_LENGTH or len(value) > _ENTROPY_MAX_LENGTH:
+        return False
+    if all(c in "0123456789abcdef" for c in value.lower()):
+        # Pure hex — commit SHAs, hashes. Not a secret in code.
+        return False
+    if "/" in value and value.count("/") > 2:
+        # Looks like a URL path fragment.
+        return False
+    if value.startswith(("http://", "https://", "data:", "file:")):
+        return False
+    if value.replace(".", "").replace("-", "").replace("_", "").isdigit():
+        # Version strings, phone numbers, etc.
+        return False
+    return True
+
+
+def _append_hardcoded_secret_hints(result: ScanResult, relative: str, content: str) -> None:
+    """Emit SecretHint records for literals pasted into source or config
+    (#39). Provider-prefixed patterns fire first; a Shannon-entropy
+    fallback catches high-entropy literals that don't match a known
+    provider. Both redact the value before it lands in evidence_text.
+    """
+    seen: set[tuple[str, str, int]] = {
+        (hint.kind, hint.file, hint.line or 0) for hint in result.secret_hints
+    }
+    matched_spans: list[tuple[int, int]] = []  # positions of provider matches
+
+    for pattern, kind in HARDCODED_SECRET_PATTERNS:
+        for match in pattern.finditer(content):
+            literal = match.group(1)
+            # JWT shape needs additional verification — the base-64 header
+            # segment must decode to something starting with `{` and
+            # containing an "alg" key. Reject anything that just happens
+            # to look like the shape.
+            if kind == "jwt" and not _is_jwt_shape(literal):
+                continue
+            line = _line_of(content, match.start())
+            key = (kind, relative, line)
+            if key in seen:
+                continue
+            seen.add(key)
+            matched_spans.append((match.start(), match.end()))
+            display_name = _redact_secret(literal) if kind != "pem_private_key" else literal
+            result.secret_hints.append(
+                SecretHint(
+                    name=display_name,
+                    file=relative,
+                    line=line,
+                    evidence_text=_line_snippet(content, match.start()),
+                    confidence=1.0,
+                    kind=kind,
+                )
+            )
+
+    # High-entropy fallback — only if no provider match was already found
+    # at this position, to avoid double-emitting the same literal.
+    def _overlaps_matched(pos: int) -> bool:
+        return any(start <= pos < end for start, end in matched_spans)
+
+    for match in _QUOTED_LITERAL.finditer(content):
+        literal = match.group(1)
+        pos = match.start(1)
+        if _overlaps_matched(pos):
+            continue
+        if not _looks_like_secret_candidate(literal):
+            continue
+        if _shannon_entropy(literal) < _ENTROPY_THRESHOLD:
+            continue
+        line = _line_of(content, pos)
+        key = ("high_entropy", relative, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.secret_hints.append(
+            SecretHint(
+                name=_redact_secret(literal),
+                file=relative,
+                line=line,
+                evidence_text=_line_snippet(content, pos),
+                confidence=0.7,
+                kind="high_entropy",
+            )
+        )
+
+
+def _is_jwt_shape(literal: str) -> bool:
+    """Verify the header segment of a candidate JWT decodes to a JSON
+    object with an `alg` field. Cheap and precise enough to keep the
+    shape regex from spamming."""
+    parts = literal.split(".")
+    if len(parts) != 3:
+        return False
+    header_b64 = parts[0]
+    # base64url decode with padding tolerance
+    padding = "=" * ((4 - len(header_b64) % 4) % 4)
+    try:
+        header_bytes = base64.urlsafe_b64decode(header_b64 + padding)
+    except (ValueError, binascii.Error):
+        return False
+    try:
+        header_text = header_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not header_text.startswith("{") or "alg" not in header_text.lower():
+        return False
+    return True
