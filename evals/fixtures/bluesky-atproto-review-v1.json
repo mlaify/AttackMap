@@ -1,6 +1,8 @@
 {
   "schema_version": "1.0.0",
   "fixture_id": "bluesky-atproto-review-v1",
+  "deprecated": true,
+  "deprecation_note": "Superseded by bluesky-atproto-review-v2.json — see FINDINGS.md §3 and #44. v1's flat required_keywords/required_terms/required_cautions rejected semantically-equivalent language (DPoP, JWKS, PAR for 'signing'; 'nsid' for 'xrpc'; 'source-quality caveat' for 'low-quality'). v2 fixes this via keyword groups and a pattern-based allowed_id_pattern. Kept on disk so historical eval runs remain reproducible.",
   "target": {
     "repo": "https://github.com/bluesky-social/atproto",
     "ecosystem": "node-service + atproto",
