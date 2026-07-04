@@ -4,15 +4,61 @@ from collections import Counter
 
 import networkx as nx
 
-from .models import AttackSurface, ScanResult
+from .models import AttackSurface, AuthHint, Route, ScanResult
+
+
+# Bounded line window used to attribute auth hints to a specific route
+# handler. Chosen so a hint at the top of the handler body still lands
+# on the route even if the handler is 40 lines long. Bigger than a typical
+# handler; smaller than the distance between two adjacent routes. See #41
+# / Bluesky FINDINGS §55 for the noise problem this fixes.
+_ROUTE_AUTH_LINE_WINDOW = 40
+
+
+def _auth_hints_for_route(
+    route: Route,
+    scan_auth_hints: list[AuthHint],
+    hints_by_file: dict[str, list[AuthHint]],
+) -> list[str]:
+    """Return the auth-hint strings that plausibly attach to `route`.
+
+    If the route has a known `line`, only hints in the same file whose
+    line falls within `_ROUTE_AUTH_LINE_WINDOW` above OR below the
+    route are counted. If the route lacks line info (framework
+    config-driven routes commonly do), fall back to file-scoped
+    attribution — same as the old behavior.
+
+    Deliberately no global fallback: the "if no hints in this file,
+    inherit every auth hint in the repo" behavior was the biggest
+    noise source per FINDINGS §55. Downstream code handles empty
+    auth_signals correctly.
+    """
+    file_hints = hints_by_file.get(route.file, [])
+    if not file_hints:
+        return []
+    if route.line is None:
+        return sorted({hint.hint for hint in file_hints})
+    lo = route.line - _ROUTE_AUTH_LINE_WINDOW
+    hi = route.line + _ROUTE_AUTH_LINE_WINDOW
+    windowed = {
+        hint.hint
+        for hint in file_hints
+        if hint.line is None or lo <= hint.line <= hi
+    }
+    if windowed:
+        return sorted(windowed)
+    # Hints exist in the file but none are within the window. That's the
+    # signal-to-noise fix: the previous route in this file had auth code,
+    # this one doesn't. Return empty — the surface's rationale below will
+    # say "no auth indicators near this route".
+    return []
 
 
 def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
     surfaces: list[AttackSurface] = []
-    auth_hints_by_file: dict[str, set[str]] = {}
+    auth_hints_by_file: dict[str, list[AuthHint]] = {}
     for hint in scan.auth_hints:
-        auth_hints_by_file.setdefault(hint.file, set()).add(hint.hint)
-    global_auth_hints = sorted({hint.hint for hint in scan.auth_hints})
+        auth_hints_by_file.setdefault(hint.file, []).append(hint)
 
     supporting_hints_by_file: dict[str, set[str]] = {}
     all_supporting_hints = [
@@ -29,8 +75,7 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
 
     for route in scan.routes:
         path_lower = route.path.lower()
-        file_auth_hints = sorted(auth_hints_by_file.get(route.file, set()))
-        auth_signals = file_auth_hints or global_auth_hints
+        auth_signals = _auth_hints_for_route(route, scan.auth_hints, auth_hints_by_file)
         supporting_signals = sorted(supporting_hints_by_file.get(route.file, set())) or sorted(
             {hint.hint for hint in all_supporting_hints}
         )
