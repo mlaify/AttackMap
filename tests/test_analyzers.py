@@ -43,18 +43,24 @@ def test_get_registered_analyzers_exposes_builtin_web_analyzers(monkeypatch) -> 
     monkeypatch.setattr("attackmap.analyzers.discover_installed_analyzers", lambda: [])
     analyzers = get_registered_analyzers()
 
-    assert len(analyzers) == 3
+    assert len(analyzers) == 4
     assert isinstance(analyzers[0], BuiltinPythonWebAnalyzer)
     assert isinstance(analyzers[1], BuiltinJavaScriptWebAnalyzer)
-    assert isinstance(analyzers[2], DefaultAnalyzer)
-    assert [analyzer.name for analyzer in analyzers] == ["python-web", "javascript-web", "default"]
+    # Config analyzer joined the built-in set with #43. See BuiltinConfigAnalyzer.
+    assert analyzers[2].name == "config"
+    assert isinstance(analyzers[3], DefaultAnalyzer)
+    assert [analyzer.name for analyzer in analyzers] == [
+        "python-web", "javascript-web", "config", "default",
+    ]
 
 
 def test_get_builtin_repository_analyzers_contains_builtin_defaults() -> None:
     analyzers = get_builtin_repository_analyzers()
 
-    assert len(analyzers) == 3
-    assert [analyzer.name for analyzer in analyzers] == ["python-web", "javascript-web", "default"]
+    assert len(analyzers) == 4
+    assert [analyzer.name for analyzer in analyzers] == [
+        "python-web", "javascript-web", "config", "default",
+    ]
 
 
 def test_discover_installed_analyzers_loads_valid_entrypoints_in_name_order(monkeypatch) -> None:
@@ -214,7 +220,9 @@ def test_get_registered_analyzers_skips_duplicate_names(monkeypatch) -> None:
 
     analyzers = get_registered_analyzers()
 
-    assert [analyzer.name for analyzer in analyzers] == ["python-web", "javascript-web", "default"]
+    assert [analyzer.name for analyzer in analyzers] == [
+        "python-web", "javascript-web", "config", "default",
+    ]
 
 
 def test_builtin_analyzers_expose_metadata() -> None:
