@@ -6,6 +6,7 @@ from pathlib import Path
 from .context_pack import build_review_context_pack
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .review_json import build_defensive_review_json
+from .sarif import build_sarif
 
 
 def _severity_rank(value: str) -> int:
@@ -50,6 +51,13 @@ def write_reports(
         "attack_paths": [path.model_dump() for path in attack_paths],
     }
     (out / "attackmap-report.json").write_text(json.dumps(json_report, indent=2) + "\n", encoding="utf-8")
+
+    # SARIF 2.1.0 for GitHub Code Scanning / VS Code / other SARIF
+    # consumers. Emitted alongside JSON, not in place of it.
+    sarif_report = build_sarif(findings, attack_paths)
+    (out / "attackmap-report.sarif").write_text(
+        json.dumps(sarif_report, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def render_console_summary(scan: ScanResult, findings: list[Finding], attack_paths: list[AttackPath]) -> str:
