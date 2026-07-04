@@ -142,6 +142,29 @@ def _extract_prefixed_hints(scan: ScanResult, prefix: str) -> list[tuple[str, st
     return deduped
 
 
+def _provenance_by_hint(scan: ScanResult) -> dict[str, str]:
+    """Index hint text -> `source_analyzer` across framework/auth hints.
+
+    Used by the chain linker (#13) to name the analyzer that produced
+    each contributing signal in the emitted evidence line. Empty dict
+    when no signals carry provenance (e.g. hand-constructed test scans).
+    """
+    index: dict[str, str] = {}
+    for hint_list in (scan.framework_hints, scan.auth_hints):
+        for hint in hint_list:
+            src = getattr(hint, "source_analyzer", None)
+            if src and hint.hint not in index:
+                index[hint.hint] = src
+    return index
+
+
+def _cited(label: str, value: str, provenance: dict[str, str], hint_key: str) -> str:
+    """Format `label: value` and append `[via <analyzer>]` when provenance exists."""
+    source = provenance.get(hint_key)
+    base = f"{label}: {value}"
+    return f"{base} [via {source}]" if source else base
+
+
 def _is_low_quality_source(path_or_text: str) -> bool:
     normalized = path_or_text.replace("\\", "/").lower()
     return any(segment in f"/{normalized}/" for segment in LOW_QUALITY_SEGMENTS)
@@ -462,9 +485,38 @@ def _is_framework_mvc_scan(scan: ScanResult) -> bool:
     )
 
 
+def confidence_bucket(value: float) -> str:
+    """Bucket a numeric confidence into the low/medium/high labels #13 asks
+    for. Thresholds picked so a bare route+sink lands in `low`, a chain
+    with controller+sink lands in `medium`, and a chain that also picks
+    up an Omeka/Laminas framework signal (extension or dependency hint)
+    lands in `high`.
+    """
+    if value >= 0.75:
+        return "high"
+    if value >= 0.55:
+        return "medium"
+    return "low"
+
+
 def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
     controllers = _extract_prefixed_hints(scan, "controller:")
     services = _extract_prefixed_hints(scan, "service:")
+    # Framework-family hints from the Omeka/Laminas analyzers. These aren't
+    # required to build a chain but they *strengthen* the evidence when
+    # present — see #13. Each contributes a small confidence bump and an
+    # evidence line naming the file it came from.
+    laminas_mappings = _extract_prefixed_hints(scan, "laminas_controller_mapping")
+    laminas_deps = _extract_prefixed_hints(scan, "laminas_dependency")
+    omeka_deps = _extract_prefixed_hints(scan, "omeka_dependency")
+    omeka_extensions = _extract_prefixed_hints(scan, "omeka_extension:")
+    omeka_surfaces = _extract_prefixed_hints(scan, "omeka_surface:")
+
+    # Provenance index: hint value -> source_analyzer, so we can name the
+    # analyzer that emitted each contributing signal in the chain evidence
+    # (#14).
+    provenance = _provenance_by_hint(scan)
+
     db_by_module = {_file_module_key(db.file): db for db in scan.databases}
     external_by_module = {_file_module_key(call.file): call for call in scan.external_calls}
 
@@ -479,20 +531,61 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
             route_controller = next((name for name, file in controllers if _file_module_key(file) == module_key), None)
             if route_controller:
                 confidence += 0.15
-                evidence.append(f"controller inferred by module proximity: {route_controller}")
+                evidence.append(
+                    _cited("controller inferred by module proximity", route_controller, provenance, f"controller:{route_controller}")
+                )
         else:
             confidence += 0.25
-            evidence.append(f"controller in same file: {route_controller}")
+            evidence.append(
+                _cited("controller in same file", route_controller, provenance, f"controller:{route_controller}")
+            )
 
         route_service = next((name for name, file in services if file == route.file), None)
         if route_service is None:
             route_service = next((name for name, file in services if _file_module_key(file) == module_key), None)
             if route_service:
                 confidence += 0.10
-                evidence.append(f"service inferred by module proximity: {route_service}")
+                evidence.append(
+                    _cited("service inferred by module proximity", route_service, provenance, f"service:{route_service}")
+                )
         else:
             confidence += 0.20
-            evidence.append(f"service in same file: {route_service}")
+            evidence.append(
+                _cited("service in same file", route_service, provenance, f"service:{route_service}")
+            )
+
+        # Framework-family reinforcement. Each additional Omeka/Laminas
+        # signal in the same module bumps confidence a little; a route
+        # that lands on Omeka admin surface with an extension binding
+        # ends up in the `high` bucket.
+        for label, hints, weight, key_prefix in (
+            ("laminas controller mapping", laminas_mappings, 0.05, "laminas_controller_mapping"),
+            ("laminas dependency", laminas_deps, 0.03, "laminas_dependency"),
+            ("omeka dependency", omeka_deps, 0.03, "omeka_dependency"),
+            ("omeka extension binding", omeka_extensions, 0.05, "omeka_extension:"),
+        ):
+            same_module_hint = next(
+                (name for name, file in hints if _file_module_key(file) == module_key),
+                None,
+            )
+            if same_module_hint is not None:
+                confidence += weight
+                evidence.append(
+                    _cited(label, same_module_hint or "(marker)", provenance, f"{key_prefix}{same_module_hint or ''}".rstrip(":"))
+                )
+
+        # Omeka surface (admin / api / site) classification. Doesn't
+        # affect chain confidence directly — the route's surface risk is
+        # handled elsewhere — but naming the surface in evidence gives
+        # readers of the attack path a domain-shaped hook.
+        omeka_surface = next(
+            (name for name, file in omeka_surfaces if _file_module_key(file) == module_key),
+            None,
+        )
+        if omeka_surface is not None:
+            evidence.append(
+                _cited("omeka surface classification", omeka_surface, provenance, f"omeka_surface:{omeka_surface}")
+            )
 
         sink = "privileged action"
         if module_key in db_by_module:
@@ -834,7 +927,10 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
                         "Sink",
                         f"Request influence reaches {sink_text}, creating an opportunity for unauthorized state change or abuse",
                     ),
-                    _action_step("Evidence", f"confidence={top_chain.confidence:.2f}; {evidence_text}"),
+                    _action_step(
+                        "Evidence",
+                        f"confidence={top_chain.confidence:.2f} ({confidence_bucket(top_chain.confidence)}); {evidence_text}",
+                    ),
                 ],
                 impact=(
                     "A public request can be chained through framework routing and service execution to sensitive operations "
