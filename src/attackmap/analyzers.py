@@ -321,8 +321,63 @@ class BuiltinJavaScriptWebAnalyzer:
         return scan_repo(root, suffixes=self._JS_SUFFIXES)
 
 
+class BuiltinConfigAnalyzer:
+    """Built-in analyzer that walks YAML / TOML / JSON / INI / .env
+    config files and extracts DB URLs, service endpoints, and
+    secret-shaped literals (see #43).
+
+    Deep parsing lives elsewhere (docker-compose service graph in the
+    forthcoming attackmap-analyzer-iac plugin, per #40); this analyzer
+    covers the broad-strokes application-config case using the same
+    regex-based approach the source scanner uses.
+    """
+
+    metadata = AnalyzerMetadata(
+        name="config",
+        display_name="Config File Analyzer",
+        version="0.1.0",
+        description="Broad built-in analyzer for YAML / TOML / JSON / INI / .env application config files.",
+        scope="Application config files. Extracts DB connection strings, external service URLs, and secret-shaped literals; deep IaC parsing (docker-compose service graph, Dockerfile hardening) lives in attackmap-analyzer-iac.",
+        targets=["yaml", "toml", "json", "ini", "env"],
+        languages=[],
+        priority=30,
+        experimental=False,
+        enabled_by_default=True,
+    )
+
+    @property
+    def name(self) -> str:
+        return self.metadata.name
+
+    def detect(self, root: str | Path) -> bool:
+        from .config_scanner import should_scan_config_file
+        repo = Path(root)
+        if not repo.exists() or not repo.is_dir():
+            return False
+        try:
+            for candidate in repo.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                if any(part in _SKIP_DIRS for part in candidate.parts):
+                    continue
+                if should_scan_config_file(candidate):
+                    return True
+        except OSError:
+            return False
+        return False
+
+    def analyze(self, root: str | Path) -> AnalyzerResult:
+        from .config_scanner import scan_config_repo
+        return scan_config_repo(root)
+
+
 def get_builtin_repository_analyzers() -> list[Analyzer]:
-    return [BuiltinPythonWebAnalyzer(), BuiltinJavaScriptWebAnalyzer(), DefaultAnalyzer()]
+    return [
+        BuiltinPythonWebAnalyzer(),
+        BuiltinJavaScriptWebAnalyzer(),
+        BuiltinConfigAnalyzer(),
+        DefaultAnalyzer(),
+    ]
 
 
 def discover_installed_analyzers(group: str = ANALYZER_ENTRYPOINT_GROUP) -> list[Analyzer]:
