@@ -16,6 +16,9 @@ from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult,
 CODE_EXTENSIONS = {
     ".py": "python",
     ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
     ".ts": "typescript",
     ".tsx": "typescript",
 }
