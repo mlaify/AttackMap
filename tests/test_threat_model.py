@@ -1,5 +1,10 @@
-from attackmap.models import AttackSurface, AuthHint, DatabaseHint, EdgeHint, ExternalCall, ProtocolHint, Route, ScanResult, SecretHint, ServiceHint
-from attackmap.threat_model import generate_attack_paths, generate_findings
+from attackmap.models import AttackSurface, AuthHint, DatabaseHint, EdgeHint, ExternalCall, FrameworkHint, ProtocolHint, Route, ScanResult, SecretHint, ServiceHint
+from attackmap.threat_model import (
+    _build_probable_chains,
+    confidence_bucket,
+    generate_attack_paths,
+    generate_findings,
+)
 
 
 def test_webhook_route_generates_high_severity_finding() -> None:
@@ -366,3 +371,112 @@ def test_evidence_only_cites_signals_from_the_same_file_as_the_surface() -> None
     evidence = next(step for step in paths[0].steps if step.startswith("Evidence:"))
     assert "postgresql" in evidence
     assert "redis" not in evidence
+
+
+# ---------------------------------------------------------------------------
+# #13: Omeka/Laminas chain linker enrichments.
+#
+# The framework chain linker was in place before #13; this issue asks
+# for it to consume the richer signals the Omeka/Laminas analyzers
+# already emit (extensions, dependencies, surface classification),
+# expose confidence in a low/medium/high bucket, and cite analyzer
+# provenance in the evidence.
+# ---------------------------------------------------------------------------
+
+
+def test_confidence_bucket_thresholds() -> None:
+    assert confidence_bucket(0.30) == "low"
+    assert confidence_bucket(0.54) == "low"
+    assert confidence_bucket(0.55) == "medium"
+    assert confidence_bucket(0.74) == "medium"
+    assert confidence_bucket(0.75) == "high"
+    assert confidence_bucket(0.95) == "high"
+
+
+def test_omeka_extension_binding_boosts_chain_confidence_and_evidence() -> None:
+    """Adding Omeka/Laminas extension + mapping + surface hints on top
+    of a base MVC scan lifts the confidence, names the framework
+    signals in the evidence, and lands the chain at or above `medium`."""
+    file = "module/Application/config/module.config.php"
+    # Sparse base scan — only a controller hint, no service, no sink.
+    # Leaves headroom below the 0.95 cap so the enrichments show up.
+    plain = ScanResult(
+        root=".",
+        routes=[Route(path="/admin", method="ANY", file=file)],
+        framework_hints=[
+            FrameworkHint(hint="controller:Application\\Controller\\AdminController", file=file),
+        ],
+    )
+    enriched = ScanResult(
+        root=".",
+        routes=[Route(path="/admin", method="ANY", file=file)],
+        framework_hints=[
+            FrameworkHint(hint="controller:Application\\Controller\\AdminController", file=file),
+            FrameworkHint(hint="omeka_extension:service_manager", file=file),
+            FrameworkHint(hint="laminas_controller_mapping", file=file),
+            FrameworkHint(hint="omeka_dependency", file=file),
+            FrameworkHint(hint="omeka_surface:admin", file=file),
+        ],
+    )
+    plain_chain = _build_probable_chains(plain)[0]
+    enriched_chain = _build_probable_chains(enriched)[0]
+
+    assert enriched_chain.confidence > plain_chain.confidence
+    # Enriched must be strictly higher and land in medium or high.
+    assert confidence_bucket(enriched_chain.confidence) in {"medium", "high"}
+
+    evidence_text = " ".join(enriched_chain.evidence)
+    assert "omeka extension binding" in evidence_text
+    assert "laminas controller mapping" in evidence_text
+    assert "omeka dependency" in evidence_text
+    assert "omeka surface classification" in evidence_text
+    assert "admin" in evidence_text
+
+
+def test_chain_evidence_cites_source_analyzer_when_provenance_is_available() -> None:
+    """When contributing hints carry `source_analyzer` (set by core
+    via #14), the chain's evidence lines end with `[via <analyzer>]`."""
+    file = "module/Application/config/module.config.php"
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/admin", method="ANY", file=file)],
+        framework_hints=[
+            FrameworkHint(
+                hint="controller:Application\\Controller\\AdminController",
+                file=file,
+                source_analyzer="php-laminas",
+            ),
+            FrameworkHint(
+                hint="omeka_extension:module",
+                file=file,
+                source_analyzer="omeka-s",
+            ),
+        ],
+        databases=[DatabaseHint(kind="sql", file="module/Application/src/Service/AdminService.php")],
+    )
+    chain = _build_probable_chains(scan)[0]
+    joined = " ".join(chain.evidence)
+    assert "[via php-laminas]" in joined
+    assert "[via omeka-s]" in joined
+
+
+def test_emitted_attack_path_includes_confidence_bucket() -> None:
+    """The attack path emitted from a framework chain includes the
+    low/medium/high label alongside the numeric confidence."""
+    file = "module/Application/config/module.config.php"
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/admin", method="ANY", file=file)],
+        framework_hints=[
+            FrameworkHint(hint="controller:Application\\Controller\\AdminController", file=file),
+            FrameworkHint(hint="service:Application\\Service\\AdminService", file=file),
+            FrameworkHint(hint="omeka_extension:service_manager", file=file),
+            FrameworkHint(hint="omeka_surface:admin", file=file),
+        ],
+        databases=[DatabaseHint(kind="sql", file=file)],
+    )
+    paths = generate_attack_paths(scan)
+    evidence_step = next(step for step in paths[0].steps if step.startswith("Evidence:"))
+    # Format: "confidence=0.85 (high); ..."
+    assert " (high)" in evidence_step or " (medium)" in evidence_step
+    assert "confidence=" in evidence_step
