@@ -480,3 +480,122 @@ def test_emitted_attack_path_includes_confidence_bucket() -> None:
     # Format: "confidence=0.85 (high); ..."
     assert " (high)" in evidence_step or " (medium)" in evidence_step
     assert "confidence=" in evidence_step
+
+
+# ---------------------------------------------------------------------------
+# #5: richer, more connected attack paths.
+# ---------------------------------------------------------------------------
+
+
+def test_public_data_propagation_step_names_the_same_file_datastore() -> None:
+    """The Propagation narrative now says 'reaches a `sqlite` data store
+    in `app.py`' when the archetype's surface shares a file with a
+    database hint, instead of the generic 'close to the data store'."""
+    surface = AttackSurface(
+        route="/orders",
+        method="POST",
+        file="app/orders.py",
+        category="public_api",
+        exposure="public",
+        risk="medium",
+        auth_signals=[],
+        data_store_interaction=True,
+        outbound_integration=False,
+        rationale=[],
+    )
+    scan = ScanResult(
+        root=".",
+        databases=[DatabaseHint(kind="sqlite", file="app/orders.py")],
+    )
+    paths = generate_attack_paths(scan, attack_surfaces=[surface])
+    propagation = next(s for s in paths[0].steps if s.startswith("Propagation:"))
+    assert "`sqlite`" in propagation
+    assert "`app/orders.py`" in propagation
+
+
+def test_integration_propagation_step_names_the_same_file_external_call() -> None:
+    surface = AttackSurface(
+        route="/proxy",
+        method="GET",
+        file="app/proxy.py",
+        category="public_api",
+        exposure="public",
+        risk="medium",
+        auth_signals=[],
+        data_store_interaction=False,
+        outbound_integration=True,
+        rationale=[],
+    )
+    scan = ScanResult(
+        root=".",
+        external_calls=[ExternalCall(target="https://vendor.example/api", file="app/proxy.py")],
+    )
+    paths = generate_attack_paths(scan, attack_surfaces=[surface])
+    propagation = next(s for s in paths[0].steps if s.startswith("Propagation:"))
+    assert "`https://vendor.example/api`" in propagation
+    assert "`app/proxy.py`" in propagation
+
+
+def test_public_data_archetype_fans_out_across_distinct_files() -> None:
+    """Three public-data routes in three separate files produce three
+    concrete paths, each anchored on its own file."""
+    surfaces = [
+        AttackSurface(
+            route=f"/svc/{name}",
+            method="POST",
+            file=f"app/{name}.py",
+            category="public_api",
+            exposure="public",
+            risk="medium",
+            auth_signals=[],
+            data_store_interaction=True,
+            outbound_integration=False,
+            rationale=[],
+        )
+        for name in ("orders", "invoices", "customers")
+    ]
+    scan = ScanResult(
+        root=".",
+        databases=[
+            DatabaseHint(kind="postgresql", file="app/orders.py"),
+            DatabaseHint(kind="sqlite", file="app/invoices.py"),
+            DatabaseHint(kind="redis", file="app/customers.py"),
+        ],
+    )
+    paths = generate_attack_paths(scan, attack_surfaces=surfaces)
+    public_data_paths = [p for p in paths if p.name == "Public input into sensitive data path"]
+    assert len(public_data_paths) == 3
+    entry_files = set()
+    for p in public_data_paths:
+        entry = next(s for s in p.steps if s.startswith("Entry:"))
+        for name in ("orders", "invoices", "customers"):
+            if f"app/{name}.py" in entry:
+                entry_files.add(name)
+    assert entry_files == {"orders", "invoices", "customers"}
+
+
+def test_public_data_fanout_collapses_same_file_surfaces_to_one_path() -> None:
+    """Three routes all in the same file share the same story — only one
+    path is emitted (surface dedup is by-file, not by-route)."""
+    surfaces = [
+        AttackSurface(
+            route=path,
+            method="POST",
+            file="app/handlers.py",
+            category="public_api",
+            exposure="public",
+            risk="medium",
+            auth_signals=[],
+            data_store_interaction=True,
+            outbound_integration=False,
+            rationale=[],
+        )
+        for path in ("/a", "/b", "/c")
+    ]
+    scan = ScanResult(
+        root=".",
+        databases=[DatabaseHint(kind="postgresql", file="app/handlers.py")],
+    )
+    paths = generate_attack_paths(scan, attack_surfaces=surfaces)
+    public_data_paths = [p for p in paths if p.name == "Public input into sensitive data path"]
+    assert len(public_data_paths) == 1

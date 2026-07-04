@@ -14,6 +14,12 @@ LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/exa
 # alone and don't count toward this cap.
 MAX_ATTACK_PATHS = 5
 
+# Per-archetype fan-out cap (#5). When multiple distinct files satisfy
+# an archetype (e.g. three different public-data routes each writing
+# to their own datastore), emit one path per file up to this many.
+# Keeps the multi-vector story visible without exploding into noise.
+MAX_PER_ARCHETYPE_FANOUT = 3
+
 
 def _surface_label(surface: AttackSurface) -> str:
     return f"{surface.method} {surface.route} in {surface.file}"
@@ -38,6 +44,49 @@ def _finding_evidence(surface: AttackSurface) -> str:
     if surface.outbound_integration:
         details.append("external integration reachable")
     return "; ".join(details)
+
+
+def _distinct_by_file(
+    surfaces: list[AttackSurface],
+    predicate,
+    limit: int,
+) -> list[AttackSurface]:
+    """Return the first `limit` surfaces matching `predicate`, one per file.
+
+    Used by #5 fan-out so a repo with three public-data routes in three
+    different files each produces its own concrete path — while three
+    routes in the same file collapse to one (same story anyway).
+    """
+    picked: list[AttackSurface] = []
+    seen_files: set[str] = set()
+    for surface in surfaces:
+        if not predicate(surface):
+            continue
+        if surface.file in seen_files:
+            continue
+        seen_files.add(surface.file)
+        picked.append(surface)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _same_file_datastore(surface: AttackSurface, scan: ScanResult) -> tuple[str, str] | None:
+    """Return `(kind, file)` of a datastore in the same file as the surface,
+    or None. Used by #5 to make Propagation steps name the concrete sink."""
+    for hint in scan.databases:
+        if hint.file == surface.file:
+            return (hint.kind, hint.file)
+    return None
+
+
+def _same_file_external(surface: AttackSurface, scan: ScanResult) -> tuple[str, str] | None:
+    """Return `(target, file)` of an external call in the same file as the
+    surface, or None. #5 narrative enrichment."""
+    for call in scan.external_calls:
+        if call.file == surface.file:
+            return (call.target, call.file)
+    return None
 
 
 def _surface_evidence(surface: AttackSurface, scan: ScanResult, max_items: int = 4) -> list[str]:
@@ -989,14 +1038,30 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
             _claim(public_data_surface)
         if integration_surface:
             _claim(integration_surface)
+        # Enrich the Propagation steps with concrete same-file artifacts
+        # when we can find them — see #5.
+        webhook_db = _same_file_datastore(webhook_surface, scan)
+        webhook_ext = _same_file_external(webhook_surface, scan)
         steps = [
             _action_step("Entry", f"An attacker reaches {webhook_surface.method} {webhook_surface.route} in {webhook_surface.file}, a webhook-style endpoint that accepts untrusted inbound events"),
             _action_step("Weak point", "The endpoint is treated like a trusted integration boundary before its input is fully verified"),
         ]
         if public_data_surface:
-            steps.append(_action_step("Propagation", "Attacker-controlled input is processed close to a data store, making unauthorized writes or state changes plausible"))
+            if webhook_db:
+                steps.append(_action_step(
+                    "Propagation",
+                    f"Attacker-controlled input reaches a `{webhook_db[0]}` data store in `{webhook_db[1]}`, making unauthorized writes or state changes plausible",
+                ))
+            else:
+                steps.append(_action_step("Propagation", "Attacker-controlled input is processed close to a data store, making unauthorized writes or state changes plausible"))
         if integration_surface:
-            steps.append(_action_step("Propagation", "The same request path can also influence outbound service calls, which widens the blast radius beyond the application itself"))
+            if webhook_ext:
+                steps.append(_action_step(
+                    "Propagation",
+                    f"The same request path also influences an outbound call to `{webhook_ext[0]}` from `{webhook_ext[1]}`, widening the blast radius beyond the application itself",
+                ))
+            else:
+                steps.append(_action_step("Propagation", "The same request path can also influence outbound service calls, which widens the blast radius beyond the application itself"))
         steps.append(_action_step("Impact", "The attacker drives business actions that should only occur after a trusted event or validated request"))
         paths.append(
             AttackPath(
@@ -1048,28 +1113,55 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
             )
         )
 
-    if _claim(public_data_surface):
+    # Per-file fan-out for public_data. A repo with distinct data-touching
+    # files each becomes its own path (bounded by MAX_ATTACK_PATHS at the
+    # end). See #5.
+    for candidate in _distinct_by_file(
+        surfaces,
+        lambda s: s.exposure == "public" and s.data_store_interaction and s.category != "health",
+        limit=MAX_PER_ARCHETYPE_FANOUT,
+    ):
+        if not _claim(candidate):
+            continue
+        db = _same_file_datastore(candidate, scan)
+        propagation = (
+            f"Attacker-controlled data reaches a `{db[0]}` data store in `{db[1]}`"
+            if db
+            else "Attacker-controlled data reaches code operating close to the data store"
+        )
         paths.append(
             AttackPath(
                 name="Public input into sensitive data path",
-                steps=_with_evidence(public_data_surface, [
-                    _action_step("Entry", f"An attacker uses {public_data_surface.method} {public_data_surface.route} in {public_data_surface.file} as a public foothold"),
+                steps=_with_evidence(candidate, [
+                    _action_step("Entry", f"An attacker uses {candidate.method} {candidate.route} in {candidate.file} as a public foothold"),
                     _action_step("Weak point", "Input validation or authorization is weaker than the route exposure suggests"),
-                    _action_step("Propagation", "Attacker-controlled data reaches code operating close to the data store"),
+                    _action_step("Propagation", propagation),
                     _action_step("Impact", "Confidentiality, integrity, or authorization guarantees around application data are weakened"),
                 ]),
                 impact="Unauthorized data access or modification through a public-facing application route.",
             )
         )
 
-    if _claim(integration_surface):
+    for candidate in _distinct_by_file(
+        surfaces,
+        lambda s: s.exposure == "public" and s.outbound_integration,
+        limit=MAX_PER_ARCHETYPE_FANOUT,
+    ):
+        if not _claim(candidate):
+            continue
+        ext = _same_file_external(candidate, scan)
+        propagation = (
+            f"Spoofed, replayed, or attacker-steered interaction with `{ext[0]}` (from `{ext[1]}`) affects internal logic"
+            if ext
+            else "Spoofed, replayed, or attacker-steered third-party interactions affect internal logic"
+        )
         paths.append(
             AttackPath(
                 name="Outbound trust boundary abuse",
-                steps=_with_evidence(integration_surface, [
-                    _action_step("Entry", f"An attacker influences {integration_surface.method} {integration_surface.route} in {integration_surface.file}, which sits near an outbound integration"),
+                steps=_with_evidence(candidate, [
+                    _action_step("Entry", f"An attacker influences {candidate.method} {candidate.route} in {candidate.file}, which sits near an outbound integration"),
                     _action_step("Weak point", "The application assumes too much trust in external calls or responses"),
-                    _action_step("Propagation", "Spoofed, replayed, or attacker-steered third-party interactions affect internal logic"),
+                    _action_step("Propagation", propagation),
                     _action_step("Impact", "Unsafe business decisions or downstream actions follow from a weak external trust boundary"),
                 ]),
                 impact="Poisoned state or unsafe downstream actions caused by over-trusting an external dependency.",
