@@ -29,6 +29,21 @@ def _severity_rank(value: str) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(value, 3)
 
 
+# #4: prioritization scoring. Higher score = triage first within severity.
+# Formula: severity_weight × confidence_multiplier, rounded to int.
+_SEVERITY_WEIGHT = {"high": 100, "medium": 50, "low": 10}
+_CONFIDENCE_MULTIPLIER = {"high": 1.0, "medium": 0.75, "low": 0.5}
+
+
+def compute_finding_score(severity: str, confidence: str) -> int:
+    """Compute the prioritization score for a finding.
+
+    Range: 5 (low/low) to 100 (high/high). Used as a secondary sort key
+    inside a severity band so a HIGH/HIGH lands above a HIGH/LOW.
+    """
+    return int(_SEVERITY_WEIGHT.get(severity, 0) * _CONFIDENCE_MULTIPLIER.get(confidence, 0.5))
+
+
 def _action_step(label: str, action: str) -> str:
     return f"{label}: {action}"
 
@@ -717,6 +732,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[_finding_evidence(surface) for surface in webhook_surfaces[:10]],
                 mitigation="Require signature verification before processing webhook payloads, reject replays, and keep any downstream state change behind strict validation.",
                 confidence="high",
+                tags=["exposed-endpoint", "auth-missing"],
             )
         )
 
@@ -728,6 +744,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[_finding_evidence(surface) for surface in admin_surfaces[:10]],
                 mitigation="Require strong authentication and explicit server-side authorization on every admin action, and move admin routes behind a narrower exposure boundary where possible.",
                 confidence="high",
+                tags=["exposed-endpoint", "auth-missing", "privileged"],
             )
         )
 
@@ -739,6 +756,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[_finding_evidence(surface) for surface in upload_surfaces[:10]],
                 mitigation="Constrain accepted formats, isolate parsers, scan uploaded content, and treat imported files as untrusted all the way through storage and processing.",
                 confidence="medium",
+                tags=["exposed-endpoint", "input-handling"],
             )
         )
 
@@ -750,6 +768,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[_finding_evidence(surface) for surface in auth_surfaces[:10]],
                 mitigation="Review these routes for rate limiting, credential validation, token or session handling, and the exact point where trust is established server-side.",
                 confidence="medium",
+                tags=["exposed-endpoint", "auth-missing"],
             )
         )
 
@@ -761,6 +780,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[_finding_evidence(surface) for surface in public_integration_surfaces[:10]],
                 mitigation="Check how outbound requests are authenticated, signed, and authorized, and confirm that untrusted route input cannot directly steer third-party actions.",
                 confidence="medium",
+                tags=["integration-risk", "auth-missing"],
             )
         )
 
@@ -772,6 +792,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[f"{hint.name} in {hint.file}" for hint in scan.secret_hints[:10]],
                 mitigation="Confirm these secrets are injected securely, never logged or returned, rotated regularly, and scoped only to the privileges each route actually needs.",
                 confidence="high",
+                tags=["secret-exposure"],
             )
         )
 
@@ -783,6 +804,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[_finding_evidence(surface) for surface in public_data_surfaces[:10]],
                 mitigation="Validate untrusted input before it reaches business logic, enforce authorization at the route boundary, and verify that downstream queries or writes stay parameterized.",
                 confidence="medium",
+                tags=["exposed-endpoint", "data-risk"],
             )
         )
 
@@ -798,6 +820,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                     "downstream service/database permissions per endpoint."
                 ),
                 confidence="high" if top_atproto_chain.confidence >= 0.7 else "medium",
+                tags=["atproto-chain", "data-risk"],
             )
         )
 
@@ -813,6 +836,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                     "treat env-configured upstream and downstream endpoints as untrusted until verified."
                 ),
                 confidence="high" if top_service_chain.confidence >= 0.7 else "medium",
+                tags=["service-chain", "data-risk"],
             )
         )
 
@@ -828,6 +852,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                     "service/factory entry points before database writes or privileged actions."
                 ),
                 confidence="high" if top_chain.confidence >= 0.7 else "medium",
+                tags=["framework-chain", "data-risk"],
             )
         )
 
@@ -839,10 +864,19 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=["No major route, secret, or integration patterns triggered a stronger finding."],
                 mitigation="Treat this as a weak signal, expand parser coverage, and manually validate the real entry points and trust boundaries.",
                 confidence="low",
+                tags=["weak-signal"],
             )
         )
 
-    return sorted(findings, key=lambda finding: (_severity_rank(finding.severity), finding.title))
+    # #4: attach numeric score for triage ordering, then sort by
+    # (severity, -score, title). Same-severity findings surface in
+    # confidence-weighted order so a HIGH/HIGH beats a HIGH/LOW.
+    for finding in findings:
+        finding.score = compute_finding_score(finding.severity, finding.confidence)
+    return sorted(
+        findings,
+        key=lambda f: (_severity_rank(f.severity), -(f.score or 0), f.title),
+    )
 
 
 def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[AttackPath]:

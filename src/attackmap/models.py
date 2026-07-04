@@ -171,6 +171,15 @@ class Finding(BaseModel):
     mitigation: str
     confidence: Literal["low", "medium", "high"] = "medium"
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)
+    # Optional categorization tags. Vocabulary (see #4): exposed-endpoint,
+    # auth-missing, data-risk, secret-exposure, integration-risk,
+    # framework-chain, service-chain, atproto-chain, weak-signal. Multiple
+    # tags may apply per finding.
+    tags: list[str] = Field(default_factory=list)
+    # Numeric prioritization score (higher = triage first within the same
+    # severity band). Computed from severity + confidence; used as a
+    # secondary sort key. `None` means "not scored" for backward compat.
+    score: int | None = None
 
 
 class AttackPath(BaseModel):
