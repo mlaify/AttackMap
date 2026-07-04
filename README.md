@@ -92,8 +92,34 @@ Every `attackmap analyze` run writes:
 | `defensive-review.json` | Structured equivalent (schema v1.2.0) |
 | `review-context-pack.json` | Structured evidence pack consumed by the LLM stage |
 | `attackmap-report.json` | Everything bundled |
+| `attackmap-report.sarif` | SARIF 2.1.0 log — ingestable by GitHub Code Scanning, VS Code, and other SARIF consumers |
 | `defensive-review-llm.md` *(with `--llm`)* | Claude-narrated review |
 | `defensive-review-llm.meta.json` *(with `--llm`)* | Backend, model, token usage |
+
+### GitHub Code Scanning integration
+
+Drop this into `.github/workflows/attackmap.yml` to get AttackMap findings inline on every PR:
+
+```yaml
+name: AttackMap
+on: [pull_request, push]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install "attackmap[all]"
+      - run: attackmap analyze . --output reports
+      - uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/attackmap-report.sarif
+          category: attackmap
+```
 
 ---
 
