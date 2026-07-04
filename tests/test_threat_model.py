@@ -683,3 +683,58 @@ def test_findings_sorted_severity_then_score_descending_then_title() -> None:
     for i, f in enumerate(highs):
         if i < upload_idx:
             assert f.confidence in {"high"}  # HIGH/HIGH precedes HIGH/MEDIUM
+
+
+# ---------------------------------------------------------------------------
+# #39: hard-coded secrets get their own HIGH finding, separate from
+# env-reference secrets which stay MEDIUM.
+# ---------------------------------------------------------------------------
+
+
+def test_hardcoded_secret_produces_high_severity_finding() -> None:
+    scan = ScanResult(
+        root=".",
+        secret_hints=[
+            SecretHint(name="AKIA…MPLE", file="app.py", kind="aws_access_key", confidence=1.0),
+        ],
+    )
+    findings = generate_findings(scan)
+    hard = next(
+        f for f in findings
+        if f.title == "Hard-coded secret literals were found in source or config"
+    )
+    assert hard.severity == "high"
+    assert "hardcoded-literal" in hard.tags
+    assert "data-risk" in hard.tags
+
+
+def test_env_reference_finding_stays_medium_when_hardcoded_is_absent() -> None:
+    scan = ScanResult(
+        root=".",
+        secret_hints=[SecretHint(name="DB_PASSWORD", file="app.py")],  # default kind = env_reference
+    )
+    findings = generate_findings(scan)
+    env = next(
+        f for f in findings
+        if f.title == "Secret-bearing environment variables are referenced in executable paths"
+    )
+    assert env.severity == "medium"
+    # No hardcoded finding should fire when only env references exist.
+    assert not any(
+        f.title == "Hard-coded secret literals were found in source or config" for f in findings
+    )
+
+
+def test_hardcoded_finding_ranks_above_env_reference_finding() -> None:
+    scan = ScanResult(
+        root=".",
+        secret_hints=[
+            SecretHint(name="AKIA…MPLE", file="app.py", kind="aws_access_key", confidence=1.0),
+            SecretHint(name="DB_PASSWORD", file="app.py"),  # env_reference
+        ],
+    )
+    findings = generate_findings(scan)
+    titles = [f.title for f in findings]
+    hard_idx = titles.index("Hard-coded secret literals were found in source or config")
+    env_idx = titles.index("Secret-bearing environment variables are referenced in executable paths")
+    assert hard_idx < env_idx  # HIGH sorts above MEDIUM

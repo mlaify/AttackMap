@@ -99,6 +99,12 @@ class SecretHint(BaseModel):
     evidence_text: str | None = None
     confidence: float = 0.85
     source_analyzer: str | None = _PROVENANCE_FIELD
+    # Optional classification. `env_reference` means we spotted a call
+    # like `os.getenv("API_KEY")` — the value is at runtime. Anything
+    # else identifies a literal secret pasted directly into code or
+    # config (#39). Consumers can elevate hardcoded-literal findings
+    # since exposure is broader than env references.
+    kind: str = "env_reference"
 
 
 SignalKind = Literal[

@@ -784,12 +784,40 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
-    if scan.secret_hints:
+    # Split secret findings by kind (#39). Hard-coded literals get HIGH
+    # severity — exposure is broader than env references (visible to
+    # anyone with repo read access, not just runtime access) — and their
+    # own tags so downstream triage and reporting can distinguish them.
+    hardcoded_secrets = [h for h in scan.secret_hints if h.kind != "env_reference"]
+    env_reference_secrets = [h for h in scan.secret_hints if h.kind == "env_reference"]
+
+    if hardcoded_secrets:
+        # Group by kind for evidence line density; still cap at 10 total.
+        evidence_lines = [
+            f"[{hint.kind}] {hint.name} in {hint.file}"
+            for hint in hardcoded_secrets[:10]
+        ]
+        findings.append(
+            Finding(
+                title="Hard-coded secret literals were found in source or config",
+                severity="high",
+                evidence=evidence_lines,
+                mitigation=(
+                    "Rotate every detected credential immediately, purge it from git history, "
+                    "and move to environment-injected or vault-managed values. Anyone with read "
+                    "access to the repository already has these secrets."
+                ),
+                confidence="high",
+                tags=["secret-exposure", "data-risk", "hardcoded-literal"],
+            )
+        )
+
+    if env_reference_secrets:
         findings.append(
             Finding(
                 title="Secret-bearing environment variables are referenced in executable paths",
                 severity="medium",
-                evidence=[f"{hint.name} in {hint.file}" for hint in scan.secret_hints[:10]],
+                evidence=[f"{hint.name} in {hint.file}" for hint in env_reference_secrets[:10]],
                 mitigation="Confirm these secrets are injected securely, never logged or returned, rotated regularly, and scoped only to the privileges each route actually needs.",
                 confidence="high",
                 tags=["secret-exposure"],
