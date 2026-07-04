@@ -80,39 +80,101 @@ DB_KEYWORDS = {
 }
 
 DB_PATTERNS = [
+    # SQL — SQLAlchemy / raw / Django / Prisma / Drizzle
     (re.compile(r"create_engine\(\s*['\"](?:postgresql|mysql|sqlite|mssql|oracle)\+?", re.IGNORECASE), "sql"),
-    (re.compile(r"sqlite3\.connect\(", re.IGNORECASE), "sqlite"),
-    (re.compile(r"psycopg(?:2)?\.connect\(", re.IGNORECASE), "postgresql"),
-    (re.compile(r"(?:AsyncIOMotorClient|MongoClient)\(", re.IGNORECASE), "mongodb"),
-    (re.compile(r"redis\.(?:Redis|StrictRedis)\(", re.IGNORECASE), "redis"),
+    (re.compile(r"create_async_engine\(", re.IGNORECASE), "sql"),
+    (re.compile(r"\bsessionmaker\s*\(", re.IGNORECASE), "sql"),
+    (re.compile(r"\bAsyncSession\s*\(", re.IGNORECASE), "sql"),
+    (re.compile(r"\bdeclarative_base\s*\(", re.IGNORECASE), "sql"),
     (re.compile(r"new\s+PrismaClient\(", re.IGNORECASE), "sql"),
-    (re.compile(r"mongoose\.connect\(", re.IGNORECASE), "mongodb"),
+    (re.compile(r"\bdrizzle\s*\(", re.IGNORECASE), "sql"),
+    (re.compile(r"\bknex\s*\(", re.IGNORECASE), "sql"),
+    # Raw SQL usage — cursor.execute with a SQL verb literal is a strong
+    # signal that raw SQL (not an ORM) is in play, which matters for
+    # injection review. #2.
+    (re.compile(r"\.execute\(\s*['\"]\s*(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b", re.IGNORECASE), "sql"),
+    (re.compile(r"\.executemany\(\s*['\"]", re.IGNORECASE), "sql"),
+    # PostgreSQL
+    (re.compile(r"psycopg(?:2|3)?\.connect\(", re.IGNORECASE), "postgresql"),
+    (re.compile(r"\basyncpg\.connect\(", re.IGNORECASE), "postgresql"),
     (re.compile(r"new\s+Pool\(", re.IGNORECASE), "postgresql"),
+    # SQLite
+    (re.compile(r"sqlite3\.connect\(", re.IGNORECASE), "sqlite"),
+    (re.compile(r"\bbetter-sqlite3\b|new\s+SQLite3?\b", re.IGNORECASE), "sqlite"),
+    # MySQL
+    (re.compile(r"\bmysql\.connector\.connect\(", re.IGNORECASE), "mysql"),
+    (re.compile(r"\bMySQLdb\.connect\(", re.IGNORECASE), "mysql"),
+    (re.compile(r"\baiomysql\.connect\(", re.IGNORECASE), "mysql"),
+    # MongoDB
+    (re.compile(r"(?:AsyncIOMotorClient|MongoClient)\(", re.IGNORECASE), "mongodb"),
+    (re.compile(r"\bpymongo\.MongoClient\(", re.IGNORECASE), "mongodb"),
+    (re.compile(r"mongoose\.connect\(", re.IGNORECASE), "mongodb"),
+    # Redis
+    (re.compile(r"redis\.(?:Redis|StrictRedis)\(", re.IGNORECASE), "redis"),
+    (re.compile(r"\bredis\.from_url\(", re.IGNORECASE), "redis"),
+    (re.compile(r"\baioredis\b|from\s+redis\s+import", re.IGNORECASE), "redis"),
+    (re.compile(r"redis\.createClient\(", re.IGNORECASE), "redis"),
 ]
 
+# Kept intentionally short — noisy naked words (`session`, `password`,
+# `token`, `mfa`, `bearer`) were dropped in #2. They fired across
+# unrelated code and turned the file-level auth-signal set into
+# indistinguishable noise (see Bluesky FINDINGS.md §55). Specific
+# compound patterns in AUTH_PATTERNS below carry the real signal.
 AUTH_KEYWORDS = [
     "jwt",
     "oauth",
     "auth0",
     "apikey",
     "api_key",
-    "bearer",
-    "session",
-    "password",
-    "token",
-    "mfa",
 ]
 
 AUTH_PATTERNS = [
+    # Decorator-based
     (re.compile(r"@login_required\b", re.IGNORECASE), "login_required"),
     (re.compile(r"@jwt_required\b", re.IGNORECASE), "jwt"),
-    (re.compile(r"Depends\(\s*(?:oauth2_scheme|get_current_user|current_user|verify_token)\s*\)", re.IGNORECASE), "depends_auth"),
+    (re.compile(r"@UseGuards\("), "auth_guard"),
+    # JWT library calls — jwt.decode / encode / verify / sign
+    (re.compile(r"\bjwt\.(?:decode|encode|verify|sign)\(", re.IGNORECASE), "jwt"),
+    (re.compile(r"\bjsonwebtoken\b", re.IGNORECASE), "jwt"),
+    (re.compile(r"\bPyJWT\b"), "jwt"),
+    # OAuth / OIDC library forms
     (re.compile(r"OAuth2PasswordBearer\(", re.IGNORECASE), "oauth"),
+    (re.compile(r"\bauthlib\.\w+", re.IGNORECASE), "oauth"),
+    # FastAPI Depends-based auth
+    (re.compile(r"Depends\(\s*(?:oauth2_scheme|get_current_user|current_user|verify_token)\s*\)", re.IGNORECASE), "depends_auth"),
+    # Authorization header access — Python, JS, Node
     (re.compile(r"request\.authorization\b", re.IGNORECASE), "authorization"),
+    (re.compile(r"request\.headers\.get\(\s*['\"]authorization['\"]", re.IGNORECASE), "authorization"),
+    (re.compile(r"req\.headers\[\s*['\"]authorization['\"]", re.IGNORECASE), "authorization"),
+    (re.compile(r"req\.get\(\s*['\"]authorization['\"]", re.IGNORECASE), "authorization"),
     (re.compile(r"Authorization['\"]?\s*\]", re.IGNORECASE), "authorization"),
+    # Bearer-token access (context, not naked word)
+    (re.compile(r"\bBearer\s+\$\{?[a-z_]"), "bearer_token"),
+    (re.compile(r"['\"]Bearer\s"), "bearer_token"),
+    # Middleware / guard naming conventions
     (re.compile(r"passport\.authenticate\(", re.IGNORECASE), "passport"),
-    (re.compile(r"\b(?:verify|require)Token\b", re.IGNORECASE), "token"),
+    (re.compile(r"\bpassport\.use\(", re.IGNORECASE), "passport"),
+    (re.compile(r"\b(?:verify|require)Token\s*\(", re.IGNORECASE), "verify_token"),
+    (re.compile(r"\bisAuthenticated\s*\(", re.IGNORECASE), "auth_middleware"),
+    (re.compile(r"\bensureLoggedIn\s*\(", re.IGNORECASE), "auth_middleware"),
+    (re.compile(r"\brequire(?:Auth|Login)\s*\(", re.IGNORECASE), "auth_middleware"),
+    (re.compile(r"\bwithAuth\s*[(<]", re.IGNORECASE), "auth_middleware"),
     (re.compile(r"\bauthMiddleware\b", re.IGNORECASE), "auth_middleware"),
+    (re.compile(r"\bauthGuard\b|\bAuthGuard\b"), "auth_guard"),
+    # Session-based auth — specific compound tokens, not the bare word "session"
+    (re.compile(r"\bexpress-session\b|require\(['\"]express-session['\"]"), "session_middleware"),
+    (re.compile(r"\breq\.session\.\w"), "session_state"),
+    (re.compile(r"\brequest\.session\.\w"), "session_state"),
+    (re.compile(r"\bcookie-session\b"), "session_middleware"),
+    (re.compile(r"\bflask_login\b|from\s+flask_login\s+import"), "session_middleware"),
+    (re.compile(r"\bdjango\.contrib\.auth\b"), "session_middleware"),
+    # MFA / 2FA — compound tokens only
+    (re.compile(r"\bmfa_required\b|\btwo_factor\b|\btotp_verify\b", re.IGNORECASE), "mfa"),
+    # Password-handling — compound tokens only
+    (re.compile(r"\bpassword_hash\b|\bpassword_reset\b|\bcheck_password\b", re.IGNORECASE), "password_flow"),
+    (re.compile(r"\bbcrypt\.(?:hash|compare)\s*\(", re.IGNORECASE), "password_flow"),
+    (re.compile(r"\bargon2\b"), "password_flow"),
 ]
 
 SECRET_PATTERNS = [
