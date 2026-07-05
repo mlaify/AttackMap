@@ -196,6 +196,18 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         # $where with any interpolation is an injection risk.
         re.compile(r"\$where"),
     ),
+    # --- open redirect (#77) -----------------------------------------------
+    # A request-derived value flowing into a redirect. Constant redirect
+    # targets are fine, so gated on a request container access.
+    (
+        "open_redirect",
+        re.compile(rf"\bredirect\s*\([^)]*{_TAINTED}"),
+    ),
+    (
+        "open_redirect",
+        # Express/Koa: res.redirect(req.query.url) ; also res.location(...)
+        re.compile(rf"\bres\s*\.\s*(?:redirect|location)\s*\([^)]*{_TAINTED}"),
+    ),
 )
 
 

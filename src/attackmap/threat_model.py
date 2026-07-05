@@ -573,6 +573,7 @@ _TAINT_SINK_LABEL: dict[str, str] = {
     "ssti": "template injection",
     "ssrf": "outbound request (SSRF)",
     "nosql_injection": "NoSQL query",
+    "open_redirect": "redirect target",
 }
 
 
@@ -638,6 +639,14 @@ _TAINT_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_id": "T1190",
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
+    },
+    "open_redirect": {
+        "severity": "medium",
+        "title": "Request-reachable open redirect",
+        "mitigation": "Never redirect to a request-derived URL directly. Redirect only to a server-side allow-list of paths/hosts, or map an opaque key to the destination; reject absolute URLs and protocol-relative (`//`) targets.",
+        "technique_id": "T1204",
+        "technique_name": "User Execution",
+        "tactic": "Execution",
     },
 }
 
@@ -734,6 +743,43 @@ _WEB_HARDENING_FINDING_SPEC: dict[str, dict[str, str]] = {
         "severity": "medium",
         "title": "Debug mode or unrestricted management endpoints enabled",
         "mitigation": "Never ship with debug mode on (Flask/Django `DEBUG`, Rails `consider_all_requests_local`) or Spring actuator endpoints exposed with `*`. Debug consoles leak internals and can enable RCE.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+}
+
+
+# Per-kind spec for novel vuln-class findings (#77).
+_CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "prototype_pollution": {
+        "severity": "high",
+        "title": "Prototype pollution",
+        "mitigation": "Never write attacker-controlled keys to `__proto__`/`constructor.prototype` or deep-merge a raw request object. Use a null-prototype object (`Object.create(null)`), a Map, or a merge that rejects `__proto__`/`constructor` keys.",
+        "technique_id": "T1059.007",
+        "technique_name": "Command and Scripting Interpreter: JavaScript",
+        "tactic": "Execution",
+    },
+    "mass_assignment": {
+        "severity": "high",
+        "title": "Mass assignment / overposting",
+        "mitigation": "Never bind a whole request body to a model. Explicitly allow-list assignable fields (serializers, DTOs, strong params with a field list) so attackers can't set privileged attributes (is_admin, role, owner_id).",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "jwt_weakness": {
+        "severity": "high",
+        "title": "JWT verification weakness (alg=none / signature not verified)",
+        "mitigation": "Pin an explicit allow-list of signing algorithms (never include `none`), always verify the signature, and reject tokens whose header `alg` isn't expected. Don't decode without verifying.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "xxe": {
+        "severity": "high",
+        "title": "XML external entity (XXE) processing enabled",
+        "mitigation": "Disable DTD/external-entity resolution in the XML parser (lxml `resolve_entities=False`, Java `disallow-doctype-decl`/secure processing, PHP keep `libxml_disable_entity_loader` default). Prefer a data format without entities where possible.",
         "technique_id": "T1190",
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
@@ -1250,6 +1296,39 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["web-hardening"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
+
+    # Novel vuln classes (#77). One aggregated finding per weakness kind.
+    code_by_kind: dict[str, list] = {}
+    for weakness in scan.code_weaknesses:
+        code_by_kind.setdefault(weakness.kind, []).append(weakness)
+    for kind, spec in _CODE_WEAKNESS_FINDING_SPEC.items():
+        items = code_by_kind.get(kind)
+        if not items:
+            continue
+        evidence = [
+            f"{i.file}:{i.line} — {i.evidence_text}" if i.evidence_text else f"{i.file}:{i.line}"
+            for i in items[:10]
+        ]
+        if len(items) > 10:
+            evidence.append(f"+{len(items) - 10} more occurrence(s)")
+        findings.append(
+            Finding(
+                title=spec["title"],
+                severity=spec["severity"],  # type: ignore[arg-type]
+                evidence=evidence,
+                mitigation=spec["mitigation"],
+                confidence="medium",
+                tags=["novel-vuln"],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],
