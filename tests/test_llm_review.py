@@ -281,6 +281,44 @@ def test_cli_backend_raises_when_payload_marks_error() -> None:
         )
 
 
+def test_cli_backend_not_logged_in_surfaces_login_hint() -> None:
+    """The real `claude` CLI returns is_error=true with subtype="success"
+    and the human message in `result` when the user isn't logged in.
+    Historically we printed the misleading "success" subtype; make sure
+    we now surface the real message and a login hint."""
+    payload = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "result": "Not logged in · Please run /login",
+    }
+    runner, _ = _make_cli_runner(json.dumps(payload))
+    with pytest.raises(LlmReviewError) as excinfo:
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [], backend="cli", cli_runner=runner
+        )
+    msg = str(excinfo.value)
+    assert "Not logged in" in msg
+    assert "success" not in msg  # never surface the misleading subtype
+    assert "claude login" in msg or "/login" in msg
+
+
+def test_cli_backend_prefers_result_text_over_subtype() -> None:
+    """When is_error=true and both `result` and `subtype` are present,
+    the human-readable `result` text wins."""
+    payload = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "result": "Rate limit hit, try again in 60s",
+    }
+    runner, _ = _make_cli_runner(json.dumps(payload))
+    with pytest.raises(LlmReviewError, match="Rate limit hit"):
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [], backend="cli", cli_runner=runner
+        )
+
+
 def test_cli_backend_raises_when_stdout_is_not_json() -> None:
     runner, _ = _make_cli_runner("not json at all")
     with pytest.raises(LlmReviewError, match="non-JSON output"):

@@ -223,8 +223,31 @@ def _run_via_claude_cli(
         ) from exc
 
     if payload.get("is_error"):
-        errors = payload.get("errors") or [payload.get("subtype") or "unknown error"]
-        raise LlmReviewError(f"`claude` CLI reported an error: {'; '.join(str(e) for e in errors)}")
+        # The CLI returns an unhelpful mix here:
+        #  - `subtype` is often the literal "success" even when is_error=true
+        #  - `result` carries the human-readable message ("Not logged in · Please run /login")
+        #  - `errors` is sometimes absent
+        # Prefer `result` when it looks like a message; fall back to `errors`,
+        # then to `subtype`. Never show "success" — it just confuses users.
+        detail: str | None = None
+        result_text = payload.get("result")
+        if isinstance(result_text, str) and result_text.strip():
+            detail = result_text.strip()
+        elif payload.get("errors"):
+            detail = "; ".join(str(e) for e in payload["errors"])
+        else:
+            subtype = payload.get("subtype")
+            if isinstance(subtype, str) and subtype and subtype != "success":
+                detail = subtype
+        detail = detail or "unknown error"
+        hint = ""
+        low = detail.lower()
+        if "not logged in" in low or "/login" in low:
+            hint = (
+                " Run `claude login` (or `claude /login` inside the CLI), "
+                "or use --llm-backend api with ANTHROPIC_API_KEY set."
+            )
+        raise LlmReviewError(f"`claude` CLI reported an error: {detail}.{hint}")
 
     markdown = payload.get("result")
     if not isinstance(markdown, str) or not markdown.strip():
