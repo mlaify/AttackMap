@@ -104,6 +104,9 @@ Every `attackmap analyze` run writes:
 | `review-context-pack.json` | Structured evidence pack consumed by the LLM stage |
 | `attackmap-report.json` | Everything bundled |
 | `attackmap-report.sarif` | SARIF 2.1.0 log — ingestable by GitHub Code Scanning, VS Code, and other SARIF consumers |
+| `attackmap-paths.md` | Mermaid flowcharts of each attack path — renders inline on GitHub |
+| `attackmap-topology.md` | Mermaid graph of the service topology, with edge kinds styled per relationship type |
+| `attackmap-paths.dot` / `attackmap-topology.dot` | Graphviz DOT versions of the two diagrams — feed into `dot -Tsvg` for slide-quality graphics |
 | `defensive-review-llm.md` *(with `--llm`)* | Claude-narrated review |
 | `defensive-review-llm.meta.json` *(with `--llm`)* | Backend, model, token usage |
 
