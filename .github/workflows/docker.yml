@@ -51,6 +51,29 @@ jobs:
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+      # Race guard: the tag push fires BOTH this workflow and the release
+      # workflow simultaneously. The release workflow has an approval gate
+      # + 5-min wait timer before publishing to PyPI, so this docker build
+      # will otherwise `pip install attackmap==0.2.0` before PyPI has it
+      # and fail with "No matching distribution". Poll until the version
+      # shows up (with a generous timeout to cover approval delay).
+      - name: Wait for PyPI to serve the version
+        if: steps.vars.outputs.version != ''
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          for attempt in $(seq 1 60); do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/attackmap/${VERSION}/json" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "attackmap ${VERSION} is live on PyPI (after ${attempt} attempt(s))."
+              exit 0
+            fi
+            echo "Waiting for attackmap ${VERSION} on PyPI (attempt ${attempt}/60, got HTTP ${code})..."
+            sleep 30
+          done
+          echo "PyPI never served attackmap ${VERSION} within 30 minutes." >&2
+          exit 1
+
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
