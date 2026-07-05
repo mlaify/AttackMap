@@ -283,6 +283,31 @@ own span so a sibling's guard is never miscredited. Results appear under
 the scan-level, route-cohort counterpart to the layered engine's
 `asymmetric_protection` insight.
 
+### Exploitability fusion ("Most exploitable now")
+
+Every signal AttackMap has about a route→sink path is fused into a single
+**0–100 exploitability score** so the highest-risk *combinations* rise to the
+top — the public, unauthenticated route whose request reaches a SQL sink next to
+a secret is a different animal from an internal, authed route that reaches the
+same sink two hops away. The score is:
+
+- **Deterministic** — the same scan always yields the same number; no
+  randomness, no clock.
+- **Explainable** — the score is the clamped sum of named factors, and every one
+  is shown. Contributing factors: sink danger (SQLi/RCE/deserialization highest),
+  exposure (public/internal/unknown), auth at the entry route, reachability
+  (fewer hops = higher), and data sensitivity at the sink (a co-located secret or
+  datastore), plus insecure-crypto / web-hardening gaps on the path as
+  amplifiers.
+
+Scores land on the relevant taint findings (`exploitability` + `exploitability_tier`)
+and in a ranked **`attackmap-exploitability.md`** report plus the `exploitability`
+array in `attackmap-report.json`; the console summary leads with the top few. For
+example, `public + no-auth + taint-to-eval (0 hops)` scores 90/100 (CRITICAL).
+(Dependency CVEs are manifest-level, not attributable to a specific source path,
+so they inform the report but aren't folded into a path's score — path-attributed
+CVE fusion is future work.)
+
 ### SBOM inventory
 
 Every scan also produces a lightweight SBOM by parsing direct dependencies out

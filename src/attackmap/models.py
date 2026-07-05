@@ -368,6 +368,39 @@ class AttackTechnique(BaseModel):
     url: str | None = None  # https://attack.mitre.org/techniques/T1190/
 
 
+ExploitabilityTier = Literal["critical", "high", "medium", "low"]
+
+
+class ExploitabilityFactor(BaseModel):
+    """One named, signed contribution to an exploitability score (#79).
+
+    Kept explicit so every score is explainable — the report shows exactly
+    which signals raised (or, at 0 points, notably did not raise) the number.
+    """
+
+    name: str  # e.g. "public exposure", "no auth at entry", "reaches sql_execute sink"
+    points: int
+    detail: str = ""  # concrete evidence for this factor
+
+
+class ExploitabilityScore(BaseModel):
+    """A fused 'exploitable now' score for one route→sink combination (#79).
+
+    Deterministic: the same scan always yields the same score, and `factors`
+    sums (before the 0–100 clamp) to `raw_score`, so nothing is hidden.
+    """
+
+    subject: str  # human label, e.g. "GET /search → sql_execute"
+    route: str
+    method: str
+    sink_kind: str
+    location: str  # sink file:line
+    score: int  # 0–100 (clamped)
+    raw_score: int  # pre-clamp sum of factor points
+    tier: ExploitabilityTier
+    factors: list[ExploitabilityFactor] = Field(default_factory=list)
+
+
 class Finding(BaseModel):
     title: str
     severity: Literal["low", "medium", "high"]
@@ -384,6 +417,10 @@ class Finding(BaseModel):
     # severity band). Computed from severity + confidence; used as a
     # secondary sort key. `None` means "not scored" for backward compat.
     score: int | None = None
+    # Fused 'exploitable now' score (#79), 0–100, with a tier. Set on
+    # findings that sit on a route→sink path; `None` when not applicable.
+    exploitability: int | None = None
+    exploitability_tier: ExploitabilityTier | None = None
 
 
 class AttackPath(BaseModel):
