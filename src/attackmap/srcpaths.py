@@ -51,4 +51,33 @@ def is_test_file(rel_path: str) -> bool:
     return _TEST_FILE_RE.search(parts[-1]) is not None
 
 
-__all__ = ["is_test_file"]
+# Conventional infrastructure / static routes that don't run application logic
+# on untrusted input: robots.txt, sitemap, favicon, `.well-known/*`, health /
+# liveness / readiness probes, metrics, ping/version/status. A taint chain or
+# exploitability score anchored on one of these is almost always import-walk
+# over-linking (the handler returns static bytes and never touches the sink),
+# so the detectors skip them. Central home so taint (#85) and exploitability
+# (#79) share one definition.
+_INFRA_ROUTE_RE = re.compile(
+    r"""
+    ^/?(?:
+        robots\.txt$ | sitemap(?:\.xml)?$ | favicon\.ico$ | \.well-known(?:/|$)
+      | (?:.*/)?_?health(?:z|check)?$ | (?:.*/)?livez$ | (?:.*/)?readyz$
+      | metrics$ | ping$ | version$ | status$
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def is_infra_route(path: str) -> bool:
+    """Return True if ``path`` is a conventional infra/static endpoint.
+
+    Honors ``ATTACKMAP_INCLUDE_INFRA_ROUTES`` — set it to scan these anyway
+    (e.g. auditing a health endpoint that really does hit a datastore)."""
+    if os.environ.get("ATTACKMAP_INCLUDE_INFRA_ROUTES"):
+        return False
+    return _INFRA_ROUTE_RE.search(path) is not None
+
+
+__all__ = ["is_test_file", "is_infra_route"]

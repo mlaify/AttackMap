@@ -82,6 +82,47 @@ def test_hop_zero_when_route_and_sink_share_file(tmp_path: Path) -> None:
     assert matches[0].files == [matches[0].route_file]
 
 
+def test_infra_routes_do_not_seed_taint(tmp_path: Path) -> None:
+    """A static/infra endpoint (robots.txt, .well-known, health) must not seed
+    a chain to a sink it merely shares a file with — #85 over-linking."""
+    (tmp_path / "handler.py").write_text(
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/robots.txt')\n"
+        "def robots():\n"
+        "    eval(request.args['x'])\n"
+        "    return 'User-agent: *'\n"
+        "@app.route('/xrpc/_health')\n"
+        "def health():\n"
+        "    eval(request.args['x'])\n"
+        "    return 'ok'\n"
+        "@app.route('/search')\n"
+        "def search():\n"
+        "    return eval(request.args['q'])\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    routes = {c.route_path for c in scan.taint_chains}
+    assert "/robots.txt" not in routes
+    assert "/xrpc/_health" not in routes
+    # a real application route in the same file still seeds normally
+    assert "/search" in routes
+
+
+def test_infra_route_opt_in_via_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("ATTACKMAP_INCLUDE_INFRA_ROUTES", "1")
+    (tmp_path / "h.py").write_text(
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/healthz')\n"
+        "def hz():\n"
+        "    return eval(request.args['q'])\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.route_path == "/healthz" for c in scan.taint_chains)
+
+
 def test_max_hops_bounds_walk(tmp_path: Path) -> None:
     """Route → a → b → c chain; only sinks at hop ≤ 2 should surface."""
     (tmp_path / "route.py").write_text(
