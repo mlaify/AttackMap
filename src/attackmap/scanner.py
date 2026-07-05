@@ -9,6 +9,7 @@ from pathlib import Path
 from .authz import analyze_authz
 from .crypto import find_crypto_weaknesses
 from .sbom import analyze_sbom
+from .srcpaths import is_test_file
 from .weaknesses import find_code_weaknesses
 from .webhardening import find_web_hardening_issues
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
@@ -575,13 +576,16 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
 
         _append_hardcoded_secret_hints(result, relative, content)
 
-        # Insecure crypto / weak randomness (#70). Content is already read,
-        # so this rides the same per-file pass rather than re-walking.
-        result.crypto_weaknesses.extend(find_crypto_weaknesses(content, relative))
-        # Web-hardening gaps (#71): CORS, CSRF, cookies, CSP, debug.
-        result.web_hardening_issues.extend(find_web_hardening_issues(content, relative))
-        # Novel vuln classes (#77): proto pollution, mass assignment, JWT, XXE.
-        result.code_weaknesses.extend(find_code_weaknesses(content, relative))
+        # The weakness passes below are noise in test scaffolding, so skip
+        # test/spec files by default (#67; ATTACKMAP_INCLUDE_TESTS opts in).
+        if not is_test_file(relative):
+            # Insecure crypto / weak randomness (#70). Content is already
+            # read, so this rides the per-file pass rather than re-walking.
+            result.crypto_weaknesses.extend(find_crypto_weaknesses(content, relative))
+            # Web-hardening gaps (#71): CORS, CSRF, cookies, CSP, debug.
+            result.web_hardening_issues.extend(find_web_hardening_issues(content, relative))
+            # Novel vuln classes (#77): proto pollution, mass assignment, JWT, XXE.
+            result.code_weaknesses.extend(find_code_weaknesses(content, relative))
 
     result.languages.sort()
     # Taint pass runs after regular signal extraction — it needs the

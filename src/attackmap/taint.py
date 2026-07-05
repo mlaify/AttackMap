@@ -33,6 +33,7 @@ from collections import deque
 from pathlib import Path
 
 from .models import Route, ScanResult, TaintChain
+from .srcpaths import is_test_file
 
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
@@ -272,6 +273,11 @@ def _index_repo(root: Path) -> dict[str, Path]:
         except ValueError:
             continue
         rel = _normalize_rel(str(path.relative_to(root)))
+        # Skip test/spec files by default (#67) — sinks in test scaffolding
+        # are a large false-positive source. `ATTACKMAP_INCLUDE_TESTS`
+        # opts back in.
+        if is_test_file(rel):
+            continue
         out[rel] = path
     return out
 
