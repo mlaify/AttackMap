@@ -187,6 +187,23 @@ template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findin
 are evidence, not proof; confidence tapers with hop distance. Chains appear in
 `attackmap-report.json` under `scan.taint_chains`.
 
+### Web hardening gaps
+
+Route- and config-level checks for common web misconfigurations, each an
+ATT&CK-mapped finding:
+
+| Kind | Catches | Severity |
+|---|---|---|
+| `cors_wildcard_credentials` | wildcard/reflected CORS origin **with** credentials | HIGH |
+| `csrf_disabled` | CSRF explicitly disabled / exempted | MEDIUM |
+| `insecure_cookie` | `httpOnly:false`, `secure:false`, `SameSite=None` without `Secure` | MEDIUM |
+| `weak_csp` | CSP allowing `'unsafe-inline'` / `'unsafe-eval'` | MEDIUM |
+| `debug_enabled` | debug mode / actuator wildcard exposure shipped on | MEDIUM |
+
+These detect *positively-present* misconfigurations rather than hard-to-judge
+absences (a wildcard CORS origin alone is fine — it's the pairing with
+credentials that's flagged). Results appear under `scan.web_hardening_issues`.
+
 ### Insecure cryptography & weak randomness
 
 A cheap per-file pass flags crypto misuse, each as a finding with an ATT&CK
