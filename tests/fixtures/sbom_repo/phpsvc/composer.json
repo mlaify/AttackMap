@@ -1,0 +1,12 @@
+{
+  "name": "acme/phpsvc",
+  "require": {
+    "php": ">=8.1",
+    "ext-json": "*",
+    "laminas/laminas-mvc": "^3.6",
+    "guzzlehttp/guzzle": "^7.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10"
+  }
+}

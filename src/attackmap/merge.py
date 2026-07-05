@@ -72,6 +72,10 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
             item.sink_line,
         ),
     ),
+    MergeRule(
+        "dependencies",
+        lambda item: (item.ecosystem, item.name, item.version, item.file, item.dev),
+    ),
 )
 
 

@@ -107,6 +107,29 @@ class SecretHint(BaseModel):
     kind: str = "env_reference"
 
 
+class DependencyHint(BaseModel):
+    """A single third-party dependency declared in a manifest (#48).
+
+    Emitted by the SBOM analyzer. Slice 1 covers direct dependencies
+    only (no lockfile parsing) — the ``version`` field carries whatever
+    the manifest wrote verbatim (``^4.16.0``, ``>=2,<3``, ``latest``,
+    etc.); consumers that need a resolved version look at lockfiles.
+    """
+
+    name: str
+    version: str
+    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer"]
+    file: str
+    line: int | None = None
+    # dev / build-only dependency (``devDependencies``, ``require-dev``,
+    # PEP-621 ``optional-dependencies[dev]``). Runtime consumers weight
+    # these differently: a dev-time RCE still matters, but a dev-only
+    # dep isn't part of the shipped attack surface.
+    dev: bool = False
+    evidence_text: str | None = None
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class TaintChain(BaseModel):
     """Cross-file data-flow evidence: a route reaches a sink via imports.
 
@@ -150,6 +173,7 @@ SignalKind = Literal[
     "framework",
     "secret",
     "taint",
+    "dependency",
 ]
 
 
@@ -339,6 +363,7 @@ class ScanResult(BaseModel):
     framework_hints: list[FrameworkHint] = Field(default_factory=list)
     secret_hints: list[SecretHint] = Field(default_factory=list)
     taint_chains: list[TaintChain] = Field(default_factory=list)
+    dependencies: list[DependencyHint] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property
@@ -428,6 +453,23 @@ class ScanResult(BaseModel):
                         "hops": str(tc.hops),
                         "sink_kind": tc.sink_kind,
                         "route_file": tc.route_file,
+                    },
+                )
+            )
+        for dep in self.dependencies:
+            signals.append(
+                Signal(
+                    kind="dependency",
+                    label=f"{dep.ecosystem}:{dep.name}@{dep.version}",
+                    file=dep.file,
+                    line=dep.line,
+                    evidence_text=dep.evidence_text,
+                    confidence=0.9,  # manifest declarations are hard evidence
+                    properties={
+                        "ecosystem": dep.ecosystem,
+                        "name": dep.name,
+                        "version": dep.version,
+                        "dev": "true" if dep.dev else "false",
                     },
                 )
             )

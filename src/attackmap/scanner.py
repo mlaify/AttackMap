@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 
+from .sbom import analyze_sbom
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import analyze_taint
 
@@ -574,6 +575,8 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
     # Taint pass runs after regular signal extraction — it needs the
     # route list to know where to seed source flows from (#45).
     result.taint_chains = analyze_taint(result, root_path)
+    # SBOM inventory: direct-dep parse of manifest files (#48, slice 1).
+    result.dependencies = analyze_sbom(root_path)
     return result
 
 
