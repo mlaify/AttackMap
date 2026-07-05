@@ -96,6 +96,10 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         "code_weaknesses",
         lambda item: (item.kind, item.file, item.line),
     ),
+    MergeRule(
+        "anomalies",
+        lambda item: (item.kind, item.route_method, item.route_path, item.route_file),
+    ),
 )
 
 

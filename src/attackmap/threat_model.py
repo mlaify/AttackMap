@@ -811,6 +811,43 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
 }
 
 
+_ANOMALY_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "auth_outlier": {
+        "severity": "high",
+        "title": "Authorization outlier — route missing an auth check its siblings enforce",
+        "mitigation": "Confirm whether the flagged route is intended to be public. If not, apply the same auth/authorization guard its sibling routes use (decorator, middleware, or policy). Inconsistent enforcement across a resource cohort is a common source of broken access control.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "validation_outlier": {
+        "severity": "medium",
+        "title": "Validation outlier — handler skips input validation its peers apply",
+        "mitigation": "Apply the same input validation/schema its sibling handlers use. An unvalidated state-changing endpoint among validated peers is a likely gap for injection or malformed-input bugs.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "method_outlier": {
+        "severity": "medium",
+        "title": "Method outlier — lone state-changing endpoint in a read-only cohort",
+        "mitigation": "Verify the state-changing endpoint is intended and adequately protected. A single write method among an otherwise read-only resource cohort can indicate an accidentally-exposed mutation.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+}
+
+
+def _numeric_to_confidence(value: float) -> str:
+    """Map an anomaly's numeric confidence onto the Finding scale."""
+    if value >= 0.75:
+        return "high"
+    if value >= 0.55:
+        return "medium"
+    return "low"
+
+
 def _taint_by_route_file(scan: ScanResult) -> dict[str, list[TaintChain]]:
     """Group taint chains by originating route file for fast lookup."""
     out: dict[str, list[TaintChain]] = {}
@@ -1353,6 +1390,46 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["novel-vuln"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
+
+    # Anomaly / outlier findings (#78). One aggregated finding per kind,
+    # each evidence line naming the peer group and the deviation. The
+    # finding's confidence tracks the strongest (most consistent) cohort.
+    anomalies_by_kind: dict[str, list] = {}
+    for anomaly in scan.anomalies:
+        anomalies_by_kind.setdefault(anomaly.kind, []).append(anomaly)
+    for kind, spec in _ANOMALY_FINDING_SPEC.items():
+        items = anomalies_by_kind.get(kind)
+        if not items:
+            continue
+        items.sort(key=lambda a: -a.confidence)
+        evidence = []
+        for a in items[:10]:
+            loc = f"{a.route_file}:{a.route_line}" if a.route_line else a.route_file
+            peers = f" (peers: {', '.join(a.peer_examples)})" if a.peer_examples else ""
+            evidence.append(
+                f"{a.route_method} {a.route_path} [{loc}] — {a.deviation}{peers} "
+                f"[confidence={a.confidence:.2f}]"
+            )
+        if len(items) > 10:
+            evidence.append(f"+{len(items) - 10} more outlier(s)")
+        findings.append(
+            Finding(
+                title=spec["title"],
+                severity=spec["severity"],  # type: ignore[arg-type]
+                evidence=evidence,
+                mitigation=spec["mitigation"],
+                confidence=_numeric_to_confidence(items[0].confidence),
+                tags=["anomaly"],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],

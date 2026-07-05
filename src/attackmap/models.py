@@ -154,6 +154,32 @@ class CodeWeakness(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class Anomaly(BaseModel):
+    """A within-repo consistency outlier — the odd-one-out in a peer group (#78).
+
+    Emitted by the `anomalies` analyzer. Rather than matching a known-bad
+    signature, it flags a route that deviates from the norm its siblings
+    establish: peers in the same resource cohort carry an auth/validation
+    signal (or are read-only) and this one doesn't. The bigger and more
+    consistent the peer group, the more likely the deviation is a mistake —
+    so `confidence` scales with `consistent_peers`.
+    """
+
+    kind: Literal["auth_outlier", "validation_outlier", "method_outlier"]
+    route_path: str
+    route_method: str
+    route_file: str
+    route_line: int | None = None
+    peer_group: str  # the shared path-prefix cohort key (e.g. "api/users")
+    peer_group_size: int  # total sibling routes in the cohort
+    consistent_peers: int  # siblings that exhibit the norm this route breaks
+    deviation: str  # human-readable description of what is odd
+    peer_examples: list[str] = Field(default_factory=list)  # sample "METHOD path" peers
+    severity: Literal["low", "medium", "high"] = "medium"
+    confidence: float = 0.5
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class WebHardeningIssue(BaseModel):
     """A web-hardening misconfiguration (#71).
 
@@ -485,6 +511,7 @@ class ScanResult(BaseModel):
     crypto_weaknesses: list[CryptoWeakness] = Field(default_factory=list)
     web_hardening_issues: list[WebHardeningIssue] = Field(default_factory=list)
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
+    anomalies: list[Anomaly] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property
