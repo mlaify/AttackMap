@@ -16,6 +16,7 @@ from .analyzers import (
     resolve_run_analyzers,
     select_requested_analyzers,
 )
+from .cve import query_vulnerabilities
 from .diff import (
     FindingSnapshot,
     diff_findings,
@@ -77,6 +78,11 @@ def analyze(
         "--fail-on-new-high",
         help="Exit non-zero if the diff introduces any new HIGH-severity findings. Requires --baseline.",
     ),
+    cve: bool = typer.Option(
+        False,
+        "--cve",
+        help="Cross-reference SBOM entries against OSV.dev and surface vulnerable dependencies as findings. Cached under ~/.attackmap/cache/osv/ (24h TTL). Off by default because it does network I/O.",
+    ),
 ) -> None:
     repo_path = Path(path).resolve()
     if not repo_path.exists():
@@ -98,6 +104,17 @@ def analyze(
 
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
     scan = analyze_repository(repo_path, analyzers=active_analyzers)
+    if cve and scan.dependencies:
+        typer.echo(f"Checking {len(scan.dependencies)} dependencies against OSV.dev…")
+        vulns, cve_summary = query_vulnerabilities(scan.dependencies)
+        scan.vulnerabilities = vulns
+        typer.echo(
+            f"CVE lookup: {len(vulns)} vulnerabilit"
+            f"{'y' if len(vulns) == 1 else 'ies'} across "
+            f"{cve_summary.queried} query(s), {cve_summary.cached} cache hit(s), "
+            f"{cve_summary.skipped_no_version} skipped (no queryable version), "
+            f"{cve_summary.network_errors} network error(s)."
+        )
     graph = build_graph(scan)
     analysis = translate_recon(scan)
     attack_surfaces = analysis.attack_surfaces

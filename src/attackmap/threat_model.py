@@ -938,6 +938,48 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    # #60 — CVE hits on SBOM entries. One Finding per vulnerable dep,
+    # aggregating every advisory affecting it in the evidence list.
+    vulns_by_pkg: dict[tuple[str, str, str], list] = {}
+    for vuln in scan.vulnerabilities:
+        vulns_by_pkg.setdefault(
+            (vuln.ecosystem, vuln.package_name, vuln.package_version), []
+        ).append(vuln)
+    for (eco, name, version), pkg_vulns in vulns_by_pkg.items():
+        top_severity = min(
+            (_severity_rank(v.severity) for v in pkg_vulns), default=_severity_rank("medium")
+        )
+        title_severity_word = {0: "critical", 1: "moderate", 2: "low"}.get(top_severity, "moderate")
+        evidence_lines: list[str] = []
+        for v in sorted(pkg_vulns, key=lambda x: (_severity_rank(x.severity), x.id)):
+            summary_snip = (v.summary[:120] + "…") if len(v.summary) > 120 else v.summary
+            aliases = f" (aka {', '.join(v.aliases[:3])})" if v.aliases else ""
+            score = f" CVSS {v.cvss_score:.1f}" if v.cvss_score is not None else ""
+            ref = v.references[0] if v.references else ""
+            ref_part = f" — {ref}" if ref else ""
+            evidence_lines.append(
+                f"{v.id}{aliases} [{v.severity}{score}]: {summary_snip}{ref_part}"
+            )
+        finding_severity = "high" if top_severity == 0 else ("medium" if top_severity == 1 else "low")
+        findings.append(
+            Finding(
+                title=f"Vulnerable dependency: {name}@{version} ({eco})",
+                severity=finding_severity,  # type: ignore[arg-type]
+                evidence=[
+                    f"{len(pkg_vulns)} known advisor{'y' if len(pkg_vulns) == 1 else 'ies'} for "
+                    f"{title_severity_word}-severity impact",
+                    *evidence_lines[:10],
+                ],
+                mitigation=(
+                    f"Upgrade `{name}` beyond the affected range shown, verify no direct"
+                    " or transitive callers depend on removed symbols, and re-run"
+                    " `attackmap analyze --cve` to confirm the finding clears."
+                ),
+                confidence="high",
+                tags=["cve", "dependency", eco],
+            )
+        )
+
     # Severe taint sinks (eval/exec/subprocess_shell) are worth surfacing
     # even outside the framework-MVC gate that `chains` sits behind (#45).
     severe_taints = [

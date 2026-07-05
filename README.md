@@ -170,7 +170,34 @@ of the common manifest files:
 Each entry appears in `attackmap-report.json` under `scan.dependencies` with
 `{name, version, ecosystem, file, dev}`. Version ranges are kept verbatim
 (`^4.16.0`, `>=2,<3`, `latest`) — this slice does not resolve lockfiles.
-CVE cross-referencing is deferred to a follow-up ticket.
+
+### CVE cross-reference (opt-in)
+
+`attackmap analyze --cve` cross-references every SBOM entry against
+[OSV.dev](https://osv.dev) and emits one finding per vulnerable dependency
+(all known advisories aggregated in the evidence list). CVSS scores map into
+low/medium/high — anything ≥ 7.0 is HIGH.
+
+```bash
+attackmap analyze . --cve
+```
+
+- **Off by default.** The flag exists precisely because CVE lookup does
+  network I/O; regular scans stay offline.
+- **Cached** under `~/.attackmap/cache/osv/` keyed by
+  `sha256(ecosystem+name+version)`. TTL is 24h by default, overridable via
+  `ATTACKMAP_OSV_CACHE_TTL_HOURS`. Repeat scans of the same repo don't hit
+  the network.
+- **Offline-tolerant.** If the network's unavailable but the cache is warm,
+  cached results still surface; only fresh queries are skipped.
+- **Version resolution is best-effort.** Manifest ranges (`^4.16.0`,
+  `>=2.28,<3`) resolve to a queryable lower-bound; OSV does the range math.
+  Unpinned specs (`*`, `latest`) are skipped.
+
+The structured vulnerability list is available under
+`scan.vulnerabilities` in `attackmap-report.json` with
+`{id, aliases, summary, severity, cvss_score, references, affected_range,
+package_name, package_version, ecosystem}`.
 
 ---
 
