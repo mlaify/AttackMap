@@ -110,6 +110,75 @@ def test_safe_xml_parser_not_flagged() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ReDoS (gated to regex context)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "const re = /^(a+)+$/\n",
+        "re.compile(r'^(\\d+)*$')\n",
+        "const r = new RegExp('(.*)*!')\n",
+        "pattern = /(x|x)*y/\n".replace("(x|x)", "(x+)"),  # (x+)*
+    ],
+)
+def test_redos_detected(content: str) -> None:
+    assert "redos" in _kinds(content)
+
+
+def test_arithmetic_not_flagged_as_redos() -> None:
+    # A quantifier-looking arithmetic expression outside a regex context.
+    assert "redos" not in _kinds("result = (x + 1) * 2\ntotal = (a+b)*c\n")
+
+
+def test_safe_regex_not_flagged() -> None:
+    assert "redos" not in _kinds("const re = /^[a-z]+$/\nre.compile(r'\\d{3}-\\d{4}')\n")
+
+
+# ---------------------------------------------------------------------------
+# Insecure file upload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "f.save(os.path.join(UPLOAD_DIR, f.filename))\n",
+        "fs.writeFileSync(dest, req.file.originalname)\n",
+        "const p = path.join(dir, file.originalname)\n",
+    ],
+)
+def test_insecure_upload_detected(content: str) -> None:
+    assert "insecure_upload" in _kinds(content)
+
+
+def test_server_named_upload_not_flagged() -> None:
+    assert "insecure_upload" not in _kinds("f.save(os.path.join(UPLOAD_DIR, uuid4().hex))\n")
+
+
+# ---------------------------------------------------------------------------
+# GraphQL exposure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "const server = new ApolloServer({ introspection: true })\n",
+        "GraphQLView.as_view('graphql', schema=schema, graphiql=True)\n",
+        "new ApolloServer({ playground: true })\n",
+    ],
+)
+def test_graphql_exposure_detected(content: str) -> None:
+    assert "graphql_exposure" in _kinds(content)
+
+
+def test_graphql_disabled_not_flagged() -> None:
+    assert "graphql_exposure" not in _kinds("new ApolloServer({ introspection: false })\n")
+
+
+# ---------------------------------------------------------------------------
 # open_redirect (taint sink) via scan_repo
 # ---------------------------------------------------------------------------
 

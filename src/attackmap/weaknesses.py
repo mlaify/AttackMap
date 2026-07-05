@@ -102,6 +102,52 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
             r"|FEATURE_SECURE_PROCESSING[^;\n]*false"
         ),
     ),
+    # --- ReDoS (catastrophic backtracking) ------------------------------
+    # A quantified group whose body also has a quantifier — (a+)+, (.*)*,
+    # (\d+)*. Gated to a REGEX context (regex literal, re.* call, or
+    # RegExp constructor) so arithmetic like `(x+1)*2` isn't flagged.
+    (
+        "redos",
+        "medium",
+        # JS regex literal: /.../ containing a nested quantifier.
+        re.compile(r"/[^/\n]*\([^()\n]*[+*][^()\n]*\)[+*][^/\n]*/"),
+    ),
+    (
+        "redos",
+        "medium",
+        # Python re.* with a nested-quantifier pattern string.
+        re.compile(
+            r"\bre\.(?:compile|match|search|fullmatch|findall|finditer|sub|subn|split)"
+            r"\s*\(\s*[rbuRBU]*['\"][^'\"\n]*\([^()\n]*[+*][^()\n]*\)[+*]"
+        ),
+    ),
+    (
+        "redos",
+        "medium",
+        re.compile(r"\bnew\s+RegExp\s*\(\s*['\"][^'\"\n]*\([^()\n]*[+*][^()\n]*\)[+*]"),
+    ),
+    # --- insecure file upload -------------------------------------------
+    (
+        "insecure_upload",
+        "high",
+        # Werkzeug FileStorage saved with the client-supplied filename
+        # (path traversal / overwrite), or Multer originalname into a write.
+        _rx(
+            r"\.save\s*\([^)]*\.filename\b"
+            r"|(?:writeFile|writeFileSync|createWriteStream)\s*\([^)]*\.originalname\b"
+            r"|path\.join\s*\([^)]*\.originalname\b"
+        ),
+    ),
+    # --- GraphQL exposure -----------------------------------------------
+    (
+        "graphql_exposure",
+        "low",
+        _rx(
+            r"\bintrospection\s*:\s*true"
+            r"|\bgraphiql\s*[:=]\s*(?:true|True)"
+            r"|\bplayground\s*:\s*true"
+        ),
+    ),
 )
 
 

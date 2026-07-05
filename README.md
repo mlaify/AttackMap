@@ -186,8 +186,11 @@ ATT&CK mapping:
 Beyond the taint sinks, a per-file pass flags additional undisclosed-vuln
 classes (`scan.code_weaknesses`): **prototype pollution** (`__proto__` writes,
 deep-merge of a request object), **mass assignment** (a whole request body bound
-to a model), **JWT weaknesses** (`alg=none`, signature verification off), and
-**XXE** (XML parsers with external entities enabled).
+to a model), **JWT weaknesses** (`alg=none`, signature verification off), **XXE**
+(XML parsers with external entities enabled), **ReDoS** (regexes with
+catastrophic backtracking), **insecure upload** (a file saved under a
+client-controlled name/path), and **GraphQL exposure** (introspection/playground
+left on).
 
 Sinks that are only dangerous with attacker-controlled input (SSRF, SSTI, NoSQL,
 open redirect, `open`) are gated on a request-shaped identifier in the call — a constant URL or
