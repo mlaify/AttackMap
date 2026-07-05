@@ -60,6 +60,32 @@ _JS_IMPORT_RE = re.compile(
 
 # --- Sink patterns ---------------------------------------------------------
 
+# Request-shaped identifiers. Used to gate sinks that are only dangerous
+# when they consume attacker-controlled input (open, outbound HTTP,
+# template render, Mongo filter). Sinks that are dangerous regardless
+# (eval, exec, deserialization) don't reference this — reachability from
+# a route is enough.
+#
+# Deliberately conservative. The precise signal for "attacker-controlled"
+# is a *member access or subscript on a request container* —
+# `req.query.url`, `request.args['x']`, `body['id']`, `params.slug` — not
+# a bare identifier. Gating on a bare token drowns real findings: the JS
+# Fetch API idiom `fetch(request)` takes a `Request` object literally
+# named `request`, and generic names like `url`/`path`/`target` match
+# nearly every outbound call (observed 600+ false SSRF hits on a real
+# repo before this was tightened). Requiring the trailing `.`/`[` cuts
+# that noise while keeping the genuine `req.query.url` shape.
+#
+# `_TAINTED` = a request container token immediately followed by property
+# access (`.field`) or subscript (`[`). We accept lower recall for far
+# higher precision; true data-flow to a variable's origin is out of scope
+# for this heuristic engine.
+_TAINTED = (
+    r"(?:req|request|body|query|params|payload|user_input|user_data|form_data)"
+    r"\s*(?:\.\s*\w|\[)"
+)
+
+
 _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "sql_execute",
@@ -92,10 +118,83 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "dynamic_open",
         # `open(...)` with a request-shaped identifier in the args
         # (heuristic; misses variables assigned from tainted input).
+        re.compile(rf"(?<![\w.])open\s*\([^)]*{_TAINTED}"),
+    ),
+    # --- unsafe deserialization (#68) --------------------------------------
+    # Dangerous regardless of args: attacker-controlled bytes into any of
+    # these is arbitrary-code / object-injection territory.
+    (
+        "unsafe_deserialization",
+        # pickle / cPickle .load / .loads
+        re.compile(r"\b(?:cPickle|pickle)\.loads?\s*\("),
+    ),
+    (
+        "unsafe_deserialization",
+        # yaml.load WITHOUT a Safe loader in the same call, plus the
+        # explicitly-unsafe helper.
+        re.compile(r"\byaml\.load\s*\((?![^)]*(?:Safe|Loader\s*=))"),
+    ),
+    (
+        "unsafe_deserialization",
+        re.compile(r"\byaml\.unsafe_load\s*\("),
+    ),
+    (
+        "unsafe_deserialization",
+        re.compile(r"\bmarshal\.loads?\s*\("),
+    ),
+    (
+        "unsafe_deserialization",
+        # Ruby Marshal.load, Java ObjectInputStream, PHP unserialize,
+        # JS node-serialize .unserialize
+        re.compile(r"\bMarshal\.load\s*\(|\bObjectInputStream\b|\bunserialize\s*\("),
+    ),
+    # --- server-side template injection (#68) ------------------------------
+    (
+        "ssti",
+        # Flask/Jinja render_template_string with request-shaped input,
+        # or a Jinja Template() constructed straight from request input.
+        re.compile(rf"\brender_template_string\s*\([^)]*{_TAINTED}"),
+    ),
+    (
+        "ssti",
+        re.compile(rf"\bTemplate\s*\([^)]*{_TAINTED}"),
+    ),
+    # --- server-side request forgery (#68) ---------------------------------
+    # Outbound HTTP where a request container access flows into the call.
+    # A constant URL is fine, so these are gated on _TAINTED.
+    (
+        "ssrf",
         re.compile(
-            r"(?<![\w.])open\s*\([^)]*"
-            r"\b(?:req|request|body|query|params|payload|user_input|user_data|form|args)\b",
+            rf"\brequests\.(?:get|post|put|delete|patch|head|request)\s*\([^)]*{_TAINTED}"
         ),
+    ),
+    (
+        "ssrf",
+        re.compile(rf"\bhttpx\.(?:get|post|put|delete|patch|head|request|Client)\s*\([^)]*{_TAINTED}"),
+    ),
+    (
+        "ssrf",
+        re.compile(rf"\b(?:urlopen|urlretrieve)\s*\([^)]*{_TAINTED}"),
+    ),
+    (
+        "ssrf",
+        # JS: axios.get(req...), fetch(req...), http.get(req...)
+        re.compile(
+            rf"\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\([^)]*{_TAINTED}"
+        ),
+    ),
+    # --- NoSQL injection (#68) ---------------------------------------------
+    (
+        "nosql_injection",
+        # Passing a request object straight into a Mongo query filter.
+        re.compile(
+            rf"\.(?:find|findOne|findOneAndUpdate|update|updateOne|updateMany|remove|deleteOne|deleteMany|aggregate|count|countDocuments)\s*\(\s*{_TAINTED}"
+        ),
+    ),
+    (
+        "nosql_injection",
+        # $where with any interpolation is an injection risk.
+        re.compile(r"\$where"),
     ),
 )
 

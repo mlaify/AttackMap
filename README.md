@@ -154,6 +154,30 @@ on unrelated commits, so a finding that persists across scans has the same id
 in both. The diff has three sections — **New**, **Persisted**, **Resolved** —
 which drop cleanly into a PR comment.
 
+### Data-flow / injection detection
+
+A lightweight taint pass (Python + JS/TS) walks the import graph up to two hops
+from each route handler and flags dangerous sinks reachable from an entry point.
+Each sink kind that a route can reach produces a dedicated finding with an
+ATT&CK mapping:
+
+| Sink kind | What it catches | Severity |
+|---|---|---|
+| `eval` / `exec` | Request-reachable code execution | HIGH |
+| `subprocess_shell` | OS command execution (`shell=True`, `child_process.exec`) | HIGH |
+| `unsafe_deserialization` | `pickle.loads`, `yaml.load` (no SafeLoader), `marshal`, `node-serialize` | HIGH |
+| `ssti` | Server-side template injection (`render_template_string`, `Template(req…)`) | HIGH |
+| `ssrf` | Request-derived URL into `requests`/`httpx`/`urlopen`/`axios`/`fetch` | MEDIUM |
+| `nosql_injection` | Request object as a Mongo filter, or `$where` | MEDIUM |
+| `sql_execute` | Cursor/session `.execute`/`.query` reachable from a route | (feeds attack paths) |
+| `dynamic_open` | `open()` with request-shaped path | (feeds attack paths) |
+
+Sinks that are only dangerous with attacker-controlled input (SSRF, SSTI, NoSQL,
+`open`) are gated on a request-shaped identifier in the call — a constant URL or
+template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findings
+are evidence, not proof; confidence tapers with hop distance. Chains appear in
+`attackmap-report.json` under `scan.taint_chains`.
+
 ### SBOM inventory
 
 Every scan also produces a lightweight SBOM by parsing direct dependencies out

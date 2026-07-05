@@ -143,11 +143,12 @@ def test_severe_taint_produces_finding_outside_framework_gate() -> None:
     not clear the `_is_framework_mvc_scan` gate."""
     scan = scan_repo(PY_REPO)
     findings = generate_findings(scan)
-    severe = [
-        f for f in findings if "taint-chain" in f.tags or "code / command execution" in f.title
-    ]
+    severe = [f for f in findings if "taint-chain" in f.tags]
     assert severe, "expected a severe-taint finding"
-    assert severe[0].severity == "high"
+    # The fixture has an eval sink (/calc) and a subprocess sink (/deploy)
+    # — both HIGH per the per-kind spec (#68).
+    assert any(f.severity == "high" for f in severe)
+    assert any("code execution via eval" in f.title for f in severe)
 
 
 def test_analyze_taint_handles_empty_scan(tmp_path: Path) -> None:
