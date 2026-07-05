@@ -195,6 +195,11 @@ template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findin
 are evidence, not proof; confidence tapers with hop distance. Chains appear in
 `attackmap-report.json` under `scan.taint_chains`.
 
+Test and spec files (`tests/`, `__tests__/`, `*.test.*`, `test_*.py`, …) are
+excluded from all the heuristic passes above by default, since dangerous
+patterns in test scaffolding are rarely real exposure. Set
+`ATTACKMAP_INCLUDE_TESTS=1` to scan them too (e.g. for test-quality reviews).
+
 ### Web hardening gaps
 
 Route- and config-level checks for common web misconfigurations, each an
