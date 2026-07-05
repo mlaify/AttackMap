@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-05
+
+Third feature release — the vulnerability-hunting arc. Adds injection-sink and
+novel vuln-class detection, insecure-crypto and web-hardening checks, BOLA/IDOR,
+within-repo anomaly/outlier detection, a deterministic exploitability score, an
+LLM vulnerability-hypothesis mode (`--hunt`), and a live scan progress bar —
+while tightening precision (test/spec and infra/static-route exclusion) and
+holding the precision-first line on every detector.
+
 ### Added
 
 - **Injection sink detection (#68).** The taint engine gained four new

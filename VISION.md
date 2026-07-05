@@ -54,7 +54,7 @@ an optional LLM-narrated review and a PR-diff mode.
 
 ## Roadmap
 
-Status as of v0.2.0.
+Status as of v0.3.0.
 
 ### Phase 1 — Signal Quality — *ongoing*
 Cleaner, more accurate signals; precision-first heuristics (e.g. request-container
@@ -62,6 +62,9 @@ gating on injection sinks).
 
 ### Phase 2 — Risk Scoring — *shipped, deepening*
 Severity × confidence scoring and triage ordering; CVSS-mapped CVE severity.
+Deterministic, explainable **exploitability fusion** (0–100 "exploitable now"
+score) that ranks route→sink combinations by sink danger, exposure, entry auth,
+reachability, and data sensitivity.
 
 ### Phase 3 — Distributed System Modeling — *shipped*
 Service topology graph and trust boundaries, exported to Mermaid/Graphviz.
@@ -75,17 +78,25 @@ gating for CI.
 
 ### Phase 6 — Data-Flow & Authorization — *shipped, expanding*
 Import-graph taint for injection sinks (SSRF, SSTI, NoSQL, deserialization,
-code/command execution) and BOLA/IDOR detection. Expanding to more languages,
-query-parameter/RPC-method authorization, and insecure-crypto / web-hardening
-checks.
+code/command execution, open redirect) and BOLA/IDOR detection. Insecure-crypto /
+weak-randomness and web-hardening (CORS/CSRF/cookies/CSP/debug) checks shipped.
+Expanding to more languages and query-parameter/RPC-method authorization.
 
 ### Phase 7 — Analyzer Ecosystem — *live*
 14 community-installable analyzer plugins auto-discovered via entry points;
 `attackmap suggest` recommends the right set per repository.
 
-### Phase 8 — Local AI Integration — *planned*
-Optional fully-local LLM narrative (today's `--llm` uses the Anthropic API or the
-`claude` CLI).
+### Phase 8 — Novel Vulnerability Hunting — *shipped*
+Detectors for bug classes beyond the taint families (prototype pollution, mass
+assignment, JWT weakness, XXE, ReDoS, insecure upload, GraphQL exposure);
+within-repo **anomaly / outlier** detection (the odd-one-out among sibling
+routes); and **`--hunt`**, an LLM red-team mode that proposes evidence-cited,
+human-verifiable exploit-chain *hypotheses* (leads, not detections) — the honest
+core of the "find the unknown" ask.
+
+### Phase 9 — Local AI Integration — *planned*
+Optional fully-local LLM narrative (today's `--llm` / `--hunt` use the Anthropic
+API or the `claude` CLI).
 
 ## Long-Term Vision
 

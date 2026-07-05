@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.2.0).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.3.0).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -58,7 +58,7 @@ Read `reports/defensive-review.md` (heuristic) and `reports/defensive-review-llm
 ```bash
 pip install attackmap                  # core only
 pip install "attackmap[llm]"           # add LLM narrative support
-pip install "attackmap[all]"           # core + LLM + all 13 analyzer plugins
+pip install "attackmap[all]"           # core + LLM + all 14 analyzer plugins
 ```
 
 You can also install individual analyzer plugins on demand:
@@ -482,7 +482,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.2.0) — published and validated on real codebases, but
+AttackMap is **beta** (v0.3.0) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
@@ -491,11 +491,22 @@ pre-1.0 and heuristic.
 - Framework-aware route extraction (FastAPI/Flask/Express/Spring/axum/chi/…).
 - Asset + control modeling, cross-cutting insight engine, chain-aware threat model.
 - Injection / data-flow detection: SSRF, SSTI, NoSQL, unsafe deserialization,
-  eval/exec/shell, SQL, dynamic file open — request-container-gated for precision.
+  eval/exec/shell, SQL, dynamic file open, open redirect — request-container-gated
+  for precision.
+- Novel vuln-class detectors: prototype pollution, mass assignment, JWT weakness,
+  XXE, ReDoS, insecure upload, GraphQL exposure.
 - BOLA/IDOR authorization detection on path-template routes.
+- Insecure-crypto / weak-randomness and web-hardening (CORS/CSRF/cookies/CSP/debug)
+  detection.
+- Anomaly / outlier detection (the odd-one-out among sibling routes) and
+  **exploitability fusion** — a deterministic, explainable 0–100 "exploitable now"
+  score that ranks route→sink combinations.
+- **`--hunt`**: LLM vulnerability-hypothesis mode — evidence-cited, human-verifiable
+  exploit-chain leads (not detections).
 - SBOM inventory (5 ecosystems) + OSV.dev CVE cross-reference (`--cve`).
 - Output: Markdown + JSON + **SARIF 2.1.0** (GitHub Code Scanning) + **Mermaid /
   Graphviz** diagrams; **diff/baseline** mode for PR gating; optional LLM narrative.
+- Live scan progress bar + ETA; test/spec files excluded from heuristic passes.
 - Distribution: `pip install attackmap[all]`, `brew install mlaify/tap/attackmap`,
   `docker pull ghcr.io/mlaify/attackmap`.
 
@@ -503,9 +514,11 @@ pre-1.0 and heuristic.
 
 - Taint + BOLA are Python + JS/TS and path-template scoped; query-param / RPC-method
   authorization and more languages are planned.
-- CVE lookup resolves a best-effort concrete version, not full lockfile ranges.
-- Test-file exclusion for the taint pass is in progress ([#67](https://github.com/mlaify/AttackMap/issues/67)).
-- Insecure-crypto and web-hardening detection are in flight ([#70](https://github.com/mlaify/AttackMap/issues/70), [#71](https://github.com/mlaify/AttackMap/issues/71)).
+- The import-graph taint walk approximates call-edges with import-edges — precision
+  over recall; findings are evidence, not proof.
+- CVE lookup resolves a best-effort concrete version, not full lockfile ranges, and
+  isn't yet fused into per-path exploitability scores.
+- Anomaly / exploitability reasoning is route-cohort and taint-chain scoped.
 
 ---
 
