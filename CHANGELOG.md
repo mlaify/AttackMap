@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-05
+
+Patch release — a precision fix surfaced by real-world testing against OWASP
+Juice Shop.
+
 ### Fixed
 
 - **Taint: deserialization/eval/exec sinks no longer over-fire on static/local

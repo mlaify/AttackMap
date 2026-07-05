@@ -54,7 +54,7 @@ an optional LLM-narrated review and a PR-diff mode.
 
 ## Roadmap
 
-Status as of v0.3.0.
+Status as of v0.3.1.
 
 ### Phase 1 — Signal Quality — *ongoing*
 Cleaner, more accurate signals; precision-first heuristics (e.g. request-container
