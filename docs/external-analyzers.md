@@ -234,7 +234,7 @@ the route file).
    publish, the Pending Publisher converts to a Configured one and the
    3-pending-publisher slot is freed.
 
-## Reference: the 13 official analyzers
+## Reference: the 14 official analyzers
 
 Each of these lives in its own repo under [`mlaify/`](https://github.com/orgs/mlaify/repositories?q=attackmap-analyzer)
 and ships to PyPI. Source-read any of them for a real, working analyzer.
@@ -247,6 +247,7 @@ and ships to PyPI. Source-read any of them for a real, working analyzer.
 | [`attackmap-analyzer-java-spring`](https://github.com/mlaify/attackmap-analyzer-java-spring) | Spring Boot, JAX-RS, Ktor; Spring Data; Spring Security |
 | [`attackmap-analyzer-dotnet`](https://github.com/mlaify/attackmap-analyzer-dotnet) | ASP.NET Core, EF Core, Identity, JwtBearer |
 | [`attackmap-analyzer-terraform`](https://github.com/mlaify/attackmap-analyzer-terraform) | AWS/Azure/GCP, IAM wildcards, open SGs, secrets |
+| [`attackmap-analyzer-iac`](https://github.com/mlaify/attackmap-analyzer-iac) | Dockerfile, docker-compose, GitHub Actions, `.env` templates, shell installers |
 | [`attackmap-analyzer-c`](https://github.com/mlaify/attackmap-analyzer-c) | libmicrohttpd, civetweb, mongoose; libcurl; OpenSSL/libsodium |
 | [`attackmap-analyzer-cpp`](https://github.com/mlaify/attackmap-analyzer-cpp) | Crow, Pistache, Drogon, cpprestsdk; libcurl/cpr; libpqxx/mongocxx |
 | [`attackmap-analyzer-node-service`](https://github.com/mlaify/attackmap-analyzer-node-service) | Node.js / TypeScript service ecosystems |

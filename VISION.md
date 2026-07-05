@@ -35,39 +35,57 @@ Free, open-source, local-first, and community-driven.
 ## What AttackMap Does
 
 ### Understand
-Languages, frameworks, services, protocols, entry points, data stores, dependencies.
+Languages, frameworks, services, protocols, entry points, data stores, and
+third-party dependencies (with an SBOM inventory and optional OSV.dev CVE
+cross-reference).
 
 ### Model
-Service graphs, trust boundaries, data flow, privilege relationships, protocol surface.
+Service graphs, trust boundaries, request-to-sink data flow, privilege and
+object-ownership relationships, protocol surface.
 
 ### Reason
-Exposure, trust, sensitivity, reachability, boundary crossings.
+Exposure, trust, sensitivity, reachability, boundary crossings, injection sinks,
+and broken object-level authorization.
 
 ### Report
-System overview, attack surface, strengths, weaknesses, evidence chains, recommendations.
+System overview, attack surface, strengths, weaknesses, evidence chains, and
+recommendations — as Markdown, JSON, SARIF, and Mermaid/Graphviz diagrams, with
+an optional LLM-narrated review and a PR-diff mode.
 
 ## Roadmap
 
-### Phase 1 — Signal Quality
-Cleaner, more accurate signals.
+Status as of v0.2.0.
 
-### Phase 2 — Risk Scoring
-Better prioritization and ranking.
+### Phase 1 — Signal Quality — *ongoing*
+Cleaner, more accurate signals; precision-first heuristics (e.g. request-container
+gating on injection sinks).
 
-### Phase 3 — Distributed System Modeling
-Service topology and trust boundaries.
+### Phase 2 — Risk Scoring — *shipped, deepening*
+Severity × confidence scoring and triage ordering; CVSS-mapped CVE severity.
 
-### Phase 4 — Protocol Awareness
-Support for modern protocols like ATProto.
+### Phase 3 — Distributed System Modeling — *shipped*
+Service topology graph and trust boundaries, exported to Mermaid/Graphviz.
 
-### Phase 5 — Review Mode Maturity
-High-quality defensive reports.
+### Phase 4 — Protocol Awareness — *shipped*
+AT Protocol (Bluesky) analyzer with XRPC/lexicon awareness.
 
-### Phase 6 — Local AI Integration
-Optional local LLM support.
+### Phase 5 — Review Mode Maturity — *shipped*
+High-quality defensive reports with evidence chains, SARIF, and diff/baseline
+gating for CI.
 
-### Phase 7 — Analyzer Ecosystem
-Community-driven extensibility.
+### Phase 6 — Data-Flow & Authorization — *shipped, expanding*
+Import-graph taint for injection sinks (SSRF, SSTI, NoSQL, deserialization,
+code/command execution) and BOLA/IDOR detection. Expanding to more languages,
+query-parameter/RPC-method authorization, and insecure-crypto / web-hardening
+checks.
+
+### Phase 7 — Analyzer Ecosystem — *live*
+14 community-installable analyzer plugins auto-discovered via entry points;
+`attackmap suggest` recommends the right set per repository.
+
+### Phase 8 — Local AI Integration — *planned*
+Optional fully-local LLM narrative (today's `--llm` uses the Anthropic API or the
+`claude` CLI).
 
 ## Long-Term Vision
 
