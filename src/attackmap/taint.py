@@ -33,7 +33,7 @@ from collections import deque
 from pathlib import Path
 
 from .models import Route, ScanResult, TaintChain
-from .srcpaths import is_test_file
+from .srcpaths import is_infra_route, is_test_file
 
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
@@ -239,6 +239,11 @@ def analyze_taint(scan: ScanResult, root: str | Path | None = None) -> list[Tain
     for route in scan.routes:
         route_file = _normalize_rel(route.file)
         if route_file not in files:
+            continue
+        # Static / infra endpoints (robots.txt, .well-known, health) return
+        # fixed bytes and don't feed request data to a sink — a chain from one
+        # is import-walk over-linking, not a real flow (#85). Skip seeding them.
+        if is_infra_route(route.path):
             continue
         for chain in _walk_from_route(route, route_file, graph, sinks_by_file):
             key = (
