@@ -62,6 +62,43 @@ Evidence pack (JSON):
 """
 
 
+HUNT_SYSTEM_PROMPT = """You are AttackMap Hunt Analyst, an experienced red-team reviewer generating VULNERABILITY HYPOTHESES for a human to confirm.
+
+Your job is NOT to report confirmed vulnerabilities. It is to reason over the structured evidence and surface candidate exploit chains and weakness hypotheses that a human analyst might miss — especially NOVEL combinations that span multiple signals (e.g. a public unauthenticated surface whose taint chain reaches a dangerous sink next to a critical asset, or an outlier route that breaks a cohort's auth norm).
+
+Hard rules (violating any of these makes the output worthless):
+- These are HYPOTHESES / LEADS, not detections. Every hypothesis is something a human must verify by reading the code.
+- Ground everything. Each hypothesis MUST cite specific evidence IDs from the pack (surface:N, finding:N, path:N, taint:N, exploit:N, anomaly:N, asset:*, control:*, insight:*). Do NOT invent routes, files, sinks, data stores, or CVEs. If you cannot ground a hypothesis in provided evidence, do not emit it.
+- Do NOT assign CVE identifiers. Do NOT write exploit code, payloads, or step-by-step exploitation instructions. Describe the *chain* and the *class* of weakness only.
+- Be honest about uncertainty. Prefer fewer, higher-quality hypotheses over speculation. If the evidence is thin, say the hypothesis is speculative and rank it low.
+
+For each hypothesis provide:
+- **Title** — the candidate weakness/chain in one line.
+- **Confidence tier** — HIGH / MEDIUM / LOW / SPECULATIVE (based on how directly the evidence supports it).
+- **Hypothesized chain** — the entry → propagation → impact story, referencing the evidence IDs at each step.
+- **Evidence** — the exact IDs this rests on.
+- **What a human must verify** — the concrete checks (which file/function to read, which assumption to confirm) that would confirm or kill this lead.
+
+Output ordering: rank hypotheses by (confidence tier, then potential impact), highest first."""
+
+
+HUNT_USER_PROMPT = """Act as a red-team analyst and produce ranked VULNERABILITY HYPOTHESES for this repository — candidate exploit chains and weakness leads for a human to confirm.
+
+Requirements:
+- Use ONLY the evidence pack below; cite evidence IDs for every hypothesis.
+- Favor novel cross-signal combinations (surface + taint + asset + control gap + anomaly) over restating a single finding.
+- Each hypothesis must include its confidence tier and an explicit "what a human must verify" section.
+- No CVE assignment, no exploit code. Hypotheses, not detections.
+- If the evidence supports few or no credible chains, say so plainly rather than inventing leads.
+
+Repository context:
+{repo_context}
+
+Evidence pack (JSON):
+{evidence_json}
+"""
+
+
 @dataclass(frozen=True)
 class RenderedReviewPrompt:
     system: str
@@ -226,5 +263,70 @@ def render_review_prompts(
     return RenderedReviewPrompt(
         system=render_system_prompt(),
         user=USER_PROMPT_TEMPLATE.format(repo_context=_repo_context(scan), evidence_json=evidence_json).strip(),
+        evidence_json=evidence_json,
+    )
+
+
+def _hunt_evidence_pack(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+) -> dict:
+    """Base evidence pack augmented with the raw signals a hunter reasons over
+    directly: taint chains, fused exploitability scores, and anomalies. These
+    carry their own citable IDs (taint:N, exploit:N, anomaly:N)."""
+    from .exploitability import score_exploitability
+
+    pack = _evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    pack["taint_chains"] = [
+        {
+            "id": f"taint:{idx + 1}",
+            "route": f"{c.route_method} {c.route_path}",
+            "route_file": c.route_file,
+            "sink_kind": c.sink_kind,
+            "sink": f"{c.sink_file}:{c.sink_line}",
+            "hops": c.hops,
+            "import_path": c.files[:8],
+        }
+        for idx, c in enumerate(scan.taint_chains[:40])
+    ]
+    pack["exploitability"] = [
+        {
+            "id": f"exploit:{idx + 1}",
+            "subject": s.subject,
+            "score": s.score,
+            "tier": s.tier,
+            "factors": [f"{f.name} ({f.points:+d})" for f in s.factors],
+        }
+        for idx, s in enumerate(score_exploitability(scan, attack_surfaces)[:20])
+    ]
+    pack["anomalies"] = [
+        {
+            "id": f"anomaly:{idx + 1}",
+            "kind": a.kind,
+            "route": f"{a.route_method} {a.route_path}",
+            "peer_group": a.peer_group,
+            "deviation": a.deviation,
+            "confidence": a.confidence,
+        }
+        for idx, a in enumerate(scan.anomalies[:30])
+    ]
+    return pack
+
+
+def render_hunt_prompts(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+) -> RenderedReviewPrompt:
+    """Render the red-team vulnerability-hypothesis prompts (#80). Same
+    grounding contract as the review — every hypothesis must cite evidence IDs."""
+    evidence_payload = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    evidence_json = json.dumps(evidence_payload, indent=2, sort_keys=True)
+    return RenderedReviewPrompt(
+        system=HUNT_SYSTEM_PROMPT.strip(),
+        user=HUNT_USER_PROMPT.format(repo_context=_repo_context(scan), evidence_json=evidence_json).strip(),
         evidence_json=evidence_json,
     )
