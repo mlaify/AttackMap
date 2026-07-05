@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .analyzer import identify_attack_surfaces
-from .models import AttackPath, AttackSurface, Finding, Route, ScanResult
+from .models import AttackPath, AttackSurface, Finding, Route, ScanResult, TaintChain
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -563,9 +563,41 @@ def confidence_bucket(value: float) -> str:
     return "low"
 
 
+_TAINT_SINK_LABEL: dict[str, str] = {
+    "sql_execute": "database (SQL execute)",
+    "subprocess_shell": "command execution",
+    "eval": "code eval",
+    "exec": "code exec",
+    "dynamic_open": "filesystem open",
+}
+
+
+def _taint_by_route_file(scan: ScanResult) -> dict[str, list[TaintChain]]:
+    """Group taint chains by originating route file for fast lookup."""
+    out: dict[str, list[TaintChain]] = {}
+    for chain in scan.taint_chains:
+        out.setdefault(chain.route_file, []).append(chain)
+    return out
+
+
+def _best_taint_for_route(
+    route: Route, taint_by_file: dict[str, list[TaintChain]]
+) -> TaintChain | None:
+    candidates = [
+        c
+        for c in taint_by_file.get(route.file, ())
+        if c.route_path == route.path and c.route_method == route.method
+    ]
+    if not candidates:
+        return None
+    # Prefer the closest sink (fewest import hops); break ties by confidence.
+    return min(candidates, key=lambda c: (c.hops, -c.confidence))
+
+
 def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
     controllers = _extract_prefixed_hints(scan, "controller:")
     services = _extract_prefixed_hints(scan, "service:")
+    taint_by_file = _taint_by_route_file(scan)
     # Framework-family hints from the Omeka/Laminas analyzers. These aren't
     # required to build a chain but they *strengthen* the evidence when
     # present — see #13. Each contributes a small confidence bump and an
@@ -652,6 +684,7 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
             )
 
         sink = "privileged action"
+        best_taint = _best_taint_for_route(route, taint_by_file)
         if module_key in db_by_module:
             sink = "database"
             confidence += 0.2
@@ -660,6 +693,15 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
             sink = "external integration"
             confidence += 0.15
             evidence.append(f"external call in same module: {external_by_module[module_key].target} ({external_by_module[module_key].file})")
+        elif best_taint is not None:
+            # Taint chain gives us a specific cross-file sink cite —
+            # stronger than the "sink somewhere in repo" fallback (#45).
+            sink = _TAINT_SINK_LABEL[best_taint.sink_kind]
+            confidence += 0.15
+            evidence.append(
+                f"taint chain: {best_taint.sink_kind} at {best_taint.sink_file}:{best_taint.sink_line} "
+                f"reachable in {best_taint.hops} import hop(s) via {' → '.join(best_taint.files)}"
+            )
         elif scan.databases:
             sink = "database"
             confidence += 0.05
@@ -669,6 +711,18 @@ def _build_probable_chains(scan: ScanResult) -> list[ProbableChain]:
             confidence += 0.05
             evidence.append(
                 f"external call elsewhere in repo: {scan.external_calls[0].target} ({scan.external_calls[0].file})"
+            )
+
+        # If we already attributed a same-module sink, taint chain still
+        # corroborates — add it as evidence without re-shaping the sink.
+        if best_taint is not None and sink not in {
+            _TAINT_SINK_LABEL[best_taint.sink_kind],
+            "privileged action",
+        }:
+            confidence += 0.05
+            evidence.append(
+                f"taint chain corroborates: {best_taint.sink_kind} at "
+                f"{best_taint.sink_file}:{best_taint.sink_line} ({best_taint.hops} hop(s))"
             )
 
         action = _guess_action(route.path)
@@ -881,6 +935,38 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 ),
                 confidence="high" if top_chain.confidence >= 0.7 else "medium",
                 tags=["framework-chain", "data-risk"],
+            )
+        )
+
+    # Severe taint sinks (eval/exec/subprocess_shell) are worth surfacing
+    # even outside the framework-MVC gate that `chains` sits behind (#45).
+    severe_taints = [
+        c for c in scan.taint_chains if c.sink_kind in {"eval", "exec", "subprocess_shell"}
+    ]
+    if severe_taints:
+        top = min(severe_taints, key=lambda c: (c.hops, -c.confidence))
+        findings.append(
+            Finding(
+                title="Request-reachable code / command execution sink via cross-file taint",
+                severity="high",
+                evidence=[
+                    f"route {top.route_method} {top.route_path} in {top.route_file}",
+                    f"sink {top.sink_kind} at {top.sink_file}:{top.sink_line}",
+                    f"import path: {' → '.join(top.files)} ({top.hops} hop(s))",
+                    *(
+                        [f"+{len(severe_taints) - 1} additional taint chain(s) to severe sinks"]
+                        if len(severe_taints) > 1
+                        else []
+                    ),
+                ],
+                mitigation=(
+                    "Do not pass request-derived data to eval/exec or shell-invoking APIs. "
+                    "Prefer parameterized subprocess calls (shell=False, argv list) and "
+                    "domain-specific parsers over eval; validate and constrain inputs at the "
+                    "route boundary."
+                ),
+                confidence="medium",
+                tags=["taint-chain", "input-handling", "data-risk"],
             )
         )
 

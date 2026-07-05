@@ -107,6 +107,37 @@ class SecretHint(BaseModel):
     kind: str = "env_reference"
 
 
+class TaintChain(BaseModel):
+    """Cross-file data-flow evidence: a route reaches a sink via imports.
+
+    Emitted by the lite taint analyzer (see #45). Each entry names the
+    starting route, the sink kind and location, and the chain of files
+    the import-walk traversed. Confidence encodes that import-edge is a
+    heuristic proxy for call-edge — real dispatch may not hit the sink.
+    """
+
+    route_path: str
+    route_method: str
+    route_file: str
+    sink_kind: Literal[
+        "sql_execute",
+        "subprocess_shell",
+        "eval",
+        "exec",
+        "dynamic_open",
+    ]
+    sink_file: str
+    sink_line: int | None = None
+    # Number of import edges walked. 0 = same file, 1 = direct import,
+    # 2 = transitive (imported module imports the sink module).
+    hops: int
+    # Chain of files walked, ordered [route_file, ..., sink_file].
+    files: list[str] = Field(default_factory=list)
+    evidence_text: str | None = None
+    confidence: float = 0.6
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 SignalKind = Literal[
     "route",
     "external_call",
@@ -118,6 +149,7 @@ SignalKind = Literal[
     "protocol",
     "framework",
     "secret",
+    "taint",
 ]
 
 
@@ -306,6 +338,7 @@ class ScanResult(BaseModel):
     protocol_hints: list[ProtocolHint] = Field(default_factory=list)
     framework_hints: list[FrameworkHint] = Field(default_factory=list)
     secret_hints: list[SecretHint] = Field(default_factory=list)
+    taint_chains: list[TaintChain] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property
@@ -380,6 +413,22 @@ class ScanResult(BaseModel):
                     line=s.line,
                     evidence_text=s.evidence_text,
                     confidence=getattr(s, "confidence", 0.85),
+                )
+            )
+        for tc in self.taint_chains:
+            signals.append(
+                Signal(
+                    kind="taint",
+                    label=f"{tc.route_method} {tc.route_path} → {tc.sink_kind}",
+                    file=tc.sink_file,
+                    line=tc.sink_line,
+                    evidence_text=tc.evidence_text,
+                    confidence=tc.confidence,
+                    properties={
+                        "hops": str(tc.hops),
+                        "sink_kind": tc.sink_kind,
+                        "route_file": tc.route_file,
+                    },
                 )
             )
         return signals
