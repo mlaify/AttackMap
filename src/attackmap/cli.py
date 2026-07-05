@@ -12,6 +12,7 @@ from .analyzers import (
     get_available_modules,
     get_available_repository_modules,
     get_analyzer_metadata,
+    install_analyzer_module,
     resolve_run_analyzers,
     select_requested_analyzers,
 )
@@ -19,6 +20,7 @@ from .graph import build_graph
 from .llm_review import LlmReviewError, generate_llm_review
 from .recon_to_analysis import translate_recon
 from .report import render_console_summary, write_reports
+from .suggest import detect_ecosystems
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
 
@@ -179,6 +181,79 @@ def modules() -> None:
     for module in repository_modules:
         typer.echo(f"- {module.analyzer_name} ({module.repo_name})")
         typer.echo(f"  repo: {module.web_url}")
+
+
+@app.command("suggest")
+def suggest(
+    path: str = typer.Argument(".", help="Path to the repository to inspect."),
+    install: bool = typer.Option(
+        False,
+        "--install",
+        help="After printing, offer to `pip install` the missing recommended plugins.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt when used with --install.",
+    ),
+    show_installed: bool = typer.Option(
+        False,
+        "--show-installed",
+        help="Include already-installed plugins in the output (marked accordingly).",
+    ),
+) -> None:
+    """Recommend analyzer plugins for the shape of the given repository."""
+    repo = Path(path).resolve()
+    if not repo.exists() or not repo.is_dir():
+        typer.echo(f"Path does not exist or is not a directory: {repo}")
+        raise typer.Exit(code=1)
+
+    suggestions = detect_ecosystems(repo)
+    missing = [s for s in suggestions if not s.installed]
+    installed = [s for s in suggestions if s.installed]
+
+    if not suggestions:
+        typer.echo(f"No AttackMap plugins matched the shape of {repo}.")
+        raise typer.Exit(code=0)
+
+    shown = suggestions if show_installed else missing
+    if not shown:
+        typer.echo("All recommended plugins are already installed:")
+        for s in installed:
+            typer.echo(f"  - {s.plugin} (installed)")
+        raise typer.Exit(code=0)
+
+    typer.echo(f"Recommended plugins for {repo}:")
+    for s in shown:
+        tag = " (installed)" if s.installed else ""
+        typer.echo(f"  - {s.plugin}{tag}")
+        typer.echo(f"      matches: {', '.join(s.matched_signals)}")
+        if not s.installed:
+            typer.echo(f"      install: {s.pip_install}")
+
+    if not install:
+        return
+    if not missing:
+        typer.echo("Nothing to install — all recommended plugins are already present.")
+        return
+
+    typer.echo("")
+    typer.echo("The following plugins will be installed via pip:")
+    for s in missing:
+        typer.echo(f"  - {s.plugin}")
+    if not yes and not typer.confirm("Proceed?", default=False):
+        typer.echo("Aborted.")
+        raise typer.Exit(code=1)
+
+    for s in missing:
+        typer.echo(f"Installing {s.plugin}…")
+        try:
+            install_analyzer_module(s.plugin)
+        except Exception as exc:  # noqa: BLE001 — surface pip failures verbatim
+            typer.echo(f"  Failed: {exc}")
+            raise typer.Exit(code=1) from exc
+    typer.echo("Done.")
 
 
 if __name__ == "__main__":
