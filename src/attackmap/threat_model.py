@@ -642,6 +642,60 @@ _TAINT_FINDING_SPEC: dict[str, dict[str, str]] = {
 }
 
 
+# Per-kind spec for insecure-crypto findings (#70). One aggregated
+# finding per crypto weakness kind present in the scan.
+_CRYPTO_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "weak_password_hash": {
+        "severity": "high",
+        "title": "Weak password hashing (MD5/SHA-1)",
+        "mitigation": "Hash passwords with a memory-hard KDF — argon2id, scrypt, or bcrypt — never a bare MD5/SHA-1/SHA-256 digest. Migrate existing hashes on next login.",
+        "technique_id": "T1110.002",
+        "technique_name": "Brute Force: Password Cracking",
+        "tactic": "Credential Access",
+    },
+    "weak_cipher": {
+        "severity": "high",
+        "title": "Weak or broken cipher (DES/3DES/RC4/Blowfish)",
+        "mitigation": "Replace legacy ciphers with AES-256-GCM (or ChaCha20-Poly1305). DES/3DES/RC4 are cryptographically broken.",
+        "technique_id": "T1600",
+        "technique_name": "Weaken Encryption",
+        "tactic": "Defense Evasion",
+    },
+    "ecb_mode": {
+        "severity": "medium",
+        "title": "Insecure ECB block-cipher mode",
+        "mitigation": "ECB leaks plaintext structure. Use an authenticated mode (AES-GCM) with a unique per-message nonce; in Java, always specify the transformation explicitly (e.g. \"AES/GCM/NoPadding\").",
+        "technique_id": "T1600",
+        "technique_name": "Weaken Encryption",
+        "tactic": "Defense Evasion",
+    },
+    "static_iv_salt": {
+        "severity": "medium",
+        "title": "Hard-coded IV or salt",
+        "mitigation": "Generate the IV/nonce and salt randomly per operation with a CSPRNG and store/transmit them alongside the ciphertext. A static IV/salt defeats the primitive's security.",
+        "technique_id": "T1600",
+        "technique_name": "Weaken Encryption",
+        "tactic": "Defense Evasion",
+    },
+    "insecure_random": {
+        "severity": "medium",
+        "title": "Insecure randomness for a security value",
+        "mitigation": "Use a CSPRNG for tokens/keys/salts/nonces/OTPs: `secrets` (Python), `crypto.randomBytes` (Node), `crypto/rand` (Go). `Math.random`/`random`/`rand`/`mt_rand` are predictable.",
+        "technique_id": "T1600",
+        "technique_name": "Weaken Encryption",
+        "tactic": "Defense Evasion",
+    },
+    "insecure_tls": {
+        "severity": "high",
+        "title": "TLS certificate/hostname verification disabled",
+        "mitigation": "Never disable certificate or hostname verification (`verify=False`, `rejectUnauthorized: false`, `InsecureSkipVerify: true`) or use deprecated TLS/SSL versions. Fix the trust store instead of turning off validation.",
+        "technique_id": "T1557",
+        "technique_name": "Adversary-in-the-Middle",
+        "tactic": "Credential Access",
+    },
+}
+
+
 def _taint_by_route_file(scan: ScanResult) -> dict[str, list[TaintChain]]:
     """Group taint chains by originating route file for fast lookup."""
     out: dict[str, list[TaintChain]] = {}
@@ -1094,6 +1148,40 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                     ],
                 )
             )
+
+    # Insecure crypto / weak randomness (#70). One aggregated finding per
+    # weakness kind present, ordered by the spec's declaration.
+    crypto_by_kind: dict[str, list] = {}
+    for weakness in scan.crypto_weaknesses:
+        crypto_by_kind.setdefault(weakness.kind, []).append(weakness)
+    for kind, spec in _CRYPTO_FINDING_SPEC.items():
+        items = crypto_by_kind.get(kind)
+        if not items:
+            continue
+        evidence = [
+            f"{w.file}:{w.line} — {w.evidence_text}" if w.evidence_text else f"{w.file}:{w.line}"
+            for w in items[:10]
+        ]
+        if len(items) > 10:
+            evidence.append(f"+{len(items) - 10} more occurrence(s)")
+        findings.append(
+            Finding(
+                title=spec["title"],
+                severity=spec["severity"],  # type: ignore[arg-type]
+                evidence=evidence,
+                mitigation=spec["mitigation"],
+                confidence="medium",
+                tags=["insecure-crypto"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
 
     # Dangerous taint sinks each get a dedicated, sink-specific finding
     # (#68) — surfaced even outside the framework-MVC gate that `chains`

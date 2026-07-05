@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from .authz import analyze_authz
+from .crypto import find_crypto_weaknesses
 from .sbom import analyze_sbom
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import analyze_taint
@@ -571,6 +572,10 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
                 )
 
         _append_hardcoded_secret_hints(result, relative, content)
+
+        # Insecure crypto / weak randomness (#70). Content is already read,
+        # so this rides the same per-file pass rather than re-walking.
+        result.crypto_weaknesses.extend(find_crypto_weaknesses(content, relative))
 
     result.languages.sort()
     # Taint pass runs after regular signal extraction — it needs the

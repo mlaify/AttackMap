@@ -187,6 +187,25 @@ template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findin
 are evidence, not proof; confidence tapers with hop distance. Chains appear in
 `attackmap-report.json` under `scan.taint_chains`.
 
+### Insecure cryptography & weak randomness
+
+A cheap per-file pass flags crypto misuse, each as a finding with an ATT&CK
+mapping:
+
+| Kind | Catches | Severity |
+|---|---|---|
+| `weak_password_hash` | MD5/SHA-1 over a password-shaped value | HIGH |
+| `weak_cipher` | DES / 3DES / RC4 / Blowfish | HIGH |
+| `ecb_mode` | ECB block-cipher mode (incl. Java's `Cipher.getInstance("AES")` default) | MEDIUM |
+| `static_iv_salt` | hard-coded IV or salt literal | MEDIUM |
+| `insecure_random` | `Math.random`/`random`/`rand`/`mt_rand` for a token/key/salt/nonce | MEDIUM |
+| `insecure_tls` | `verify=False`, `rejectUnauthorized:false`, `InsecureSkipVerify:true`, deprecated TLS | HIGH |
+
+The noisy families (weak hash, insecure RNG) are gated on a security-context
+identifier; cipher/ECB tokens are matched case-sensitively so algorithm names
+aren't confused with prose (e.g. the French word "des"). Results appear under
+`scan.crypto_weaknesses`.
+
 ### Broken object-level authorization (BOLA / IDOR)
 
 OWASP API Security #1. AttackMap flags a route as a BOLA/IDOR candidate when it
