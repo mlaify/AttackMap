@@ -116,8 +116,10 @@ Every `attackmap analyze` run writes:
 | `attackmap-paths.md` | Mermaid flowcharts of each attack path — renders inline on GitHub |
 | `attackmap-topology.md` | Mermaid graph of the service topology, with edge kinds styled per relationship type |
 | `attackmap-paths.dot` / `attackmap-topology.dot` | Graphviz DOT versions of the two diagrams — feed into `dot -Tsvg` for slide-quality graphics |
+| `attackmap-exploitability.md` | "Most exploitable now" — route→sink paths ranked by fused 0–100 score, each with its factors |
 | `defensive-review-llm.md` *(with `--llm`)* | Claude-narrated review |
 | `defensive-review-llm.meta.json` *(with `--llm`)* | Backend, model, token usage |
+| `vulnerability-hypotheses.md` *(with `--hunt`)* | LLM-generated, evidence-cited exploit-chain **hypotheses** to confirm (leads, not detections) |
 
 ### GitHub Code Scanning integration
 
@@ -383,6 +385,18 @@ trust-boundary violations, and more.
 from the structured evidence pack. The model is forced to cite real
 surface/asset/control IDs, so it can't invent findings.
 
+**5. Vulnerability-hypothesis hunting (`--hunt`).** The honest core of the
+"find the unknown" ask. `attackmap analyze . --hunt` has Claude reason over the
+full evidence pack (surfaces, assets, controls, taint chains, exploitability
+scores, anomalies) as a red-team analyst and propose **ranked, human-verifiable
+exploit-chain hypotheses** — candidate weaknesses a static rule wouldn't catch,
+especially novel cross-signal combinations. Output goes to
+`vulnerability-hypotheses.md` under an unmissable banner: **these are hypotheses
+to confirm, not detections.** The same grounding contract as the review applies
+(every hypothesis cites real evidence IDs), plus honesty guardrails: no CVE
+assignment, no exploit code, confidence-tiered, and each lead lists exactly what
+a human must verify. Uses the same auth/backend resolution as `--llm`.
+
 Layered on top: **MITRE ATT&CK technique mappings** on every insight and
 **detection opportunities** (Sigma/KQL/Splunk-style hints) for each weakness.
 
@@ -429,6 +443,7 @@ attackmap analyze <path> --module python --module rust   # only these analyzers
 attackmap analyze <path> --cve           # cross-reference SBOM against OSV.dev
 attackmap analyze <path> --llm           # add LLM narrative (auto-resolve auth)
 attackmap analyze <path> --llm --llm-backend cli         # force Claude CLI
+attackmap analyze <path> --hunt          # LLM vulnerability-hypothesis hunt (leads to confirm)
 
 # CI / PR diff gating
 attackmap analyze <path> --baseline prev/attackmap-report.json \

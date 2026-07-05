@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
-from .review_prompts import render_review_prompts
+from .review_prompts import render_hunt_prompts, render_review_prompts
 
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_EFFORT: Literal["low", "medium", "high", "xhigh", "max"] = "high"
@@ -323,18 +323,22 @@ def generate_llm_review(
     client: Any | None = None,
     backend: LlmBackend = "auto",
     cli_runner: Any | None = None,
+    mode: Literal["review", "hunt"] = "review",
 ) -> LlmReviewResult:
-    """Produce a narrative defensive review by calling Claude.
+    """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
+    vulnerability hypotheses (#80) — by calling Claude.
 
     Resolves which backend to use (API SDK or `claude` CLI) based on available
-    auth, then runs the existing prompt pack through it. Streams the SDK path
+    auth, then runs the appropriate prompt pack through it. Streams the SDK path
     so we never hit HTTP timeouts on long reviews. The CLI path runs synchronously
-    via `claude -p --output-format=json`.
+    via `claude -p --output-format=json`. Both modes share the same evidence
+    grounding contract (every claim cites evidence IDs).
     """
     resolved_model = model or os.environ.get("ATTACKMAP_LLM_MODEL") or DEFAULT_MODEL
     resolved_effort = effort or DEFAULT_EFFORT
 
-    rendered = render_review_prompts(scan, attack_surfaces, findings, attack_paths)
+    render = render_hunt_prompts if mode == "hunt" else render_review_prompts
+    rendered = render(scan, attack_surfaces, findings, attack_paths)
     if backend == "cli" and cli_runner is not None:
         chosen_backend: Literal["api", "cli"] = "cli"
     else:

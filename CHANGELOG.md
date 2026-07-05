@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary leads with the most exploitable. Conventional infra/static routes
   (robots.txt, `.well-known`, health) are excluded from the ranking so a
   mis-linked chain doesn't cry wolf.
+- **LLM vulnerability-hypothesis mode `--hunt` (#80).** Has Claude reason over
+  the full evidence pack (surfaces, assets, controls, taint chains,
+  exploitability scores, anomalies) as a red-team analyst and propose ranked,
+  human-verifiable exploit-chain **hypotheses** to `vulnerability-hypotheses.md`.
+  Framed as leads not detections (unmissable banner), same evidence-citation
+  grounding as `--llm`, with honesty guardrails: no CVE assignment, no exploit
+  code, confidence-tiered, and each lead states what a human must verify. Shares
+  `--llm`'s auth/backend resolution.
 
 ### Changed
 
