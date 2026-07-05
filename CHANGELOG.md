@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   breaks the norm its resource cohort establishes — under `scan.anomalies`.
   Confidence scales with cohort consistency; only strict-minority deviations in
   structurally-real cohorts are flagged.
+- **Exploitability fusion (#79).** Fuses sink danger, exposure, entry-route auth,
+  reachability (hops), and data sensitivity at the sink into a deterministic,
+  fully-explainable 0–100 "exploitable now" score per route→sink path. Scores
+  attach to taint findings (`exploitability` + `exploitability_tier`) and rank a
+  new `attackmap-exploitability.md` / `exploitability` JSON section; the console
+  summary leads with the most exploitable. Conventional infra/static routes
+  (robots.txt, `.well-known`, health) are excluded from the ranking so a
+  mis-linked chain doesn't cry wolf.
 
 ### Changed
 

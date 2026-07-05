@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .analyzer import identify_attack_surfaces
+from .exploitability import best_by_sink_kind, score_exploitability
 from .models import AttackPath, AttackSurface, AttackTechnique, Finding, Route, ScanResult, TaintChain
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
@@ -1449,6 +1450,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     for chain in scan.taint_chains:
         if chain.sink_kind in _TAINT_FINDING_SPEC:
             taint_by_kind.setdefault(chain.sink_kind, []).append(chain)
+    taint_findings_by_kind: dict[str, Finding] = {}
     for kind, spec in _TAINT_FINDING_SPEC.items():
         kind_chains = taint_by_kind.get(kind)
         if not kind_chains:
@@ -1463,24 +1465,35 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             evidence.append(
                 f"+{len(kind_chains) - 1} more route(s) reach a {_TAINT_SINK_LABEL.get(kind, kind)} sink"
             )
-        findings.append(
-            Finding(
-                title=spec["title"],
-                severity=spec["severity"],  # type: ignore[arg-type]
-                evidence=evidence,
-                mitigation=spec["mitigation"],
-                confidence="medium",
-                tags=["taint-chain", "input-handling", "data-risk"],
-                attack_techniques=[
-                    AttackTechnique(
-                        technique_id=spec["technique_id"],
-                        name=spec["technique_name"],
-                        tactic=spec["tactic"],
-                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
-                    )
-                ],
-            )
+        taint_finding = Finding(
+            title=spec["title"],
+            severity=spec["severity"],  # type: ignore[arg-type]
+            evidence=evidence,
+            mitigation=spec["mitigation"],
+            confidence="medium",
+            tags=["taint-chain", "input-handling", "data-risk"],
+            attack_techniques=[
+                AttackTechnique(
+                    technique_id=spec["technique_id"],
+                    name=spec["technique_name"],
+                    tactic=spec["tactic"],
+                    url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                )
+            ],
         )
+        taint_findings_by_kind[kind] = taint_finding
+        findings.append(taint_finding)
+
+    # Exploitability fusion (#79): attach the best 'exploitable now' score for
+    # each sink kind to its aggregated taint finding, so triage can lead with
+    # the public + no-auth + dangerous-sink combinations.
+    if taint_findings_by_kind:
+        best = best_by_sink_kind(score_exploitability(scan, attack_surfaces))
+        for kind, finding in taint_findings_by_kind.items():
+            scored = best.get(kind)
+            if scored is not None:
+                finding.exploitability = scored.score
+                finding.exploitability_tier = scored.tier
 
     if not findings:
         findings.append(

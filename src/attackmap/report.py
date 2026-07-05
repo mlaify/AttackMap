@@ -11,7 +11,8 @@ from .diagrams import (
     render_topology_mermaid,
 )
 from .diff import finding_id
-from .models import AttackPath, AttackSurface, Finding, ScanResult
+from .exploitability import score_exploitability
+from .models import AttackPath, AttackSurface, ExploitabilityScore, Finding, ScanResult
 from .review_json import build_defensive_review_json
 from .sarif import build_sarif
 from .topology import build_service_graph
@@ -47,6 +48,11 @@ def write_reports(
     )
     (out / "review-context-pack.json").write_text(json.dumps(review_context_pack, indent=2) + "\n", encoding="utf-8")
 
+    exploitability = score_exploitability(scan, attack_surfaces)
+    (out / "attackmap-exploitability.md").write_text(
+        render_exploitability_ranking(exploitability) + "\n", encoding="utf-8"
+    )
+
     json_report = {
         "scan": scan.model_dump(),
         "architecture_summary": architecture_md,
@@ -59,6 +65,7 @@ def write_reports(
             {"id": finding_id(finding.title), **finding.model_dump()} for finding in findings
         ],
         "attack_paths": [path.model_dump() for path in attack_paths],
+        "exploitability": [score.model_dump() for score in exploitability],
     }
     (out / "attackmap-report.json").write_text(json.dumps(json_report, indent=2) + "\n", encoding="utf-8")
 
@@ -87,6 +94,34 @@ def write_reports(
     )
 
 
+def render_exploitability_ranking(scores: list[ExploitabilityScore]) -> str:
+    """Render the 'Most exploitable now' section — fused route→sink risk,
+    ranked, with every score showing its contributing factors."""
+    lines = ["# Most exploitable now", ""]
+    if not scores:
+        lines.append(
+            "No request-to-sink data-flow paths were found, so there is nothing to "
+            "fuse into an exploitability ranking."
+        )
+        return "\n".join(lines)
+    lines.append(
+        "Fused 0–100 exploitability for each route→sink path (deterministic; every "
+        "score is the clamped sum of the listed factors). Highest risk first."
+    )
+    lines.append("")
+    for rank, s in enumerate(scores, start=1):
+        lines.append(f"## {rank}. {s.subject} — {s.score}/100 ({s.tier.upper()})")
+        lines.append(f"- sink location: `{s.location}`")
+        lines.append("- factors:")
+        for f in s.factors:
+            sign = "+" if f.points >= 0 else ""
+            lines.append(f"    - {sign}{f.points}  {f.name} — {f.detail}")
+        if s.raw_score != s.score:
+            lines.append(f"    - (raw {s.raw_score} clamped to {s.score})")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def render_console_summary(scan: ScanResult, findings: list[Finding], attack_paths: list[AttackPath]) -> str:
     ordered_findings = sorted(findings, key=lambda finding: (_severity_rank(finding.severity), finding.title))
     lines = [
@@ -99,7 +134,24 @@ def render_console_summary(scan: ScanResult, findings: list[Finding], attack_pat
         "Findings:",
     ]
     for finding in ordered_findings:
-        lines.append(f"- [{finding.severity.upper()}] {finding.title}")
+        exploit = (
+            f"  (exploitability {finding.exploitability}/100, {finding.exploitability_tier})"
+            if finding.exploitability is not None
+            else ""
+        )
+        lines.append(f"- [{finding.severity.upper()}] {finding.title}{exploit}")
+
+    exploitable = sorted(
+        (f for f in findings if f.exploitability is not None),
+        key=lambda f: -(f.exploitability or 0),
+    )
+    if exploitable:
+        lines.append("")
+        lines.append("Most exploitable now:")
+        for finding in exploitable[:5]:
+            lines.append(
+                f"- {finding.exploitability}/100 [{finding.exploitability_tier}] {finding.title}"
+            )
 
     lines.append("")
     lines.append("Attack paths:")
