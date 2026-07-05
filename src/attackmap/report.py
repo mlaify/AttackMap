@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from .context_pack import build_review_context_pack
+from .diff import finding_id
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .review_json import build_defensive_review_json
 from .sarif import build_sarif
@@ -47,7 +48,9 @@ def write_reports(
         "defensive_review_json": defensive_review_json,
         "review_context_pack": review_context_pack,
         "attack_surfaces": [surface.model_dump() for surface in attack_surfaces],
-        "findings": [finding.model_dump() for finding in findings],
+        "findings": [
+            {"id": finding_id(finding.title), **finding.model_dump()} for finding in findings
+        ],
         "attack_paths": [path.model_dump() for path in attack_paths],
     }
     (out / "attackmap-report.json").write_text(json.dumps(json_report, indent=2) + "\n", encoding="utf-8")
