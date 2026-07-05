@@ -25,6 +25,7 @@ from .diff import (
 )
 from .graph import build_graph
 from .llm_review import LlmReviewError, generate_llm_review
+from .progress import ScanProgress
 from .recon_to_analysis import translate_recon
 from .report import render_console_summary, write_reports
 from .suggest import detect_ecosystems
@@ -98,6 +99,11 @@ def analyze(
         "--cve",
         help="Cross-reference SBOM entries against OSV.dev and surface vulnerable dependencies as findings. Cached under ~/.attackmap/cache/osv/ (24h TTL). Off by default because it does network I/O.",
     ),
+    no_progress: bool = typer.Option(
+        False,
+        "--no-progress",
+        help="Disable the live progress bar / ETA during scanning. Progress auto-disables when stderr isn't a terminal (CI, piped output).",
+    ),
 ) -> None:
     repo_path = Path(path).resolve()
     if not repo_path.exists():
@@ -118,7 +124,8 @@ def analyze(
             raise typer.BadParameter(str(exc)) from exc
 
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
-    scan = analyze_repository(repo_path, analyzers=active_analyzers)
+    scan_progress = ScanProgress(enabled=not no_progress)
+    scan = analyze_repository(repo_path, analyzers=active_analyzers, progress=scan_progress)
     if cve and scan.dependencies:
         typer.echo(f"Checking {len(scan.dependencies)} dependencies against OSV.dev…")
         vulns, cve_summary = query_vulnerabilities(scan.dependencies)

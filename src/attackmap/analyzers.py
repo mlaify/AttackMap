@@ -3,12 +3,16 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+import inspect
 import json
 import logging
 from pathlib import Path
 import subprocess
 import sys
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .progress import ScanProgress
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -221,8 +225,10 @@ class DefaultAnalyzer:
     def name(self) -> str:
         return self.metadata.name
 
-    def analyze(self, root: str | Path) -> AnalyzerResult:
-        return scan_repo(root, suffixes=set(CODE_EXTENSIONS) - self._CLAIMED_SUFFIXES)
+    def analyze(self, root: str | Path, progress: "ScanProgress | None" = None) -> AnalyzerResult:
+        return scan_repo(
+            root, suffixes=set(CODE_EXTENSIONS) - self._CLAIMED_SUFFIXES, progress=progress
+        )
 
 
 class BuiltinPythonWebAnalyzer:
@@ -243,8 +249,8 @@ class BuiltinPythonWebAnalyzer:
     def name(self) -> str:
         return self.metadata.name
 
-    def analyze(self, root: str | Path) -> AnalyzerResult:
-        return scan_repo(root, suffixes={".py"})
+    def analyze(self, root: str | Path, progress: "ScanProgress | None" = None) -> AnalyzerResult:
+        return scan_repo(root, suffixes={".py"}, progress=progress)
 
 
 class BuiltinJavaScriptWebAnalyzer:
@@ -317,8 +323,8 @@ class BuiltinJavaScriptWebAnalyzer:
             return False
         return False
 
-    def analyze(self, root: str | Path) -> AnalyzerResult:
-        return scan_repo(root, suffixes=self._JS_SUFFIXES)
+    def analyze(self, root: str | Path, progress: "ScanProgress | None" = None) -> AnalyzerResult:
+        return scan_repo(root, suffixes=self._JS_SUFFIXES, progress=progress)
 
 
 class BuiltinConfigAnalyzer:
@@ -594,17 +600,34 @@ def _fetch_org_repositories(api_url: str) -> list[dict[str, object]]:
     return [item for item in decoded if isinstance(item, dict)]
 
 
-def analyze_repository(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> AnalyzerResult:
+def analyze_repository(
+    root: str | Path,
+    analyzers: Iterable[Analyzer] | None = None,
+    progress: "ScanProgress | None" = None,
+) -> AnalyzerResult:
     repo_root = Path(root).resolve()
     active_analyzers = resolve_run_analyzers(repo_root, analyzers=analyzers)
     results: list[AnalyzerResult] = []
     for analyzer in active_analyzers:
-        result = analyzer.analyze(repo_root)
+        result = _call_analyze(analyzer, repo_root, progress)
         _stamp_provenance(result, analyzer.name)
         results.append(result)
     if not results:
         return AnalyzerResult(root=str(repo_root))
     return merge_analyzer_results(results, root=repo_root)
+
+
+def _call_analyze(analyzer: Analyzer, root: Path, progress: "ScanProgress | None") -> AnalyzerResult:
+    """Invoke ``analyzer.analyze``, forwarding ``progress`` only to analyzers
+    that accept it. Keeps the plugin ``analyze(root)`` contract intact — old
+    plugins that don't know about progress are called unchanged."""
+    if progress is not None:
+        try:
+            if "progress" in inspect.signature(analyzer.analyze).parameters:
+                return analyzer.analyze(root, progress=progress)  # type: ignore[call-arg]
+        except (TypeError, ValueError):
+            pass
+    return analyzer.analyze(root)
 
 
 def _stamp_provenance(result: AnalyzerResult, analyzer_name: str) -> None:

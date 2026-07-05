@@ -5,6 +5,10 @@ import binascii
 import math
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .progress import ScanProgress
 
 from .anomalies import find_anomalies
 from .authz import analyze_authz
@@ -525,13 +529,26 @@ def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, l
             seen.add((keyword, relative))
 
 
-def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
+def scan_repo(
+    root: str | Path,
+    suffixes: set[str] | None = None,
+    progress: "ScanProgress | None" = None,
+) -> ScanResult:
     root_path = Path(root).resolve()
     result = ScanResult(root=str(root_path))
 
-    for file_path in root_path.rglob("*"):
-        if not file_path.is_file() or not should_scan_with_suffixes(file_path, suffixes):
-            continue
+    # Materialize the scannable file list first so progress has a total to
+    # compute a percentage and ETA against. The extra directory walk is cheap
+    # next to reading + regex-scanning each file.
+    scan_files = [
+        p for p in root_path.rglob("*") if p.is_file() and should_scan_with_suffixes(p, suffixes)
+    ]
+    if progress is not None:
+        progress.begin(len(scan_files))
+
+    for file_path in scan_files:
+        if progress is not None:
+            progress.advance(str(file_path.relative_to(root_path)))
 
         result.files_scanned += 1
         language = CODE_EXTENSIONS[file_path.suffix]
@@ -590,17 +607,29 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
 
     result.languages.sort()
     # Taint pass runs after regular signal extraction — it needs the
-    # route list to know where to seed source flows from (#45).
+    # route list to know where to seed source flows from (#45). This is the
+    # slow tail on big monorepos (import-graph walk), so it gets its own
+    # progress stage.
+    if progress is not None:
+        progress.stage("Taint / data-flow analysis")
     result.taint_chains = analyze_taint(result, root_path)
     # SBOM inventory: direct-dep parse of manifest files (#48, slice 1).
+    if progress is not None:
+        progress.stage("Dependency inventory (SBOM)")
     result.dependencies = analyze_sbom(root_path)
     # BOLA/IDOR: routes with an id param reaching a datastore with no
     # ownership check nearby (#69). Runs after taint so it can reuse
     # sql_execute reachability.
+    if progress is not None:
+        progress.stage("Authorization (BOLA/IDOR)")
     result.authz_candidates = analyze_authz(result, root_path)
     # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
     # Runs last so the full route list is assembled into cohorts.
+    if progress is not None:
+        progress.stage("Anomaly / outlier detection")
     result.anomalies = find_anomalies(result, root_path)
+    if progress is not None:
+        progress.done()
     return result
 
 
