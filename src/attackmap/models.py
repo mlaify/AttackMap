@@ -161,6 +161,27 @@ class TaintChain(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class Vulnerability(BaseModel):
+    """A known CVE / advisory affecting a resolved dependency (#60).
+
+    One entry per (dep × advisory). ``package_version`` is the concrete
+    lower-bound the CVE lookup resolved from the manifest spec — it may
+    differ from the DependencyHint's raw ``version`` string.
+    """
+
+    id: str  # OSV entry id — CVE-2023-1234, GHSA-xxxx-xxxx, etc.
+    aliases: list[str] = Field(default_factory=list)
+    summary: str = ""
+    severity: Literal["low", "medium", "high"] = "medium"
+    cvss_score: float | None = None
+    references: list[str] = Field(default_factory=list)
+    affected_range: str = ""  # human-readable "affected [lower, upper)" text
+    package_name: str
+    package_version: str
+    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer"]
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 SignalKind = Literal[
     "route",
     "external_call",
@@ -364,6 +385,7 @@ class ScanResult(BaseModel):
     secret_hints: list[SecretHint] = Field(default_factory=list)
     taint_chains: list[TaintChain] = Field(default_factory=list)
     dependencies: list[DependencyHint] = Field(default_factory=list)
+    vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property
