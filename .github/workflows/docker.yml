@@ -50,6 +50,18 @@ jobs:
             version="${INPUT_VERSION}"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # Derive major and major.minor for the additional image tags.
+          # Both stay empty if version is unset (e.g. workflow_dispatch
+          # with no input) — the tag rules skip empty values.
+          if [ -n "${version}" ]; then
+            major="$(echo "${version}" | cut -d. -f1)"
+            major_minor="$(echo "${version}" | cut -d. -f1-2)"
+          else
+            major=""
+            major_minor=""
+          fi
+          echo "major=${major}" >> "$GITHUB_OUTPUT"
+          echo "major_minor=${major_minor}" >> "$GITHUB_OUTPUT"
 
       # Race guard: the tag push fires BOTH this workflow and the release
       # workflow simultaneously. The release workflow has an approval gate
@@ -74,17 +86,22 @@ jobs:
           echo "PyPI never served attackmap ${VERSION} within 30 minutes." >&2
           exit 1
 
+      # We derive tags from the resolved version (works for both tag
+      # pushes and workflow_dispatch with an explicit version input).
+      # The metadata-action's built-in `type=semver` rules only fire when
+      # the git ref is itself a semver tag, so they silently drop version
+      # tags on workflow_dispatch runs — which is what left 0.2.0
+      # untagged the first time.
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/attackmap
           tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.vars.outputs.version }},enable=${{ steps.vars.outputs.version != '' }}
+            type=raw,value=${{ steps.vars.outputs.major_minor }},enable=${{ steps.vars.outputs.major_minor != '' }}
+            type=raw,value=${{ steps.vars.outputs.major }},enable=${{ steps.vars.outputs.major != '' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
