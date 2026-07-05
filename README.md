@@ -257,6 +257,32 @@ under `scan.authz_candidates`; the ownership-marker scan is the main
 false-positive reducer, so a well-scoped handler is not flagged. Path-template
 routes today; query-parameter and RPC-method ids are future work.
 
+### Anomaly / outlier detection
+
+The closest honest thing to "surface the unknown": instead of matching a
+known-bad signature, AttackMap flags a route that deviates from the norm its own
+siblings establish. Routes are bucketed into resource cohorts by path prefix
+(`/api/users`, `/api/users/{id}` and `/api/users/export` all share `api/users`;
+`api`/version scaffolding is stripped so versioned resources still separate), and
+within each cohort the odd-one-out is reported:
+
+| Kind | Catches | Severity |
+|---|---|---|
+| `auth_outlier` | siblings carry an auth/authorization signal near the handler; this route doesn't | HIGH |
+| `validation_outlier` | among a cohort's state-changing handlers, peers validate input and this one shows no validation marker | LOW |
+| `method_outlier` | a lone state-changing method in an otherwise read-only cohort | MEDIUM |
+
+Everything is peer-relative and **confidence scales with how consistent the
+cohort is** — a lone deviation among many agreeing siblings is likelier a mistake
+than the same deviation in a split group. Outliers are only flagged when they're a
+strict minority (a genuinely 50/50 surface isn't nagged), the cohort must have
+real route structure (distinct paths with parameters/sub-paths, not repeated
+method-call strings), and per-route signal detection is scoped to each handler's
+own span so a sibling's guard is never miscredited. Results appear under
+`scan.anomalies`, each finding naming the peer group and the deviation. This is
+the scan-level, route-cohort counterpart to the layered engine's
+`asymmetric_protection` insight.
+
 ### SBOM inventory
 
 Every scan also produces a lightweight SBOM by parsing direct dependencies out

@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 
+from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .crypto import find_crypto_weaknesses
 from .sbom import analyze_sbom
@@ -597,6 +598,9 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
     # ownership check nearby (#69). Runs after taint so it can reuse
     # sql_execute reachability.
     result.authz_candidates = analyze_authz(result, root_path)
+    # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
+    # Runs last so the full route list is assembled into cohorts.
+    result.anomalies = find_anomalies(result, root_path)
     return result
 
 

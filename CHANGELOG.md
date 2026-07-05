@@ -22,6 +22,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routes that take a resource id in the path, reach a datastore, and have no
   ownership/authorization check nearby. Write methods are HIGH, reads MEDIUM;
   emits a Finding (T1190) and a dedicated attack-path narrative.
+- **Insecure cryptography & weak randomness detection (#70).** A per-file pass
+  flags weak password hashing, broken ciphers (DES/3DES/RC4/Blowfish), ECB mode,
+  static IV/salt literals, insecure RNG for secrets, and insecure TLS
+  (`verify=False`, `rejectUnauthorized:false`, …), each an ATT&CK-mapped finding
+  under `scan.crypto_weaknesses`. Noisy families are context-gated and cipher
+  tokens matched case-sensitively (so the French "des" isn't a hit).
+- **Web-hardening detection (#71).** Flags positively-present misconfigurations —
+  wildcard CORS *with* credentials, disabled CSRF, insecure cookie flags,
+  `unsafe-inline`/`unsafe-eval` CSP, and shipped debug mode — under
+  `scan.web_hardening_issues`.
+- **Novel vulnerability-class detectors (#77).** A per-file `weaknesses` pass for
+  bug classes beyond the taint/crypto/web families, under `scan.code_weaknesses`:
+  prototype pollution, mass assignment, JWT weakness (alg=none / unverified),
+  XXE, ReDoS (regex-context-gated so arithmetic isn't flagged), insecure upload
+  (client-controlled filename/path), and GraphQL introspection/playground
+  exposure. Plus `open_redirect` as a taint sink.
+- **Anomaly / outlier detection (#78).** Surfaces the odd-one-out among sibling
+  routes — an `auth_outlier` / `validation_outlier` / `method_outlier` that
+  breaks the norm its resource cohort establishes — under `scan.anomalies`.
+  Confidence scales with cohort consistency; only strict-minority deviations in
+  structurally-real cohorts are flagged.
+
+### Changed
+
+- **Test/spec files excluded from heuristic passes by default (#67).** The
+  crypto, web-hardening, novel-vuln, and anomaly passes skip `tests/`,
+  `__tests__/`, `*.test.*`, `test_*.py`, and similar, since dangerous-looking
+  patterns in test scaffolding are rarely real exposure. `ATTACKMAP_INCLUDE_TESTS=1`
+  opts back in.
 
 ## [0.2.0] - 2026-07-05
 
