@@ -151,6 +151,24 @@ on unrelated commits, so a finding that persists across scans has the same id
 in both. The diff has three sections — **New**, **Persisted**, **Resolved** —
 which drop cleanly into a PR comment.
 
+### SBOM inventory
+
+Every scan also produces a lightweight SBOM by parsing direct dependencies out
+of the common manifest files:
+
+| Ecosystem | Files parsed |
+|---|---|
+| PyPI (Python) | `pyproject.toml` (PEP 621 + Poetry), `requirements.txt` |
+| npm (Node.js) | `package.json` (dependencies + devDependencies + peer/optional) |
+| Go | `go.mod` (single-line + block-form `require`, `// indirect` flagged) |
+| Cargo (Rust) | `Cargo.toml` (dependencies + dev-dependencies + build-dependencies) |
+| Composer (PHP) | `composer.json` (require + require-dev; platform reqs skipped) |
+
+Each entry appears in `attackmap-report.json` under `scan.dependencies` with
+`{name, version, ecosystem, file, dev}`. Version ranges are kept verbatim
+(`^4.16.0`, `>=2,<3`, `latest`) — this slice does not resolve lockfiles.
+CVE cross-referencing is deferred to a follow-up ticket.
+
 ---
 
 ## How it works

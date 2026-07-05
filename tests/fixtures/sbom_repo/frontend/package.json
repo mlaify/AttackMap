@@ -1,0 +1,12 @@
+{
+  "name": "frontend",
+  "version": "0.0.1",
+  "dependencies": {
+    "express": "^4.16.0",
+    "lodash": "4.17.21"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20"
+  }
+}
