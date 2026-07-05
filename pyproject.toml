@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "attackmap"
-version = "0.1.1"
+version = "0.1.2"
 description = "AI-assisted defensive security analyzer for codebases — scans a repository, models assets and controls, finds cross-cutting weaknesses, and generates an evidence-grounded review with MITRE ATT&CK mappings and detection-engineering hints."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -72,6 +72,7 @@ all = [
   "attackmap-analyzer-php-web>=0.1.0",
   "attackmap-analyzer-php-laminas>=0.1.0",
   "attackmap-analyzer-omeka-s>=0.1.0",
+  "attackmap-analyzer-iac>=0.1.0",
 ]
 dev = [
   "pytest>=8.0.0",
