@@ -4,10 +4,17 @@ import json
 from pathlib import Path
 
 from .context_pack import build_review_context_pack
+from .diagrams import (
+    render_attack_paths_dot,
+    render_attack_paths_mermaid,
+    render_topology_dot,
+    render_topology_mermaid,
+)
 from .diff import finding_id
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .review_json import build_defensive_review_json
 from .sarif import build_sarif
+from .topology import build_service_graph
 
 
 def _severity_rank(value: str) -> int:
@@ -60,6 +67,23 @@ def write_reports(
     sarif_report = build_sarif(findings, attack_paths)
     (out / "attackmap-report.sarif").write_text(
         json.dumps(sarif_report, indent=2) + "\n", encoding="utf-8"
+    )
+
+    # Mermaid + Graphviz DOT export of attack paths and service topology
+    # (#49). Nothing new is computed — pure output transform of shapes
+    # that already exist in the JSON report.
+    service_graph = build_service_graph(scan)
+    (out / "attackmap-paths.md").write_text(
+        render_attack_paths_mermaid(attack_paths), encoding="utf-8"
+    )
+    (out / "attackmap-topology.md").write_text(
+        render_topology_mermaid(service_graph), encoding="utf-8"
+    )
+    (out / "attackmap-paths.dot").write_text(
+        render_attack_paths_dot(attack_paths), encoding="utf-8"
+    )
+    (out / "attackmap-topology.dot").write_text(
+        render_topology_dot(service_graph), encoding="utf-8"
     )
 
 
