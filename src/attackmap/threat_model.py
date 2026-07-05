@@ -1050,6 +1050,51 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    # Broken object-level authorization (BOLA/IDOR, #69). Routes with a
+    # resource-id param that reach a datastore with no ownership check
+    # nearby. Split into a HIGH finding for write methods and a MEDIUM
+    # finding for reads, per the OWASP API #1 severity shape.
+    bola = scan.authz_candidates
+    if bola:
+        write_candidates = [c for c in bola if c.route_method in {"POST", "PUT", "PATCH", "DELETE"}]
+        read_candidates = [c for c in bola if c.route_method not in {"POST", "PUT", "PATCH", "DELETE"}]
+        for group, severity, verb in (
+            (write_candidates, "high", "modify"),
+            (read_candidates, "medium", "read"),
+        ):
+            if not group:
+                continue
+            evidence = [
+                f"{c.route_method} {c.route_path} (id param `{c.id_param}`) in {c.route_file} — {c.db_evidence}"
+                for c in group[:10]
+            ]
+            if len(group) > 10:
+                evidence.append(f"+{len(group) - 10} more route(s) with the same pattern")
+            findings.append(
+                Finding(
+                    title=f"Possible broken object-level authorization (BOLA/IDOR) on {verb} routes",
+                    severity=severity,  # type: ignore[arg-type]
+                    evidence=evidence,
+                    mitigation=(
+                        "Enforce an object-level authorization check on every access: confirm the "
+                        "authenticated principal owns or may access the requested resource id "
+                        "server-side — scope the query by the caller's identity or evaluate a policy "
+                        "— before reading or modifying the record. Never trust the id from the "
+                        "request alone."
+                    ),
+                    confidence="medium",
+                    tags=["broken-authorization", "exposed-endpoint", "data-risk"],
+                    attack_techniques=[
+                        AttackTechnique(
+                            technique_id="T1190",
+                            name="Exploit Public-Facing Application",
+                            tactic="Initial Access",
+                            url="https://attack.mitre.org/techniques/T1190/",
+                        )
+                    ],
+                )
+            )
+
     # Dangerous taint sinks each get a dedicated, sink-specific finding
     # (#68) — surfaced even outside the framework-MVC gate that `chains`
     # sits behind. One aggregated finding per sink kind reachable from a
@@ -1434,6 +1479,41 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
                     _action_step("Impact", "Unsafe business decisions or downstream actions follow from a weak external trust boundary"),
                 ]),
                 impact="Poisoned state or unsafe downstream actions caused by over-trusting an external dependency.",
+            )
+        )
+
+    # BOLA/IDOR archetype (#69): an id-bearing route reaching data with no
+    # ownership check. Independent of the surface-claim machinery above —
+    # it keys off scan.authz_candidates.
+    bola = scan.authz_candidates
+    if bola:
+        top = min(
+            bola,
+            key=lambda c: (c.route_method not in {"POST", "PUT", "PATCH", "DELETE"}, c.route_file),
+        )
+        action = "modify" if top.route_method in {"POST", "PUT", "PATCH", "DELETE"} else "read"
+        paths.append(
+            AttackPath(
+                name="Object-level authorization bypass (BOLA/IDOR)",
+                steps=[
+                    _action_step(
+                        "Entry",
+                        f"An authenticated attacker calls {top.route_method} {top.route_path} in {top.route_file}, which takes a resource id (`{top.id_param}`)",
+                    ),
+                    _action_step(
+                        "Weak point",
+                        "No ownership or authorization check is visible near the handler — the resource id from the request is trusted directly",
+                    ),
+                    _action_step(
+                        "Propagation",
+                        f"The attacker enumerates or substitutes `{top.id_param}` values; {top.db_evidence}, so the query returns another principal's record",
+                    ),
+                    _action_step(
+                        "Impact",
+                        f"Cross-tenant / cross-user ability to {action} records that should be out of scope for the caller",
+                    ),
+                ],
+                impact=f"Horizontal privilege escalation — attackers {action} other users' objects by changing an id in the request.",
             )
         )
 

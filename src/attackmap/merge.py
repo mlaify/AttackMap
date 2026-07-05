@@ -80,6 +80,10 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         "vulnerabilities",
         lambda item: (item.ecosystem, item.package_name, item.package_version, item.id),
     ),
+    MergeRule(
+        "authz_candidates",
+        lambda item: (item.route_method, item.route_path, item.route_file, item.id_param),
+    ),
 )
 
 
