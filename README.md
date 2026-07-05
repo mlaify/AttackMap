@@ -178,6 +178,24 @@ template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findin
 are evidence, not proof; confidence tapers with hop distance. Chains appear in
 `attackmap-report.json` under `scan.taint_chains`.
 
+### Broken object-level authorization (BOLA / IDOR)
+
+OWASP API Security #1. AttackMap flags a route as a BOLA/IDOR candidate when it
+composes three signals it already has:
+
+1. the route takes a **resource id** in the path (`/users/{id}`,
+   `/orders/:orderId`, `/docs/<int:doc_id>`), and
+2. it **reaches a datastore** — a DB hint in the same file/module, or a taint
+   chain from the route to a SQL execute sink, and
+3. **no ownership/authorization check** is visible near the handler
+   (`current_user`, `request.user`, `authorize`, a policy/guard, or a
+   `filter_by(user_id=…)`-style scoped query).
+
+Write routes (POST/PUT/PATCH/DELETE) are HIGH, reads MEDIUM. Candidates appear
+under `scan.authz_candidates`; the ownership-marker scan is the main
+false-positive reducer, so a well-scoped handler is not flagged. Path-template
+routes today; query-parameter and RPC-method ids are future work.
+
 ### SBOM inventory
 
 Every scan also produces a lightweight SBOM by parsing direct dependencies out

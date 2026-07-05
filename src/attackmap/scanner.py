@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 
+from .authz import analyze_authz
 from .sbom import analyze_sbom
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import analyze_taint
@@ -577,6 +578,10 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
     result.taint_chains = analyze_taint(result, root_path)
     # SBOM inventory: direct-dep parse of manifest files (#48, slice 1).
     result.dependencies = analyze_sbom(root_path)
+    # BOLA/IDOR: routes with an id param reaching a datastore with no
+    # ownership check nearby (#69). Runs after taint so it can reuse
+    # sql_execute reachability.
+    result.authz_candidates = analyze_authz(result, root_path)
     return result
 
 

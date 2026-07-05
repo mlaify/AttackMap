@@ -130,6 +130,26 @@ class DependencyHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class BolaCandidate(BaseModel):
+    """A route that may be missing object-level authorization (#69).
+
+    Emitted by the authz analyzer when a route takes a resource
+    identifier and reaches a datastore, but no ownership/authorization
+    check is visible near the handler. Heuristic — the ownership-marker
+    scan is the main false-positive reducer; confidence stays honest.
+    """
+
+    route_path: str
+    route_method: str
+    route_file: str
+    route_line: int | None = None
+    id_param: str  # the resource-id parameter detected in the route
+    reaches_db: bool = False
+    db_evidence: str = ""  # how DB reachability was established
+    has_ownership_check: bool = False  # True → suppressed (not a candidate)
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class TaintChain(BaseModel):
     """Cross-file data-flow evidence: a route reaches a sink via imports.
 
@@ -390,6 +410,7 @@ class ScanResult(BaseModel):
     taint_chains: list[TaintChain] = Field(default_factory=list)
     dependencies: list[DependencyHint] = Field(default_factory=list)
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
+    authz_candidates: list[BolaCandidate] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property
