@@ -130,6 +130,29 @@ class DependencyHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class CryptoWeakness(BaseModel):
+    """An insecure-cryptography or weak-randomness usage (#70).
+
+    Emitted by the built-in crypto finder. Heuristic and regex-based;
+    the noisy families (weak hash, insecure RNG) are gated on a
+    security-context identifier to keep precision high.
+    """
+
+    kind: Literal[
+        "weak_password_hash",
+        "weak_cipher",
+        "ecb_mode",
+        "static_iv_salt",
+        "insecure_random",
+        "insecure_tls",
+    ]
+    file: str
+    line: int | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class BolaCandidate(BaseModel):
     """A route that may be missing object-level authorization (#69).
 
@@ -411,6 +434,7 @@ class ScanResult(BaseModel):
     dependencies: list[DependencyHint] = Field(default_factory=list)
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     authz_candidates: list[BolaCandidate] = Field(default_factory=list)
+    crypto_weaknesses: list[CryptoWeakness] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property
