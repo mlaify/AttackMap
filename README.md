@@ -181,8 +181,16 @@ ATT&CK mapping:
 | `sql_execute` | Cursor/session `.execute`/`.query` reachable from a route | (feeds attack paths) |
 | `dynamic_open` | `open()` with request-shaped path | (feeds attack paths) |
 
+| `open_redirect` | Request-derived URL into `redirect()`/`res.redirect()` | MEDIUM |
+
+Beyond the taint sinks, a per-file pass flags additional undisclosed-vuln
+classes (`scan.code_weaknesses`): **prototype pollution** (`__proto__` writes,
+deep-merge of a request object), **mass assignment** (a whole request body bound
+to a model), **JWT weaknesses** (`alg=none`, signature verification off), and
+**XXE** (XML parsers with external entities enabled).
+
 Sinks that are only dangerous with attacker-controlled input (SSRF, SSTI, NoSQL,
-`open`) are gated on a request-shaped identifier in the call — a constant URL or
+open redirect, `open`) are gated on a request-shaped identifier in the call — a constant URL or
 template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findings
 are evidence, not proof; confidence tapers with hop distance. Chains appear in
 `attackmap-report.json` under `scan.taint_chains`.

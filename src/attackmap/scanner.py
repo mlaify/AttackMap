@@ -9,6 +9,7 @@ from pathlib import Path
 from .authz import analyze_authz
 from .crypto import find_crypto_weaknesses
 from .sbom import analyze_sbom
+from .weaknesses import find_code_weaknesses
 from .webhardening import find_web_hardening_issues
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import analyze_taint
@@ -579,6 +580,8 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
         result.crypto_weaknesses.extend(find_crypto_weaknesses(content, relative))
         # Web-hardening gaps (#71): CORS, CSRF, cookies, CSP, debug.
         result.web_hardening_issues.extend(find_web_hardening_issues(content, relative))
+        # Novel vuln classes (#77): proto pollution, mass assignment, JWT, XXE.
+        result.code_weaknesses.extend(find_code_weaknesses(content, relative))
 
     result.languages.sort()
     # Taint pass runs after regular signal extraction — it needs the

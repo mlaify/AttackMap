@@ -130,6 +130,30 @@ class DependencyHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class CodeWeakness(BaseModel):
+    """A novel vulnerability-class weakness in source (#77).
+
+    Emitted by the built-in `weaknesses` finder — bug classes beyond the
+    taint/crypto/web-hardening families, detected from concrete risky
+    constructs (not absence).
+    """
+
+    kind: Literal[
+        "prototype_pollution",
+        "mass_assignment",
+        "jwt_weakness",
+        "xxe",
+        "redos",
+        "insecure_upload",
+        "graphql_exposure",
+    ]
+    file: str
+    line: int | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class WebHardeningIssue(BaseModel):
     """A web-hardening misconfiguration (#71).
 
@@ -218,6 +242,7 @@ class TaintChain(BaseModel):
         "ssti",
         "ssrf",
         "nosql_injection",
+        "open_redirect",
     ]
     sink_file: str
     sink_line: int | None = None
@@ -459,6 +484,7 @@ class ScanResult(BaseModel):
     authz_candidates: list[BolaCandidate] = Field(default_factory=list)
     crypto_weaknesses: list[CryptoWeakness] = Field(default_factory=list)
     web_hardening_issues: list[WebHardeningIssue] = Field(default_factory=list)
+    code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property
