@@ -81,6 +81,13 @@ def analyze(
     repo_path = Path(path).resolve()
     if not repo_path.exists():
         raise typer.BadParameter(f"Path does not exist: {repo_path}")
+    # Validate diff-mode flag combinations before doing any real work.
+    if fail_on_new_high and baseline is None:
+        raise typer.BadParameter("--fail-on-new-high requires --baseline to be set.")
+    if baseline is not None:
+        baseline_path = Path(baseline)
+        if not baseline_path.exists():
+            raise typer.BadParameter(f"Baseline report not found: {baseline_path}")
 
     selected_analyzers = None
     if module:
@@ -126,8 +133,6 @@ def analyze(
     diff_exit_code = 0
     if baseline is not None:
         baseline_path = Path(baseline)
-        if not baseline_path.exists():
-            raise typer.BadParameter(f"Baseline report not found: {baseline_path}")
         try:
             baseline_snapshots = load_baseline(baseline_path)
         except (OSError, ValueError) as exc:
@@ -154,8 +159,6 @@ def analyze(
             for t in new_high_titles:
                 typer.echo(f"  - {t}", err=True)
             diff_exit_code = 1
-    elif fail_on_new_high:
-        raise typer.BadParameter("--fail-on-new-high requires --baseline to be set.")
 
     if llm:
         try:
