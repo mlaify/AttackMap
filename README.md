@@ -58,6 +58,17 @@ You can also install individual analyzer plugins on demand:
 pip install attackmap-analyzer-python attackmap-analyzer-go
 ```
 
+Not sure which plugins your repo needs? Let AttackMap tell you:
+
+```bash
+attackmap suggest ./path/to/repo          # print ranked pip lines
+attackmap suggest ./path/to/repo --install # and install them (prompts once)
+```
+
+`suggest` inspects the repo's manifest files, extensions, and directory layout
+and recommends only the plugins that would give it deeper signal — useful
+when you want a smaller install footprint than `[all]`.
+
 ### With Docker
 
 ```bash
@@ -190,6 +201,8 @@ attackmap analyze <path> --output dir    # write outputs to `dir/`
 attackmap analyze <path> --module python --module rust   # only these analyzers
 attackmap analyze <path> --llm           # add LLM narrative (auto-resolve auth)
 attackmap analyze <path> --llm --llm-backend cli         # force Claude CLI
+attackmap suggest ./repo                 # recommend plugins for a repo shape
+attackmap suggest ./repo --install       # and pip-install the missing ones
 attackmap modules                        # list installed analyzers
 ```
 
