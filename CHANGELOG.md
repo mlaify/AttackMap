@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Injection sink detection (#68).** The taint engine gained four new
+  dangerous-sink families, each producing a dedicated ATT&CK-mapped finding
+  when reachable from a route: `unsafe_deserialization` (pickle, yaml.load
+  without SafeLoader, marshal, node-serialize), `ssti` (server-side template
+  injection), `ssrf` (request-derived outbound HTTP), and `nosql_injection`
+  (request object as a Mongo filter, or `$where`). Args-gated sinks require a
+  member access / subscript on a request container (`req.query.url`) rather than
+  a bare identifier — validated against a real repo, this cut 607 false SSRF
+  hits to 0 while preserving genuine detection.
+- **Broken object-level authorization (BOLA/IDOR) detection (#69).** Flags
+  routes that take a resource id in the path, reach a datastore, and have no
+  ownership/authorization check nearby. Write methods are HIGH, reads MEDIUM;
+  emits a Finding (T1190) and a dedicated attack-path narrative.
+
+## [0.2.0] - 2026-07-05
+
+Second feature release. Turns AttackMap from an architecture/asset modeler into
+a tool that also traces data flow, checks authorization, and inventories
+dependency risk — while adding CI-grade output formats.
+
+### Added
+
+- **Data-flow / taint analysis (#45).** A lightweight import-graph walk (Python
+  + JS/TS) traces request-to-sink reachability up to two hops from each route,
+  emitting `TaintChain` signals for SQL execute, subprocess/shell, eval, exec,
+  and dynamic file-open sinks, and folding them into attack-path narratives.
+- **SBOM inventory (#48).** Parses direct dependencies from `pyproject.toml`,
+  `requirements.txt`, `package.json`, `go.mod`, `Cargo.toml`, and
+  `composer.json` into `DependencyHint` signals across five ecosystems.
+- **CVE cross-reference (`--cve`, #60).** Opt-in OSV.dev lookup for every SBOM
+  entry, with an on-disk cache (`~/.attackmap/cache/osv/`, 24h TTL) and
+  offline-tolerant fallback. Emits one finding per vulnerable dependency,
+  CVSS-mapped to severity.
+- **`attackmap suggest` (#46).** Recommends the analyzer plugins a repository
+  actually needs (by manifests, extensions, and framework markers), with an
+  optional `--install`.
+- **Watch / diff mode (#47).** `--baseline`, `--diff-output`, and
+  `--fail-on-new-high` produce a New/Persisted/Resolved diff against a prior
+  report and can gate a PR on newly-introduced HIGH findings. Findings now carry
+  a stable id in `attackmap-report.json`.
+- **SARIF 2.1.0 output (#42).** Every scan writes `attackmap-report.sarif` for
+  GitHub Code Scanning, VS Code, and other SARIF consumers.
+- **Mermaid + Graphviz export (#49).** Attack paths and service topology render
+  as `attackmap-paths.md` / `attackmap-topology.md` (Mermaid) and `.dot`
+  (Graphviz).
+- **Hard-coded secret detection (#39)** in source and config, with
+  `<first-4>…<last-4>` redaction and entropy heuristics.
+- **Config-file analyzer (#43).** Extracts DB connection strings, service URLs,
+  and secret-shaped literals from YAML / TOML / JSON / INI / `.env`.
+- **`attackmap-analyzer-iac` (#40).** New official plugin: Dockerfile hardening,
+  docker-compose service graphs, GitHub Actions workflows, `.env` templates, and
+  shell installers. Now bundled in the `[all]` extra (14 plugins total).
+- **Route-scoped auth attribution (#41).** Auth signals are attributed per-route
+  instead of via a global fallback, sharpening BOLA and missing-auth findings.
+- **Eval rubric v2 (#44).** Keyword-group + pattern-based scoring with per-repo
+  fixture splits (Bluesky atproto / PDS / social-app).
+
+### Changed
+
+- The `[all]` extra now installs 14 analyzer plugins (adds `attackmap-analyzer-iac`).
+- `claude` CLI backend errors now surface the real message (e.g. "Not logged in
+  · Please run /login") plus a hint, instead of the misleading `subtype`
+  ("success") field.
+
+### Fixed
+
+- Container image and Homebrew publishing pipelines: the GHCR build now waits for
+  PyPI before building and tags images from the resolved version; the Homebrew
+  formula drops the `anthropic`/`jiter` tree (unbuildable in Homebrew's sandbox),
+  depends on `rust` for `pydantic-core`, and passes `brew audit`/`brew style`.
+
 ## [0.1.1] - 2026-06-25
 
 ### Changed
@@ -73,6 +146,7 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mlaify/AttackMap/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/mlaify/AttackMap/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mlaify/AttackMap/releases/tag/v0.1.0

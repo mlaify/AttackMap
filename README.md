@@ -1,9 +1,11 @@
 # AttackMap
 
 **AI-assisted defensive security analysis for codebases.** AttackMap reads your
-repository, models its assets and defensive controls, finds cross-cutting
-weaknesses that single-file scanners miss, and produces an evidence-grounded
-security review with MITRE ATT&CK mappings and detection-engineering hints.
+repository, models its assets and defensive controls, traces request-to-sink
+data flow, inventories dependencies and their known CVEs, and produces an
+evidence-grounded security review with MITRE ATT&CK mappings and
+detection-engineering hints — finding the cross-cutting weaknesses that
+single-file scanners miss.
 
 Built for AppSec engineers, SOC and detection-engineering teams, and engineering
 managers who need to triage an unfamiliar codebase.
@@ -12,6 +14,13 @@ managers who need to triage an unfamiliar codebase.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
+[![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
+
+> **Status: beta (v0.2.0).** Core engine and 14 analyzer plugins are published
+> to PyPI, Homebrew, and GHCR and validated against real-world codebases.
+> AttackMap is heuristic by design — findings are confidence-tiered evidence,
+> not proof. See [Project status](#project-status) for what's solid and what's
+> still maturing.
 
 ---
 
@@ -251,7 +260,10 @@ AttackMap is built as four layers, each grounded in the layer below.
 databases, external calls, auth signals, secrets, frameworks, and entrypoints.
 Every signal carries a `file:line` citation, an evidence-text snippet, and a
 confidence score. Plugins are auto-discovered through the `attackmap.analyzers`
-entry-point group.
+entry-point group. Alongside recon, three cross-file passes run in core: a
+**taint / data-flow** walk (request-to-sink reachability across imports), a
+**BOLA/IDOR** authorization check, and an **SBOM** dependency inventory
+(optionally cross-referenced against OSV.dev with `--cve`).
 
 **2. Asset and control overlay.** Identifies *what's at risk* (credentials,
 sessions, PII, payment records, internal secrets — with criticality tiers) and
@@ -275,7 +287,7 @@ Layered on top: **MITRE ATT&CK technique mappings** on every insight and
 
 ## Supported ecosystems
 
-Thirteen official analyzer plugins, each distributable as a separate package:
+Fourteen official analyzer plugins, each distributable as a separate package:
 
 | Plugin | Coverage |
 |---|---|
@@ -285,13 +297,15 @@ Thirteen official analyzer plugins, each distributable as a separate package:
 | `attackmap-analyzer-java-spring` | Java/Kotlin Spring Boot, JAX-RS, Ktor; Spring Data; Spring Security; jjwt |
 | `attackmap-analyzer-dotnet` | ASP.NET Core minimal APIs and attribute routing, EF Core, Identity, JwtBearer |
 | `attackmap-analyzer-terraform` | AWS, Azure, GCP resources; IAM wildcards; open SGs; secrets |
+| `attackmap-analyzer-iac` | Dockerfile hardening, docker-compose service graphs, GitHub Actions workflows, `.env` templates, shell installers |
 | `attackmap-analyzer-c` | libmicrohttpd, civetweb, mongoose; libcurl; OpenSSL/libsodium; sqlite3/libpq/mysql |
 | `attackmap-analyzer-cpp` | Crow, Pistache, Drogon, cpprestsdk; libcurl/cpr; OpenSSL/Botan/libsodium; libpqxx/mongocxx |
 | `attackmap-analyzer-node-service` | Node.js / TypeScript service ecosystems |
 | `attackmap-analyzer-atproto` | AT Protocol (Bluesky) services |
 | `attackmap-analyzer-php-web` / `-php-laminas` / `-omeka-s` | Generic PHP web, Laminas/Zend MVC, Omeka-S |
 
-`pip install "attackmap[all]"` installs every official plugin.
+`pip install "attackmap[all]"` installs every official plugin. Not sure which
+you need? `attackmap suggest ./repo` recommends the right set for a repo's shape.
 
 ### Building your own analyzer
 
@@ -307,16 +321,27 @@ scaffolding, testing, and publishing instructions is in
 ```bash
 attackmap analyze <path>                 # run a review on a repository
 attackmap analyze <path> --output dir    # write outputs to `dir/`
+attackmap analyze <path> --format json   # json | markdown | all (default)
 attackmap analyze <path> --module python --module rust   # only these analyzers
+attackmap analyze <path> --cve           # cross-reference SBOM against OSV.dev
 attackmap analyze <path> --llm           # add LLM narrative (auto-resolve auth)
 attackmap analyze <path> --llm --llm-backend cli         # force Claude CLI
+
+# CI / PR diff gating
+attackmap analyze <path> --baseline prev/attackmap-report.json \
+  --diff-output reports/attackmap-diff.md --fail-on-new-high
+
+# Plugin discovery
 attackmap suggest ./repo                 # recommend plugins for a repo shape
 attackmap suggest ./repo --install       # and pip-install the missing ones
 attackmap modules                        # list installed analyzers
 ```
 
 `--module` is repeatable. Missing requested external analyzers can be
-auto-installed (when possible) from the `mlaify` GitHub organization.
+auto-installed (when possible) from the `mlaify` GitHub organization. `--cve`
+does network I/O (cached under `~/.attackmap/cache/osv/`, 24h TTL);
+`--fail-on-new-high` requires `--baseline` and exits non-zero when the diff
+introduces a new HIGH finding.
 
 ---
 
@@ -324,10 +349,45 @@ auto-installed (when possible) from the `mlaify` GitHub organization.
 
 - **A runtime detector.** AttackMap is static. The detection opportunities it
   emits are *hints* for your SIEM team — they are not deployable rules.
-- **A vulnerability scanner.** AttackMap models architecture, assets, and
-  controls. It does not match known-CVE patterns.
+- **A replacement for dedicated SCA.** AttackMap does inventory dependencies and
+  cross-reference OSV.dev with `--cve`, but tools like Trivy, Grype, and
+  Dependabot go deeper on transitive resolution and lockfiles. AttackMap's
+  value is folding the CVE signal into an architecture-aware narrative
+  ("this public route reaches this vulnerable ORM").
+- **A true taint engine.** The data-flow pass is a heuristic import-graph walk
+  (import-edge ≈ call-edge), not sound interprocedural taint analysis. It
+  favors precision over recall; findings are evidence, not proof.
 - **Exhaustive.** AttackMap is heuristic by design. Findings are confidence-tiered
   with explicit guardrails for stale signals.
+
+---
+
+## Project status
+
+AttackMap is **beta** (v0.2.0) — published and validated on real codebases, but
+pre-1.0 and heuristic.
+
+**Solid today:**
+
+- Modular analyzer execution with entry-point discovery; 14 official plugins on PyPI.
+- Framework-aware route extraction (FastAPI/Flask/Express/Spring/axum/chi/…).
+- Asset + control modeling, cross-cutting insight engine, chain-aware threat model.
+- Injection / data-flow detection: SSRF, SSTI, NoSQL, unsafe deserialization,
+  eval/exec/shell, SQL, dynamic file open — request-container-gated for precision.
+- BOLA/IDOR authorization detection on path-template routes.
+- SBOM inventory (5 ecosystems) + OSV.dev CVE cross-reference (`--cve`).
+- Output: Markdown + JSON + **SARIF 2.1.0** (GitHub Code Scanning) + **Mermaid /
+  Graphviz** diagrams; **diff/baseline** mode for PR gating; optional LLM narrative.
+- Distribution: `pip install attackmap[all]`, `brew install mlaify/tap/attackmap`,
+  `docker pull ghcr.io/mlaify/attackmap`.
+
+**Still maturing:**
+
+- Taint + BOLA are Python + JS/TS and path-template scoped; query-param / RPC-method
+  authorization and more languages are planned.
+- CVE lookup resolves a best-effort concrete version, not full lockfile ranges.
+- Test-file exclusion for the taint pass is in progress ([#67](https://github.com/mlaify/AttackMap/issues/67)).
+- Insecure-crypto and web-hardening detection are in flight ([#70](https://github.com/mlaify/AttackMap/issues/70), [#71](https://github.com/mlaify/AttackMap/issues/71)).
 
 ---
 
