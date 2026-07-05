@@ -130,6 +130,29 @@ class DependencyHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class WebHardeningIssue(BaseModel):
+    """A web-hardening misconfiguration (#71).
+
+    Emitted by the built-in web-hardening finder. Detects
+    positively-present misconfigurations (wildcard CORS with credentials,
+    explicit CSRF disable, insecure cookie flags, unsafe-inline/eval CSP,
+    debug enabled) rather than hard-to-judge absences.
+    """
+
+    kind: Literal[
+        "cors_wildcard_credentials",
+        "csrf_disabled",
+        "insecure_cookie",
+        "weak_csp",
+        "debug_enabled",
+    ]
+    file: str
+    line: int | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class CryptoWeakness(BaseModel):
     """An insecure-cryptography or weak-randomness usage (#70).
 
@@ -435,6 +458,7 @@ class ScanResult(BaseModel):
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     authz_candidates: list[BolaCandidate] = Field(default_factory=list)
     crypto_weaknesses: list[CryptoWeakness] = Field(default_factory=list)
+    web_hardening_issues: list[WebHardeningIssue] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property

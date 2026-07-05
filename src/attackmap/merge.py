@@ -88,6 +88,10 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         "crypto_weaknesses",
         lambda item: (item.kind, item.file, item.line),
     ),
+    MergeRule(
+        "web_hardening_issues",
+        lambda item: (item.kind, item.file, item.line),
+    ),
 )
 
 

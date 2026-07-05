@@ -696,6 +696,51 @@ _CRYPTO_FINDING_SPEC: dict[str, dict[str, str]] = {
 }
 
 
+# Per-kind spec for web-hardening findings (#71).
+_WEB_HARDENING_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "cors_wildcard_credentials": {
+        "severity": "high",
+        "title": "CORS allows credentials with a wildcard/reflected origin",
+        "mitigation": "Never combine `Access-Control-Allow-Credentials: true` with a `*` or reflected origin. Allow-list explicit trusted origins; if credentials aren't needed, drop the credentials flag.",
+        "technique_id": "T1539",
+        "technique_name": "Steal Web Session Cookie",
+        "tactic": "Credential Access",
+    },
+    "csrf_disabled": {
+        "severity": "medium",
+        "title": "CSRF protection disabled or exempted",
+        "mitigation": "Keep CSRF protection on for cookie-authenticated, state-changing routes. If an endpoint is a token-authenticated API that legitimately doesn't need it, scope the exemption narrowly and document why.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "insecure_cookie": {
+        "severity": "medium",
+        "title": "Session cookie set without secure flags",
+        "mitigation": "Set `HttpOnly`, `Secure`, and `SameSite=Lax` (or `Strict`) on session cookies. `SameSite=None` must always be paired with `Secure`.",
+        "technique_id": "T1539",
+        "technique_name": "Steal Web Session Cookie",
+        "tactic": "Credential Access",
+    },
+    "weak_csp": {
+        "severity": "medium",
+        "title": "Content-Security-Policy allows unsafe-inline/unsafe-eval",
+        "mitigation": "Remove `'unsafe-inline'` and `'unsafe-eval'` from the CSP; use nonces or hashes for inline scripts. These directives largely defeat CSP's XSS protection.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "debug_enabled": {
+        "severity": "medium",
+        "title": "Debug mode or unrestricted management endpoints enabled",
+        "mitigation": "Never ship with debug mode on (Flask/Django `DEBUG`, Rails `consider_all_requests_local`) or Spring actuator endpoints exposed with `*`. Debug consoles leak internals and can enable RCE.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+}
+
+
 def _taint_by_route_file(scan: ScanResult) -> dict[str, list[TaintChain]]:
     """Group taint chains by originating route file for fast lookup."""
     out: dict[str, list[TaintChain]] = {}
@@ -1172,6 +1217,39 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["insecure-crypto"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
+
+    # Web-hardening gaps (#71). One aggregated finding per issue kind.
+    web_by_kind: dict[str, list] = {}
+    for issue in scan.web_hardening_issues:
+        web_by_kind.setdefault(issue.kind, []).append(issue)
+    for kind, spec in _WEB_HARDENING_FINDING_SPEC.items():
+        items = web_by_kind.get(kind)
+        if not items:
+            continue
+        evidence = [
+            f"{i.file}:{i.line} — {i.evidence_text}" if i.evidence_text else f"{i.file}:{i.line}"
+            for i in items[:10]
+        ]
+        if len(items) > 10:
+            evidence.append(f"+{len(items) - 10} more occurrence(s)")
+        findings.append(
+            Finding(
+                title=spec["title"],
+                severity=spec["severity"],  # type: ignore[arg-type]
+                evidence=evidence,
+                mitigation=spec["mitigation"],
+                confidence="medium",
+                tags=["web-hardening"],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],
