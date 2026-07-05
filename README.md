@@ -132,6 +132,25 @@ jobs:
           category: attackmap
 ```
 
+### Diff mode (PR gating)
+
+For a lighter CI integration than Code Scanning — a bot comment, a JSON delta,
+or a hard fail on newly-introduced HIGH findings — point `--baseline` at a
+prior report and AttackMap will emit a Markdown diff alongside the fresh
+report:
+
+```bash
+attackmap analyze . --output reports \
+  --baseline path/to/previous/attackmap-report.json \
+  --diff-output reports/attackmap-diff.md \
+  --fail-on-new-high        # exit non-zero if the PR introduces any HIGH finding
+```
+
+Findings get a stable id (hash of the finding title) that survives line drift
+on unrelated commits, so a finding that persists across scans has the same id
+in both. The diff has three sections — **New**, **Persisted**, **Resolved** —
+which drop cleanly into a PR comment.
+
 ---
 
 ## How it works

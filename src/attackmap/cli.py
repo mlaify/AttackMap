@@ -16,6 +16,12 @@ from .analyzers import (
     resolve_run_analyzers,
     select_requested_analyzers,
 )
+from .diff import (
+    FindingSnapshot,
+    diff_findings,
+    load_baseline,
+    render_diff_markdown,
+)
 from .graph import build_graph
 from .llm_review import LlmReviewError, generate_llm_review
 from .recon_to_analysis import translate_recon
@@ -56,10 +62,32 @@ def analyze(
         "--llm-backend",
         help="Which backend --llm uses: 'auto' (default) tries ANTHROPIC_API_KEY → ANTHROPIC_AUTH_TOKEN → `claude` CLI; 'api' forces the SDK; 'cli' forces the `claude` CLI (uses your `claude login` auth, e.g. Pro/Max subscription).",
     ),
+    baseline: str | None = typer.Option(
+        None,
+        "--baseline",
+        help="Path to a prior `attackmap-report.json`. When set, emit a diff (new/persisted/resolved) alongside the fresh report.",
+    ),
+    diff_output: str | None = typer.Option(
+        None,
+        "--diff-output",
+        help="Path to write the Markdown diff. Defaults to <output>/attackmap-diff.md when --baseline is set.",
+    ),
+    fail_on_new_high: bool = typer.Option(
+        False,
+        "--fail-on-new-high",
+        help="Exit non-zero if the diff introduces any new HIGH-severity findings. Requires --baseline.",
+    ),
 ) -> None:
     repo_path = Path(path).resolve()
     if not repo_path.exists():
         raise typer.BadParameter(f"Path does not exist: {repo_path}")
+    # Validate diff-mode flag combinations before doing any real work.
+    if fail_on_new_high and baseline is None:
+        raise typer.BadParameter("--fail-on-new-high requires --baseline to be set.")
+    if baseline is not None:
+        baseline_path = Path(baseline)
+        if not baseline_path.exists():
+            raise typer.BadParameter(f"Baseline report not found: {baseline_path}")
 
     selected_analyzers = None
     if module:
@@ -101,6 +129,36 @@ def analyze(
     typer.echo(render_console_summary(scan, findings, attack_paths))
     typer.echo("")
     typer.echo(f"Reports written to: {Path(output).resolve()}")
+
+    diff_exit_code = 0
+    if baseline is not None:
+        baseline_path = Path(baseline)
+        try:
+            baseline_snapshots = load_baseline(baseline_path)
+        except (OSError, ValueError) as exc:
+            raise typer.BadParameter(f"Failed to read baseline: {exc}") from exc
+        current_snapshots = [FindingSnapshot.from_finding(f) for f in findings]
+        diff = diff_findings(baseline_snapshots, current_snapshots)
+        counts = diff.counts()
+        typer.echo("")
+        typer.echo(
+            f"Diff vs baseline: {counts['new']} new, "
+            f"{counts['persisted']} persisted, {counts['resolved']} resolved."
+        )
+        diff_path = Path(diff_output) if diff_output else Path(output) / "attackmap-diff.md"
+        diff_path.parent.mkdir(parents=True, exist_ok=True)
+        diff_path.write_text(render_diff_markdown(diff), encoding="utf-8")
+        typer.echo(f"Diff written to: {diff_path.resolve()}")
+        if fail_on_new_high and diff.has_new_high:
+            new_high_titles = [s.title for s in diff.new if s.severity == "high"]
+            typer.echo("", err=True)
+            typer.echo(
+                "New HIGH findings introduced (failing per --fail-on-new-high):",
+                err=True,
+            )
+            for t in new_high_titles:
+                typer.echo(f"  - {t}", err=True)
+            diff_exit_code = 1
 
     if llm:
         try:
@@ -151,6 +209,9 @@ def analyze(
                 encoding="utf-8",
             )
             typer.echo(f"LLM review written to: {llm_md_path.resolve()} (backend={result.backend})")
+
+    if diff_exit_code:
+        raise typer.Exit(code=diff_exit_code)
 
 
 @app.command("modules")
