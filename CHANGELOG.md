@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code, confidence-tiered, and each lead states what a human must verify. Shares
   `--llm`'s auth/backend resolution.
 
+- **Live scan progress + ETA (#36).** `attackmap analyze` now shows a
+  self-updating progress bar with percentage, file count, and estimated time
+  remaining during the per-file pass, plus an animated spinner with elapsed time
+  for the indeterminate tail analyzers (taint, SBOM, authorization, anomalies) —
+  so a multi-minute monorepo scan visibly makes progress instead of looking
+  hung. TTY-aware (silent when stderr isn't a terminal); `--no-progress` forces
+  it off. Zero new dependencies.
+
 ### Changed
 
 - **Test/spec files excluded from heuristic passes by default (#67).** The
