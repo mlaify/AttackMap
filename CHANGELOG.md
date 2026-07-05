@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Taint: deserialization/eval/exec sinks no longer over-fire on static/local
+  arguments (#91).** The "dangerous-regardless" sink families are now suppressed
+  when the call argument is provably static — a string literal or a literal-path
+  file read (e.g. `yaml.load(fs.readFileSync('./swagger.yml'))`) — rather than
+  attacker-influenced. Found via OWASP Juice Shop, where one benign startup
+  `yaml.load` in a hub module fanned out to 113 of 123 taint chains (all scored
+  CRITICAL); this cuts it to 10 while preserving the real `eval()` RCE and the
+  variable-path `yaml.load('./data/'+key)` chains. Same class as #85.
+
 ## [0.3.0] - 2026-07-05
 
 Third feature release — the vulnerability-hunting arc. Adds injection-sink and

@@ -216,7 +216,7 @@ def test_analyze_taint_uses_scan_routes_directly(tmp_path: Path) -> None:
         "import worker\ndef h(): return worker.run()\n", encoding="utf-8"
     )
     (tmp_path / "worker.py").write_text(
-        "def run(): eval('1+1')\n", encoding="utf-8"
+        "def run(x): eval(x)\n", encoding="utf-8"
     )
     scan = ScanResult(
         root=str(tmp_path),
@@ -228,6 +228,77 @@ def test_analyze_taint_uses_scan_routes_directly(tmp_path: Path) -> None:
     assert chains[0].route_path == "/synthetic"
 
 
+def test_static_local_deserialization_not_flagged(tmp_path: Path) -> None:
+    """`yaml.load` of a static local file (shipped config at boot) is not an
+    unsafe deserialization of untrusted data — must not seed a chain. This is
+    the juice-shop `yaml.load(readFileSync('./swagger.yml'))` fan-out FP."""
+    (tmp_path / "server.js").write_text(
+        "const fs = require('fs')\n"
+        "const yaml = require('js-yaml')\n"
+        "const express = require('express')\n"
+        "const app = express()\n"
+        "const swaggerDocument = yaml.load(fs.readFileSync('./swagger.yml', 'utf8'))\n"
+        "app.get('/status', (req, res) => res.json(swaggerDocument))\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert not [c for c in scan.taint_chains if c.sink_kind == "unsafe_deserialization"]
+
+
+def test_dynamic_deserialization_still_flagged(tmp_path: Path) -> None:
+    # request-derived bytes into yaml.load → real, still flagged.
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "import yaml\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/load', methods=['POST'])\n"
+        "def load():\n"
+        "    return yaml.load(request.data)\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.sink_kind == "unsafe_deserialization" for c in scan.taint_chains)
+
+
+def test_concatenated_path_deserialization_still_flagged(tmp_path: Path) -> None:
+    # literal path + a variable (potential traversal) is NOT purely static.
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "import yaml\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/hint/<key>')\n"
+        "def hint(key):\n"
+        "    return yaml.load(open('./data/' + key + '.yml').read())\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.sink_kind == "unsafe_deserialization" for c in scan.taint_chains)
+
+
+def test_constant_eval_not_flagged_but_variable_eval_is(tmp_path: Path) -> None:
+    # Separate files so hop-0 file-locality doesn't cross-link the routes.
+    (tmp_path / "constant.py").write_text(
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/const')\n"
+        "def c():\n"
+        "    return eval('1 + 1')\n",  # constant → benign, suppressed
+        encoding="utf-8",
+    )
+    (tmp_path / "dynamic.py").write_text(
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/dyn')\n"
+        "def d():\n"
+        "    return eval(request.args['x'])\n",  # variable → dangerous
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    eval_routes = {c.route_path for c in scan.taint_chains if c.sink_kind == "eval"}
+    assert "/dyn" in eval_routes
+    assert "/const" not in eval_routes
+
+
 @pytest.mark.parametrize("sink_kind", ["eval", "exec", "subprocess_shell", "dynamic_open"])
 def test_all_sink_kinds_are_detectable(tmp_path: Path, sink_kind: str) -> None:
     (tmp_path / "route.py").write_text(
@@ -236,8 +307,10 @@ def test_all_sink_kinds_are_detectable(tmp_path: Path, sink_kind: str) -> None:
         encoding="utf-8",
     )
     bodies = {
-        "eval": "def go(): eval('1+1')\n",
-        "exec": "def go(): exec('a=1')\n",
+        # eval/exec use a variable arg (not a constant) — a constant eval is
+        # benign and is now suppressed by the static-arg gate (see below).
+        "eval": "def go(x): eval(x)\n",
+        "exec": "def go(x): exec(x)\n",
         "subprocess_shell": "import subprocess\ndef go(): subprocess.run('ls', shell=True)\n",
         "dynamic_open": "def go(req): return open(req.path)\n",
     }

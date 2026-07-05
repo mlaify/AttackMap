@@ -391,6 +391,59 @@ def _resolve_js_target(target: Path, files: dict[str, Path], root: Path) -> str 
     return None
 
 
+# Sink families that fire on reachability alone (no request-token gate),
+# because the operation is dangerous regardless of the argument's shape.
+# But that over-fires when the argument is provably STATIC/local — e.g.
+# `yaml.load(fs.readFileSync('./swagger.yml'))` loads a shipped config at
+# boot, not attacker bytes. Left ungated, one such call in a hub module
+# fans out to a chain from every route (observed: 113/123 chains on a real
+# app collapsing to one benign `yaml.load` of a static file). We suppress
+# these kinds when the call argument is a bare string literal or a
+# literal-path file read with no dynamic/attacker component.
+_STATIC_GATED_KINDS = frozenset({"unsafe_deserialization", "eval", "exec"})
+
+# A quoted string literal appears in the argument.
+_ARG_STRING_LITERAL = re.compile(r"""['"][^'"]*['"]""")
+# Signals the argument is (or may be) dynamic / attacker-influenced:
+# string concatenation, template/f-string interpolation, or a request /
+# runtime-input container. If any appears, we do NOT treat the arg as static.
+_ARG_DYNAMIC = re.compile(
+    r"\+|\$\{|`|\b(?:req|request|body|query|params|payload|argv|input|stdin)\b|process\."
+)
+
+
+def _extract_call_arg(content: str, open_paren: int, cap: int = 400) -> str:
+    """Return the text inside the balanced parens starting at ``open_paren``
+    (the index of the ``(``), bounded to ``cap`` chars."""
+    depth = 0
+    end = min(len(content), open_paren + cap)
+    for i in range(open_paren, end):
+        ch = content[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return content[open_paren + 1 : i]
+    return content[open_paren + 1 : end]
+
+
+def _is_static_local_arg(content: str, match: re.Match[str]) -> bool:
+    """True if the sink call's argument is provably static/local — a string
+    literal or a literal-path file read — with no dynamic/attacker component."""
+    paren = content.find("(", match.start())
+    if paren == -1:
+        return False
+    arg = _extract_call_arg(content, paren)
+    if not _ARG_STRING_LITERAL.search(arg):
+        return False  # no literal → provenance unknown → keep flagging
+    # Strip quoted spans before the dynamic check so a `+`/`${`/token that is
+    # DATA inside a literal (e.g. `eval('1 + 1')`, `yaml.load('a: b+c')`)
+    # doesn't read as concatenation/interpolation of the argument.
+    residual = _ARG_STRING_LITERAL.sub("", arg)
+    return _ARG_DYNAMIC.search(residual) is None
+
+
 def _find_sinks(
     files: dict[str, Path], root: Path
 ) -> dict[str, list[tuple[str, int, str]]]:
@@ -404,6 +457,10 @@ def _find_sinks(
         hits: list[tuple[str, int, str]] = []
         for kind, pattern in _SINK_PATTERNS:
             for match in pattern.finditer(content):
+                # Suppress ungated "dangerous-regardless" sinks whose argument
+                # is a static literal / local-file read (#88 follow-up).
+                if kind in _STATIC_GATED_KINDS and _is_static_local_arg(content, match):
+                    continue
                 line = content.count("\n", 0, match.start()) + 1
                 snippet = _line_snippet(content, match.start())
                 hits.append((kind, line, snippet))
