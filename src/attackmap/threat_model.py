@@ -784,6 +784,30 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
     },
+    "redos": {
+        "severity": "medium",
+        "title": "Regular expression vulnerable to catastrophic backtracking (ReDoS)",
+        "mitigation": "Rewrite the pattern to avoid nested quantifiers ((a+)+, (.*)*) and ambiguous alternation; use possessive quantifiers/atomic groups, a linear-time engine (RE2), or cap the length of user-supplied strings matched against it.",
+        "technique_id": "T1499",
+        "technique_name": "Endpoint Denial of Service",
+        "tactic": "Impact",
+    },
+    "insecure_upload": {
+        "severity": "high",
+        "title": "Uploaded file persisted with a client-controlled name/path",
+        "mitigation": "Never derive the stored path from the client filename. Generate a server-side name, store outside the web root, validate content type/size, and strip path separators before use.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "graphql_exposure": {
+        "severity": "low",
+        "title": "GraphQL introspection / playground enabled",
+        "mitigation": "Disable introspection and the GraphiQL/playground UI in production, and add query depth/complexity limits to prevent schema disclosure and expensive-query DoS.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
 }
 
 
