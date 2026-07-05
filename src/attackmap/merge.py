@@ -61,6 +61,17 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
     MergeRule("protocol_hints", lambda item: (item.hint, item.file)),
     MergeRule("framework_hints", lambda item: (item.hint, item.file)),
     MergeRule("secret_hints", lambda item: (item.name, item.file)),
+    MergeRule(
+        "taint_chains",
+        lambda item: (
+            item.route_method,
+            item.route_path,
+            item.route_file,
+            item.sink_kind,
+            item.sink_file,
+            item.sink_line,
+        ),
+    ),
 )
 
 

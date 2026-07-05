@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+from .taint import analyze_taint
 
 # Scanner responsibilities are intentionally generic-only:
 # - file walking and suffix filtering
@@ -570,6 +571,9 @@ def scan_repo(root: str | Path, suffixes: set[str] | None = None) -> ScanResult:
         _append_hardcoded_secret_hints(result, relative, content)
 
     result.languages.sort()
+    # Taint pass runs after regular signal extraction — it needs the
+    # route list to know where to seed source flows from (#45).
+    result.taint_chains = analyze_taint(result, root_path)
     return result
 
 
