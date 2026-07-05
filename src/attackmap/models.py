@@ -148,6 +148,10 @@ class TaintChain(BaseModel):
         "eval",
         "exec",
         "dynamic_open",
+        "unsafe_deserialization",
+        "ssti",
+        "ssrf",
+        "nosql_injection",
     ]
     sink_file: str
     sink_line: int | None = None

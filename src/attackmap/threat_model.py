@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .analyzer import identify_attack_surfaces
-from .models import AttackPath, AttackSurface, Finding, Route, ScanResult, TaintChain
+from .models import AttackPath, AttackSurface, AttackTechnique, Finding, Route, ScanResult, TaintChain
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -569,6 +569,76 @@ _TAINT_SINK_LABEL: dict[str, str] = {
     "eval": "code eval",
     "exec": "code exec",
     "dynamic_open": "filesystem open",
+    "unsafe_deserialization": "unsafe deserialization",
+    "ssti": "template injection",
+    "ssrf": "outbound request (SSRF)",
+    "nosql_injection": "NoSQL query",
+}
+
+
+# Per-sink-kind specification for the dedicated taint findings (#68).
+# Each dangerous sink kind reachable from a route produces one aggregated
+# Finding. `severity` is the Finding severity; `technique` is an ATT&CK
+# reference. Sinks NOT in this table (sql_execute, dynamic_open) are
+# surfaced through the probable-chain finding path instead of a dedicated
+# finding.
+_TAINT_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "eval": {
+        "severity": "high",
+        "title": "Request-reachable code execution via eval",
+        "mitigation": "Never pass request-derived data to eval. Use a domain-specific parser or an explicit allow-list of operations.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "exec": {
+        "severity": "high",
+        "title": "Request-reachable code execution via exec",
+        "mitigation": "Never pass request-derived data to exec. Refactor to call named functions selected via a validated allow-list.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "subprocess_shell": {
+        "severity": "high",
+        "title": "Request-reachable OS command execution",
+        "mitigation": "Prefer argv-list subprocess calls with shell=False. Never interpolate request data into a shell string; validate and constrain any external command inputs.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "unsafe_deserialization": {
+        "severity": "high",
+        "title": "Request-reachable unsafe deserialization",
+        "mitigation": "Do not deserialize attacker-controlled data with pickle/marshal/yaml.load/ObjectInputStream/unserialize. Use a data-only format (JSON) with a schema, or a safe loader (yaml.safe_load).",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "ssti": {
+        "severity": "high",
+        "title": "Request-reachable server-side template injection",
+        "mitigation": "Never render request-derived strings as templates. Pass untrusted data as template *variables* (auto-escaped), not as the template source.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "ssrf": {
+        "severity": "medium",
+        "title": "Request-reachable server-side request forgery (SSRF)",
+        "mitigation": "Validate and allow-list outbound destinations, resolve and pin DNS, block link-local/metadata ranges (169.254.0.0/16, fd00::/8), and disable redirects to internal hosts.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "nosql_injection": {
+        "severity": "medium",
+        "title": "Request-reachable NoSQL injection",
+        "mitigation": "Never pass a raw request object as a query filter. Cast and validate each field, reject operator keys ($where, $gt, ...) in user input, and disable server-side JavaScript execution.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
 }
 
 
@@ -980,35 +1050,44 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
-    # Severe taint sinks (eval/exec/subprocess_shell) are worth surfacing
-    # even outside the framework-MVC gate that `chains` sits behind (#45).
-    severe_taints = [
-        c for c in scan.taint_chains if c.sink_kind in {"eval", "exec", "subprocess_shell"}
-    ]
-    if severe_taints:
-        top = min(severe_taints, key=lambda c: (c.hops, -c.confidence))
+    # Dangerous taint sinks each get a dedicated, sink-specific finding
+    # (#68) — surfaced even outside the framework-MVC gate that `chains`
+    # sits behind. One aggregated finding per sink kind reachable from a
+    # route, ordered by the spec's declaration.
+    taint_by_kind: dict[str, list] = {}
+    for chain in scan.taint_chains:
+        if chain.sink_kind in _TAINT_FINDING_SPEC:
+            taint_by_kind.setdefault(chain.sink_kind, []).append(chain)
+    for kind, spec in _TAINT_FINDING_SPEC.items():
+        kind_chains = taint_by_kind.get(kind)
+        if not kind_chains:
+            continue
+        top = min(kind_chains, key=lambda c: (c.hops, -c.confidence))
+        evidence = [
+            f"route {top.route_method} {top.route_path} in {top.route_file}",
+            f"sink at {top.sink_file}:{top.sink_line} ({_TAINT_SINK_LABEL.get(kind, kind)})",
+            f"import path: {' → '.join(top.files)} ({top.hops} hop(s))",
+        ]
+        if len(kind_chains) > 1:
+            evidence.append(
+                f"+{len(kind_chains) - 1} more route(s) reach a {_TAINT_SINK_LABEL.get(kind, kind)} sink"
+            )
         findings.append(
             Finding(
-                title="Request-reachable code / command execution sink via cross-file taint",
-                severity="high",
-                evidence=[
-                    f"route {top.route_method} {top.route_path} in {top.route_file}",
-                    f"sink {top.sink_kind} at {top.sink_file}:{top.sink_line}",
-                    f"import path: {' → '.join(top.files)} ({top.hops} hop(s))",
-                    *(
-                        [f"+{len(severe_taints) - 1} additional taint chain(s) to severe sinks"]
-                        if len(severe_taints) > 1
-                        else []
-                    ),
-                ],
-                mitigation=(
-                    "Do not pass request-derived data to eval/exec or shell-invoking APIs. "
-                    "Prefer parameterized subprocess calls (shell=False, argv list) and "
-                    "domain-specific parsers over eval; validate and constrain inputs at the "
-                    "route boundary."
-                ),
+                title=spec["title"],
+                severity=spec["severity"],  # type: ignore[arg-type]
+                evidence=evidence,
+                mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["taint-chain", "input-handling", "data-risk"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
             )
         )
 
