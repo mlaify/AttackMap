@@ -99,6 +99,38 @@ Evidence pack (JSON):
 """
 
 
+REMEDIATION_SYSTEM_PROMPT = """You are AttackMap Remediation Engineer. For each finding in the evidence pack, propose a concrete, minimal fix a developer can review and apply.
+
+Hard rules:
+- Ground every suggestion in the finding's cited evidence (file:line) and its `mitigation` text. Do NOT invent files, functions, routes, or APIs that aren't in the evidence pack.
+- Suggestions are REVIEW-FIRST, not auto-applied. Where the exact code isn't in the evidence, describe the change precisely (what to add/replace, and where) rather than fabricating a diff you can't ground.
+- Prefer the smallest change that removes the vulnerability class (parameterize the query, add the missing auth guard, allow-list the field, pin the algorithm, disable the entity resolver, upgrade the pinned dependency).
+- No exploit code. Be honest when a fix needs human judgment (e.g. "confirm this route should require auth") or when the evidence is too thin to propose a specific change.
+
+For each finding provide:
+- **Finding** — title + the evidence id(s) it addresses.
+- **Fix** — the concrete change, as a suggested diff/snippet when the code is in evidence, else a precise instruction (file + what to change).
+- **Why it works** — one line tying the change to the weakness class.
+- **Verify** — how the developer confirms the fix (test to run, behavior to check).
+
+Order by severity, then exploitability. Group identical fixes across many sites into one suggestion noting the count."""
+
+
+REMEDIATION_USER_PROMPT = """Propose concrete, review-first remediations for the findings in this repository.
+
+Requirements:
+- Use ONLY the evidence pack below; cite finding/evidence ids.
+- Smallest safe change per finding; group repeated fixes.
+- No invented code, no exploit code; flag where human judgment is needed.
+
+Repository context:
+{repo_context}
+
+Evidence pack (JSON):
+{evidence_json}
+"""
+
+
 @dataclass(frozen=True)
 class RenderedReviewPrompt:
     system: str
@@ -328,5 +360,24 @@ def render_hunt_prompts(
     return RenderedReviewPrompt(
         system=HUNT_SYSTEM_PROMPT.strip(),
         user=HUNT_USER_PROMPT.format(repo_context=_repo_context(scan), evidence_json=evidence_json).strip(),
+        evidence_json=evidence_json,
+    )
+
+
+def render_remediation_prompts(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+) -> RenderedReviewPrompt:
+    """Render the remediation prompts (#106): concrete, review-first fixes per
+    finding, grounded in evidence IDs / cited file:line."""
+    evidence_payload = _evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    evidence_json = json.dumps(evidence_payload, indent=2, sort_keys=True)
+    return RenderedReviewPrompt(
+        system=REMEDIATION_SYSTEM_PROMPT.strip(),
+        user=REMEDIATION_USER_PROMPT.format(
+            repo_context=_repo_context(scan), evidence_json=evidence_json
+        ).strip(),
         evidence_json=evidence_json,
     )

@@ -42,6 +42,16 @@ HUNT_BANNER = (
     "> no CVE assignment, no exploitation instructions.\n\n"
 )
 
+# Prepended to remediation.md (#106): suggestions are review-first, not
+# auto-applied.
+REMEDIATION_BANNER = (
+    "> 🛠️ **Suggested fixes to review, not auto-applied.**\n"
+    "> LLM-proposed remediations grounded in AttackMap's static evidence. Each is\n"
+    "> the smallest change to remove a weakness class; review the diff, confirm the\n"
+    "> intent (e.g. whether a route should require auth), and run the verification\n"
+    "> step before applying. No exploit code.\n\n"
+)
+
 
 @app.command()
 def analyze(
@@ -78,6 +88,11 @@ def analyze(
         False,
         "--hunt",
         help="Vulnerability-hypothesis mode (#80): have Claude reason over the full evidence pack as a red-team analyst and propose ranked, human-verifiable exploit-chain HYPOTHESES (leads, not detections) to vulnerability-hypotheses.md. Uses the same LLM auth/backend as --llm.",
+    ),
+    remediate: bool = typer.Option(
+        False,
+        "--remediate",
+        help="Remediation mode (#106): have Claude propose concrete, review-first fixes per finding (suggested diffs / precise instructions, grounded in evidence) to remediation.md. Uses the same LLM auth/backend as --llm.",
     ),
     baseline: str | None = typer.Option(
         None,
@@ -311,6 +326,58 @@ def analyze(
             typer.echo(
                 f"Vulnerability hypotheses written to: {hunt_md_path.resolve()} "
                 f"(backend={hunt_result.backend})"
+            )
+
+    if remediate:
+        try:
+            rem_effort_value = None
+            if llm_effort is not None:
+                if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
+                    raise typer.BadParameter(
+                        f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
+                    )
+                rem_effort_value = llm_effort  # type: ignore[assignment]
+            if llm_backend not in {"auto", "api", "cli"}:
+                raise typer.BadParameter(
+                    f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
+                )
+            typer.echo("")
+            typer.echo(
+                f"Generating remediation suggestions via Claude (backend={llm_backend}, may take a minute)..."
+            )
+            rem_result = generate_llm_review(
+                scan,
+                attack_surfaces,
+                findings,
+                attack_paths,
+                model=llm_model,
+                effort=rem_effort_value,  # type: ignore[arg-type]
+                backend=llm_backend,  # type: ignore[arg-type]
+                mode="remediate",
+            )
+        except LlmReviewError as exc:
+            typer.echo(f"Remediation skipped: {exc}", err=True)
+        else:
+            output_path = Path(output)
+            rem_md_path = output_path / "remediation.md"
+            rem_md_path.write_text(REMEDIATION_BANNER + rem_result.markdown + "\n", encoding="utf-8")
+            rem_meta_path = output_path / "remediation.meta.json"
+            rem_meta_path.write_text(
+                json.dumps(
+                    {
+                        "backend": rem_result.backend,
+                        "model": rem_result.model,
+                        "stop_reason": rem_result.stop_reason,
+                        "usage": rem_result.usage,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            typer.echo(
+                f"Remediation suggestions written to: {rem_md_path.resolve()} "
+                f"(backend={rem_result.backend})"
             )
 
     if diff_exit_code:
