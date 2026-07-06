@@ -145,6 +145,57 @@ _CRYPTO_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         # deprecated protocols
         _rx(r"PROTOCOL_TLSv1(?:_1)?\b|PROTOCOL_SSLv[23]\b|SSLv3|\bTLSv1\.0\b"),
     ),
+    # --- Go-specific (#102 follow-up) ------------------------------------
+    (
+        # Go weak hash: md5.New()/md5.Sum(...) / sha1.* over a security value.
+        "weak_password_hash",
+        "high",
+        _rx(rf"\b(?:md5|sha1)\.(?:New|Sum)\s*\([^;\n]*{_SECURITY_CTX}"),
+    ),
+    (
+        "weak_password_hash",
+        "high",
+        _rx(rf"{_SECURITY_CTX}[^;\n]*\b(?:md5|sha1)\.(?:New|Sum)\s*\("),
+    ),
+    (
+        # Go weak cipher: des.NewCipher / rc4.NewCipher / crypto/des|rc4 import.
+        # `.New…(` / `crypto/` context (not prose) makes lowercase safe.
+        "weak_cipher",
+        "high",
+        re.compile(r"\b(?:des|rc4)\.New(?:Cipher|TripleDESCipher)?\s*\(|\bcrypto/(?:des|rc4)\b"),
+    ),
+    (
+        # Go insecure RNG for a security value — math/rand-exclusive funcs only
+        # (rand.Int/Read are ambiguous with the secure crypto/rand, so excluded).
+        "insecure_random",
+        "medium",
+        _rx(rf"{_SECURITY_CTX}[^;\n]*\brand\.(?:Intn|Int31n?|Int63n?|Float64|Float32|Perm|Shuffle)\s*\("),
+    ),
+    (
+        "insecure_random",
+        "medium",
+        _rx(rf"\brand\.(?:Intn|Int31n?|Int63n?|Float64|Float32|Perm|Shuffle)\s*\([^;\n]*{_SECURITY_CTX}"),
+    ),
+    # --- PHP-specific (#103 follow-up) -----------------------------------
+    (
+        # PHP mcrypt weak ciphers (mcrypt is removed/insecure) + DES/RC4/Blowfish
+        # constants (which the \bDES\b token misses after the `MCRYPT_` prefix).
+        "weak_cipher",
+        "high",
+        re.compile(
+            r"\bMCRYPT_(?:DES|3DES|TRIPLEDES|RC4|RC2|BLOWFISH)\b"
+            r"|\bmcrypt_(?:encrypt|decrypt|module_open)\s*\("
+        ),
+    ),
+    (
+        # PHP disabled TLS verification (cURL / stream context).
+        "insecure_tls",
+        "high",
+        _rx(
+            r"CURLOPT_SSL_VERIFY(?:PEER|HOST)\s*(?:,|=>)\s*(?:false|0)\b"
+            r"|['\"]verify(?:_peer(?:_name)?)?['\"]\s*=>\s*false"
+        ),
+    ),
 )
 
 
