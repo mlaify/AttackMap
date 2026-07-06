@@ -235,6 +235,10 @@ def analyze_taint(scan: ScanResult, root: str | Path | None = None) -> list[Tain
 
     seen: set[tuple[str, str, str, int | None]] = set()
     chains: list[TaintChain] = []
+    # Cache per-file content + name→module map so handler resolution reads
+    # each route file at most once.
+    content_cache: dict[str, str] = {}
+    import_cache: dict[str, dict[str, str]] = {}
 
     for route in scan.routes:
         route_file = _normalize_rel(route.file)
@@ -245,18 +249,43 @@ def analyze_taint(scan: ScanResult, root: str | Path | None = None) -> list[Tain
         # is import-walk over-linking, not a real flow (#85). Skip seeding them.
         if is_infra_route(route.path):
             continue
-        for chain in _walk_from_route(route, route_file, graph, sinks_by_file):
-            key = (
-                f"{chain.route_method} {chain.route_path}",
-                chain.sink_file,
-                chain.sink_kind,
-                chain.sink_line,
+
+        # Handler-aware seeding (#107): for JS/TS central-registration apps,
+        # seed from the module that DEFINES the route's handler rather than the
+        # registration file — otherwise `server.ts` (importing ~100 handlers)
+        # fans every route out to every imported sink. Falls back to the route
+        # file when no handler identifier resolves (inline handlers, Python
+        # decorators, etc.).
+        seed_files = [route_file]
+        if Path(route_file).suffix in _JS_TS_SUFFIXES:
+            if route_file not in import_cache:
+                try:
+                    rf_content = files[route_file].read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    rf_content = ""
+                content_cache[route_file] = rf_content
+                import_cache[route_file] = _named_import_modules(
+                    rf_content, route_file, files, root_path
+                )
+            handler_seeds = _handler_seed_files(
+                route, content_cache.get(route_file, ""), import_cache[route_file]
             )
-            if key in seen:
-                continue
-            seen.add(key)
-            chain.source_analyzer = "taint"
-            chains.append(chain)
+            if handler_seeds:
+                seed_files = handler_seeds
+
+        for seed in seed_files:
+            for chain in _walk_from_route(route, seed, graph, sinks_by_file):
+                key = (
+                    f"{chain.route_method} {chain.route_path}",
+                    chain.sink_file,
+                    chain.sink_kind,
+                    chain.sink_line,
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                chain.source_analyzer = "taint"
+                chains.append(chain)
 
     chains.sort(key=lambda c: (c.hops, c.route_file, c.sink_file))
     return chains
@@ -365,6 +394,99 @@ def _resolve_js_imports(
         if rel is not None:
             out.add(rel)
     return out
+
+
+# Named / default / namespace / require bindings → module specifier, so a
+# route's handler identifier can be resolved to the module that defines it
+# (#107 handler-aware seeding).
+_JS_NAMED_IMPORT_RE = re.compile(r"""import\s+(?P<clause>[^;'"]+?)\s+from\s+["'](?P<path>[^"']+)["']""")
+_JS_REQUIRE_BIND_RE = re.compile(
+    r"""(?:const|let|var)\s+(?P<clause>\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*require\(\s*["'](?P<path>[^"']+)["']\s*\)"""
+)
+
+
+def _binding_names(clause: str) -> list[str]:
+    """Extract bound identifiers from an import/require clause.
+
+    `{ a, b as c }` → [a, c]; `foo` → [foo]; `* as ns` → [ns];
+    `Def, { a }` → [Def, a]."""
+    names: list[str] = []
+    clause = clause.strip()
+    brace = re.search(r"\{([^}]*)\}", clause)
+    if brace:
+        for part in brace.group(1).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            name = re.split(r"\s+as\s+", part)[-1].strip()
+            if name.isidentifier():
+                names.append(name)
+        before = clause[: brace.start()].strip().rstrip(",").strip()
+        if before.isidentifier():
+            names.append(before)
+    else:
+        ns = re.search(r"\*\s+as\s+([A-Za-z_$][\w$]*)", clause)
+        if ns:
+            names.append(ns.group(1))
+        elif clause.isidentifier():
+            names.append(clause)
+    return names
+
+
+def _named_import_modules(
+    content: str, from_rel: str, files: dict[str, Path], root: Path
+) -> dict[str, str]:
+    """Map each imported binding name in ``content`` to its resolved intra-repo
+    module (rel path). Only bindings that resolve to a file we indexed appear."""
+    from_dir = (root / from_rel).parent
+    out: dict[str, str] = {}
+    for regex in (_JS_NAMED_IMPORT_RE, _JS_REQUIRE_BIND_RE):
+        for match in regex.finditer(content):
+            rel = _resolve_js_target((from_dir / match.group("path")).resolve(), files, root)
+            if rel is None:
+                continue
+            for name in _binding_names(match.group("clause")):
+                out.setdefault(name, rel)
+    return out
+
+
+_ROUTE_CALL_RE = re.compile(
+    r"\.(?:get|post|put|delete|patch|options|head|all|use)\s*\(", re.IGNORECASE
+)
+
+
+def _handler_seed_files(route: Route, content: str, name_to_module: dict[str, str]) -> list[str]:
+    """For a JS/TS route registration (`app.get(path, …handler…)`), resolve an
+    imported handler *identifier* to its defining module.
+
+    Only the registration call's arguments are inspected — not the handler
+    body. An inline handler (`=>` / `function`) keeps its own code in the
+    registration file, so we don't redirect the seed (returns []); a reference
+    to an imported handler (`getUserProfile`, `utils.asyncHandler(getUserProfile())`)
+    seeds from that handler's module instead, avoiding the central-registration
+    import-hub fan-out (#107)."""
+    if route.line is None:
+        return []
+    lines = content.splitlines(keepends=True)
+    idx = route.line - 1
+    if idx < 0 or idx >= len(lines):
+        return []
+    line_start = sum(len(line) for line in lines[:idx])
+    call = _ROUTE_CALL_RE.search(content, line_start, min(len(content), line_start + 400))
+    if call is None:
+        return []
+    paren = content.find("(", call.start())
+    if paren == -1:
+        return []
+    args = _extract_call_arg(content, paren)
+    if "=>" in args or re.search(r"\bfunction\b", args):
+        return []  # inline handler — its body lives in the registration file
+    seeds: list[str] = []
+    for ident in dict.fromkeys(re.findall(r"[A-Za-z_$][\w$]*", args)):
+        mod = name_to_module.get(ident)
+        if mod is not None and mod not in seeds:
+            seeds.append(mod)
+    return seeds
 
 
 def _resolve_js_target(target: Path, files: dict[str, Path], root: Path) -> str | None:

@@ -318,3 +318,49 @@ def test_all_sink_kinds_are_detectable(tmp_path: Path, sink_kind: str) -> None:
     scan = scan_repo(tmp_path)
     kinds = {c.sink_kind for c in scan.taint_chains}
     assert sink_kind in kinds
+
+
+def test_handler_aware_seeding_connects_central_registration(tmp_path: Path) -> None:
+    """A route registered in a hub file via an imported handler seeds taint from
+    the handler's module, not by fanning out across all the hub's imports (#107)."""
+    (tmp_path / "server.js").write_text(
+        "const express = require('express')\n"
+        "const app = express()\n"
+        "const { getProfile } = require('./routes/profile')\n"
+        "const { listStats } = require('./routes/stats')\n"  # decoy import, different route
+        "app.get('/profile', getProfile)\n"
+        "app.get('/stats', listStats)\n",
+        encoding="utf-8",
+    )
+    routes = tmp_path / "routes"
+    routes.mkdir()
+    # The vulnerable handler for /profile.
+    (routes / "profile.js").write_text(
+        "exports.getProfile = (req, res) => { return eval(req.query.expr) }\n",
+        encoding="utf-8",
+    )
+    # A benign sibling handler (its sink must NOT be attributed to /profile).
+    (routes / "stats.js").write_text(
+        "exports.listStats = (req, res) => { return eval(req.query.n) }\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    evals = [c for c in scan.taint_chains if c.sink_kind == "eval"]
+    by_route = {(c.route_path, c.sink_file.replace("\\", "/")) for c in evals}
+    # /profile connects to profile.js; /stats to stats.js — and NOT cross-linked.
+    assert ("/profile", "routes/profile.js") in by_route
+    assert ("/stats", "routes/stats.js") in by_route
+    assert ("/profile", "routes/stats.js") not in by_route  # no hub fan-out
+    assert ("/stats", "routes/profile.js") not in by_route
+
+
+def test_inline_handler_still_seeds_from_route_file(tmp_path: Path) -> None:
+    # An inline handler keeps its code in the registration file → seed there.
+    (tmp_path / "app.js").write_text(
+        "const express = require('express')\n"
+        "const app = express()\n"
+        "app.post('/run', (req, res) => { return eval(req.body.code) })\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.sink_kind == "eval" and c.route_path == "/run" for c in scan.taint_chains)
