@@ -420,12 +420,35 @@ def _express_prefixes(content: str) -> dict[str, str]:
     return prefixes
 
 
+# Receiver names that identify an Express/Koa-style app or router (so
+# `x.get("s")` is a route registration, not an unrelated method call like
+# `headers.get(...)` / `params.get(...)` / `map.get(...)`). Exact names plus
+# the common `…Router` / `…App` suffixes.
+_ROUTER_RECEIVERS = frozenset(
+    {"app", "application", "router", "route", "routes", "api", "apirouter",
+     "server", "srv", "http", "https", "express", "r", "rt"}
+)
+
+
+def _looks_like_route(receiver: str, raw_path: str) -> bool:
+    """True when `<receiver>.<verb>("<raw_path>")` is plausibly a real HTTP
+    route: either the path is URL-shaped (leading `/` or a `*` wildcard) or the
+    receiver looks like an app/router. Cuts the `xxx.get("config-key")` and
+    `headers.delete("content-type")` false routes (#99)."""
+    if raw_path.startswith("/") or raw_path == "*":
+        return True
+    lower = receiver.lower()
+    return lower in _ROUTER_RECEIVERS or lower.endswith("router") or lower.endswith("app")
+
+
 def _extract_javascript_routes(content: str, file: str) -> list[Route]:
     routes: list[Route] = []
     prefixes = _express_prefixes(content)
 
     for match in EXPRESS_DIRECT_ROUTE_PATTERN.finditer(content):
         router_name, method, route_path = match.groups()
+        if not _looks_like_route(router_name, route_path):
+            continue
         method_normalized = method.upper()
         if method_normalized == "ALL":
             method_normalized = "ANY"
@@ -441,6 +464,8 @@ def _extract_javascript_routes(content: str, file: str) -> list[Route]:
 
     for match in EXPRESS_CHAIN_ROUTE_PATTERN.finditer(content):
         router_name, route_path, chain = match.group(1), match.group(2), match.group("chain")
+        if not _looks_like_route(router_name, route_path):
+            continue
         full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
         chain_offset = match.start("chain")
         for method_match in re.finditer(r"\.(get|post|put|delete|patch|options|head|all)\s*\(", chain, re.IGNORECASE):
