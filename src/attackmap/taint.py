@@ -33,7 +33,7 @@ from collections import deque
 from pathlib import Path
 
 from .models import Route, ScanResult, TaintChain
-from .srcpaths import is_infra_route, is_test_file
+from .srcpaths import is_infra_route, is_test_file, is_vendored_file
 
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
@@ -41,7 +41,8 @@ _MAX_FILES_VISITED_PER_ROUTE = 40
 
 _PY_SUFFIXES = {".py"}
 _JS_TS_SUFFIXES = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
-_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES
+_GO_SUFFIXES = {".go"}
+_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES
 
 # --- Import extraction -----------------------------------------------------
 
@@ -49,6 +50,23 @@ _PY_IMPORT_RE = re.compile(
     r"^\s*(?:from\s+(?P<from_mod>[\w.]+)\s+import\b|import\s+(?P<mod>[\w., ]+))",
     re.MULTILINE,
 )
+
+# Go imports: single `import "path"` and block `import ( "a"\n alias "b" )`.
+# We only resolve INTRA-repo packages (those under the module path from go.mod).
+_GO_IMPORT_RE = re.compile(r'\bimport\s+(?:"(?P<single>[^"]+)"|\((?P<block>[^)]*)\))', re.DOTALL)
+_GO_IMPORT_PATH_RE = re.compile(r'"(?P<path>[^"]+)"')
+_GO_MODULE_RE = re.compile(r"^\s*module\s+(?P<mod>\S+)", re.MULTILINE)
+
+
+def _parse_go_imports(content: str) -> list[str]:
+    """Return the import paths in a Go file (single and block form)."""
+    paths: list[str] = []
+    for match in _GO_IMPORT_RE.finditer(content):
+        if match.group("single"):
+            paths.append(match.group("single"))
+        elif match.group("block") is not None:
+            paths.extend(m.group("path") for m in _GO_IMPORT_PATH_RE.finditer(match.group("block")))
+    return paths
 
 # Only relative or bare-word imports we can resolve within the repo.
 _JS_IMPORT_RE = re.compile(
@@ -96,6 +114,15 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
+        # Go database/sql (#102): db/tx/stmt.Query|Exec (+Context/Row variants).
+        # Title-case methods + a db-ish receiver avoid `url.Query()` etc.
+        "sql_execute",
+        re.compile(
+            r"\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)"
+            r"\.(?:Query|QueryRow|QueryContext|QueryRowContext|Exec|ExecContext)\s*\(",
+        ),
+    ),
+    (
         "subprocess_shell",
         re.compile(
             r"subprocess\.(?:run|call|Popen|check_output|check_call)"
@@ -106,6 +133,11 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "subprocess_shell",
         re.compile(r"child_process\s*\.\s*exec\s*\("),
+    ),
+    (
+        # Go os/exec (#102): exec.Command / exec.CommandContext.
+        "subprocess_shell",
+        re.compile(r"\bexec\.Command(?:Context)?\s*\("),
     ),
     (
         "eval",
@@ -313,10 +345,10 @@ def _index_repo(root: Path) -> dict[str, Path]:
         except ValueError:
             continue
         rel = _normalize_rel(str(path.relative_to(root)))
-        # Skip test/spec files by default (#67) — sinks in test scaffolding
-        # are a large false-positive source. `ATTACKMAP_INCLUDE_TESTS`
-        # opts back in.
-        if is_test_file(rel):
+        # Skip test/spec files (#67) and vendored/minified/generated files
+        # (#95, incl. `*.d.ts` type stubs) — sinks there are a large false-
+        # positive source. `ATTACKMAP_INCLUDE_TESTS` / `_INCLUDE_VENDORED` opt in.
+        if is_test_file(rel) or is_vendored_file(rel):
             continue
         out[rel] = path
     return out
@@ -326,9 +358,54 @@ def _normalize_rel(rel: str) -> str:
     return rel.replace("\\", "/")
 
 
+def _go_module_path(root: Path) -> str | None:
+    """The module path declared in go.mod, if present (e.g. github.com/x/y)."""
+    gomod = root / "go.mod"
+    try:
+        if gomod.is_file():
+            m = _GO_MODULE_RE.search(gomod.read_text(encoding="utf-8", errors="ignore"))
+            if m:
+                return m.group("mod")
+    except OSError:
+        pass
+    return None
+
+
+def _go_dir_index(files: dict[str, Path]) -> dict[str, set[str]]:
+    """Map each directory (rel) to the set of .go files it contains — a Go
+    package is a directory, so imports resolve to all files in the dir."""
+    idx: dict[str, set[str]] = {}
+    for rel in files:
+        if rel.endswith(".go"):
+            d = rel.rsplit("/", 1)[0] if "/" in rel else ""
+            idx.setdefault(d, set()).add(rel)
+    return idx
+
+
+def _resolve_go_imports(
+    content: str, module_path: str | None, dir_index: dict[str, set[str]]
+) -> set[str]:
+    """Resolve a Go file's intra-repo imports to the files in the imported
+    package directories (module-path based)."""
+    if not module_path:
+        return set()
+    out: set[str] = set()
+    for imp in _parse_go_imports(content):
+        if imp == module_path:
+            pkgdir = ""
+        elif imp.startswith(module_path + "/"):
+            pkgdir = imp[len(module_path) + 1 :]
+        else:
+            continue  # external / stdlib package
+        out |= dir_index.get(pkgdir, set())
+    return out
+
+
 def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str]]:
     """rel_path -> set of rel_paths this file imports (intra-repo only)."""
     graph: dict[str, set[str]] = {rel: set() for rel in files}
+    go_module = _go_module_path(root)
+    go_dirs = _go_dir_index(files)
     for rel, abs_path in files.items():
         try:
             content = abs_path.read_text(encoding="utf-8")
@@ -336,6 +413,8 @@ def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str
             continue
         if abs_path.suffix in _PY_SUFFIXES:
             graph[rel].update(_resolve_py_imports(content, rel, files))
+        elif abs_path.suffix in _GO_SUFFIXES:
+            graph[rel].update(_resolve_go_imports(content, go_module, go_dirs))
         else:
             graph[rel].update(_resolve_js_imports(content, rel, files, root))
     return graph
@@ -592,7 +671,8 @@ def _is_parameterized_sql(content: str, match: re.Match[str]) -> bool:
     if "${" in args or re.search(r"\bf['\"]", args):  # template literal / f-string
         return False
     no_str = re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "", args)  # drop quoted spans
-    if re.search(r"\+|\.format\s*\(|%\s*[(\w]", no_str):  # concat / .format() / %-format
+    # concat / .format() / %-format / Go fmt.Sprintf — string building, not binding.
+    if re.search(r"\+|\.format\s*\(|%\s*[(\w]|\bSprintf\b|\bfmt\.", no_str):
         return False
     no_tmpl = re.sub(r"`[^`]*`", "", no_str)  # drop (now interp-free) template literals
     if "," in no_tmpl:

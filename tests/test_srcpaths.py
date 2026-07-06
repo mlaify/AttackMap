@@ -73,6 +73,7 @@ def test_include_tests_env_disables_exclusion(monkeypatch: pytest.MonkeyPatch) -
         "src/bower_components/jquery/jquery.js",
         "app/static/app.min.js",
         "app/main.bundle.js",
+        "sdk/js/types.d.ts",
     ],
 )
 def test_vendored_paths_detected(rel: str) -> None:

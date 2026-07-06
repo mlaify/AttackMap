@@ -98,8 +98,11 @@ _VENDORED_DIR_SEGMENTS = frozenset(
     }
 )
 
-# Minified / bundled build artifacts — not human-authored source.
-_MINIFIED_FILE_RE = re.compile(r"\.min\.(?:js|css|mjs|cjs)$|\.bundle\.js$", re.IGNORECASE)
+# Minified / bundled build artifacts and generated TypeScript declaration
+# stubs (`*.d.ts`) — not human-authored, executable source.
+_MINIFIED_FILE_RE = re.compile(
+    r"\.min\.(?:js|css|mjs|cjs)$|\.bundle\.js$|\.d\.ts$", re.IGNORECASE
+)
 
 
 def is_vendored_file(rel_path: str) -> bool:

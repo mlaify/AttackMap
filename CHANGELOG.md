@@ -9,13 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Go language support — route extraction (#102, part 1).** `.go` is now a
-  recognized language, and route registrations across the common Go web
-  frameworks are extracted: net/http (`mux.HandleFunc("/x", h)` / `http.Handle`),
-  gin/echo (`r.GET("/x", h)`), and chi/fiber (`r.Get("/x", h)`). Gated on a
-  leading-slash path so `cache.Get("key")` / `http.Get(url)` aren't mistaken for
-  routes. Validated on PocketBase (108 Go routes, 0 false). Go import-graph
-  taint + sinks land in a follow-up.
+- **Go language support (#102).** `.go` is a recognized language with route
+  extraction across the common Go web frameworks — net/http
+  (`mux.HandleFunc("/x", h)`), gin/echo (`r.GET("/x", h)`), chi/fiber
+  (`r.Get("/x", h)`), leading-slash-gated — **and import-graph taint**: Go
+  imports are resolved module-path-relative (via `go.mod`) so a route reaches
+  sinks in imported packages, with Go dangerous sinks `db/tx/stmt.Query|Exec`
+  (parameterized-query-gated; `fmt.Sprintf`-built SQL still flagged) and
+  `exec.Command`. Validated on PocketBase (108 routes; 0 taint chains — it uses
+  parameterized `dbx` throughout, correctly not flagged).
+- **Generated/declaration files excluded from scanning (#95 follow-up).** `*.d.ts`
+  TypeScript declaration stubs join the vendored/minified exclusion, and the
+  taint indexer now honors it — removing a class of false sinks (PocketBase's
+  19k-line `types.d.ts` had produced 30 spurious `exec` chains).
 - **CVE → exploitability fusion (#104).** The exploitability score now folds in
   known-vulnerable dependencies: each route→sink path file's bare imports are
   resolved to package names and matched against the `--cve` advisory set, so a
