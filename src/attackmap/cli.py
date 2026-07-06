@@ -25,7 +25,7 @@ from .diff import (
 )
 from .graph import build_graph
 from .llm_review import LlmReviewError, generate_llm_review
-from .progress import ScanProgress
+from .progress import create_progress
 from .recon_to_analysis import translate_recon
 from .report import render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
@@ -124,6 +124,11 @@ def analyze(
         "--no-progress",
         help="Disable the live progress bar / ETA during scanning. Progress auto-disables when stderr isn't a terminal (CI, piped output).",
     ),
+    progress_format: str = typer.Option(
+        "auto",
+        "--progress-format",
+        help="Progress reporting: 'auto' (TTY bar when stderr is a terminal), 'json' (newline-delimited JSON events on stderr, for GUI/tool front-ends), or 'none'. --no-progress is equivalent to 'none'.",
+    ),
     pr_comment: str | None = typer.Option(
         None,
         "--pr-comment",
@@ -148,8 +153,10 @@ def analyze(
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
 
+    if progress_format not in {"auto", "tty", "json", "none"}:
+        raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
-    scan_progress = ScanProgress(enabled=not no_progress)
+    scan_progress = create_progress(progress_format, no_progress=no_progress)
     scan = analyze_repository(repo_path, analyzers=active_analyzers, progress=scan_progress)
     if cve and scan.dependencies:
         typer.echo(f"Checking {len(scan.dependencies)} dependencies against OSV.dev…")
