@@ -268,7 +268,13 @@ def analyze_taint(scan: ScanResult, root: str | Path | None = None) -> list[Tain
 def _index_repo(root: Path) -> dict[str, Path]:
     """Return {rel_path: abs_path} for every taint-relevant source file."""
     out: dict[str, Path] = {}
-    skip_dirs = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv"}
+    skip_dirs = {
+        ".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv",
+        # Vendored third-party trees (#95) — import-walking someone else's
+        # bundled library adds sinks the project doesn't own.
+        "bower_components", "vendor", "third_party", "third-party",
+        "external", "externals", "jspm_packages", "site-packages",
+    }
     for path in root.rglob("*"):
         if not path.is_file() or path.suffix not in _SUPPORTED_SUFFIXES:
             continue

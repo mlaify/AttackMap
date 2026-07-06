@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from attackmap.scanner import scan_repo
-from attackmap.srcpaths import is_test_file
+from attackmap.srcpaths import is_test_file, is_vendored_file
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,68 @@ def test_include_tests_env_disables_exclusion(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("ATTACKMAP_INCLUDE_TESTS", "1")
     assert is_test_file("tests/test_auth.py") is False
     assert is_test_file("pkg/foo.test.ts") is False
+
+
+# ---------------------------------------------------------------------------
+# is_vendored_file classification (#95)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "node_modules/lodash/merge.js",
+        "UserInterface/External/three.js/three.js",
+        "vendor/github.com/x/y.go",
+        "third_party/zlib/zlib.js",
+        "src/bower_components/jquery/jquery.js",
+        "app/static/app.min.js",
+        "app/main.bundle.js",
+    ],
+)
+def test_vendored_paths_detected(rel: str) -> None:
+    assert is_vendored_file(rel) is True
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "src/app.js",
+        "UserInterface/Models/PropertyPath.js",  # not under External/
+        "services/external_api.py",              # 'external_api' file, not an 'external' dir
+        "vendored_notes.md",                     # not a dir segment
+    ],
+)
+def test_non_vendored_paths_not_detected(rel: str) -> None:
+    assert is_vendored_file(rel) is False
+
+
+def test_include_vendored_env_disables_exclusion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ATTACKMAP_INCLUDE_VENDORED", "1")
+    assert is_vendored_file("node_modules/x/y.js") is False
+    assert is_vendored_file("a/b.min.js") is False
+
+
+def test_weakness_in_vendored_file_excluded_by_default(tmp_path: Path) -> None:
+    ext = tmp_path / "External" / "three.js"
+    ext.mkdir(parents=True)
+    # A ReDoS-shaped regex living in a vendored library.
+    (ext / "three.js").write_text(
+        "const re = /((?:WC+[\\/:])*)/\n", encoding="utf-8"
+    )
+    scan = scan_repo(tmp_path)
+    assert not [w for w in scan.code_weaknesses if w.kind == "redos"]
+
+
+def test_weakness_in_vendored_file_included_with_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ATTACKMAP_INCLUDE_VENDORED", "1")
+    ext = tmp_path / "External"
+    ext.mkdir(parents=True)
+    (ext / "lib.js").write_text("const re = /^(a+)+$/\n", encoding="utf-8")
+    scan = scan_repo(tmp_path)
+    assert any(w.kind == "redos" for w in scan.code_weaknesses)
 
 
 # ---------------------------------------------------------------------------

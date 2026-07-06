@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Weakness/secret precision fixes from real-world testing (#94, #95, #96).**
+  Surfaced scanning Apple's `apple-oss-distributions` (WebInspectorUI):
+  - `prototype_pollution` no longer fires on prototype-chain *reads*
+    (`x.prototype.__proto__.constructor`) or on `__proto__` inside `//`
+    comments — it now requires an assignment (write) context. (#94)
+  - Per-file weakness passes and the taint indexer now skip vendored/minified
+    third-party code (`node_modules`, `vendor`, `third_party`, `External/`,
+    `*.min.js`, …) via `srcpaths.is_vendored_file`; `ATTACKMAP_INCLUDE_VENDORED`
+    opts back in. (#95)
+  - The high-entropy secret heuristic no longer flags well-known charset
+    constants (base64/base32/hex alphabets, e.g. a source-map `base64Digits`
+    string). (#96)
+
+  On WebInspectorUI this cut the noise from 5 weaknesses + 1 "secret" (all false
+  positives or vendored) to 1 genuine finding, with no loss on juice-shop.
+
 ## [0.3.1] - 2026-07-05
 
 Patch release — a precision fix surfaced by real-world testing against OWASP

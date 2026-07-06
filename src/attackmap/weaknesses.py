@@ -32,8 +32,19 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     (
         "prototype_pollution",
         "high",
-        # Literal __proto__ / constructor.prototype write.
-        _rx(r"\[\s*['\"]__proto__['\"]\s*\]|\.__proto__\s*[=.]|['\"]constructor['\"]\s*\]\s*\[\s*['\"]prototype['\"]"),
+        # Literal __proto__ / constructor.prototype *write* (assignment target).
+        # Requiring a trailing `=` (not `==`) avoids flagging prototype-chain
+        # *reads* like `x.prototype.__proto__.constructor` (#94).
+        _rx(
+            r"(?:"
+            r"\.__proto__"
+            r"|\[\s*['\"]__proto__['\"]\s*\]"
+            r"|\[\s*['\"]constructor['\"]\s*\]\s*\[\s*['\"]prototype['\"]\s*\]"
+            r"|\.constructor\s*\.\s*prototype"
+            r")"
+            r"(?:\s*\.\s*\w+|\s*\[[^\]]*\])*"  # optional further member/subscript access
+            r"\s*=(?!=)"
+        ),
     ),
     (
         "prototype_pollution",
@@ -158,6 +169,8 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
     out: list[CodeWeakness] = []
     for kind, severity, pattern in _PATTERNS:
         for match in pattern.finditer(content):
+            if _in_line_comment(content, match.start()):
+                continue  # a pattern inside a `//` comment isn't real code (#94)
             line = content.count("\n", 0, match.start()) + 1
             key = (kind, line)
             if key in seen:
@@ -174,6 +187,14 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
                 )
             )
     return out
+
+
+def _in_line_comment(content: str, offset: int) -> bool:
+    """True if ``offset`` falls after a `//` line comment on its line. Cheap
+    heuristic (ignores `//` inside strings), used only to drop obvious
+    comment-embedded matches like `// x.__proto__.y = z`."""
+    line_start = content.rfind("\n", 0, offset) + 1
+    return "//" in content[line_start:offset]
 
 
 def _snippet(content: str, offset: int, radius: int = 120) -> str:
