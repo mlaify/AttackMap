@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-05
+
+Patch release — precision fixes surfaced by real-world testing against Apple's
+`apple-oss-distributions` (WebInspectorUI).
+
 ### Fixed
 
 - **Weakness/secret precision fixes from real-world testing (#94, #95, #96).**
