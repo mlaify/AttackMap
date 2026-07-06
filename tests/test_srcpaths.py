@@ -181,3 +181,19 @@ def test_production_file_still_scanned(tmp_path: Path) -> None:
     hits = [w for w in scan.crypto_weaknesses if w.kind == "weak_password_hash"]
     assert len(hits) == 1
     assert hits[0].file == "auth.py"
+
+
+def test_routes_in_test_files_excluded_from_surface(tmp_path: Path) -> None:
+    """Route calls in test files (Laravel/pytest helpers) aren't real routes (#113)."""
+    (tmp_path / "routes").mkdir()
+    (tmp_path / "routes" / "web.php").write_text(
+        "<?php\nRoute::get('/dashboard', 'HomeController@index');\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "FeatureTest.php").write_text(
+        "<?php\n$app->get('/only-in-test', fn() => null);\n", encoding="utf-8"
+    )
+    scan = scan_repo(tmp_path)
+    paths = {r.path for r in scan.routes}
+    assert "/dashboard" in paths
+    assert "/only-in-test" not in paths
