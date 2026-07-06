@@ -885,3 +885,30 @@ def test_custom_auth_middleware_recognized(tmp_path: Path) -> None:
     assert surfaces[("GET", "/admin/users")].auth_signals
     # the genuinely unauthenticated route (different file) does not
     assert not surfaces[("GET", "/public/status")].auth_signals
+
+
+def test_go_route_extraction(tmp_path: Path) -> None:
+    """Go web-router registrations across gin/echo (GET) and chi/fiber (Get) and
+    net/http (HandleFunc), gated on a leading-slash path (#102)."""
+    (tmp_path / "main.go").write_text(
+        'package main\n'
+        'import "github.com/gin-gonic/gin"\n'
+        'func main() {\n'
+        '  r := gin.Default()\n'
+        '  r.GET("/users", listUsers)\n'
+        '  r.POST("/users", createUser)\n'
+        '  api.Get("/orders/:id", getOrder)\n'      # chi/fiber Title-case
+        '  mux.HandleFunc("/health", healthz)\n'    # net/http → ANY
+        '  cache.Get("some-key")\n'                  # not a route (no slash)
+        '  http.Get("https://example.com")\n'        # outbound, not a route
+        '}\n',
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    got = {(r.method, r.path) for r in scan.routes}
+    assert ("GET", "/users") in got
+    assert ("POST", "/users") in got
+    assert ("GET", "/orders/:id") in got
+    assert ("ANY", "/health") in got
+    assert not any(r.path in {"some-key", "https://example.com"} for r in scan.routes)
+    assert "go" in scan.languages
