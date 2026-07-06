@@ -484,6 +484,8 @@ attackmap analyze <path> --cve           # cross-reference SBOM against OSV.dev
 attackmap analyze <path> --llm           # add LLM narrative (auto-resolve auth)
 attackmap analyze <path> --llm --llm-backend cli         # force Claude CLI
 attackmap analyze <path> --hunt          # LLM vulnerability-hypothesis hunt (leads to confirm)
+attackmap analyze <path> --remediate     # LLM review-first fix suggestions (remediation.md)
+attackmap analyze <path> --pr-comment pr.md   # Markdown PR summary comment for CI
 
 # CI / PR diff gating
 attackmap analyze <path> --baseline prev/attackmap-report.json \

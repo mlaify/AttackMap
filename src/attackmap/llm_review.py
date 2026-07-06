@@ -30,7 +30,11 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
-from .review_prompts import render_hunt_prompts, render_review_prompts
+from .review_prompts import (
+    render_hunt_prompts,
+    render_remediation_prompts,
+    render_review_prompts,
+)
 
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_EFFORT: Literal["low", "medium", "high", "xhigh", "max"] = "high"
@@ -323,7 +327,7 @@ def generate_llm_review(
     client: Any | None = None,
     backend: LlmBackend = "auto",
     cli_runner: Any | None = None,
-    mode: Literal["review", "hunt"] = "review",
+    mode: Literal["review", "hunt", "remediate"] = "review",
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling Claude.
@@ -337,7 +341,10 @@ def generate_llm_review(
     resolved_model = model or os.environ.get("ATTACKMAP_LLM_MODEL") or DEFAULT_MODEL
     resolved_effort = effort or DEFAULT_EFFORT
 
-    render = render_hunt_prompts if mode == "hunt" else render_review_prompts
+    render = {
+        "hunt": render_hunt_prompts,
+        "remediate": render_remediation_prompts,
+    }.get(mode, render_review_prompts)
     rendered = render(scan, attack_surfaces, findings, attack_paths)
     if backend == "cli" and cli_runner is not None:
         chosen_backend: Literal["api", "cli"] = "cli"

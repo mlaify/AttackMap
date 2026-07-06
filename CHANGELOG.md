@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LLM-assisted remediation `--remediate` (#106).** Proposes concrete,
+  review-first fixes per finding — a suggested diff/snippet when the code is in
+  evidence, else a precise instruction (file + what to change) — grounded in the
+  same evidence contract as `--llm`/`--hunt` (cite ids, no invented code, no
+  exploit code, flags where human judgment is needed). Output to
+  `remediation.md` under a "suggestions to review, not auto-applied" banner.
 - **GitHub PR bot (#105).** A reusable composite Action (`action.yml`) that
   installs AttackMap, scans, uploads SARIF (inline annotations on the PR's
   *Files changed* tab), and renders a Markdown **PR summary comment** — new /
