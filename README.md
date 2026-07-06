@@ -299,16 +299,16 @@ same sink two hops away. The score is:
   is shown. Contributing factors: sink danger (SQLi/RCE/deserialization highest),
   exposure (public/internal/unknown), auth at the entry route, reachability
   (fewer hops = higher), and data sensitivity at the sink (a co-located secret or
-  datastore), plus insecure-crypto / web-hardening gaps on the path as
-  amplifiers.
+  datastore), plus insecure-crypto / web-hardening gaps and **known-vulnerable
+  dependencies imported on the path** (from `--cve`, amplified by CVE severity)
+  as amplifiers.
 
 Scores land on the relevant taint findings (`exploitability` + `exploitability_tier`)
 and in a ranked **`attackmap-exploitability.md`** report plus the `exploitability`
 array in `attackmap-report.json`; the console summary leads with the top few. For
-example, `public + no-auth + taint-to-eval (0 hops)` scores 90/100 (CRITICAL).
-(Dependency CVEs are manifest-level, not attributable to a specific source path,
-so they inform the report but aren't folded into a path's score — path-attributed
-CVE fusion is future work.)
+example, `public + no-auth + taint-to-eval (0 hops)` scores 90/100 (CRITICAL), and
+a route reaching a sink through a known-vulnerable library version scores higher
+still.
 
 ### SBOM inventory
 
