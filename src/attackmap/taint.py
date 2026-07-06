@@ -572,6 +572,34 @@ def _is_static_local_arg(content: str, match: re.Match[str]) -> bool:
     return _ARG_DYNAMIC.search(residual) is None
 
 
+# Placeholder markers that indicate a parameterized query (bind params rather
+# than string interpolation): %s / %(name)s, $1, :name, ?.
+_SQL_PLACEHOLDER_RE = re.compile(r"%\(?\w*\)?[sd]|\$\d+|:[A-Za-z_]\w*|(?<!\w)\?(?!\w)")
+
+
+def _is_parameterized_sql(content: str, match: re.Match[str]) -> bool:
+    """True if a `sql_execute` call is a *safe* parameterized query (bind
+    params, builder terminal, or placeholder-only literal) rather than a raw
+    string-built one — so we don't flag it as an injection sink (#101)."""
+    paren = content.find("(", match.start())
+    if paren == -1:
+        return False
+    args = _extract_call_arg(content, paren)
+    stripped = args.strip()
+    if not stripped:
+        return True  # builder terminal, e.g. Kysely `.execute()`
+    # Interpolation OUTSIDE string literals ⇒ raw/dynamic ⇒ NOT safe.
+    if "${" in args or re.search(r"\bf['\"]", args):  # template literal / f-string
+        return False
+    no_str = re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "", args)  # drop quoted spans
+    if re.search(r"\+|\.format\s*\(|%\s*[(\w]", no_str):  # concat / .format() / %-format
+        return False
+    no_tmpl = re.sub(r"`[^`]*`", "", no_str)  # drop (now interp-free) template literals
+    if "," in no_tmpl:
+        return True  # query + params bind
+    return _SQL_PLACEHOLDER_RE.search(args) is not None
+
+
 def _find_sinks(
     files: dict[str, Path], root: Path
 ) -> dict[str, list[tuple[str, int, str]]]:
@@ -588,6 +616,10 @@ def _find_sinks(
                 # Suppress ungated "dangerous-regardless" sinks whose argument
                 # is a static literal / local-file read (#88 follow-up).
                 if kind in _STATIC_GATED_KINDS and _is_static_local_arg(content, match):
+                    continue
+                # Suppress parameterized SQL — bind params / builder / placeholders
+                # only — vs. raw string-built queries (#101).
+                if kind == "sql_execute" and _is_parameterized_sql(content, match):
                     continue
                 line = content.count("\n", 0, match.start()) + 1
                 snippet = _line_snippet(content, match.start())

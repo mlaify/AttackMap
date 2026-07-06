@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Inline handlers and Python decorators are unaffected (they co-locate handler
   and route, so seeding stays on the route file).
 
+- **Parameterized-query recognition (#101).** The `sql_execute` taint sink no
+  longer flags safe parameterized queries — bind-param calls
+  (`cursor.execute("… %s", (id,))`, `client.query("… $1", [id])`), builder
+  terminals (Kysely `.execute()`), and placeholder-only literals. Raw
+  string-built SQL (concatenation, f-strings, template interpolation,
+  `.format()`, `%`-format) is still flagged. Cuts SQLi false positives.
 - **Framework auth-middleware awareness (#100).** Auth attribution now
   recognizes custom middleware factories (`webhookAuth({secret})`,
   `apiKeyAuth()`, `tenantGuard()` — any CamelCase `*Auth(`/`*Guard(` call),

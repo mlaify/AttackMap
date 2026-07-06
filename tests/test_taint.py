@@ -364,3 +364,68 @@ def test_inline_handler_still_seeds_from_route_file(tmp_path: Path) -> None:
     )
     scan = scan_repo(tmp_path)
     assert any(c.sink_kind == "eval" and c.route_path == "/run" for c in scan.taint_chains)
+
+
+def test_parameterized_sql_not_flagged(tmp_path: Path) -> None:
+    """Parameterized queries (bind params / placeholders) are safe → not a
+    sql_execute sink (#101)."""
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "import psycopg2\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/u')\n"
+        "def u():\n"
+        "    cur = psycopg2.connect('').cursor()\n"
+        "    cursor.execute('SELECT * FROM users WHERE id = %s', (request.args['id'],))\n"
+        "    return cur.fetchone()\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert not [c for c in scan.taint_chains if c.sink_kind == "sql_execute"]
+
+
+def test_raw_string_built_sql_still_flagged(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "import psycopg2\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/u')\n"
+        "def u():\n"
+        "    cur = psycopg2.connect('').cursor()\n"
+        "    cursor.execute('SELECT * FROM users WHERE id = ' + request.args['id'])\n"
+        "    return cur.fetchone()\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.sink_kind == "sql_execute" for c in scan.taint_chains)
+
+
+def test_fstring_sql_still_flagged(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "import psycopg2\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/u')\n"
+        "def u():\n"
+        "    cur = psycopg2.connect('').cursor()\n"
+        "    cursor.execute(f\"SELECT * FROM users WHERE id = {request.args['id']}\")\n"
+        "    return cur.fetchone()\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.sink_kind == "sql_execute" for c in scan.taint_chains)
+
+
+def test_query_builder_terminal_execute_not_flagged(tmp_path: Path) -> None:
+    # Kysely-style builder terminal `.execute()` with no raw SQL arg is safe.
+    (tmp_path / "handler.ts").write_text(
+        "import { Router } from 'express'\n"
+        "const r = Router()\n"
+        "r.get('/orders', async (req, res) => {\n"
+        "  const rows = await db.selectFrom('orders').where('id', '=', req.query.id).execute()\n"
+        "  res.json(rows)\n"
+        "})\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert not [c for c in scan.taint_chains if c.sink_kind == "sql_execute"]
