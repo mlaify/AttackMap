@@ -54,7 +54,7 @@ an optional LLM-narrated review and a PR-diff mode.
 
 ## Roadmap
 
-Status as of v0.3.2.
+Status as of v0.4.0.
 
 ### Phase 1 — Signal Quality — *ongoing*
 Cleaner, more accurate signals; precision-first heuristics (e.g. request-container
@@ -78,9 +78,12 @@ gating for CI.
 
 ### Phase 6 — Data-Flow & Authorization — *shipped, expanding*
 Import-graph taint for injection sinks (SSRF, SSTI, NoSQL, deserialization,
-code/command execution, open redirect) and BOLA/IDOR detection. Insecure-crypto /
-weak-randomness and web-hardening (CORS/CSRF/cookies/CSP/debug) checks shipped.
-Expanding to more languages and query-parameter/RPC-method authorization.
+code/command execution, open redirect) and BOLA/IDOR detection, now across
+**Python, JS/TS, Go (module-path resolution), and PHP (PSR-4 autoload)**.
+Insecure-crypto / weak-randomness (all four languages) and web-hardening
+(CORS/CSRF/cookies/CSP/debug) checks shipped. CVE→exploitability fusion links
+known-vulnerable deps on a path into the score. Expanding to query-parameter /
+RPC-method authorization.
 
 ### Phase 7 — Analyzer Ecosystem — *live*
 14 community-installable analyzer plugins auto-discovered via entry points;
@@ -92,9 +95,16 @@ assignment, JWT weakness, XXE, ReDoS, insecure upload, GraphQL exposure);
 within-repo **anomaly / outlier** detection (the odd-one-out among sibling
 routes); and **`--hunt`**, an LLM red-team mode that proposes evidence-cited,
 human-verifiable exploit-chain *hypotheses* (leads, not detections) — the honest
-core of the "find the unknown" ask.
+core of the "find the unknown" ask. `--hunt --verify` adjudicates each lead
+(CONFIRMED / REFUTED / NEEDS-REVIEW) against the actual source; `--remediate`
+proposes review-first fixes.
 
-### Phase 9 — Local AI Integration — *planned*
+### Phase 9 — Product & Workflow — *shipped*
+A reusable GitHub **Action + PR bot** (inline SARIF annotations + a summary
+comment with the exploitability ranking and diff-gate status), so AttackMap runs
+on every pull request.
+
+### Phase 10 — Local AI Integration — *planned*
 Optional fully-local LLM narrative (today's `--llm` / `--hunt` use the Anthropic
 API or the `claude` CLI).
 

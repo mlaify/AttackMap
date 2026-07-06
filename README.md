@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.3.2).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.0).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -525,7 +525,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.3.2) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.0) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
@@ -533,34 +533,38 @@ pre-1.0 and heuristic.
 - Modular analyzer execution with entry-point discovery; 14 official plugins on PyPI.
 - Framework-aware route extraction (FastAPI/Flask/Express/Spring/axum/chi/…).
 - Asset + control modeling, cross-cutting insight engine, chain-aware threat model.
-- Injection / data-flow detection: SSRF, SSTI, NoSQL, unsafe deserialization,
-  eval/exec/shell, SQL, dynamic file open, open redirect — request-container-gated
-  for precision.
+- **Multi-language import-graph taint** — **Python, JS/TS, Go (module-path
+  resolution), and PHP (PSR-4 autoload)** — for injection sinks: SSRF, SSTI,
+  NoSQL, unsafe deserialization, eval/exec/shell, SQL (parameterized-query-gated),
+  dynamic file open, open redirect. Handler-aware seeding connects a route to
+  the module that defines its handler (no import-hub fan-out).
 - Novel vuln-class detectors: prototype pollution, mass assignment, JWT weakness,
   XXE, ReDoS, insecure upload, GraphQL exposure.
-- BOLA/IDOR authorization detection on path-template routes.
-- Insecure-crypto / weak-randomness and web-hardening (CORS/CSRF/cookies/CSP/debug)
-  detection.
-- Anomaly / outlier detection (the odd-one-out among sibling routes) and
-  **exploitability fusion** — a deterministic, explainable 0–100 "exploitable now"
-  score that ranks route→sink combinations.
-- **`--hunt`**: LLM vulnerability-hypothesis mode — evidence-cited, human-verifiable
-  exploit-chain leads (not detections).
+- BOLA/IDOR authorization detection (with custom-middleware / guard-arg awareness).
+- Insecure-crypto / weak-randomness (Python/JS/Go/PHP) and web-hardening
+  (CORS/CSRF/cookies/CSP/debug) detection.
+- Anomaly / outlier detection and **exploitability fusion** — a deterministic,
+  explainable 0–100 "exploitable now" score that ranks route→sink combinations
+  and folds in known-vulnerable dependencies on the path.
+- **`--hunt`** (LLM exploit-chain hypotheses) with **`--verify`** (adjudicate
+  each lead CONFIRMED/REFUTED/NEEDS-REVIEW against the actual source), and
+  **`--remediate`** (review-first fix suggestions).
 - SBOM inventory (5 ecosystems) + OSV.dev CVE cross-reference (`--cve`).
-- Output: Markdown + JSON + **SARIF 2.1.0** (GitHub Code Scanning) + **Mermaid /
-  Graphviz** diagrams; **diff/baseline** mode for PR gating; optional LLM narrative.
-- Live scan progress bar + ETA; test/spec files excluded from heuristic passes.
+- Output: Markdown + JSON + **SARIF 2.1.0** + **Mermaid / Graphviz** diagrams;
+  **diff/baseline** PR gating; a reusable **GitHub Action + PR bot**; optional
+  LLM narrative.
+- Live scan progress bar + ETA; test/spec/vendored/generated files excluded from
+  heuristic passes.
 - Distribution: `pip install attackmap[all]`, `brew install mlaify/tap/attackmap`,
   `docker pull ghcr.io/mlaify/attackmap`.
 
 **Still maturing:**
 
-- Taint + BOLA are Python + JS/TS and path-template scoped; query-param / RPC-method
+- Taint is Python/JS/TS/Go/PHP and path-template scoped; query-param / RPC-method
   authorization and more languages are planned.
 - The import-graph taint walk approximates call-edges with import-edges — precision
   over recall; findings are evidence, not proof.
-- CVE lookup resolves a best-effort concrete version, not full lockfile ranges, and
-  isn't yet fused into per-path exploitability scores.
+- CVE lookup resolves a best-effort concrete version, not full lockfile ranges.
 - Anomaly / exploitability reasoning is route-cohort and taint-chain scoped.
 
 ---
