@@ -429,3 +429,95 @@ def test_query_builder_terminal_execute_not_flagged(tmp_path: Path) -> None:
     )
     scan = scan_repo(tmp_path)
     assert not [c for c in scan.taint_chains if c.sink_kind == "sql_execute"]
+
+
+def test_go_taint_route_to_sql_sink(tmp_path: Path) -> None:
+    """Go: route in one package reaches a SQL sink in an imported package via
+    module-path import resolution (#102)."""
+    (tmp_path / "go.mod").write_text("module github.com/acme/app\n\ngo 1.22\n", encoding="utf-8")
+    api = tmp_path / "api"
+    api.mkdir()
+    (api / "routes.go").write_text(
+        'package api\n'
+        'import (\n'
+        '  "github.com/gin-gonic/gin"\n'
+        '  "github.com/acme/app/store"\n'
+        ')\n'
+        'func Register(r *gin.Engine) {\n'
+        '  r.GET("/orders/:id", store.GetOrder)\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "orders.go").write_text(
+        'package store\n'
+        'import "fmt"\n'
+        'func GetOrder(db *sql.DB, id string) {\n'
+        '  db.Query(fmt.Sprintf("SELECT * FROM orders WHERE id = %s", id))\n'  # raw → sink
+        '}\n',
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    sql = [c for c in scan.taint_chains if c.sink_kind == "sql_execute"]
+    assert sql, "expected Go route → sql_execute chain across packages"
+    assert any(c.route_path == "/orders/:id" for c in sql)
+
+
+def test_go_parameterized_sql_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text("module github.com/acme/app\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text(
+        'package main\n'
+        'import "github.com/gin-gonic/gin"\n'
+        'func main() {\n'
+        '  r := gin.Default()\n'
+        '  r.GET("/u/:id", func(c *gin.Context) {\n'
+        '    db.Query("SELECT * FROM users WHERE id = $1", c.Param("id"))\n'  # parameterized
+        '  })\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert not [c for c in scan.taint_chains if c.sink_kind == "sql_execute"]
+
+
+def test_go_exec_command_sink(tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text("module github.com/acme/app\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text(
+        'package main\n'
+        'import (\n'
+        '  "os/exec"\n'
+        '  "github.com/gin-gonic/gin"\n'
+        ')\n'
+        'func main() {\n'
+        '  r := gin.Default()\n'
+        '  r.POST("/run", func(c *gin.Context) {\n'
+        '    exec.Command("sh", "-c", c.Query("cmd")).Run()\n'
+        '  })\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.sink_kind == "subprocess_shell" for c in scan.taint_chains)
+
+
+def test_dts_declaration_file_not_a_sink_source(tmp_path: Path) -> None:
+    """Generated `*.d.ts` type stubs are not executable code and must not be
+    taint sink sources (#95/#102 validation — PocketBase types.d.ts noise)."""
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/x')\n"
+        "def x():\n"
+        "    return eval(request.args['e'])\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "types.d.ts").write_text(
+        "export function exec(cmd: string): void\n"
+        "declare const child_process: { exec(c: string): void }\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    # the real python eval is caught; nothing from the .d.ts stub
+    assert any(c.sink_kind == "eval" for c in scan.taint_chains)
+    assert not any(c.sink_file.endswith(".d.ts") for c in scan.taint_chains)
