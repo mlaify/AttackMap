@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Handler-aware taint seeding for central route registration (#107).** For
+  JS/TS apps that register many handlers in one hub file (`server.ts` importing
+  ~100 route modules), taint now seeds from the module that *defines* a route's
+  handler (`app.get('/profile', getUserProfile())` → `routes/userProfile.ts`)
+  instead of walking the hub's entire import set. This connects routes to their
+  real code precisely and kills the import-hub fan-out (on OWASP Juice Shop:
+  the real `GET /profile → eval` RCE is now found via the correct 0-hop path,
+  and total chains are 22 credible flows vs. 856 with a naive visit-cap raise).
+  Inline handlers and Python decorators are unaffected (they co-locate handler
+  and route, so seeding stays on the route file).
+
 ### Fixed
 
 - **Route extraction no longer mistakes method calls for routes (#99).**
