@@ -15,10 +15,15 @@ scanner drives it through the small hook surface (`begin`/`advance`/`stage`/
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
 from typing import TextIO
+
+# NDJSON progress protocol version (consumed by the macOS GUI and other
+# non-TTY front-ends). Bump only on a breaking change to the event shape.
+PROGRESS_PROTOCOL_VERSION = 1
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _BAR_WIDTH = 24
@@ -152,4 +157,97 @@ def _truncate(text: str, width: int) -> str:
     return "…" + text[-(width - 1):]
 
 
-__all__ = ["ScanProgress"]
+class JsonScanProgress:
+    """Emit scan progress as newline-delimited JSON (one object per line).
+
+    Same hook surface as ``ScanProgress`` (``begin``/``advance``/``stage``/
+    ``done``) so the scanner drives either interchangeably. Unlike the TTY
+    renderer this never gates on ``isatty`` — its whole purpose is to feed a
+    non-terminal consumer (the macOS GUI) reading the child process's stderr.
+
+    Event shapes (all carry ``"v": PROGRESS_PROTOCOL_VERSION``)::
+
+        {"v":1,"event":"begin","total":1240,"label":"Scanning files"}
+        {"v":1,"event":"advance","done":37,"total":1240,"current":"src/app.ts"}
+        {"v":1,"event":"stage","label":"Taint analysis"}
+        {"v":1,"event":"done","summary":"…","done":1240,"total":1240,"elapsed_s":92.4}
+
+    ``advance`` events are throttled to at most one per ``min_interval`` seconds
+    to keep the stream sane on large trees; ``done`` (per-file count) stays
+    accurate because every advance still increments the internal counter and the
+    latest count rides on each emitted event.
+    """
+
+    def __init__(self, *, stream: TextIO | None = None, min_interval: float = 0.1) -> None:
+        self._stream = stream if stream is not None else sys.stderr
+        self._min_interval = max(0.0, min_interval)
+        self._total = 0
+        self._done = 0
+        self._start = 0.0
+        self._last_emit = 0.0
+
+    def begin(self, total: int, label: str = "Scanning files") -> None:
+        self._total = max(0, total)
+        self._done = 0
+        self._start = time.monotonic()
+        self._last_emit = self._start  # anchor throttle window to scan start
+        self._emit("begin", total=self._total, label=label)
+
+    def advance(self, current: str = "") -> None:
+        self._done += 1
+        now = time.monotonic()
+        # Always emit the final file; throttle the rest.
+        if self._done < self._total and (now - self._last_emit) < self._min_interval:
+            return
+        self._last_emit = now
+        self._emit("advance", done=self._done, total=self._total, current=current)
+
+    def stage(self, label: str) -> None:
+        self._emit("stage", label=label)
+
+    def done(self, summary: str = "") -> None:
+        elapsed = round(time.monotonic() - self._start, 3) if self._start else 0.0
+        self._emit(
+            "done",
+            summary=summary,
+            done=self._done,
+            total=self._total,
+            elapsed_s=elapsed,
+        )
+
+    def _emit(self, event: str, **fields: object) -> None:
+        payload = {"v": PROGRESS_PROTOCOL_VERSION, "event": event, **fields}
+        try:
+            self._stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            self._stream.flush()
+        except (ValueError, OSError):
+            # Never let a broken/closed pipe take down a scan.
+            pass
+
+
+def create_progress(
+    fmt: str = "auto",
+    *,
+    no_progress: bool = False,
+    stream: TextIO | None = None,
+):
+    """Build the right progress sink for ``--progress-format``.
+
+    - ``none`` (or ``no_progress=True``) → a disabled ``ScanProgress`` no-op.
+    - ``json`` → :class:`JsonScanProgress` (NDJSON, always emits).
+    - ``auto`` / ``tty`` → :class:`ScanProgress` (TTY bar, self-silences when
+      stderr isn't a terminal).
+    """
+    if no_progress or fmt == "none":
+        return ScanProgress(enabled=False, stream=stream)
+    if fmt == "json":
+        return JsonScanProgress(stream=stream)
+    return ScanProgress(enabled=True, stream=stream)
+
+
+__all__ = [
+    "ScanProgress",
+    "JsonScanProgress",
+    "create_progress",
+    "PROGRESS_PROTOCOL_VERSION",
+]
