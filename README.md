@@ -146,6 +146,46 @@ jobs:
           category: attackmap
 ```
 
+### PR bot (reusable Action + summary comment)
+
+AttackMap ships a composite **GitHub Action** (`action.yml`) that installs it,
+scans, uploads SARIF (for inline annotations on the PR's *Files changed* tab),
+and renders a Markdown **PR summary comment** (new/resolved findings, gate
+status, and the top "most exploitable now"). Wire it up to post the comment on
+each PR:
+
+```yaml
+name: AttackMap PR review
+on: pull_request
+permissions:
+  contents: read
+  security-events: write   # SARIF upload
+  pull-requests: write     # summary comment
+jobs:
+  attackmap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: scan
+        uses: mlaify/AttackMap@v1
+        with:
+          path: .
+          fail-on-new-high: "true"   # optional gate (needs a baseline)
+      - uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('${{ steps.scan.outputs.pr-comment-file }}', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body,
+            });
+```
+
+The comment renderer is also available standalone: `attackmap analyze .
+--pr-comment pr.md` (add `--baseline prev.json` to include the diff).
+
 ### Diff mode (PR gating)
 
 For a lighter CI integration than Code Scanning — a bot comment, a JSON delta,

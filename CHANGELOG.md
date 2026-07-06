@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitHub PR bot (#105).** A reusable composite Action (`action.yml`) that
+  installs AttackMap, scans, uploads SARIF (inline annotations on the PR's
+  *Files changed* tab), and renders a Markdown **PR summary comment** — new /
+  resolved findings vs. baseline, HIGH-gate status, and the top "most
+  exploitable now". New `--pr-comment <path>` CLI flag emits the comment
+  (with the diff when `--baseline` is set); a documented workflow posts it via
+  `actions/github-script`.
 - **PHP language support (#103).** `.php` is a recognized language with route
   extraction for Laravel (`Route::get('/x', …)`, `$router->…`), Slim
   (`$app->get('/x', …)`), and Symfony attributes/annotations (`#[Route('/x')]` /
