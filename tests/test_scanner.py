@@ -912,3 +912,34 @@ def test_go_route_extraction(tmp_path: Path) -> None:
     assert ("ANY", "/health") in got
     assert not any(r.path in {"some-key", "https://example.com"} for r in scan.routes)
     assert "go" in scan.languages
+
+
+def test_php_route_extraction(tmp_path: Path) -> None:
+    """PHP routes across Laravel (Route::/$router->), Slim ($app->) and Symfony
+    attributes, leading-slash gated (#103)."""
+    (tmp_path / "routes.php").write_text(
+        "<?php\n"
+        "Route::get('/users', [UserController::class, 'index']);\n"
+        "Route::post('/users', 'UserController@store');\n"
+        "$app->get('/health', function() {});\n"
+        "$router->delete('/users/{id}', 'UserController@destroy');\n"
+        "$cache->get('some-key');\n",  # not a route (no leading slash)
+        encoding="utf-8",
+    )
+    (tmp_path / "FooController.php").write_text(
+        "<?php\n"
+        "class FooController {\n"
+        "  #[Route('/api/foo', methods: ['GET'])]\n"
+        "  public function foo() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    got = {(r.method, r.path) for r in scan.routes}
+    assert ("GET", "/users") in got
+    assert ("POST", "/users") in got
+    assert ("GET", "/health") in got
+    assert ("DELETE", "/users/{id}") in got
+    assert ("ANY", "/api/foo") in got
+    assert not any(r.path == "some-key" for r in scan.routes)
+    assert "php" in scan.languages

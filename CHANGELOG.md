@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PHP language support — route extraction (#103, part 1).** `.php` is a
+  recognized language with route extraction for Laravel (`Route::get('/x', …)`,
+  `$router->…`), Slim (`$app->get('/x', …)`), and Symfony attributes/annotations
+  (`#[Route('/x')]` / `@Route("/x")`), leading-slash gated. Validated on
+  BookStack (254 real routes from `routes/web.php`/`api.php`). PHP taint + sinks
+  land in a follow-up.
 - **Go language support (#102).** `.go` is a recognized language with route
   extraction across the common Go web frameworks — net/http
   (`mux.HandleFunc("/x", h)`), gin/echo (`r.GET("/x", h)`), chi/fiber
@@ -32,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Test/vendored routes excluded from the attack surface (#113).** Route
+  extraction now skips test/spec and vendored/minified files by default —
+  Laravel/Go/pytest test helpers call `.get('/x')` heavily, inflating the route
+  count and attack surface (BookStack went 868 → 254 real routes; test routes
+  no longer appear). `ATTACKMAP_INCLUDE_TESTS` / `ATTACKMAP_INCLUDE_VENDORED`
+  opt back in.
 - **Handler-aware taint seeding for central route registration (#107).** For
   JS/TS apps that register many handlers in one hub file (`server.ts` importing
   ~100 route modules), taint now seeds from the module that *defines* a route's

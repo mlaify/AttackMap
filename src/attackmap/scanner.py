@@ -37,7 +37,22 @@ CODE_EXTENSIONS = {
     ".ts": "typescript",
     ".tsx": "typescript",
     ".go": "go",
+    ".php": "php",
 }
+
+# PHP route registrations (#103):
+#   Laravel:  Route::get('/x', ...)      / $router->get('/x', ...)
+#   Slim:     $app->get('/x', ...)
+#   Symfony:  #[Route('/x', ...)]        / @Route("/x", ...)
+# Leading-slash gated, same discipline as #99.
+PHP_ROUTE_PATTERN = re.compile(
+    r"(?:\bRoute::|\$\w+->)(get|post|put|delete|patch|options|head|any)\s*\(\s*['\"](/[^'\"]*)['\"]",
+    re.IGNORECASE,
+)
+PHP_SYMFONY_ROUTE_PATTERN = re.compile(
+    r"(?:#\[\s*Route|@Route)\s*\(\s*['\"](/[^'\"]*)['\"]",
+)
+_PHP_ANY_METHODS = {"any"}
 
 # Go web-router registrations across the common frameworks:
 #   net/http:      mux.HandleFunc("/x", h) / http.Handle("/x", h)
@@ -530,6 +545,22 @@ def _extract_go_routes(content: str, file: str) -> list[Route]:
     return routes
 
 
+def _extract_php_routes(content: str, file: str) -> list[Route]:
+    routes: list[Route] = []
+    for match in PHP_ROUTE_PATTERN.finditer(content):
+        verb = match.group(1).lower()
+        method = "ANY" if verb in _PHP_ANY_METHODS else verb.upper()
+        routes.append(
+            Route(path=match.group(2), method=method, file=file, line=_line_of(content, match.start()))
+        )
+    for match in PHP_SYMFONY_ROUTE_PATTERN.finditer(content):
+        # Symfony attribute/annotation — method lives in `methods:`; default ANY.
+        routes.append(
+            Route(path=match.group(1), method="ANY", file=file, line=_line_of(content, match.start()))
+        )
+    return routes
+
+
 def extract_routes(content: str, file: str, suffix: str) -> list[Route]:
     if suffix == ".py":
         return _extract_python_routes(content, file)
@@ -537,6 +568,8 @@ def extract_routes(content: str, file: str, suffix: str) -> list[Route]:
         return _extract_javascript_routes(content, file)
     if suffix == ".go":
         return _extract_go_routes(content, file)
+    if suffix == ".php":
+        return _extract_php_routes(content, file)
     return []
 
 
@@ -634,8 +667,12 @@ def scan_repo(
             continue
 
         relative = str(file_path.relative_to(root_path))
-        file_routes = extract_routes(content, relative, file_path.suffix)
-        result.routes.extend(file_routes)
+        # Routes declared in test/spec or vendored files aren't real attack
+        # surface — Laravel/Go/pytest test helpers call `.get('/x')` heavily
+        # (#113). Skip them by default (ATTACKMAP_INCLUDE_TESTS / _VENDORED opt in).
+        if not is_test_file(relative) and not is_vendored_file(relative):
+            file_routes = extract_routes(content, relative, file_path.suffix)
+            result.routes.extend(file_routes)
 
         for pattern in EXTERNAL_CALL_PATTERNS:
             for match in pattern.finditer(content):
