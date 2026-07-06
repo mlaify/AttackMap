@@ -9,12 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **PHP language support — route extraction (#103, part 1).** `.php` is a
-  recognized language with route extraction for Laravel (`Route::get('/x', …)`,
-  `$router->…`), Slim (`$app->get('/x', …)`), and Symfony attributes/annotations
-  (`#[Route('/x')]` / `@Route("/x")`), leading-slash gated. Validated on
-  BookStack (254 real routes from `routes/web.php`/`api.php`). PHP taint + sinks
-  land in a follow-up.
+- **PHP language support (#103).** `.php` is a recognized language with route
+  extraction for Laravel (`Route::get('/x', …)`, `$router->…`), Slim
+  (`$app->get('/x', …)`), and Symfony attributes/annotations (`#[Route('/x')]` /
+  `@Route`), leading-slash gated — **and import-graph taint**: `use Ns\Class`
+  is resolved via composer.json PSR-4 autoload (plus `require`/`include`), so a
+  route reaches sinks in its controllers/models. PHP sinks: `mysqli_query` /
+  `pg_query` / PDO `->query|exec` / Laravel `DB::select|raw|…` (with a
+  PHP-tailored parameterized-query gate — flags `.`-concatenation, `"…$var…"`
+  interpolation, and `sprintf`, not the `+`/comma heuristic that misreads PHP),
+  `system`/`shell_exec`/`passthru`/`proc_open`/`popen`, and `unserialize`.
+  Validated on BookStack (254 routes; route→controller resolves via PSR-4 across
+  337 files; 0 taint chains — it uses parameterized Eloquent throughout,
+  correctly not flagged).
 - **Go language support (#102).** `.go` is a recognized language with route
   extraction across the common Go web frameworks — net/http
   (`mux.HandleFunc("/x", h)`), gin/echo (`r.GET("/x", h)`), chi/fiber

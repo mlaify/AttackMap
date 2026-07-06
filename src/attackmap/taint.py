@@ -28,6 +28,7 @@ their own signals with taint alone.
 
 from __future__ import annotations
 
+import json
 import re
 from collections import deque
 from pathlib import Path
@@ -42,7 +43,8 @@ _MAX_FILES_VISITED_PER_ROUTE = 40
 _PY_SUFFIXES = {".py"}
 _JS_TS_SUFFIXES = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 _GO_SUFFIXES = {".go"}
-_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES
+_PHP_SUFFIXES = {".php"}
+_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES | _PHP_SUFFIXES
 
 # --- Import extraction -----------------------------------------------------
 
@@ -138,6 +140,28 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         # Go os/exec (#102): exec.Command / exec.CommandContext.
         "subprocess_shell",
         re.compile(r"\bexec\.Command(?:Context)?\s*\("),
+    ),
+    (
+        # PHP SQL (#103): mysqli_query / pg_query, PDO/db ->query|exec (NOT
+        # ->prepare, which is safe), and Laravel raw DB::select|statement|raw.
+        # Parameterized-query-gated with PHP-aware detection.
+        "sql_execute",
+        re.compile(
+            r"\b(?:mysqli_query|pg_query)\s*\("
+            r"|\$\w+->(?:query|exec)\s*\("
+            r"|\bDB::(?:select|statement|insert|update|delete|raw|unprepared)\s*\(",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        # PHP shell execution (#103).
+        "subprocess_shell",
+        re.compile(r"\b(?:system|shell_exec|passthru|proc_open|popen)\s*\("),
+    ),
+    (
+        # PHP object deserialization (#103).
+        "unsafe_deserialization",
+        re.compile(r"\bunserialize\s*\("),
     ),
     (
         "eval",
@@ -401,11 +425,61 @@ def _resolve_go_imports(
     return out
 
 
+_PHP_USE_RE = re.compile(r"^\s*use\s+(?P<fqcn>\\?[A-Za-z0-9_\\]+)", re.MULTILINE)
+_PHP_REQUIRE_RE = re.compile(
+    r"\b(?:require|include)(?:_once)?\s*\(?\s*['\"](?P<path>[^'\"]+)['\"]"
+)
+
+
+def _php_psr4_map(root: Path) -> dict[str, str]:
+    """namespace-prefix → directory from composer.json PSR-4 autoload."""
+    composer = root / "composer.json"
+    out: dict[str, str] = {}
+    try:
+        data = json.loads(composer.read_text(encoding="utf-8", errors="ignore"))
+    except (OSError, ValueError):
+        return out
+    for section in ("autoload", "autoload-dev"):
+        psr4 = data.get(section, {}).get("psr-4", {}) if isinstance(data.get(section), dict) else {}
+        for ns, directory in psr4.items():
+            dirs = directory if isinstance(directory, list) else [directory]
+            for d in dirs:
+                out.setdefault(ns.rstrip("\\"), str(d).strip("/"))
+    return out
+
+
+def _resolve_php_imports(
+    content: str, from_rel: str, files: dict[str, Path], root: Path, psr4: dict[str, str]
+) -> set[str]:
+    """Resolve PHP `use Ns\\Class` (via composer PSR-4) and `require '…'` to
+    intra-repo files."""
+    out: set[str] = set()
+    for match in _PHP_USE_RE.finditer(content):
+        fqcn = match.group("fqcn").lstrip("\\")
+        for ns, directory in psr4.items():
+            if fqcn == ns or fqcn.startswith(ns + "\\"):
+                rest = fqcn[len(ns):].lstrip("\\").replace("\\", "/")
+                rel = _normalize_rel(str((Path(directory) / (rest + ".php"))) if directory else rest + ".php")
+                if rel in files:
+                    out.add(rel)
+                break
+    from_dir = (root / from_rel).parent
+    for match in _PHP_REQUIRE_RE.finditer(content):
+        try:
+            rel = _normalize_rel(str((from_dir / match.group("path")).resolve().relative_to(root)))
+        except ValueError:
+            continue
+        if rel in files:
+            out.add(rel)
+    return out
+
+
 def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str]]:
     """rel_path -> set of rel_paths this file imports (intra-repo only)."""
     graph: dict[str, set[str]] = {rel: set() for rel in files}
     go_module = _go_module_path(root)
     go_dirs = _go_dir_index(files)
+    php_psr4 = _php_psr4_map(root)
     for rel, abs_path in files.items():
         try:
             content = abs_path.read_text(encoding="utf-8")
@@ -415,6 +489,8 @@ def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str
             graph[rel].update(_resolve_py_imports(content, rel, files))
         elif abs_path.suffix in _GO_SUFFIXES:
             graph[rel].update(_resolve_go_imports(content, go_module, go_dirs))
+        elif abs_path.suffix in _PHP_SUFFIXES:
+            graph[rel].update(_resolve_php_imports(content, rel, files, root, php_psr4))
         else:
             graph[rel].update(_resolve_js_imports(content, rel, files, root))
     return graph
@@ -611,11 +687,13 @@ _STATIC_GATED_KINDS = frozenset({"unsafe_deserialization", "eval", "exec"})
 
 # A quoted string literal appears in the argument.
 _ARG_STRING_LITERAL = re.compile(r"""['"][^'"]*['"]""")
-# Signals the argument is (or may be) dynamic / attacker-influenced:
-# string concatenation, template/f-string interpolation, or a request /
-# runtime-input container. If any appears, we do NOT treat the arg as static.
+# Signals the argument is (or may be) dynamic / attacker-influenced: string
+# concatenation, template/f-string interpolation, a request / runtime-input
+# container, or a `$`-variable (PHP `$_POST`/`$var`, so `unserialize($_POST['k'])`
+# — whose `'k'` array-key literal would otherwise read as static — is flagged).
+# If any appears, we do NOT treat the arg as static.
 _ARG_DYNAMIC = re.compile(
-    r"\+|\$\{|`|\b(?:req|request|body|query|params|payload|argv|input|stdin)\b|process\."
+    r"\+|\$|`|\b(?:req|request|body|query|params|payload|argv|input|stdin)\b|process\."
 )
 
 
@@ -656,10 +734,9 @@ def _is_static_local_arg(content: str, match: re.Match[str]) -> bool:
 _SQL_PLACEHOLDER_RE = re.compile(r"%\(?\w*\)?[sd]|\$\d+|:[A-Za-z_]\w*|(?<!\w)\?(?!\w)")
 
 
-def _is_parameterized_sql(content: str, match: re.Match[str]) -> bool:
-    """True if a `sql_execute` call is a *safe* parameterized query (bind
-    params, builder terminal, or placeholder-only literal) rather than a raw
-    string-built one — so we don't flag it as an injection sink (#101)."""
+def _is_parameterized_sql(content: str, match: re.Match[str], suffix: str = "") -> bool:
+    """True if a `sql_execute` call is a *safe* parameterized query rather than a
+    raw string-built one — so we don't flag it as an injection sink (#101)."""
     paren = content.find("(", match.start())
     if paren == -1:
         return False
@@ -667,6 +744,15 @@ def _is_parameterized_sql(content: str, match: re.Match[str]) -> bool:
     stripped = args.strip()
     if not stripped:
         return True  # builder terminal, e.g. Kysely `.execute()`
+    if suffix == ".php":
+        # PHP-tailored (#103): flag only on evidence of DYNAMIC query building —
+        # `.` concatenation, double-quote `"…$var…"` interpolation, or sprintf.
+        # Avoids the `+`/comma heuristic's traps here (`.` concat, mysqli's
+        # ($conn, $sql) arg order). A bare `$db->query($sql)` is suppressed —
+        # provenance is unknown and flagging every ORM call is noise.
+        if re.search(r'["\']\s*\.|\.\s*\$|\bsprintf\s*\(', args) or re.search(r'"[^"]*\$', args):
+            return False
+        return True
     # Interpolation OUTSIDE string literals ⇒ raw/dynamic ⇒ NOT safe.
     if "${" in args or re.search(r"\bf['\"]", args):  # template literal / f-string
         return False
@@ -699,7 +785,7 @@ def _find_sinks(
                     continue
                 # Suppress parameterized SQL — bind params / builder / placeholders
                 # only — vs. raw string-built queries (#101).
-                if kind == "sql_execute" and _is_parameterized_sql(content, match):
+                if kind == "sql_execute" and _is_parameterized_sql(content, match, abs_path.suffix):
                     continue
                 line = content.count("\n", 0, match.start()) + 1
                 snippet = _line_snippet(content, match.start())
