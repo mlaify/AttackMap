@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Go language support — route extraction (#102, part 1).** `.go` is now a
+  recognized language, and route registrations across the common Go web
+  frameworks are extracted: net/http (`mux.HandleFunc("/x", h)` / `http.Handle`),
+  gin/echo (`r.GET("/x", h)`), and chi/fiber (`r.Get("/x", h)`). Gated on a
+  leading-slash path so `cache.Get("key")` / `http.Get(url)` aren't mistaken for
+  routes. Validated on PocketBase (108 Go routes, 0 false). Go import-graph
+  taint + sinks land in a follow-up.
 - **CVE → exploitability fusion (#104).** The exploitability score now folds in
   known-vulnerable dependencies: each route→sink path file's bare imports are
   resolved to package names and matched against the `--cve` advisory set, so a

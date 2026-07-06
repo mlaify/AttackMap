@@ -36,7 +36,21 @@ CODE_EXTENSIONS = {
     ".cjs": "javascript",
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".go": "go",
 }
+
+# Go web-router registrations across the common frameworks:
+#   net/http:      mux.HandleFunc("/x", h) / http.Handle("/x", h)
+#   gin/echo:      r.GET("/x", h)          (uppercase verbs)
+#   chi/fiber:     r.Get("/x", h)          (Title-case verbs)
+# Gated on a leading-slash path so `cache.Get("key")` / `http.Get(url)` (an
+# outbound call, not a route) don't match — same discipline as #99.
+GO_ROUTE_PATTERN = re.compile(
+    r"\b\w+\.(get|post|put|delete|patch|head|options|connect|trace|any|all|handle|handlefunc)"
+    r"\s*\(\s*\"(/[^\"]*)\"",
+    re.IGNORECASE,
+)
+_GO_ANY_METHODS = {"any", "all", "handle", "handlefunc"}
 
 FASTAPI_ROUTER_PATTERN = re.compile(
     r"(\w+)\s*=\s*APIRouter\(\s*(?:[^)]*?\bprefix\s*=\s*['\"]([^'\"]*)['\"])?",
@@ -500,11 +514,29 @@ def _extract_javascript_routes(content: str, file: str) -> list[Route]:
     return routes
 
 
+def _extract_go_routes(content: str, file: str) -> list[Route]:
+    routes: list[Route] = []
+    for match in GO_ROUTE_PATTERN.finditer(content):
+        verb = match.group(1).lower()
+        method = "ANY" if verb in _GO_ANY_METHODS else verb.upper()
+        routes.append(
+            Route(
+                path=match.group(2),
+                method=method,
+                file=file,
+                line=_line_of(content, match.start()),
+            )
+        )
+    return routes
+
+
 def extract_routes(content: str, file: str, suffix: str) -> list[Route]:
     if suffix == ".py":
         return _extract_python_routes(content, file)
     if suffix in {".js", ".ts", ".tsx"}:
         return _extract_javascript_routes(content, file)
+    if suffix == ".go":
+        return _extract_go_routes(content, file)
     return []
 
 
