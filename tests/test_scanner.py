@@ -854,3 +854,34 @@ def test_route_extraction_keeps_real_routes(tmp_path: Path) -> None:
     assert ("POST", "/orders") in got
     assert ("DELETE", "/u/:id") in got
     assert ("ANY", "/*") in got
+
+
+def test_custom_auth_middleware_recognized(tmp_path: Path) -> None:
+    """Custom middleware factories and guard args count as auth signals so an
+    authenticated route isn't reported as 'no auth' (#100)."""
+    from attackmap.analyzer import identify_attack_surfaces
+
+    (tmp_path / "authed.js").write_text(
+        "const express = require('express')\n"
+        "const app = express()\n"
+        "const { webhookAuth } = require('./mw')\n"
+        "const requireAuth = require('./auth')\n"
+        "app.post('/hook', webhookAuth({ secret: cfg.secret }), handleHook)\n"
+        "app.get('/admin/users', requireAuth, listUsers)\n",
+        encoding="utf-8",
+    )
+    # A separate file with no auth code — its route must stay unauthenticated.
+    (tmp_path / "public.js").write_text(
+        "const express = require('express')\n"
+        "const app = express()\n"
+        "app.get('/public/status', getStatus)\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(h.hint == "auth_middleware" for h in scan.auth_hints)
+    surfaces = {(s.method, s.route): s for s in identify_attack_surfaces(scan)}
+    # authenticated routes carry auth signals (custom factory + guard-arg ref)
+    assert surfaces[("POST", "/hook")].auth_signals
+    assert surfaces[("GET", "/admin/users")].auth_signals
+    # the genuinely unauthenticated route (different file) does not
+    assert not surfaces[("GET", "/public/status")].auth_signals
