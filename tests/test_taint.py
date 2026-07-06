@@ -521,3 +521,55 @@ def test_dts_declaration_file_not_a_sink_source(tmp_path: Path) -> None:
     # the real python eval is caught; nothing from the .d.ts stub
     assert any(c.sink_kind == "eval" for c in scan.taint_chains)
     assert not any(c.sink_file.endswith(".d.ts") for c in scan.taint_chains)
+
+
+def test_php_psr4_route_to_sql_sink(tmp_path: Path) -> None:
+    """PHP: route file `use`s a controller (PSR-4) whose method builds raw SQL —
+    resolved via composer.json autoload (#103)."""
+    (tmp_path / "composer.json").write_text('{"autoload":{"psr-4":{"App\\\\":"src/"}}}\n', encoding="utf-8")
+    (tmp_path / "routes.php").write_text(
+        "<?php\n"
+        "use App\\Handlers\\Search;\n"
+        "Route::get('/search', [Search::class, 'run']);\n",
+        encoding="utf-8",
+    )
+    handlers = tmp_path / "src" / "Handlers"
+    handlers.mkdir(parents=True)
+    (handlers / "Search.php").write_text(
+        "<?php\n"
+        "namespace App\\Handlers;\n"
+        "class Search {\n"
+        "  public function run($db, $q) {\n"
+        "    return $db->query(\"SELECT * FROM t WHERE x = '\" . $q . \"'\");\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    sql = [c for c in scan.taint_chains if c.sink_kind == "sql_execute"]
+    assert sql, "expected PHP route → sql_execute chain via PSR-4 use"
+    assert any(c.route_path == "/search" for c in sql)
+
+
+def test_php_dynamic_vs_static_sql(tmp_path: Path) -> None:
+    (tmp_path / "concat.php").write_text(
+        "<?php\nRoute::get('/a', function($db, $q) { $db->query(\"SELECT \" . $q); });\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "static.php").write_text(
+        "<?php\nRoute::get('/b', function($db) { $db->query(\"SELECT * FROM users\"); });\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    sql_routes = {c.route_path for c in scan.taint_chains if c.sink_kind == "sql_execute"}
+    assert "/a" in sql_routes          # concatenation → flagged
+    assert "/b" not in sql_routes      # static literal → suppressed
+
+
+def test_php_unserialize_sink(tmp_path: Path) -> None:
+    (tmp_path / "app.php").write_text(
+        "<?php\nRoute::post('/import', function() { return unserialize($_POST['data']); });\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert any(c.sink_kind == "unsafe_deserialization" for c in scan.taint_chains)
