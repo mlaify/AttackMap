@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agentic hunt verification `--hunt --verify` (#122).** Upgrades `--hunt` to
+  adjudicate each hypothesis **CONFIRMED / REFUTED / NEEDS HUMAN REVIEW**
+  against the *actual source* at cited locations. Because the LLM backend is
+  sandboxed to the AttackMap workspace (can't read the target repo), AttackMap
+  extracts the cited route/sink/finding code excerpts (line ± context) and
+  feeds them to the verify pass, which is instructed to refute leads the shown
+  code contradicts (parameterized query, constant arg, auth present, static-file
+  sink) and to say NEEDS-REVIEW when the excerpt is insufficient — rather than
+  confirm what it can't see.
 - **Crypto-weakness detection for Go and PHP (#120).** The insecure-crypto pass
   now covers Go (`md5.New`/`md5.Sum` over a security value, `des`/`rc4.NewCipher`
   and `crypto/des`|`rc4` imports, `math/rand`-exclusive RNG for secrets) and PHP

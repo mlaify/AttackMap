@@ -32,6 +32,7 @@ from typing import Any, Literal
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .review_prompts import (
     render_hunt_prompts,
+    render_hunt_verify_prompts,
     render_remediation_prompts,
     render_review_prompts,
 )
@@ -327,7 +328,7 @@ def generate_llm_review(
     client: Any | None = None,
     backend: LlmBackend = "auto",
     cli_runner: Any | None = None,
-    mode: Literal["review", "hunt", "remediate"] = "review",
+    mode: Literal["review", "hunt", "hunt_verify", "remediate"] = "review",
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling Claude.
@@ -343,6 +344,7 @@ def generate_llm_review(
 
     render = {
         "hunt": render_hunt_prompts,
+        "hunt_verify": render_hunt_verify_prompts,
         "remediate": render_remediation_prompts,
     }.get(mode, render_review_prompts)
     rendered = render(scan, attack_surfaces, findings, attack_paths)

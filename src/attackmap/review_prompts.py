@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .security_overlay import build_security_overlay
@@ -360,6 +362,101 @@ def render_hunt_prompts(
     return RenderedReviewPrompt(
         system=HUNT_SYSTEM_PROMPT.strip(),
         user=HUNT_USER_PROMPT.format(repo_context=_repo_context(scan), evidence_json=evidence_json).strip(),
+        evidence_json=evidence_json,
+    )
+
+
+HUNT_VERIFY_SYSTEM_PROMPT = """You are AttackMap Hunt Verifier, an adversarial red-team reviewer.
+
+You are given the SAME evidence pack as the hunt, PLUS a `code_excerpts` section containing the ACTUAL SOURCE at each cited route/sink location. Your job is to produce vulnerability hypotheses AND adjudicate each one against the shown code.
+
+For every hypothesis, assign a VERDICT:
+- **CONFIRMED** — the shown code clearly exhibits the weakness (e.g. request data concatenated into the query at the cited sink line).
+- **REFUTED** — the shown code contradicts the hypothesis (e.g. the query is parameterized, the value is a constant, an auth guard is present, the sink consumes a static local file). Refute aggressively; a plausible-but-wrong lead is worse than none.
+- **NEEDS HUMAN REVIEW** — the excerpt is insufficient (the relevant code isn't shown, or provenance can't be determined from what's provided).
+
+Hard rules:
+- Base each verdict on the `code_excerpts` when the location is present; do NOT invent code beyond what's shown.
+- Cite the evidence ids and the excerpt you relied on. No CVE assignment, no exploit code.
+- Prefer fewer, well-adjudicated hypotheses over speculation.
+
+For each: **Title**, **Verdict** (+ one-line justification quoting the excerpt), **Hypothesized chain** (evidence ids), **What a human must verify** (only for CONFIRMED / NEEDS REVIEW). Order CONFIRMED first, then NEEDS REVIEW, then REFUTED."""
+
+
+HUNT_VERIFY_USER_PROMPT = """Produce and adjudicate vulnerability hypotheses for this repository. For each, assign CONFIRMED / REFUTED / NEEDS HUMAN REVIEW based on the actual source in `code_excerpts`.
+
+Requirements:
+- Use ONLY the evidence pack + code excerpts below; cite ids and the excerpt line you relied on.
+- Refute leads the shown code contradicts (parameterized query, constant arg, auth present, static-file sink).
+- No CVE assignment, no exploit code.
+
+Repository context:
+{repo_context}
+
+Evidence pack (JSON):
+{evidence_json}
+"""
+
+
+def _code_excerpts(scan: ScanResult, findings: list[Finding], max_locations: int = 24, ctx: int = 3) -> dict:
+    """Gather actual source at cited route/sink/finding locations so the verify
+    pass adjudicates against real code, not abstract ids (#hunt-verify)."""
+    root = Path(scan.root)
+    locs: list[tuple[str, int]] = []
+    for c in scan.taint_chains:
+        if c.sink_line:
+            locs.append((c.sink_file, c.sink_line))
+    loc_re = re.compile(r"([^\s:]+\.[A-Za-z0-9]+):(\d+)")
+    for f in findings:
+        for ev in f.evidence:
+            m = loc_re.search(ev)
+            if m:
+                locs.append((m.group(1), int(m.group(2))))
+                break
+    seen: set[tuple[str, int]] = set()
+    out: dict[str, str] = {}
+    file_cache: dict[str, list[str]] = {}
+    for rel, line in locs:
+        key = (rel, line)
+        if key in seen or len(out) >= max_locations:
+            continue
+        seen.add(key)
+        if rel not in file_cache:
+            try:
+                p = root / rel
+                file_cache[rel] = (
+                    p.read_text(encoding="utf-8", errors="ignore").splitlines()
+                    if p.is_file() and p.stat().st_size <= 1_000_000
+                    else []
+                )
+            except (OSError, ValueError):
+                file_cache[rel] = []
+        lines = file_cache[rel]
+        if not lines:
+            continue
+        lo = max(0, line - 1 - ctx)
+        hi = min(len(lines), line + ctx)
+        excerpt = "\n".join(f"{i + 1}: {lines[i]}" for i in range(lo, hi))
+        out[f"{rel}:{line}"] = excerpt
+    return out
+
+
+def render_hunt_verify_prompts(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+) -> RenderedReviewPrompt:
+    """Hunt evidence pack augmented with actual source at cited locations, for
+    an adjudicated (CONFIRMED/REFUTED/NEEDS-REVIEW) hunt pass."""
+    pack = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    pack["code_excerpts"] = _code_excerpts(scan, findings)
+    evidence_json = json.dumps(pack, indent=2, sort_keys=True)
+    return RenderedReviewPrompt(
+        system=HUNT_VERIFY_SYSTEM_PROMPT.strip(),
+        user=HUNT_VERIFY_USER_PROMPT.format(
+            repo_context=_repo_context(scan), evidence_json=evidence_json
+        ).strip(),
         evidence_json=evidence_json,
     )
 

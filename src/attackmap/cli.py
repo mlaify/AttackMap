@@ -89,6 +89,11 @@ def analyze(
         "--hunt",
         help="Vulnerability-hypothesis mode (#80): have Claude reason over the full evidence pack as a red-team analyst and propose ranked, human-verifiable exploit-chain HYPOTHESES (leads, not detections) to vulnerability-hypotheses.md. Uses the same LLM auth/backend as --llm.",
     ),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="With --hunt: adjudicate each hypothesis against the actual source at cited locations — CONFIRMED / REFUTED / NEEDS HUMAN REVIEW (#hunt-verify). AttackMap feeds the code excerpts to the model.",
+    ),
     remediate: bool = typer.Option(
         False,
         "--remediate",
@@ -290,8 +295,10 @@ def analyze(
                     f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
                 )
             typer.echo("")
+            hunt_mode = "hunt_verify" if verify else "hunt"
             typer.echo(
-                f"Hunting for vulnerability hypotheses via Claude (backend={llm_backend}, may take a minute)..."
+                f"Hunting for vulnerability hypotheses via Claude "
+                f"({'adjudicated against source, ' if verify else ''}backend={llm_backend}, may take a minute)..."
             )
             hunt_result = generate_llm_review(
                 scan,
@@ -301,7 +308,7 @@ def analyze(
                 model=llm_model,
                 effort=hunt_effort_value,  # type: ignore[arg-type]
                 backend=llm_backend,  # type: ignore[arg-type]
-                mode="hunt",
+                mode=hunt_mode,  # type: ignore[arg-type]
             )
         except LlmReviewError as exc:
             typer.echo(f"Vulnerability hunt skipped: {exc}", err=True)

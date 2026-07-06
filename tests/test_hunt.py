@@ -168,3 +168,39 @@ def test_banner_states_hypotheses_not_detections() -> None:
     assert "HYPOTHESES to confirm" in HUNT_BANNER
     assert "not confirmed vulnerabilities" in HUNT_BANNER
     assert "no cve" in HUNT_BANNER.lower()
+
+
+def test_hunt_verify_prompt_adjudicates_with_excerpts(tmp_path) -> None:
+    """--hunt --verify feeds actual source excerpts and asks for verdicts."""
+    from pathlib import Path as _P
+    from attackmap.scanner import scan_repo
+    from attackmap.recon_to_analysis import translate_recon
+    from attackmap.review_prompts import render_hunt_verify_prompts
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/x')\n"
+        "def x():\n"
+        "    return eval(request.args['e'])\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    analysis = translate_recon(scan)
+    r = render_hunt_verify_prompts(scan, analysis.attack_surfaces, analysis.findings, analysis.attack_paths)
+    assert "Hunt Verifier" in r.system
+    assert "CONFIRMED" in r.system and "REFUTED" in r.system
+    pack = json.loads(r.evidence_json)
+    assert "code_excerpts" in pack
+    # the eval sink line is included as an excerpt with real source
+    assert any("eval(request.args" in v for v in pack["code_excerpts"].values())
+
+
+def test_hunt_verify_routes_to_verify_prompt() -> None:
+    payload = {"type": "result", "is_error": False, "result": "## H1\n**Verdict:** CONFIRMED",
+               "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 7}}
+    runner, captured = _make_cli_runner(json.dumps(payload))
+    result = generate_llm_review(_scan(), _surfaces(), _findings(), [], backend="cli",
+                                 cli_runner=runner, mode="hunt_verify")
+    assert result.backend == "cli"
+    sys_idx = captured["cmd"].index("--system-prompt")
+    assert "Hunt Verifier" in captured["cmd"][sys_idx + 1]
