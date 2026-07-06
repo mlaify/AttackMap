@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Inline handlers and Python decorators are unaffected (they co-locate handler
   and route, so seeding stays on the route file).
 
+- **Framework auth-middleware awareness (#100).** Auth attribution now
+  recognizes custom middleware factories (`webhookAuth({secret})`,
+  `apiKeyAuth()`, `tenantGuard()` — any CamelCase `*Auth(`/`*Guard(` call),
+  global installs (`app.use(requireAuth)`), and guards passed as a route
+  argument (`router.get('/x', requireAuth, handler)`). Previously these
+  authenticated routes were reported as "no auth" (the Bluesky KWS-webhook
+  false positive), skewing the BOLA, anomaly, and exploitability passes.
+
 ### Fixed
 
 - **Route extraction no longer mistakes method calls for routes (#99).**

@@ -180,6 +180,22 @@ AUTH_PATTERNS = [
     (re.compile(r"\bwithAuth\s*[(<]", re.IGNORECASE), "auth_middleware"),
     (re.compile(r"\bauthMiddleware\b", re.IGNORECASE), "auth_middleware"),
     (re.compile(r"\bauthGuard\b|\bAuthGuard\b"), "auth_guard"),
+    # Custom middleware factories / guards (#100): CamelCase names ending in
+    # Auth/Guard called as a function — e.g. webhookAuth({secret}), apiKeyAuth(),
+    # tenantGuard(). Case-sensitive so `Author(`/`Guardian(` don't match.
+    (re.compile(r"\b\w+(?:Auth|Guard)\s*\("), "auth_middleware"),
+    # Auth middleware installed globally: app.use(requireAuth) / router.use(authz).
+    (re.compile(r"\.use\(\s*[\w$.]*(?:[Aa]uth|[Gg]uard|passport)", re.IGNORECASE), "auth_middleware"),
+    # Auth-ish guard passed as a middleware ARGUMENT in a route registration:
+    # router.get('/x', requireAuth, handler) — the guard is a bare reference.
+    (
+        re.compile(
+            r"\.(?:get|post|put|delete|patch|all)\(\s*['\"][^'\"]*['\"]\s*,[^)\n]*"
+            r"\b\w*(?:[Aa]uth|[Gg]uard|authenticate|authorize)\w*\b",
+            re.IGNORECASE,
+        ),
+        "auth_middleware",
+    ),
     # Session-based auth — specific compound tokens, not the bare word "session"
     (re.compile(r"\bexpress-session\b|require\(['\"]express-session['\"]"), "session_middleware"),
     (re.compile(r"\breq\.session\.\w"), "session_state"),
