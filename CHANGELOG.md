@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-06
+
+Fourth feature release — **precision, multi-language reach, and workflow**. The
+taint engine now spans **Python, JS/TS, Go, and PHP**; the front-end (routes,
+auth attribution, SQL) is materially more precise; exploitability fuses known
+dependency CVEs; and AttackMap gains a GitHub PR bot, LLM-assisted remediation,
+and adjudicated (`--hunt --verify`) hypothesis hunting. Every feature was
+validated on real codebases (Bluesky, Juice Shop, Apple OSS, PocketBase,
+BookStack).
+
 ### Added
 
 - **Agentic hunt verification `--hunt --verify` (#122).** Upgrades `--hunt` to
