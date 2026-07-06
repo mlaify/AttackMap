@@ -803,3 +803,23 @@ def refresh():
     # separate exposures). But the same line must not double-emit.
     lines = [h.line for h in aws_hints]
     assert len(lines) == len(set(lines))
+
+
+def test_base64_alphabet_constant_not_flagged_as_secret(tmp_path: Path) -> None:
+    """A base64/hex alphabet constant is high-entropy but not a secret (#96)."""
+    (tmp_path / "sourcemap.js").write_text(
+        'var base64Digits = '
+        '"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";\n',
+        encoding="utf-8",
+    )
+    result = scan_repo(tmp_path)
+    assert not [s for s in result.secret_hints if s.kind == "high_entropy"]
+
+
+def test_real_high_entropy_secret_still_flagged(tmp_path: Path) -> None:
+    (tmp_path / "cfg.js").write_text(
+        'const apiToken = "s3cr3tR4nd0mK3yZ9xQvB2mNw8LpT4hJ7";\n',
+        encoding="utf-8",
+    )
+    result = scan_repo(tmp_path)
+    assert any(s.kind == "high_entropy" for s in result.secret_hints)

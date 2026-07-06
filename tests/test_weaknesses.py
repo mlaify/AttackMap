@@ -40,6 +40,27 @@ def test_safe_merge_of_constant_not_flagged() -> None:
     assert "prototype_pollution" not in _kinds("_.merge(target, { a: 1 })\n")
 
 
+def test_prototype_chain_read_not_flagged() -> None:
+    # Reading up the prototype chain (parent-constructor lookup) is not a write.
+    assert "prototype_pollution" not in _kinds(
+        "constructor = constructor.prototype.__proto__.constructor;\n"
+    )
+    assert "prototype_pollution" not in _kinds("const p = obj.__proto__.foo\n")
+
+
+def test_proto_in_comment_not_flagged() -> None:
+    assert "prototype_pollution" not in _kinds(
+        '// The path for "foo.__proto__.bar.__proto__.x" is shown as "foo.bar.x".\n'
+    )
+    # even a write-shaped example inside a line comment is ignored
+    assert "prototype_pollution" not in _kinds("// obj.__proto__.polluted = true\n")
+
+
+def test_proto_write_still_flagged() -> None:
+    assert "prototype_pollution" in _kinds("target.__proto__.polluted = true\n")
+    assert "prototype_pollution" in _kinds("obj['__proto__']['x'] = 1\n")
+
+
 # ---------------------------------------------------------------------------
 # Mass assignment
 # ---------------------------------------------------------------------------

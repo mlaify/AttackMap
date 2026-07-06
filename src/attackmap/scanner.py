@@ -14,7 +14,7 @@ from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .crypto import find_crypto_weaknesses
 from .sbom import analyze_sbom
-from .srcpaths import is_test_file
+from .srcpaths import is_test_file, is_vendored_file
 from .weaknesses import find_code_weaknesses
 from .webhardening import find_web_hardening_issues
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
@@ -594,9 +594,11 @@ def scan_repo(
 
         _append_hardcoded_secret_hints(result, relative, content)
 
-        # The weakness passes below are noise in test scaffolding, so skip
-        # test/spec files by default (#67; ATTACKMAP_INCLUDE_TESTS opts in).
-        if not is_test_file(relative):
+        # The weakness passes below are noise in test scaffolding (#67) and in
+        # vendored/minified third-party code (#95) — a bug in a dependency the
+        # project doesn't maintain isn't this repo's finding. Skip both by
+        # default (ATTACKMAP_INCLUDE_TESTS / ATTACKMAP_INCLUDE_VENDORED opt in).
+        if not is_test_file(relative) and not is_vendored_file(relative):
             # Insecure crypto / weak randomness (#70). Content is already
             # read, so this rides the per-file pass rather than re-walking.
             result.crypto_weaknesses.extend(find_crypto_weaknesses(content, relative))
@@ -724,6 +726,8 @@ def _append_hardcoded_secret_hints(result: ScanResult, relative: str, content: s
             continue
         if not _looks_like_secret_candidate(literal):
             continue
+        if _looks_like_charset(literal):
+            continue  # base64/base32/hex alphabet constant, not a secret (#96)
         if _shannon_entropy(literal) < _ENTROPY_THRESHOLD:
             continue
         line = _line_of(content, pos)
@@ -741,6 +745,20 @@ def _append_hardcoded_secret_hints(result: ScanResult, relative: str, content: s
                 kind="high_entropy",
             )
         )
+
+
+# Sequential alphabet runs that mark a well-known charset/alphabet constant
+# (base64/base32/base16 digit strings) — high-entropy but not a secret (#96).
+_CHARSET_MARKERS = (
+    "abcdefghijklmnop",  # lowercase alphabet run (base64/base32/base36)
+    "ABCDEFGHIJKLMNOP",  # uppercase alphabet run
+    "0123456789abcdef",  # lower hex
+    "0123456789ABCDEF",  # upper hex
+)
+
+
+def _looks_like_charset(value: str) -> bool:
+    return any(marker in value for marker in _CHARSET_MARKERS)
 
 
 def _is_jwt_shape(literal: str) -> bool:

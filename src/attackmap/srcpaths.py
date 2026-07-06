@@ -80,4 +80,41 @@ def is_infra_route(path: str) -> bool:
     return _INFRA_ROUTE_RE.search(path) is not None
 
 
-__all__ = ["is_test_file", "is_infra_route"]
+# Directory segments that hold third-party / vendored code the project doesn't
+# maintain. Flagging weaknesses here is noise about someone else's dependency.
+_VENDORED_DIR_SEGMENTS = frozenset(
+    {
+        "node_modules",
+        "bower_components",
+        "vendor",
+        "vendored",
+        "third_party",
+        "third-party",
+        "thirdparty",
+        "external",
+        "externals",
+        "site-packages",
+        "jspm_packages",
+    }
+)
+
+# Minified / bundled build artifacts — not human-authored source.
+_MINIFIED_FILE_RE = re.compile(r"\.min\.(?:js|css|mjs|cjs)$|\.bundle\.js$", re.IGNORECASE)
+
+
+def is_vendored_file(rel_path: str) -> bool:
+    """Return True if ``rel_path`` is vendored third-party or minified/bundled
+    code (e.g. ``UserInterface/External/three.js``, ``vendor/…``, ``*.min.js``).
+
+    Honors ``ATTACKMAP_INCLUDE_VENDORED`` to scan it anyway (e.g. auditing a
+    pinned/forked dependency)."""
+    if os.environ.get("ATTACKMAP_INCLUDE_VENDORED"):
+        return False
+    norm = rel_path.replace("\\", "/")
+    parts = norm.split("/")
+    if any(segment.lower() in _VENDORED_DIR_SEGMENTS for segment in parts[:-1]):
+        return True
+    return _MINIFIED_FILE_RE.search(parts[-1]) is not None
+
+
+__all__ = ["is_test_file", "is_infra_route", "is_vendored_file"]
