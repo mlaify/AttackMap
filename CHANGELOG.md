@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CVE → exploitability fusion (#104).** The exploitability score now folds in
+  known-vulnerable dependencies: each route→sink path file's bare imports are
+  resolved to package names and matched against the `--cve` advisory set, so a
+  public route reaching a sink through a known-vulnerable library version scores
+  higher (amplifier by CVE severity: high +15 / medium +8 / low +3, with the
+  matched package and advisory ids cited in the factor). Completes the CVE half
+  of #79.
+
 ### Changed
 
 - **Handler-aware taint seeding for central route registration (#107).** For
