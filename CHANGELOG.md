@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Crypto-weakness detection for Go and PHP (#120).** The insecure-crypto pass
+  now covers Go (`md5.New`/`md5.Sum` over a security value, `des`/`rc4.NewCipher`
+  and `crypto/des`|`rc4` imports, `math/rand`-exclusive RNG for secrets) and PHP
+  (`mcrypt_*` / `MCRYPT_DES|RC4|…`, `CURLOPT_SSL_VERIFYPEER => false`, `'verify'
+  => false`) — completing the crypto surface for the languages added in
+  #102/#103. Ambiguous forms are excluded to avoid false positives (Go
+  `rand.Int`/`rand.Read` overlap the secure `crypto/rand`, so only math-only
+  funcs are flagged).
 - **LLM-assisted remediation `--remediate` (#106).** Proposes concrete,
   review-first fixes per finding — a suggested diff/snippet when the code is in
   evidence, else a precise instruction (file + what to change) — grounded in the

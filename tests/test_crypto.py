@@ -254,3 +254,32 @@ def test_scan_repo_clean_file_no_crypto_findings(tmp_path: Path) -> None:
     )
     scan = scan_repo(tmp_path)
     assert scan.crypto_weaknesses == []
+
+
+def _kinds(content: str, f: str = "x.go"):
+    from attackmap.crypto import find_crypto_weaknesses
+    return {w.kind for w in find_crypto_weaknesses(content, f)}
+
+
+def test_go_weak_hash_over_password() -> None:
+    assert "weak_password_hash" in _kinds("h := md5.Sum([]byte(password))\n")
+    # non-security md5 (checksum) is not flagged
+    assert "weak_password_hash" not in _kinds("sum := md5.Sum(fileBytes)\n")
+
+
+def test_go_weak_cipher_and_rng() -> None:
+    assert "weak_cipher" in _kinds("block, _ := des.NewCipher(key)\n")
+    assert "weak_cipher" in _kinds('import "crypto/rc4"\n')
+    assert "insecure_random" in _kinds("token := fmt.Sprint(rand.Intn(1000000))\n")
+    # secure crypto/rand-style rand.Int is NOT flagged (ambiguous func excluded)
+    assert "insecure_random" not in _kinds("n, _ := rand.Int(rand.Reader, max) // token\n")
+
+
+def test_php_mcrypt_and_tls() -> None:
+    assert "weak_cipher" in _kinds("$c = mcrypt_encrypt(MCRYPT_DES, $key, $data);\n", "x.php")
+    assert "insecure_tls" in _kinds("curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);\n", "x.php")
+    assert "insecure_tls" in _kinds("$opts = ['verify' => false];\n", "x.php")
+
+
+def test_php_weak_hash_over_password() -> None:
+    assert "weak_password_hash" in _kinds("$h = md5($password);\n", "x.php")
