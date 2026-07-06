@@ -1,0 +1,67 @@
+name: "AttackMap"
+description: "Run AttackMap defensive security analysis, upload SARIF, and produce a PR summary comment."
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  path:
+    description: "Path to scan."
+    required: false
+    default: "."
+  extras:
+    description: "pip extras to install (e.g. 'all' for every analyzer plugin, or 'llm')."
+    required: false
+    default: "all"
+  baseline:
+    description: "Optional path to a prior attackmap-report.json for diff/gating."
+    required: false
+    default: ""
+  fail-on-new-high:
+    description: "Fail the job if the diff introduces new HIGH-severity findings (requires baseline)."
+    required: false
+    default: "false"
+  output:
+    description: "Directory for generated reports."
+    required: false
+    default: "attackmap-reports"
+  cve:
+    description: "Cross-reference dependencies against OSV.dev (network I/O)."
+    required: false
+    default: "false"
+
+outputs:
+  pr-comment-file:
+    description: "Path to the rendered Markdown PR summary comment."
+    value: "${{ inputs.output }}/pr-comment.md"
+  sarif-file:
+    description: "Path to the SARIF report (for code-scanning upload)."
+    value: "${{ inputs.output }}/attackmap-report.sarif"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install AttackMap
+      shell: bash
+      run: pip install "attackmap[${{ inputs.extras }}]"
+
+    - name: Run AttackMap
+      shell: bash
+      run: |
+        args=(analyze "${{ inputs.path }}" --output "${{ inputs.output }}" --no-progress \
+              --pr-comment "${{ inputs.output }}/pr-comment.md")
+        [ -n "${{ inputs.baseline }}" ] && args+=(--baseline "${{ inputs.baseline }}")
+        [ "${{ inputs.fail-on-new-high }}" = "true" ] && args+=(--fail-on-new-high)
+        [ "${{ inputs.cve }}" = "true" ] && args+=(--cve)
+        attackmap "${args[@]}"
+
+    - name: Upload SARIF (inline PR annotations)
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: "${{ inputs.output }}/attackmap-report.sarif"

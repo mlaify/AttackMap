@@ -27,7 +27,7 @@ from .graph import build_graph
 from .llm_review import LlmReviewError, generate_llm_review
 from .progress import ScanProgress
 from .recon_to_analysis import translate_recon
-from .report import render_console_summary, write_reports
+from .report import render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
@@ -104,6 +104,11 @@ def analyze(
         "--no-progress",
         help="Disable the live progress bar / ETA during scanning. Progress auto-disables when stderr isn't a terminal (CI, piped output).",
     ),
+    pr_comment: str | None = typer.Option(
+        None,
+        "--pr-comment",
+        help="Write a Markdown PR summary comment to this path (for the GitHub Action / bot to post). Includes the baseline diff and top exploitability when available.",
+    ),
 ) -> None:
     repo_path = Path(path).resolve()
     if not repo_path.exists():
@@ -170,6 +175,7 @@ def analyze(
     typer.echo(f"Reports written to: {Path(output).resolve()}")
 
     diff_exit_code = 0
+    diff = None
     if baseline is not None:
         baseline_path = Path(baseline)
         try:
@@ -198,6 +204,12 @@ def analyze(
             for t in new_high_titles:
                 typer.echo(f"  - {t}", err=True)
             diff_exit_code = 1
+
+    if pr_comment is not None:
+        pr_path = Path(pr_comment)
+        pr_path.parent.mkdir(parents=True, exist_ok=True)
+        pr_path.write_text(render_pr_comment(findings, diff), encoding="utf-8")
+        typer.echo(f"PR comment written to: {pr_path.resolve()}")
 
     if llm:
         try:

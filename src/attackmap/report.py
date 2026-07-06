@@ -122,6 +122,56 @@ def render_exploitability_ranking(scores: list[ExploitabilityScore]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def render_pr_comment(findings: list[Finding], diff: object | None = None) -> str:
+    """Render a compact Markdown PR summary comment (#105).
+
+    With a `DiffReport` (duck-typed: `.new`/`.resolved`/`.has_new_high`), leads
+    with what the PR introduced/resolved; otherwise summarizes current findings.
+    Always surfaces the top 'most exploitable now' entries. Pure function —
+    the GitHub Action posts the string via `gh pr comment` / github-script."""
+    sev_rank = {"high": 0, "medium": 1, "low": 2}
+    lines = ["## 🗺️ AttackMap security review", ""]
+
+    new = list(getattr(diff, "new", []) or []) if diff is not None else []
+    resolved = list(getattr(diff, "resolved", []) or []) if diff is not None else []
+
+    if diff is not None:
+        gate = "⚠️ introduces new HIGH-severity findings" if getattr(diff, "has_new_high", False) else "no new HIGH findings"
+        lines.append(f"**{len(new)} new**, **{len(resolved)} resolved** vs. baseline — {gate}.")
+        lines.append("")
+        if new:
+            lines.append("### New findings")
+            for s in sorted(new, key=lambda s: sev_rank.get(s.severity, 3)):
+                lines.append(f"- **[{s.severity.upper()}]** {s.title}")
+            lines.append("")
+    else:
+        by_sev = {"high": 0, "medium": 0, "low": 0}
+        for f in findings:
+            by_sev[f.severity] = by_sev.get(f.severity, 0) + 1
+        lines.append(
+            f"**{by_sev['high']} high**, **{by_sev['medium']} medium**, **{by_sev['low']} low** findings."
+        )
+        lines.append("")
+
+    exploitable = sorted(
+        (f for f in findings if f.exploitability is not None),
+        key=lambda f: -(f.exploitability or 0),
+    )
+    if exploitable:
+        lines.append("### Most exploitable now")
+        for f in exploitable[:3]:
+            lines.append(
+                f"- `{f.exploitability}/100` **{(f.exploitability_tier or '').upper()}** — {f.title}"
+            )
+        lines.append("")
+
+    lines.append(
+        "<sub>Heuristic static analysis — findings are confidence-tiered evidence, "
+        "not proof. See the uploaded SARIF for inline annotations.</sub>"
+    )
+    return "\n".join(lines)
+
+
 def render_console_summary(scan: ScanResult, findings: list[Finding], attack_paths: list[AttackPath]) -> str:
     ordered_findings = sorted(findings, key=lambda finding: (_severity_rank(finding.severity), finding.title))
     lines = [
