@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Route extraction no longer mistakes method calls for routes (#99).**
+  Express-style `x.<verb>("s")` extraction is now gated on an app/router-like
+  receiver or a URL-shaped path (leading `/` or `*`), so `headers.delete
+  ("content-type")`, `params.get("request_uri")`, and config lookups like
+  `settings.get("application.favicon")` are no longer emitted as HTTP routes.
+  On real repos this cut route noise substantially (juice-shop 455 → 273 real
+  routes; a client-only UI 36 → 0). First of the Theme A precision fixes.
+
 ## [0.3.2] - 2026-07-05
 
 Patch release — precision fixes surfaced by real-world testing against Apple's

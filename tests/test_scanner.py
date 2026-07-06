@@ -823,3 +823,34 @@ def test_real_high_entropy_secret_still_flagged(tmp_path: Path) -> None:
     )
     result = scan_repo(tmp_path)
     assert any(s.kind == "high_entropy" for s in result.secret_hints)
+
+
+def test_route_extraction_ignores_non_router_method_calls(tmp_path: Path) -> None:
+    """`x.get("s")` on a non-router receiver with a non-URL string is not a
+    route — `headers.delete`, `params.get`, config lookups (#99)."""
+    (tmp_path / "util.js").write_text(
+        "const ct = headers.delete('content-type')\n"
+        "const uri = params.get('request_uri')\n"
+        "const fav = settings.get('application.favicon')\n"
+        "const cached = cache.get('user:42')\n",
+        encoding="utf-8",
+    )
+    result = scan_repo(tmp_path)
+    assert result.routes == []
+
+
+def test_route_extraction_keeps_real_routes(tmp_path: Path) -> None:
+    (tmp_path / "api.js").write_text(
+        "const app = express()\n"
+        "app.get('/users', listUsers)\n"          # leading slash
+        "router.post('/orders', createOrder)\n"   # router receiver
+        "userRouter.delete('/u/:id', removeUser)\n"  # *Router receiver
+        "app.all('*', catchAll)\n",               # wildcard
+        encoding="utf-8",
+    )
+    result = scan_repo(tmp_path)
+    got = {(r.method, r.path) for r in result.routes}
+    assert ("GET", "/users") in got
+    assert ("POST", "/orders") in got
+    assert ("DELETE", "/u/:id") in got
+    assert ("ANY", "/*") in got
