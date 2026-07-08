@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-08
+
+Patch release enabling the macOS GUI front-end.
+
 ### Added
 
 - `--progress-format {auto,json,none}` on `analyze`. `json` emits versioned
   newline-delimited JSON progress events (`begin`/`advance`/`stage`/`done`) to
-  stderr for non-TTY front-ends — the foundation for the forthcoming macOS GUI
+  stderr for non-TTY front-ends — the foundation for the macOS GUI
   (`mlaify/AttackMap-mac`). `auto` preserves the existing TTY bar; `--no-progress`
   is equivalent to `none`. See `docs/macos-gui-plan.md`.
 
