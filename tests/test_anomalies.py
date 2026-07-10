@@ -369,3 +369,29 @@ def test_auth_outlier_becomes_tagged_finding(tmp_path: Path) -> None:
     assert auth.severity == "high"
     assert auth.attack_techniques
     assert any("/api/users/export" in e for e in auth.evidence)
+
+
+def test_progress_reported_per_cohort(tmp_path: Path) -> None:
+    """find_anomalies drives a determinate begin/advance over cohorts (#status)."""
+    import io
+    import json
+
+    from attackmap.progress import JsonScanProgress
+
+    scan = _scan_with_routes(
+        tmp_path,
+        "views.py",
+        _AUTH_COHORT,
+        [
+            ("/api/users", "GET", '"/api/users")'),
+            ("/api/users/<id>", "GET", '"/api/users/<id>")'),
+            ("/api/users/export", "GET", '"/api/users/export")'),
+        ],
+    )
+    stream = io.StringIO()
+    find_anomalies(scan, progress=JsonScanProgress(stream=stream, min_interval=0.0))
+    events = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    begin = next(e for e in events if e["event"] == "begin")
+    assert begin["label"] == "Anomaly / outlier detection"
+    assert begin["total"] >= 1
+    assert any(e["event"] == "advance" for e in events)

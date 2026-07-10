@@ -36,9 +36,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .models import Anomaly, Route, ScanResult
 from .srcpaths import is_test_file
+
+if TYPE_CHECKING:
+    from .progress import JsonScanProgress, ScanProgress
+
+    _Progress = ScanProgress | JsonScanProgress
 
 
 @dataclass
@@ -106,8 +112,17 @@ _MIN_GROUP = 3
 _SCAFFOLD_RE = re.compile(r"^(?:api|rest|graphql|gql|v\d+(?:beta\d*|alpha\d*)?)$", re.IGNORECASE)
 
 
-def find_anomalies(scan: ScanResult, root: str | Path | None = None) -> list[Anomaly]:
-    """Return within-repo consistency outliers for the routes in ``scan``."""
+def find_anomalies(
+    scan: ScanResult,
+    root: str | Path | None = None,
+    progress: "_Progress | None" = None,
+) -> list[Anomaly]:
+    """Return within-repo consistency outliers for the routes in ``scan``.
+
+    On a large route surface the per-cohort source-window reads dominate this
+    pass, so when a ``progress`` reporter is supplied it drives a determinate
+    bar over the cohorts (rather than an open-ended spinner).
+    """
     root_path = Path(root or scan.root).resolve()
 
     routes = [r for r in scan.routes if not is_test_file(r.file)]
@@ -129,8 +144,13 @@ def find_anomalies(scan: ScanResult, root: str | Path | None = None) -> list[Ano
 
     ctx = _SignalCtx(root_path, line_cache, file_route_lines)
 
+    if progress is not None:
+        progress.begin(len(groups), "Anomaly / outlier detection")
+
     out: list[Anomaly] = []
     for key, members in groups.items():
+        if progress is not None:
+            progress.advance(key)
         if len(members) < _MIN_GROUP:
             continue
         if not _is_route_like_cohort(key, members):
