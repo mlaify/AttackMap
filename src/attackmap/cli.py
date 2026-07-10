@@ -160,7 +160,11 @@ def analyze(
     scan = analyze_repository(repo_path, analyzers=active_analyzers, progress=scan_progress)
     if cve and scan.dependencies:
         typer.echo(f"Checking {len(scan.dependencies)} dependencies against OSV.dev…")
-        vulns, cve_summary = query_vulnerabilities(scan.dependencies)
+        scan_progress.stage(f"Checking {len(scan.dependencies)} dependencies against OSV.dev")
+        try:
+            vulns, cve_summary = query_vulnerabilities(scan.dependencies)
+        finally:
+            scan_progress.done()
         scan.vulnerabilities = vulns
         typer.echo(
             f"CVE lookup: {len(vulns)} vulnerabilit"
@@ -257,15 +261,19 @@ def analyze(
             typer.echo(
                 f"Generating narrative review via Claude (backend={llm_backend}, may take a minute)..."
             )
-            result = generate_llm_review(
-                scan,
-                attack_surfaces,
-                findings,
-                attack_paths,
-                model=llm_model,
-                effort=effort_value,  # type: ignore[arg-type]
-                backend=llm_backend,  # type: ignore[arg-type]
-            )
+            scan_progress.stage(f"Claude is writing the defensive review (backend={llm_backend})")
+            try:
+                result = generate_llm_review(
+                    scan,
+                    attack_surfaces,
+                    findings,
+                    attack_paths,
+                    model=llm_model,
+                    effort=effort_value,  # type: ignore[arg-type]
+                    backend=llm_backend,  # type: ignore[arg-type]
+                )
+            finally:
+                scan_progress.done()
         except LlmReviewError as exc:
             typer.echo(f"LLM review skipped: {exc}", err=True)
         else:
@@ -307,16 +315,23 @@ def analyze(
                 f"Hunting for vulnerability hypotheses via Claude "
                 f"({'adjudicated against source, ' if verify else ''}backend={llm_backend}, may take a minute)..."
             )
-            hunt_result = generate_llm_review(
-                scan,
-                attack_surfaces,
-                findings,
-                attack_paths,
-                model=llm_model,
-                effort=hunt_effort_value,  # type: ignore[arg-type]
-                backend=llm_backend,  # type: ignore[arg-type]
-                mode=hunt_mode,  # type: ignore[arg-type]
+            scan_progress.stage(
+                f"Claude is hunting exploit-chain hypotheses"
+                f"{' + verifying against source' if verify else ''} (backend={llm_backend})"
             )
+            try:
+                hunt_result = generate_llm_review(
+                    scan,
+                    attack_surfaces,
+                    findings,
+                    attack_paths,
+                    model=llm_model,
+                    effort=hunt_effort_value,  # type: ignore[arg-type]
+                    backend=llm_backend,  # type: ignore[arg-type]
+                    mode=hunt_mode,  # type: ignore[arg-type]
+                )
+            finally:
+                scan_progress.done()
         except LlmReviewError as exc:
             typer.echo(f"Vulnerability hunt skipped: {exc}", err=True)
         else:
@@ -359,16 +374,20 @@ def analyze(
             typer.echo(
                 f"Generating remediation suggestions via Claude (backend={llm_backend}, may take a minute)..."
             )
-            rem_result = generate_llm_review(
-                scan,
-                attack_surfaces,
-                findings,
-                attack_paths,
-                model=llm_model,
-                effort=rem_effort_value,  # type: ignore[arg-type]
-                backend=llm_backend,  # type: ignore[arg-type]
-                mode="remediate",
-            )
+            scan_progress.stage(f"Claude is drafting remediation suggestions (backend={llm_backend})")
+            try:
+                rem_result = generate_llm_review(
+                    scan,
+                    attack_surfaces,
+                    findings,
+                    attack_paths,
+                    model=llm_model,
+                    effort=rem_effort_value,  # type: ignore[arg-type]
+                    backend=llm_backend,  # type: ignore[arg-type]
+                    mode="remediate",
+                )
+            finally:
+                scan_progress.done()
         except LlmReviewError as exc:
             typer.echo(f"Remediation skipped: {exc}", err=True)
         else:
