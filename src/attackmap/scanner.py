@@ -736,10 +736,9 @@ def scan_repo(
         progress.stage("Authorization (BOLA/IDOR)")
     result.authz_candidates = analyze_authz(result, root_path)
     # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
-    # Runs last so the full route list is assembled into cohorts.
-    if progress is not None:
-        progress.stage("Anomaly / outlier detection")
-    result.anomalies = find_anomalies(result, root_path)
+    # Runs last so the full route list is assembled into cohorts. It drives its
+    # own determinate per-cohort progress (the slow tail on big route surfaces).
+    result.anomalies = find_anomalies(result, root_path, progress=progress)
     if progress is not None:
         progress.done()
     return result
