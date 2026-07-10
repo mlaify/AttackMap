@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-08
+
+Progress/status polish so no phase runs silently — motivated by the macOS GUI.
+
+### Changed
+
+- **Anomaly / outlier pass now reports determinate progress (#127).** The slow
+  tail on large route surfaces drove only an indeterminate spinner; it now
+  advances a real bar over the route cohorts (TTY bar + ETA, and determinate
+  progress on the `--progress-format json` stream).
+- **Live status for the CVE lookup and all LLM phases (#128).** `--cve` and
+  every LLM mode (`--llm` / `--hunt` / `--hunt --verify` / `--remediate`)
+  previously blocked silently — an LLM call can run for minutes. Each now shows
+  an animated spinner + elapsed timer on the TTY (e.g. "Claude is writing the
+  defensive review… 0:42") and emits a phase `stage` event the GUI renders with
+  a live timer.
+
 ## [0.4.1] - 2026-07-08
 
 Patch release enabling the macOS GUI front-end.
