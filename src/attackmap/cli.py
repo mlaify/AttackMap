@@ -449,8 +449,32 @@ def analyze(
 
 
 @app.command("modules")
-def modules() -> None:
+def modules(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the installed analyzer modules as a JSON array "
+        "(name/display_name/description/scope/ecosystems/enabled_by_default). "
+        "Network-free — the remote module-repository section is omitted. "
+        "Intended for tool / GUI front-ends that offer analyzer selection.",
+    ),
+) -> None:
     available_modules = get_available_modules()
+    if json_output:
+        payload = [
+            {
+                "name": meta.name,
+                "display_name": meta.display_name or meta.name,
+                "description": meta.description,
+                "scope": meta.scope,
+                "ecosystems": list(meta.ecosystems),
+                "enabled_by_default": meta.enabled_by_default,
+            }
+            for meta in available_modules
+        ]
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
     if not available_modules:
         typer.echo("No analyzer modules are currently available.")
     else:
