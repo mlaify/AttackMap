@@ -15,11 +15,45 @@ want structural analysis can extend on top; this layer stays regex-only.
 
 from __future__ import annotations
 
+import bisect
 import re
 from pathlib import Path
 
 from .models import DatabaseHint, ExternalCall, ScanResult, SecretHint
-from .scanner import _line_of, _line_snippet
+from .scanner import _line_snippet
+
+# Config files larger than this are skipped — at that size they're invariably
+# generated (lock files, minified bundles, or AttackMap's own JSON reports)
+# rather than hand-written config, and scanning multi-megabyte text for URL /
+# secret regexes is pointlessly slow.
+_MAX_CONFIG_BYTES = 5_000_000
+
+
+class _LineIndex:
+    """O(log n) line-number lookups for a file's text.
+
+    `scanner._line_of` counts newlines from the start on every call — O(n) each,
+    which degrades to O(n^2) when a large file yields many matches (the cause of
+    a scan hang on multi-megabyte JSON). Precomputing the line-start offsets once
+    and binary-searching keeps extraction linear.
+    """
+
+    __slots__ = ("_starts",)
+
+    def __init__(self, content: str) -> None:
+        starts = [0]
+        find = content.find
+        idx = find("\n")
+        while idx != -1:
+            starts.append(idx + 1)
+            idx = find("\n", idx + 1)
+        self._starts = starts
+
+    def line_of(self, offset: int) -> int:
+        """1-indexed line number for a character offset."""
+        if offset <= 0:
+            return 1
+        return bisect.bisect_right(self._starts, offset)
 
 
 CONFIG_SUFFIXES = {".yaml", ".yml", ".toml", ".json", ".ini", ".cfg", ".env"}
@@ -48,6 +82,8 @@ CONFIG_EXCLUDE_FILENAMES = frozenset({
 _SKIP_DIRS = frozenset({
     "node_modules",
     ".git",
+    ".attackmap-gui",  # the macOS GUI's report output dir — never scan our own output
+    ".attackmap",      # CLI cache / output dir
     ".venv",
     "venv",
     "dist",
@@ -183,6 +219,8 @@ def scan_config_repo(root: str | Path) -> ScanResult:
         if not should_scan_config_file(path):
             continue
         try:
+            if path.stat().st_size > _MAX_CONFIG_BYTES:
+                continue
             content = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
@@ -196,6 +234,7 @@ def scan_config_repo(root: str | Path) -> ScanResult:
 
 def _extract_db_urls(content: str, relative: str, result: ScanResult) -> None:
     seen: set[str] = {(h.kind, h.file) for h in result.databases if h.file == relative}
+    index = _LineIndex(content)
     for match in _DB_URL_PATTERN.finditer(content):
         scheme = match.group("scheme").lower()
         kind = _DB_SCHEME_TO_KIND.get(scheme, scheme)
@@ -205,7 +244,7 @@ def _extract_db_urls(content: str, relative: str, result: ScanResult) -> None:
                 DatabaseHint(
                     kind=kind,
                     file=relative,
-                    line=_line_of(content, match.start()),
+                    line=index.line_of(match.start()),
                     evidence_text=_line_snippet(content, match.start()),
                 )
             )
@@ -221,7 +260,7 @@ def _extract_db_urls(content: str, relative: str, result: ScanResult) -> None:
                     SecretHint(
                         name=_redact(password),
                         file=relative,
-                        line=_line_of(content, match.start()),
+                        line=index.line_of(match.start()),
                         evidence_text=_line_snippet(content, match.start()),
                         confidence=1.0,
                         kind=f"{kind}_url_password",
@@ -231,6 +270,7 @@ def _extract_db_urls(content: str, relative: str, result: ScanResult) -> None:
 
 def _extract_http_targets(content: str, relative: str, result: ScanResult) -> None:
     seen_targets = {(c.target, c.file) for c in result.external_calls if c.file == relative}
+    index = _LineIndex(content)
     for match in _HTTP_URL_PATTERN.finditer(content):
         target = match.group(0)
         # Trim trailing punctuation that looks like URL end
@@ -244,7 +284,7 @@ def _extract_http_targets(content: str, relative: str, result: ScanResult) -> No
             ExternalCall(
                 target=target,
                 file=relative,
-                line=_line_of(content, match.start()),
+                line=index.line_of(match.start()),
                 evidence_text=_line_snippet(content, match.start()),
             )
         )
@@ -258,12 +298,13 @@ def _extract_host(url: str) -> str | None:
 
 def _extract_secret_kvs(content: str, relative: str, result: ScanResult) -> None:
     seen: set[tuple[str, int]] = {(h.name, h.line or 0) for h in result.secret_hints if h.file == relative}
+    index = _LineIndex(content)
     for match in _SECRET_KEY_RE.finditer(content):
         key = match.group("key")
         value = match.group("value") or match.group("bare") or ""
         if not value or _is_placeholder(value):
             continue
-        line = _line_of(content, match.start())
+        line = index.line_of(match.start())
         # Store `key` as the SecretHint.name so consumers see WHICH secret
         # was leaked (auth vs stripe vs db). Value itself is redacted into
         # evidence_text via the same helper hardcoded-secret detection uses.

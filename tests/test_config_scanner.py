@@ -263,3 +263,43 @@ def test_analyze_repository_preserves_provenance_on_config_signals(tmp_path: Pat
     config_dbs = [d for d in result.databases if d.file == "app.yaml"]
     assert config_dbs
     assert config_dbs[0].source_analyzer == "config"
+
+
+# ---------------------------------------------------------------------------
+# Large-file / feedback-loop hang regression (config_scanner _line_of O(n^2))
+# ---------------------------------------------------------------------------
+
+import attackmap.config_scanner as _cfg
+from attackmap.config_scanner import _LineIndex
+
+
+def test_line_index_matches_naive_line_numbers() -> None:
+    content = "a\nbb\n\nccc\nd"
+    expected = {0: 1, 1: 1, 2: 2, 4: 2, 5: 3, 6: 4, 9: 4, 10: 5}
+    index = _LineIndex(content)
+    for offset, line in expected.items():
+        assert index.line_of(offset) == line, (offset, index.line_of(offset))
+    assert index.line_of(-5) == 1
+
+
+def test_skips_attackmap_output_dir(tmp_path: Path) -> None:
+    # AttackMap writes reports into .attackmap-gui/ inside scanned repos; scanning
+    # them back is a feedback loop that hung on the multi-MB report (#gui-hang).
+    (tmp_path / "app.json").write_text('{"api": "https://api.real-service.com/v1"}')
+    reports = tmp_path / ".attackmap-gui" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "attackmap-report.json").write_text('{"u": "https://leaked.internal-host.net/x"}')
+
+    files = {c.file for c in scan_config_repo(tmp_path).external_calls}
+    assert not any(".attackmap-gui" in f for f in files)
+    assert any("app.json" in f for f in files)
+
+
+def test_skips_oversized_config_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(_cfg, "_MAX_CONFIG_BYTES", 200)
+    (tmp_path / "big.json").write_text('{"u":"https://api.real-service.com/"}' + " " * 500)
+    (tmp_path / "small.json").write_text('{"u":"https://api.real-service.com/"}')
+
+    files = {c.file for c in scan_config_repo(tmp_path).external_calls}
+    assert "big.json" not in files
+    assert "small.json" in files

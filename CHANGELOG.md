@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-11
+
+### Fixed
+
+- **Scan hang on large/generated files (config scanner).** `_extract_*` called
+  `_line_of` — which counts newlines from the start on every match — once per
+  match, so a large file yielded O(n²) work and effectively hung the scan. Most
+  visibly, re-scanning a repo the macOS GUI had scanned before choked on
+  AttackMap's own multi-MB JSON reports under `.attackmap-gui/`. Fixed with a
+  precomputed line index (O(log n) lookups), a 5 MB config-file size cap, and by
+  adding `.attackmap-gui` / `.attackmap` to the skipped directories.
+
 ## [0.4.4] - 2026-07-11
 
 Analyzer selection for tool front-ends (the macOS GUI's Analyzers picker).
