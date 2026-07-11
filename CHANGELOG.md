@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`attackmap modules --json`.** Emits the installed analyzer modules as a JSON
+  array (`name`/`display_name`/`description`/`scope`/`ecosystems`/
+  `enabled_by_default`). Network-free (skips the remote module-repository lookup
+  the human-readable listing does) so tool / GUI front-ends can offer analyzer
+  selection without a GitHub round-trip. Backs the macOS GUI's Analyzers picker.
+
 ## [0.4.3] - 2026-07-11
 
 Choose your LLM: model/reasoning/speed selection, plus an OpenAI/Codex provider
