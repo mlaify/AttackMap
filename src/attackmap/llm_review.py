@@ -48,6 +48,23 @@ FAST_MODE_BETA = "fast-mode-2026-02-01"
 FAST_CAPABLE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-4-7"})
 CLAUDE_CLI_TIMEOUT_SECONDS = 600
 
+# OpenAI / Codex provider. `gpt-5-codex` is the code-optimized GPT-5 (Responses
+# API only) and the safe default; any other model ID is passed through verbatim
+# so we never have to chase OpenAI's point-release churn. Reasoning effort maps
+# onto the Responses API's `reasoning.effort` — OpenAI exposes low/medium/high,
+# so our extended tiers (xhigh/max) clamp down to "high".
+OPENAI_DEFAULT_MODEL = "gpt-5-codex"
+OPENAI_API_TIMEOUT_SECONDS = 900
+CODEX_CLI_TIMEOUT_SECONDS = 900
+OPENAI_EFFORT_MAP = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+    "max": "high",
+}
+
+LlmProvider = Literal["claude", "openai"]
 LlmBackend = Literal["auto", "api", "cli"]
 
 
@@ -301,7 +318,210 @@ def _run_via_claude_cli(
     )
 
 
+# ---------- OpenAI SDK backend (Responses API) ----------
+
+
+def _resolve_openai_client(api_key: str | None, client: Any | None) -> Any:
+    if client is not None:
+        return client
+    try:
+        import openai
+    except ImportError as exc:
+        raise LlmReviewError(
+            "The openai SDK is not installed. Install with `pip install attackmap[llm]` "
+            "to use the OpenAI API backend, or install the `codex` CLI for the CLI backend."
+        ) from exc
+
+    resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+    if not resolved_key:
+        raise LlmReviewError(
+            "No OpenAI API credentials found. Set OPENAI_API_KEY, or install the `codex` "
+            "CLI and run `codex login` to use --llm-backend cli."
+        )
+    return openai.OpenAI(api_key=resolved_key, timeout=OPENAI_API_TIMEOUT_SECONDS)
+
+
+def _openai_output_text(response: Any) -> str:
+    text = getattr(response, "output_text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    # Fallback: walk output items → content blocks → text, for SDK/response
+    # shapes where the `output_text` convenience isn't populated.
+    parts: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        for block in getattr(item, "content", None) or []:
+            value = getattr(block, "text", None)
+            if isinstance(value, str) and value:
+                parts.append(value)
+    return "\n".join(parts).strip()
+
+
+def _openai_usage(usage: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for field in ("input_tokens", "output_tokens"):
+        value = getattr(usage, field, None)
+        if isinstance(value, int):
+            out[field] = value
+    return out
+
+
+def _run_via_openai_sdk(
+    rendered_system: str,
+    rendered_user: str,
+    *,
+    model: str,
+    effort: str,
+    max_tokens: int,
+    api_key: str | None,
+    client: Any | None,
+) -> LlmReviewResult:
+    oi = _resolve_openai_client(api_key, client)
+    reasoning_effort = OPENAI_EFFORT_MAP.get(effort, "high")
+
+    try:
+        response = oi.responses.create(
+            model=model,
+            instructions=rendered_system,
+            input=rendered_user,
+            reasoning={"effort": reasoning_effort},
+            max_output_tokens=max_tokens,
+        )
+    except LlmReviewError:
+        raise
+    except Exception as exc:  # pragma: no cover - surface SDK errors verbatim
+        raise LlmReviewError(f"OpenAI API call failed: {exc}") from exc
+
+    markdown = _openai_output_text(response)
+    if not markdown:
+        raise LlmReviewError("OpenAI returned no text content for the review.")
+
+    status = getattr(response, "status", None)
+    return LlmReviewResult(
+        markdown=markdown,
+        model=str(getattr(response, "model", None) or model),
+        stop_reason=status if isinstance(status, str) else None,
+        usage=_openai_usage(getattr(response, "usage", None)),
+        backend="api",
+    )
+
+
+# ---------- Codex CLI backend ----------
+
+
+def _codex_cli_available() -> bool:
+    return shutil.which("codex") is not None
+
+
+def _run_via_codex_cli(
+    rendered_system: str,
+    rendered_user: str,
+    *,
+    model: str,
+    effort: str,
+    runner: Any | None = None,
+) -> LlmReviewResult:
+    """Invoke `codex exec` non-interactively and return the final message.
+
+    `codex exec` treats the positional prompt as the instruction and piped
+    stdin as additional context, so we pass the rendered system prompt as the
+    argument and stream the (large) evidence pack in on stdin. It prints only
+    the final agent message to stdout. Runs read-only so it can never mutate the
+    working tree, and `--skip-git-repo-check` lets it run outside a git repo.
+
+    The `runner` argument is only used by tests to inject a fake subprocess
+    runner; in production we go straight to subprocess.run.
+    """
+    if runner is None and not _codex_cli_available():
+        raise LlmReviewError(
+            "`codex` CLI was not found on PATH. Install it (npm install -g @openai/codex) "
+            "and run `codex login`, or set OPENAI_API_KEY to use --llm-backend api."
+        )
+
+    reasoning_effort = OPENAI_EFFORT_MAP.get(effort, "high")
+    cmd = [
+        "codex",
+        "exec",
+        "--model",
+        model,
+        "-c",
+        f'model_reasoning_effort="{reasoning_effort}"',
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        rendered_system,
+    ]
+
+    try:
+        if runner is None:
+            completed = subprocess.run(
+                cmd,
+                input=rendered_user,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=CODEX_CLI_TIMEOUT_SECONDS,
+            )
+        else:
+            completed = runner(cmd, rendered_user)
+    except FileNotFoundError as exc:
+        raise LlmReviewError("`codex` CLI was not found on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise LlmReviewError(
+            f"`codex` CLI did not respond within {CODEX_CLI_TIMEOUT_SECONDS}s."
+        ) from exc
+
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    if completed.returncode != 0:
+        hint = ""
+        low = stderr.lower()
+        if "not logged in" in low or "login" in low or "auth" in low:
+            hint = (
+                " Run `codex login`, or use --llm-backend api with OPENAI_API_KEY set."
+            )
+        raise LlmReviewError(
+            f"`codex` CLI exited with status {completed.returncode}: "
+            f"{stderr or '<no stderr>'}.{hint}"
+        )
+    if not stdout:
+        raise LlmReviewError("`codex` CLI produced no output.")
+
+    return LlmReviewResult(
+        markdown=stdout,
+        model=model,
+        stop_reason=None,
+        usage={},
+        backend="cli",
+    )
+
+
 # ---------- Public entry point ----------
+
+
+def _resolve_openai_backend(
+    backend: LlmBackend,
+    *,
+    api_key: str | None,
+    client: Any | None,
+    codex_runner: Any | None,
+) -> Literal["api", "cli"]:
+    if backend == "api":
+        return "api"
+    if backend == "cli":
+        if codex_runner is None and not _codex_cli_available():
+            raise LlmReviewError(
+                "`--llm-backend cli` was requested but the `codex` CLI is not on PATH."
+            )
+        return "cli"
+    # auto
+    if client is not None or api_key or os.environ.get("OPENAI_API_KEY"):
+        return "api"
+    if _codex_cli_available():
+        return "cli"
+    raise LlmReviewError(
+        "No OpenAI backend available. Set OPENAI_API_KEY, or install the `codex` "
+        "CLI and run `codex login`."
+    )
 
 
 def _resolve_backend(
@@ -346,17 +566,22 @@ def generate_llm_review(
     cli_runner: Any | None = None,
     mode: Literal["review", "hunt", "hunt_verify", "remediate"] = "review",
     speed: Literal["standard", "fast"] = "standard",
+    provider: LlmProvider = "claude",
+    openai_client: Any | None = None,
+    codex_runner: Any | None = None,
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
-    vulnerability hypotheses (#80) — by calling Claude.
+    vulnerability hypotheses (#80) — by calling an LLM.
 
-    Resolves which backend to use (API SDK or `claude` CLI) based on available
-    auth, then runs the appropriate prompt pack through it. Streams the SDK path
-    so we never hit HTTP timeouts on long reviews. The CLI path runs synchronously
-    via `claude -p --output-format=json`. Both modes share the same evidence
-    grounding contract (every claim cites evidence IDs).
+    ``provider`` selects Claude (default) or OpenAI/Codex. For each provider,
+    the backend resolves to an API SDK or a subscription CLI based on available
+    auth, then runs the appropriate prompt pack through it. The Claude SDK path
+    streams so we never hit HTTP timeouts on long reviews; the `claude` CLI path
+    runs `claude -p --output-format=json`. The OpenAI path uses the Responses
+    API; the `codex` CLI path runs `codex exec`. All modes share the same
+    evidence grounding contract (every claim cites evidence IDs). ``speed`` (Fast
+    mode) is Claude/API-only and ignored for OpenAI.
     """
-    resolved_model = model or os.environ.get("ATTACKMAP_LLM_MODEL") or DEFAULT_MODEL
     resolved_effort = effort or DEFAULT_EFFORT
 
     render = {
@@ -365,6 +590,36 @@ def generate_llm_review(
         "remediate": render_remediation_prompts,
     }.get(mode, render_review_prompts)
     rendered = render(scan, attack_surfaces, findings, attack_paths)
+
+    if provider == "openai":
+        resolved_model = (
+            model or os.environ.get("ATTACKMAP_OPENAI_MODEL") or OPENAI_DEFAULT_MODEL
+        )
+        if backend == "cli" and codex_runner is not None:
+            chosen: Literal["api", "cli"] = "cli"
+        else:
+            chosen = _resolve_openai_backend(
+                backend, api_key=api_key, client=openai_client, codex_runner=codex_runner
+            )
+        if chosen == "api":
+            return _run_via_openai_sdk(
+                rendered.system,
+                rendered.user,
+                model=resolved_model,
+                effort=resolved_effort,
+                max_tokens=max_tokens,
+                api_key=api_key,
+                client=openai_client,
+            )
+        return _run_via_codex_cli(
+            rendered.system,
+            rendered.user,
+            model=resolved_model,
+            effort=resolved_effort,
+            runner=codex_runner,
+        )
+
+    resolved_model = model or os.environ.get("ATTACKMAP_LLM_MODEL") or DEFAULT_MODEL
     if backend == "cli" and cli_runner is not None:
         chosen_backend: Literal["api", "cli"] = "cli"
     else:
@@ -394,7 +649,9 @@ __all__ = [
     "LlmReviewError",
     "LlmReviewResult",
     "LlmBackend",
+    "LlmProvider",
     "DEFAULT_MODEL",
+    "OPENAI_DEFAULT_MODEL",
     "DEFAULT_EFFORT",
     "DEFAULT_MAX_TOKENS",
 ]

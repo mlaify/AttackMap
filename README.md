@@ -46,6 +46,12 @@ to use your existing Pro/Max subscription:
 attackmap analyze /path/to/repo --output reports --llm
 ```
 
+Prefer OpenAI? Add `--llm-provider openai` to run the same review/hunt/remediate
+phases on OpenAI. Set `OPENAI_API_KEY` for the Responses API, or log in once with
+the [`codex` CLI](https://developers.openai.com/codex) to use your subscription
+(`--llm-backend cli`). Default model is `gpt-5-codex`; `--llm-model` accepts any
+model ID verbatim.
+
 Read `reports/defensive-review.md` (heuristic) and `reports/defensive-review-llm.md`
 (LLM-narrated) side by side.
 
@@ -423,7 +429,9 @@ trust-boundary violations, and more.
 
 **4. LLM narrative review.** With `--llm`, Claude Opus generates a final review
 from the structured evidence pack. The model is forced to cite real
-surface/asset/control IDs, so it can't invent findings.
+surface/asset/control IDs, so it can't invent findings. Add `--llm-provider
+openai` to run the same phase on OpenAI/Codex instead (`gpt-5-codex` by default,
+via `OPENAI_API_KEY` or the `codex` CLI) — the grounding contract is identical.
 
 **5. Vulnerability-hypothesis hunting (`--hunt`).** The honest core of the
 "find the unknown" ask. `attackmap analyze . --hunt` has Claude reason over the
@@ -483,6 +491,8 @@ attackmap analyze <path> --module python --module rust   # only these analyzers
 attackmap analyze <path> --cve           # cross-reference SBOM against OSV.dev
 attackmap analyze <path> --llm           # add LLM narrative (auto-resolve auth)
 attackmap analyze <path> --llm --llm-backend cli         # force Claude CLI
+attackmap analyze <path> --llm --llm-provider openai     # use OpenAI/Codex (OPENAI_API_KEY or `codex` CLI)
+attackmap analyze <path> --llm --llm-provider openai --llm-model gpt-5.5   # any OpenAI model ID, passed through
 attackmap analyze <path> --hunt          # LLM vulnerability-hypothesis hunt (leads to confirm)
 attackmap analyze <path> --hunt --verify # adjudicate each lead vs. source (confirmed/refuted/review)
 attackmap analyze <path> --remediate     # LLM review-first fix suggestions (remediation.md)
