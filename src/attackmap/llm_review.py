@@ -37,9 +37,15 @@ from .review_prompts import (
     render_review_prompts,
 )
 
-DEFAULT_MODEL = "claude-opus-4-7"
+DEFAULT_MODEL = "claude-opus-4-8"
 DEFAULT_EFFORT: Literal["low", "medium", "high", "xhigh", "max"] = "high"
 DEFAULT_MAX_TOKENS = 32000
+
+# Fast mode (2.5x output speed, premium price) is a research-preview beta and
+# only runs on the Opus 4.8 / 4.7 tiers via the API backend — the `claude` CLI
+# backend and other models silently fall back to standard speed.
+FAST_MODE_BETA = "fast-mode-2026-02-01"
+FAST_CAPABLE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-4-7"})
 CLAUDE_CLI_TIMEOUT_SECONDS = 600
 
 LlmBackend = Literal["auto", "api", "cli"]
@@ -121,6 +127,7 @@ def _run_via_sdk(
     max_tokens: int,
     api_key: str | None,
     client: Any | None,
+    speed: str = "standard",
 ) -> LlmReviewResult:
     sdk_client, _ = _resolve_sdk_client(api_key, client)
 
@@ -135,8 +142,17 @@ def _run_via_sdk(
         "output_config": {"effort": effort},
     }
 
+    # Fast mode needs the beta endpoint + flag + top-level speed, and only on
+    # the Opus 4.8/4.7 tiers. Anything else runs at standard speed.
+    fast = speed == "fast" and model in FAST_CAPABLE_MODELS
+    messages_api = sdk_client.messages
+    if fast:
+        request_kwargs["speed"] = "fast"
+        request_kwargs["betas"] = [FAST_MODE_BETA]
+        messages_api = sdk_client.beta.messages
+
     try:
-        with sdk_client.messages.stream(**request_kwargs) as stream:
+        with messages_api.stream(**request_kwargs) as stream:
             final_message = stream.get_final_message()
     except LlmReviewError:
         raise
@@ -329,6 +345,7 @@ def generate_llm_review(
     backend: LlmBackend = "auto",
     cli_runner: Any | None = None,
     mode: Literal["review", "hunt", "hunt_verify", "remediate"] = "review",
+    speed: Literal["standard", "fast"] = "standard",
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling Claude.
@@ -362,6 +379,7 @@ def generate_llm_review(
             max_tokens=max_tokens,
             api_key=api_key,
             client=client,
+            speed=speed,
         )
     return _run_via_claude_cli(
         rendered.system,
