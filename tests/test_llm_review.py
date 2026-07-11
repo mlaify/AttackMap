@@ -424,6 +424,35 @@ def test_auto_backend_falls_back_to_cli_when_no_creds(monkeypatch) -> None:
     assert result.backend == "cli"
 
 
+def test_auto_backend_falls_back_to_cli_when_key_set_but_sdk_missing(monkeypatch) -> None:
+    # Homebrew installs attackmap without the anthropic SDK. A key set in that
+    # environment must fall back to the `claude` CLI, not error.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr("attackmap.llm_review._anthropic_sdk_available", lambda: False)
+    monkeypatch.setattr("attackmap.llm_review._claude_cli_available", lambda: True)
+
+    payload = {"type": "result", "is_error": False, "result": "hi"}
+    runner, _ = _make_cli_runner(json.dumps(payload))
+
+    result = generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [], backend="auto", cli_runner=runner
+    )
+    assert result.backend == "cli"
+
+
+def test_openai_auto_falls_back_to_codex_when_key_set_but_sdk_missing(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    monkeypatch.setattr("attackmap.llm_review._openai_sdk_available", lambda: False)
+    monkeypatch.setattr("attackmap.llm_review._codex_cli_available", lambda: True)
+    runner, _ = _make_cli_runner("hi")
+
+    result = generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        provider="openai", backend="auto", codex_runner=runner,
+    )
+    assert result.backend == "cli"
+
+
 def test_auto_backend_raises_when_no_creds_and_no_cli(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)

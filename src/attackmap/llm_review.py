@@ -197,6 +197,14 @@ def _claude_cli_available() -> bool:
     return shutil.which("claude") is not None
 
 
+def _anthropic_sdk_available() -> bool:
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _run_via_claude_cli(
     rendered_system: str,
     rendered_user: str,
@@ -412,6 +420,14 @@ def _codex_cli_available() -> bool:
     return shutil.which("codex") is not None
 
 
+def _openai_sdk_available() -> bool:
+    try:
+        import openai  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _run_via_codex_cli(
     rendered_system: str,
     rendered_user: str,
@@ -514,10 +530,18 @@ def _resolve_openai_backend(
             )
         return "cli"
     # auto
-    if client is not None or api_key or os.environ.get("OPENAI_API_KEY"):
+    if client is not None:
+        return "api"
+    has_key = bool(api_key or os.environ.get("OPENAI_API_KEY"))
+    # Prefer the API backend only when the openai SDK is importable; otherwise
+    # fall back to the `codex` CLI (needs no SDK) so a key set against an
+    # SDK-less install still works via subscription auth.
+    if has_key and _openai_sdk_available():
         return "api"
     if _codex_cli_available():
         return "cli"
+    if has_key:
+        return "api"  # no SDK and no CLI — surface the actionable SDK-missing error
     raise LlmReviewError(
         "No OpenAI backend available. Set OPENAI_API_KEY, or install the `codex` "
         "CLI and run `codex login`."
@@ -539,12 +563,23 @@ def _resolve_backend(
             )
         return "cli"
     # auto
-    if client is not None or api_key:
+    if client is not None:
         return "api"
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+    has_key = bool(
+        api_key
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    )
+    # Prefer the API backend only when the SDK is actually importable. Otherwise
+    # fall back to the `claude` CLI (needs no SDK), so a key set against an
+    # SDK-less install (e.g. Homebrew, which doesn't vendor `attackmap[llm]`)
+    # still works via subscription auth instead of erroring.
+    if has_key and _anthropic_sdk_available():
         return "api"
     if _claude_cli_available():
         return "cli"
+    if has_key:
+        return "api"  # no SDK and no CLI — surface the actionable SDK-missing error
     raise LlmReviewError(
         "No LLM backend available. Set ANTHROPIC_API_KEY, set ANTHROPIC_AUTH_TOKEN, "
         "or install the `claude` CLI and run `claude login`."
