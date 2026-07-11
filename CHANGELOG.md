@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-11
+
+Choose your LLM: model/reasoning/speed selection, plus an OpenAI/Codex provider
+alongside Claude. Motivated by the macOS GUI's provider + model pickers.
+
 ### Added
 
 - **OpenAI / Codex provider (`--llm-provider {claude,openai}`).** `--llm`,
