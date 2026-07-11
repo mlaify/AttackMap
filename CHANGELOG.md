@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--llm-speed {standard,fast}`.** Fast mode (~2.5× output speed, premium
+  price) for the LLM phases, applied only on Opus 4.8/4.7 via the API backend
+  (other models/backends fall back to standard). Surfaced in the macOS GUI as a
+  per-scan Fast toggle alongside model + reasoning pickers.
+
+### Changed
+
+- **`--llm-model` default bumped `claude-opus-4-7` → `claude-opus-4-8`** (current
+  Opus tier). Help text now lists the verified selectable models
+  (opus-4-8 / fable-5 / sonnet-5 / opus-4-7 / opus-4-6 / sonnet-4-6). `--llm-effort`
+  (low→max) is unchanged; the GUI now exposes model + reasoning as pickers.
+
 ## [0.4.2] - 2026-07-10
 
 Progress/status polish so no phase runs silently — motivated by the macOS GUI.

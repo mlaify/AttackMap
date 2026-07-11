@@ -51,19 +51,27 @@ class _FakeStreamContext:
 
 
 class _FakeMessages:
-    def __init__(self, message: _FakeMessage, captured: dict[str, Any]) -> None:
+    def __init__(self, message: _FakeMessage, captured: dict[str, Any], endpoint: str) -> None:
         self._message = message
         self._captured = captured
+        self._endpoint = endpoint
 
     def stream(self, **kwargs: Any) -> _FakeStreamContext:
         self._captured.update(kwargs)
+        self._captured["endpoint"] = self._endpoint
         return _FakeStreamContext(self._message)
+
+
+class _FakeBeta:
+    def __init__(self, message: _FakeMessage, captured: dict[str, Any]) -> None:
+        self.messages = _FakeMessages(message, captured, endpoint="beta")
 
 
 class _FakeClient:
     def __init__(self, message: _FakeMessage) -> None:
         self.captured: dict[str, Any] = {}
-        self.messages = _FakeMessages(message, self.captured)
+        self.messages = _FakeMessages(message, self.captured, endpoint="standard")
+        self.beta = _FakeBeta(message, self.captured)
 
 
 def _trivial_scan() -> ScanResult:
@@ -158,6 +166,50 @@ def test_generate_llm_review_honors_model_and_effort_overrides() -> None:
     assert captured["model"] == "claude-sonnet-4-6"
     assert captured["output_config"] == {"effort": "xhigh"}
     assert captured["max_tokens"] == 1024
+
+
+def test_default_model_is_opus_4_8() -> None:
+    assert DEFAULT_MODEL == "claude-opus-4-8"
+
+
+def test_fast_mode_uses_beta_endpoint_on_supported_model() -> None:
+    client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
+
+    generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        model="claude-opus-4-8", client=client, speed="fast",
+    )
+
+    captured = client.captured
+    assert captured["endpoint"] == "beta"
+    assert captured["speed"] == "fast"
+    assert captured["betas"] == ["fast-mode-2026-02-01"]
+
+
+def test_fast_mode_falls_back_to_standard_on_unsupported_model() -> None:
+    client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
+
+    generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        model="claude-sonnet-5", client=client, speed="fast",
+    )
+
+    captured = client.captured
+    assert captured["endpoint"] == "standard"
+    assert "speed" not in captured
+    assert "betas" not in captured
+
+
+def test_standard_speed_uses_standard_endpoint() -> None:
+    client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
+
+    generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        model="claude-opus-4-8", client=client,  # speed defaults to standard
+    )
+
+    assert client.captured["endpoint"] == "standard"
+    assert "speed" not in client.captured
 
 
 def test_generate_llm_review_raises_when_no_text_blocks_returned() -> None:

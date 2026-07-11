@@ -72,7 +72,7 @@ def analyze(
     llm_model: str | None = typer.Option(
         None,
         "--llm-model",
-        help="Claude model ID for --llm (defaults to claude-opus-4-7).",
+        help="Claude model ID for --llm (e.g. claude-opus-4-8, claude-fable-5, claude-sonnet-5, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6). Defaults to claude-opus-4-8.",
     ),
     llm_effort: str | None = typer.Option(
         None,
@@ -83,6 +83,11 @@ def analyze(
         "auto",
         "--llm-backend",
         help="Which backend --llm uses: 'auto' (default) tries ANTHROPIC_API_KEY → ANTHROPIC_AUTH_TOKEN → `claude` CLI; 'api' forces the SDK; 'cli' forces the `claude` CLI (uses your `claude login` auth, e.g. Pro/Max subscription).",
+    ),
+    llm_speed: str = typer.Option(
+        "standard",
+        "--llm-speed",
+        help="LLM output speed: 'standard' (default) or 'fast'. Fast mode (~2.5x output speed, premium price) applies only to Opus 4.8/4.7 via the API backend; other models/backends fall back to standard.",
     ),
     hunt: bool = typer.Option(
         False,
@@ -155,6 +160,8 @@ def analyze(
 
     if progress_format not in {"auto", "tty", "json", "none"}:
         raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
+    if llm_speed not in {"standard", "fast"}:
+        raise typer.BadParameter("--llm-speed must be one of: standard, fast.")
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
     scan_progress = create_progress(progress_format, no_progress=no_progress)
     scan = analyze_repository(repo_path, analyzers=active_analyzers, progress=scan_progress)
@@ -271,6 +278,7 @@ def analyze(
                     model=llm_model,
                     effort=effort_value,  # type: ignore[arg-type]
                     backend=llm_backend,  # type: ignore[arg-type]
+                    speed=llm_speed,  # type: ignore[arg-type]
                 )
             finally:
                 scan_progress.done()
@@ -329,6 +337,7 @@ def analyze(
                     effort=hunt_effort_value,  # type: ignore[arg-type]
                     backend=llm_backend,  # type: ignore[arg-type]
                     mode=hunt_mode,  # type: ignore[arg-type]
+                    speed=llm_speed,  # type: ignore[arg-type]
                 )
             finally:
                 scan_progress.done()
@@ -385,6 +394,7 @@ def analyze(
                     effort=rem_effort_value,  # type: ignore[arg-type]
                     backend=llm_backend,  # type: ignore[arg-type]
                     mode="remediate",
+                    speed=llm_speed,  # type: ignore[arg-type]
                 )
             finally:
                 scan_progress.done()
