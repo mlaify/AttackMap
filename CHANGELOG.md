@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAI / Codex provider (`--llm-provider {claude,openai}`).** `--llm`,
+  `--hunt`, and `--remediate` can now run on OpenAI as well as Claude. Mirroring
+  the Claude api/cli split, the OpenAI provider has two backends: `api` (the
+  OpenAI SDK's Responses API, using `OPENAI_API_KEY`) and `cli` (`codex exec`,
+  using your `codex login` subscription — no API key needed). `--llm-backend
+  auto` tries `OPENAI_API_KEY` then the `codex` CLI. The default model is
+  `gpt-5-codex`; `--llm-model` passes any model ID through verbatim (e.g.
+  `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`). `--llm-effort` maps onto the Responses
+  API's reasoning effort (xhigh/max clamp to high); `--llm-speed fast` is
+  Claude-only and ignored for OpenAI. Install with `pip install attackmap[llm]`
+  (now pulls in `openai`) or just have the `codex` CLI on PATH.
 - **`--llm-speed {standard,fast}`.** Fast mode (~2.5× output speed, premium
   price) for the LLM phases, applied only on Opus 4.8/4.7 via the API backend
   (other models/backends fall back to standard). Surfaced in the macOS GUI as a

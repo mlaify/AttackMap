@@ -69,20 +69,25 @@ def analyze(
         "--llm",
         help="Generate a narrative defensive review by calling Claude with the evidence pack. Auth resolves automatically: ANTHROPIC_API_KEY → ANTHROPIC_AUTH_TOKEN → `claude` CLI (subscription auth). Force a backend with --llm-backend.",
     ),
+    llm_provider: str = typer.Option(
+        "claude",
+        "--llm-provider",
+        help="LLM provider for --llm/--hunt/--remediate: 'claude' (default, Anthropic) or 'openai' (OpenAI/Codex).",
+    ),
     llm_model: str | None = typer.Option(
         None,
         "--llm-model",
-        help="Claude model ID for --llm (e.g. claude-opus-4-8, claude-fable-5, claude-sonnet-5, claude-opus-4-7, claude-opus-4-6, claude-sonnet-4-6). Defaults to claude-opus-4-8.",
+        help="Model ID for --llm. Claude provider: e.g. claude-opus-4-8 (default), claude-fable-5, claude-sonnet-5, claude-opus-4-7. OpenAI provider: e.g. gpt-5-codex (default), gpt-5.5, gpt-5.4, gpt-5.4-mini — any model ID is passed through verbatim.",
     ),
     llm_effort: str | None = typer.Option(
         None,
         "--llm-effort",
-        help="Effort for --llm: low|medium|high|xhigh|max. Defaults to high.",
+        help="Effort for --llm: low|medium|high|xhigh|max. Defaults to high. For OpenAI, xhigh/max clamp to high (Responses API reasoning effort tops out at high).",
     ),
     llm_backend: str = typer.Option(
         "auto",
         "--llm-backend",
-        help="Which backend --llm uses: 'auto' (default) tries ANTHROPIC_API_KEY → ANTHROPIC_AUTH_TOKEN → `claude` CLI; 'api' forces the SDK; 'cli' forces the `claude` CLI (uses your `claude login` auth, e.g. Pro/Max subscription).",
+        help="Which backend --llm uses. Claude: 'auto' tries ANTHROPIC_API_KEY → ANTHROPIC_AUTH_TOKEN → `claude` CLI; 'api' forces the SDK; 'cli' forces the `claude` CLI. OpenAI: 'auto' tries OPENAI_API_KEY then the `codex` CLI; 'api' forces the OpenAI SDK; 'cli' forces `codex exec` (your `codex login` subscription).",
     ),
     llm_speed: str = typer.Option(
         "standard",
@@ -162,6 +167,15 @@ def analyze(
         raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
     if llm_speed not in {"standard", "fast"}:
         raise typer.BadParameter("--llm-speed must be one of: standard, fast.")
+    if llm_provider not in {"claude", "openai"}:
+        raise typer.BadParameter("--llm-provider must be one of: claude, openai.")
+    # Provider-aware label for the "via X" progress/echo strings.
+    llm_display = "Codex" if llm_provider == "openai" else "Claude"
+    if llm_provider == "openai" and llm_speed == "fast" and (llm or hunt or remediate):
+        typer.echo(
+            "Note: --llm-speed fast is Claude-only; ignoring it for the OpenAI provider.",
+            err=True,
+        )
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
     scan_progress = create_progress(progress_format, no_progress=no_progress)
     scan = analyze_repository(repo_path, analyzers=active_analyzers, progress=scan_progress)
@@ -266,9 +280,11 @@ def analyze(
 
             typer.echo("")
             typer.echo(
-                f"Generating narrative review via Claude (backend={llm_backend}, may take a minute)..."
+                f"Generating narrative review via {llm_display} (backend={llm_backend}, may take a minute)..."
             )
-            scan_progress.stage(f"Claude is writing the defensive review (backend={llm_backend})")
+            scan_progress.stage(
+                f"{llm_display} is writing the defensive review (backend={llm_backend})"
+            )
             try:
                 result = generate_llm_review(
                     scan,
@@ -279,6 +295,7 @@ def analyze(
                     effort=effort_value,  # type: ignore[arg-type]
                     backend=llm_backend,  # type: ignore[arg-type]
                     speed=llm_speed,  # type: ignore[arg-type]
+                    provider=llm_provider,  # type: ignore[arg-type]
                 )
             finally:
                 scan_progress.done()
@@ -320,11 +337,11 @@ def analyze(
             typer.echo("")
             hunt_mode = "hunt_verify" if verify else "hunt"
             typer.echo(
-                f"Hunting for vulnerability hypotheses via Claude "
+                f"Hunting for vulnerability hypotheses via {llm_display} "
                 f"({'adjudicated against source, ' if verify else ''}backend={llm_backend}, may take a minute)..."
             )
             scan_progress.stage(
-                f"Claude is hunting exploit-chain hypotheses"
+                f"{llm_display} is hunting exploit-chain hypotheses"
                 f"{' + verifying against source' if verify else ''} (backend={llm_backend})"
             )
             try:
@@ -338,6 +355,7 @@ def analyze(
                     backend=llm_backend,  # type: ignore[arg-type]
                     mode=hunt_mode,  # type: ignore[arg-type]
                     speed=llm_speed,  # type: ignore[arg-type]
+                    provider=llm_provider,  # type: ignore[arg-type]
                 )
             finally:
                 scan_progress.done()
@@ -381,9 +399,11 @@ def analyze(
                 )
             typer.echo("")
             typer.echo(
-                f"Generating remediation suggestions via Claude (backend={llm_backend}, may take a minute)..."
+                f"Generating remediation suggestions via {llm_display} (backend={llm_backend}, may take a minute)..."
             )
-            scan_progress.stage(f"Claude is drafting remediation suggestions (backend={llm_backend})")
+            scan_progress.stage(
+                f"{llm_display} is drafting remediation suggestions (backend={llm_backend})"
+            )
             try:
                 rem_result = generate_llm_review(
                     scan,
@@ -395,6 +415,7 @@ def analyze(
                     backend=llm_backend,  # type: ignore[arg-type]
                     mode="remediate",
                     speed=llm_speed,  # type: ignore[arg-type]
+                    provider=llm_provider,  # type: ignore[arg-type]
                 )
             finally:
                 scan_progress.done()

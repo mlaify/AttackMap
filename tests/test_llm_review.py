@@ -9,6 +9,7 @@ import pytest
 from attackmap.llm_review import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MODEL,
+    OPENAI_DEFAULT_MODEL,
     LlmReviewError,
     generate_llm_review,
 )
@@ -436,3 +437,232 @@ def test_explicit_cli_backend_raises_when_cli_missing(monkeypatch) -> None:
     monkeypatch.setattr("attackmap.llm_review._claude_cli_available", lambda: False)
     with pytest.raises(LlmReviewError, match="--llm-backend cli.*not on PATH"):
         generate_llm_review(_trivial_scan(), _surfaces(), _findings(), [], backend="cli")
+
+
+# ---------- OpenAI / Codex provider tests ----------
+
+
+@dataclass
+class _FakeOpenAIUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass
+class _FakeOpenAIResponse:
+    output_text: str
+    model: str = OPENAI_DEFAULT_MODEL
+    status: str = "completed"
+    usage: _FakeOpenAIUsage = field(default_factory=_FakeOpenAIUsage)
+
+
+class _FakeResponses:
+    def __init__(self, response: _FakeOpenAIResponse, captured: dict[str, Any]) -> None:
+        self._response = response
+        self._captured = captured
+
+    def create(self, **kwargs: Any) -> _FakeOpenAIResponse:
+        self._captured.update(kwargs)
+        return self._response
+
+
+class _FakeOpenAIClient:
+    def __init__(self, response: _FakeOpenAIResponse) -> None:
+        self.captured: dict[str, Any] = {}
+        self.responses = _FakeResponses(response, self.captured)
+
+
+def test_openai_default_model_constant() -> None:
+    assert OPENAI_DEFAULT_MODEL == "gpt-5-codex"
+
+
+def test_openai_api_returns_markdown_and_passes_expected_kwargs() -> None:
+    response = _FakeOpenAIResponse(
+        output_text="# Defensive Review\n\nBody.",
+        usage=_FakeOpenAIUsage(input_tokens=100, output_tokens=200),
+    )
+    client = _FakeOpenAIClient(response)
+
+    result = generate_llm_review(
+        _trivial_scan(),
+        _surfaces(),
+        _findings(),
+        [],
+        provider="openai",
+        openai_client=client,
+    )
+
+    assert result.backend == "api"
+    assert result.markdown == "# Defensive Review\n\nBody."
+    assert result.model == OPENAI_DEFAULT_MODEL
+    assert result.stop_reason == "completed"
+    assert result.usage == {"input_tokens": 100, "output_tokens": 200}
+
+    captured = client.captured
+    assert captured["model"] == OPENAI_DEFAULT_MODEL
+    assert captured["reasoning"] == {"effort": "high"}
+    assert captured["max_output_tokens"] == DEFAULT_MAX_TOKENS
+    assert "AttackMap Review Analyst" in captured["instructions"]
+    assert "Evidence pack (JSON)" in captured["input"]
+
+
+def test_openai_passes_model_through_verbatim() -> None:
+    client = _FakeOpenAIClient(_FakeOpenAIResponse(output_text="hi", model="gpt-5.5"))
+
+    result = generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        provider="openai", openai_client=client, model="gpt-5.5",
+    )
+
+    assert client.captured["model"] == "gpt-5.5"
+    assert result.model == "gpt-5.5"
+
+
+def test_openai_effort_clamps_beyond_high() -> None:
+    client = _FakeOpenAIClient(_FakeOpenAIResponse(output_text="hi"))
+
+    generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        provider="openai", openai_client=client, effort="max",
+    )
+
+    assert client.captured["reasoning"] == {"effort": "high"}
+
+
+def test_openai_raises_when_no_text_returned() -> None:
+    client = _FakeOpenAIClient(_FakeOpenAIResponse(output_text=""))
+
+    with pytest.raises(LlmReviewError, match="no text content"):
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [],
+            provider="openai", openai_client=client,
+        )
+
+
+def test_openai_auto_backend_picks_api_when_client_present() -> None:
+    client = _FakeOpenAIClient(_FakeOpenAIResponse(output_text="ok"))
+    result = generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        provider="openai", backend="auto", openai_client=client,
+    )
+    assert result.backend == "api"
+
+
+def test_openai_api_no_key_raises(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(LlmReviewError) as excinfo:
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [],
+            provider="openai", backend="api",
+        )
+    message = str(excinfo.value)
+    assert "OPENAI_API_KEY" in message or "openai SDK is not installed" in message
+
+
+def test_openai_api_builds_client_with_key_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    captured_ctor: dict[str, Any] = {}
+    response = _FakeOpenAIResponse(output_text="ok")
+
+    class _FakeOpenAIModule:
+        @staticmethod
+        def OpenAI(**kwargs):  # noqa: N802 (matches SDK class name)
+            captured_ctor.update(kwargs)
+            return _FakeOpenAIClient(response)
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "openai", _FakeOpenAIModule)
+
+    result = generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        provider="openai", backend="api",
+    )
+
+    assert result.backend == "api"
+    assert captured_ctor["api_key"] == "sk-openai-test"
+    assert "timeout" in captured_ctor
+
+
+# ---------- Codex CLI backend tests ----------
+
+
+def test_codex_cli_backend_reads_stdout_and_passes_correct_flags() -> None:
+    runner, captured = _make_cli_runner("# Review\n\nCodex narrative body.")
+
+    result = generate_llm_review(
+        _trivial_scan(),
+        _surfaces(),
+        _findings(),
+        [],
+        provider="openai",
+        backend="cli",
+        codex_runner=runner,
+    )
+
+    assert result.backend == "cli"
+    assert result.markdown == "# Review\n\nCodex narrative body."
+    assert result.model == OPENAI_DEFAULT_MODEL
+
+    cmd = captured["cmd"]
+    assert cmd[0:2] == ["codex", "exec"]
+    assert "--model" in cmd
+    assert cmd[cmd.index("--model") + 1] == OPENAI_DEFAULT_MODEL
+    assert "-c" in cmd
+    assert cmd[cmd.index("-c") + 1] == 'model_reasoning_effort="high"'
+    assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+    assert "--skip-git-repo-check" in cmd
+    # The rendered system prompt is the final positional argument (the
+    # instruction); the evidence pack is piped in on stdin as context.
+    assert "AttackMap Review Analyst" in cmd[-1]
+    assert "Evidence pack (JSON)" in captured["stdin"]
+
+
+def test_codex_cli_backend_raises_on_nonzero_exit() -> None:
+    runner, _ = _make_cli_runner("", returncode=2, stderr="boom")
+    with pytest.raises(LlmReviewError, match="exited with status 2"):
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [],
+            provider="openai", backend="cli", codex_runner=runner,
+        )
+
+
+def test_codex_cli_login_error_surfaces_hint() -> None:
+    runner, _ = _make_cli_runner("", returncode=1, stderr="Error: not logged in")
+    with pytest.raises(LlmReviewError) as excinfo:
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [],
+            provider="openai", backend="cli", codex_runner=runner,
+        )
+    assert "codex login" in str(excinfo.value)
+
+
+def test_openai_auto_backend_falls_back_to_codex_when_no_key(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("attackmap.llm_review._codex_cli_available", lambda: True)
+    runner, _ = _make_cli_runner("hi")
+
+    result = generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [],
+        provider="openai", backend="auto", codex_runner=runner,
+    )
+    assert result.backend == "cli"
+
+
+def test_openai_auto_raises_when_no_key_and_no_codex(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("attackmap.llm_review._codex_cli_available", lambda: False)
+    with pytest.raises(LlmReviewError, match="No OpenAI backend available"):
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [],
+            provider="openai", backend="auto",
+        )
+
+
+def test_explicit_codex_backend_raises_when_cli_missing(monkeypatch) -> None:
+    monkeypatch.setattr("attackmap.llm_review._codex_cli_available", lambda: False)
+    with pytest.raises(LlmReviewError, match="--llm-backend cli.*not on PATH"):
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [],
+            provider="openai", backend="cli",
+        )
