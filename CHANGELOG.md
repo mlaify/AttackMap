@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-11
+
+### Fixed
+
+- **`--llm-backend auto` now falls back to the subscription CLI when the API SDK
+  isn't installed.** Previously, if an API key was set but the `anthropic` /
+  `openai` SDK wasn't importable (e.g. a Homebrew install, which doesn't vendor
+  `attackmap[llm]`), `auto` chose the API backend and errored instead of using
+  the `claude` / `codex` CLI. It now prefers the API backend only when the SDK is
+  importable, otherwise uses the CLI (subscription auth) — so `--llm` / `--hunt`
+  / `--remediate` work out of the box on brew installs.
+
 ## [0.4.5] - 2026-07-11
 
 ### Fixed
