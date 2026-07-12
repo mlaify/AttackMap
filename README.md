@@ -211,6 +211,48 @@ on unrelated commits, so a finding that persists across scans has the same id
 in both. The diff has three sections — **New**, **Persisted**, **Resolved** —
 which drop cleanly into a PR comment.
 
+### Suppressing findings
+
+Silence a residual false positive without going blind to new signal. Two
+mechanisms, both honored across every pass:
+
+**Repo-level baseline** — `.attackmap-suppress.yaml` at the repo root:
+
+```yaml
+version: 1
+suppress:
+  # by stable finding id (the 16-hex id in attackmap-report.json)
+  - id: 1a2b3c4d5e6f7a8b
+    reason: accepted risk, tracked in JIRA-1234
+
+  # by rule (a slug of the finding title — same string as the SARIF ruleId),
+  # optionally scoped to paths
+  - rule: hard-coded-secret-literals-were-found-in-source-or-config
+    reason: example keys in docs, never shipped
+    paths: ["docs/**", "examples/**"]
+
+  # by path only — any finding whose evidence is *entirely* within these globs
+  - path: "vendor/**"
+    reason: third-party code, out of scope
+```
+
+A `path` selector matches a finding only when **every** file its evidence cites
+falls under the glob, so a finding that also touches live code is never hidden.
+`*` spans path separators (`vendor/*` covers the whole subtree).
+
+**Inline directives** — a comment on the flagged line, in any language:
+
+```python
+API_KEY = "AKIA…"  # attackmap:ignore[hard-coded-secret-literals-were-found-in-source-or-config] staging only
+```
+
+Suppressed findings are **not dropped**: they're excluded from
+`--fail-on-new-high` and the console summary, but retained in
+`attackmap-report.json` under `suppressed_findings` (with reasons) and marked
+with a SARIF `suppressions` array so GitHub Code Scanning shows them as
+suppressed. Suppression counts print in the run summary. Use `--no-suppress`
+for a full unfiltered audit, or `--suppress-file PATH` to point elsewhere.
+
 ### Data-flow / injection detection
 
 A lightweight taint pass (Python + JS/TS) walks the import graph up to two hops
@@ -501,6 +543,10 @@ attackmap analyze <path> --pr-comment pr.md   # Markdown PR summary comment for 
 # CI / PR diff gating
 attackmap analyze <path> --baseline prev/attackmap-report.json \
   --diff-output reports/attackmap-diff.md --fail-on-new-high
+
+# Suppression (.attackmap-suppress.yaml + inline `attackmap:ignore` directives)
+attackmap analyze <path> --no-suppress          # full audit, ignore all suppressions
+attackmap analyze <path> --suppress-file cfg.yaml   # override baseline location
 
 # Plugin discovery
 attackmap suggest ./repo                 # recommend plugins for a repo shape

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "attackmap"
-version = "0.4.6"
+version = "0.4.7"
 description = "AI-assisted defensive security analyzer for codebases — scans a repository, models assets and controls, finds cross-cutting weaknesses, and generates an evidence-grounded review with MITRE ATT&CK mappings and detection-engineering hints."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,6 +51,7 @@ dependencies = [
   "typer>=0.12.3",
   "pydantic>=2.7.0",
   "networkx>=3.3",
+  "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]

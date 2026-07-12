@@ -124,41 +124,49 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
     return list(rules_by_id.values())
 
 
+def _build_result(finding: Finding, *, suppression_reason: str | None = None) -> dict[str, Any]:
+    rule_id = _slugify(finding.title)
+    locations = _locations_from_evidence(finding.evidence)
+    properties: dict[str, Any] = {
+        "tags": list(finding.tags),
+        "security-severity": _security_severity(finding.severity, finding.confidence),
+        "confidence": finding.confidence,
+    }
+    if finding.score is not None:
+        # SARIF `rank` is 0-100, higher = more important — same
+        # direction as `score` from #4.
+        properties["rank"] = float(finding.score)
+    result: dict[str, Any] = {
+        "ruleId": rule_id,
+        "level": _sarif_level(finding.severity),
+        "message": {
+            "text": finding.title,
+            "markdown": f"**{finding.title}**\n\n{finding.mitigation}",
+        },
+        "properties": properties,
+    }
+    # If we found citable file locations, attach them; otherwise SARIF
+    # allows results without locations (they surface repo-wide).
+    if locations:
+        result["locations"] = locations
+    # Evidence goes to a partial-fingerprints-style secondary spot
+    # so the raw citation text isn't lost.
+    if finding.evidence:
+        result["partialFingerprints"] = {
+            "attackmap/evidence": "|".join(finding.evidence[:8]),
+        }
+    # Suppressed findings stay in the log (not dropped) but carry a SARIF
+    # `suppressions` array so viewers / GitHub Code Scanning show them as
+    # suppressed rather than active (#144).
+    if suppression_reason is not None:
+        result["suppressions"] = [
+            {"kind": "external", "justification": suppression_reason or "suppressed by AttackMap"}
+        ]
+    return result
+
+
 def _build_results(findings: list[Finding]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for finding in findings:
-        rule_id = _slugify(finding.title)
-        locations = _locations_from_evidence(finding.evidence)
-        properties: dict[str, Any] = {
-            "tags": list(finding.tags),
-            "security-severity": _security_severity(finding.severity, finding.confidence),
-            "confidence": finding.confidence,
-        }
-        if finding.score is not None:
-            # SARIF `rank` is 0-100, higher = more important — same
-            # direction as `score` from #4.
-            properties["rank"] = float(finding.score)
-        result: dict[str, Any] = {
-            "ruleId": rule_id,
-            "level": _sarif_level(finding.severity),
-            "message": {
-                "text": finding.title,
-                "markdown": f"**{finding.title}**\n\n{finding.mitigation}",
-            },
-            "properties": properties,
-        }
-        # If we found citable file locations, attach them; otherwise SARIF
-        # allows results without locations (they surface repo-wide).
-        if locations:
-            result["locations"] = locations
-        # Evidence goes to a partial-fingerprints-style secondary spot
-        # so the raw citation text isn't lost.
-        if finding.evidence:
-            result["partialFingerprints"] = {
-                "attackmap/evidence": "|".join(finding.evidence[:8]),
-            }
-        results.append(result)
-    return results
+    return [_build_result(finding) for finding in findings]
 
 
 def _build_code_flows_from_attack_paths(
@@ -198,11 +206,22 @@ def _build_code_flows_from_attack_paths(
 def build_sarif(
     findings: list[Finding],
     attack_paths: list[AttackPath] | None = None,
+    *,
+    suppressed: list[tuple[Finding, str]] | None = None,
 ) -> dict[str, Any]:
     """Serialize `findings` (+ optional `attack_paths`) as a SARIF 2.1.0
-    log dict. Caller is responsible for writing it to disk."""
-    rules = _build_rules(findings)
+    log dict. Caller is responsible for writing it to disk.
+
+    `suppressed` is a list of ``(finding, justification)`` pairs (#144):
+    they are emitted as results carrying a SARIF ``suppressions`` array so
+    consumers show them as suppressed rather than active.
+    """
+    suppressed = suppressed or []
+    # Rules taxonomy must cover suppressed findings too, so their ruleId
+    # resolves in viewers.
+    rules = _build_rules(findings + [f for f, _ in suppressed])
     results = _build_results(findings)
+    results.extend(_build_result(f, suppression_reason=reason) for f, reason in suppressed)
 
     driver: dict[str, Any] = {
         "name": "AttackMap",
