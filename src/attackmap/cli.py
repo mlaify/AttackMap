@@ -29,6 +29,7 @@ from .progress import create_progress
 from .recon_to_analysis import translate_recon
 from .report import render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
+from .suppress import apply_suppressions, collect_suppressions
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
 
@@ -144,6 +145,16 @@ def analyze(
         "--pr-comment",
         help="Write a Markdown PR summary comment to this path (for the GitHub Action / bot to post). Includes the baseline diff and top exploitability when available.",
     ),
+    no_suppress: bool = typer.Option(
+        False,
+        "--no-suppress",
+        help="Ignore all suppressions — the .attackmap-suppress.yaml baseline and inline `attackmap:ignore` directives (#144). Use for a full, unfiltered audit.",
+    ),
+    suppress_file: str | None = typer.Option(
+        None,
+        "--suppress-file",
+        help="Path to a suppression baseline, overriding auto-discovery of .attackmap-suppress.yaml at the repo root (#144).",
+    ),
 ) -> None:
     repo_path = Path(path).resolve()
     if not repo_path.exists():
@@ -201,6 +212,31 @@ def analyze(
     attack_surface_md = summarize_attack_surface(scan, attack_surfaces)
     findings = analysis.findings
     attack_paths = analysis.attack_paths
+
+    # Finding suppression (#144): the .attackmap-suppress.yaml baseline plus
+    # inline `attackmap:ignore` directives. Suppressed findings are partitioned
+    # out of the active set used for the review, console, and the diff gate —
+    # but retained (with reasons) in report.json and marked suppressed in SARIF.
+    suppressed_findings: list = []
+    if no_suppress:
+        if suppress_file is not None:
+            typer.echo("Note: --suppress-file is ignored because --no-suppress is set.", err=True)
+    else:
+        explicit = Path(suppress_file) if suppress_file else None
+        if explicit is not None and not explicit.exists():
+            raise typer.BadParameter(f"Suppress file not found: {explicit}")
+        suppset, sup_warnings = collect_suppressions(repo_path, findings, explicit_file=explicit)
+        for warning in sup_warnings:
+            typer.echo(f"Suppression warning: {warning}", err=True)
+        outcome = apply_suppressions(findings, suppset)
+        findings = outcome.active
+        suppressed_findings = outcome.suppressed
+        if suppressed_findings:
+            typer.echo("")
+            typer.echo(f"Suppressed {len(suppressed_findings)} finding(s) (#144):")
+            for summary_line in outcome.summary_lines():
+                typer.echo(summary_line)
+
     defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
 
     write_reports(
@@ -221,6 +257,7 @@ def analyze(
             }
             for metadata in (get_analyzer_metadata(analyzer) for analyzer in active_analyzers)
         ],
+        suppressed=suppressed_findings,
     )
     typer.echo(render_console_summary(scan, findings, attack_paths))
     typer.echo("")

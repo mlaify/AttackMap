@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-07-12
+
+### Added
+
+- **Finding suppression (#144).** Silence residual false positives without going
+  blind to new signal — the noise-in-CI adoption blocker. Two mechanisms, both
+  applied as a post-pass over the assembled findings:
+  - **Repo-level baseline** `.attackmap-suppress.yaml` at the repo root, with
+    entries keyed by `id` (the stable 16-hex finding id), `rule` (a slug of the
+    finding title — the same string as the SARIF `ruleId`), and/or `path`/`paths`
+    globs, each carrying a mandatory `reason`. A `path` selector matches a finding
+    only when **every** file its evidence cites falls under the glob, so a finding
+    that also touches live code is never silently hidden.
+  - **Inline directives** `# attackmap:ignore[rule-id] reason` (any comment
+    leader — `#`, `//`, `/* */`, …). A directive in a file suppresses findings
+    whose cited evidence is covered by it.
+  - Suppressed findings are **retained, not dropped**: excluded from
+    `--fail-on-new-high` and the console summary, but emitted to
+    `attackmap-report.json` under `suppressed_findings` (with reasons) and marked
+    with a SARIF `suppressions` array so GitHub Code Scanning shows them as
+    suppressed. Suppression counts are printed in the run summary.
+  - New flags: `--no-suppress` (ignore all suppressions for a full audit) and
+    `--suppress-file PATH` (override baseline auto-discovery).
+- **PyYAML** is now a runtime dependency (parses the suppression baseline).
+
 ## [0.4.6] - 2026-07-11
 
 ### Fixed

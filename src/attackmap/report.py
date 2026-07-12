@@ -15,6 +15,7 @@ from .exploitability import score_exploitability
 from .models import AttackPath, AttackSurface, ExploitabilityScore, Finding, ScanResult
 from .review_json import build_defensive_review_json
 from .sarif import build_sarif
+from .suppress import SuppressedFinding
 from .topology import build_service_graph
 
 
@@ -32,9 +33,11 @@ def write_reports(
     findings: list[Finding],
     attack_paths: list[AttackPath],
     analyzer_metadata: list[dict[str, object]] | None = None,
+    suppressed: list[SuppressedFinding] | None = None,
 ) -> None:
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    suppressed = suppressed or []
 
     (out / "architecture.md").write_text(architecture_md + "\n", encoding="utf-8")
     (out / "attack-surface.md").write_text(attack_surface_md + "\n", encoding="utf-8")
@@ -64,6 +67,18 @@ def write_reports(
         "findings": [
             {"id": finding_id(finding.title), **finding.model_dump()} for finding in findings
         ],
+        # Suppressed findings are retained (not dropped) with their reason so
+        # audits can see what was silenced and why (#144).
+        "suppressed_findings": [
+            {
+                "id": s.id,
+                "rule": s.rule,
+                "reason": s.reason,
+                "suppressed_by": [m.label() for m in s.matched],
+                **s.finding.model_dump(),
+            }
+            for s in suppressed
+        ],
         "attack_paths": [path.model_dump() for path in attack_paths],
         "exploitability": [score.model_dump() for score in exploitability],
     }
@@ -71,7 +86,11 @@ def write_reports(
 
     # SARIF 2.1.0 for GitHub Code Scanning / VS Code / other SARIF
     # consumers. Emitted alongside JSON, not in place of it.
-    sarif_report = build_sarif(findings, attack_paths)
+    sarif_report = build_sarif(
+        findings,
+        attack_paths,
+        suppressed=[(s.finding, s.reason) for s in suppressed],
+    )
     (out / "attackmap-report.sarif").write_text(
         json.dumps(sarif_report, indent=2) + "\n", encoding="utf-8"
     )
