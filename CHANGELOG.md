@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-12
+
+### Added
+
+- **GitHub Actions / CI workflow security scanner (#142).** A new built-in pass
+  parses `.github/workflows/*.yml` — a real, previously-unanalyzed attack
+  surface — and emits findings for:
+  - **script injection** — an attacker-controlled context
+    (`github.event.*.{title,body,message,…}`, `github.head_ref`) interpolated
+    into a `run:` step, so a crafted issue/PR title runs arbitrary shell (high);
+  - **`pull_request_target` + PR-head checkout** — building untrusted fork code
+    with the base repo's secrets in scope (high);
+  - **unpinned actions** — `uses: org/action@tag|branch` instead of a pinned
+    commit SHA (branch/`latest` = medium, semver tag = low);
+  - **secret in `run:`** — `${{ secrets.* }}` expanded into a shell step instead
+    of passed via `env:` (medium);
+  - **over-broad permissions** — `permissions: write-all` at the workflow or job
+    level (medium);
+  - **self-hosted runner on a PR trigger** — exposing the runner to fork code
+    (high under `pull_request_target`, else medium).
+
+  Findings aggregate per issue kind (severity = the max over that kind), carry
+  the workflow/job/step context as evidence plus remediation and an ATT&CK
+  mapping, and flow through SARIF, the diff gate, and suppression like any other
+  finding. A hardened workflow (SHA-pinned actions, scoped permissions, secrets
+  via `env:`, no untrusted-context interpolation) produces nothing.
+
 ## [0.4.7] - 2026-07-12
 
 ### Added

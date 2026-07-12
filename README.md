@@ -329,6 +329,25 @@ identifier; cipher/ECB tokens are matched case-sensitively so algorithm names
 aren't confused with prose (e.g. the French word "des"). Results appear under
 `scan.crypto_weaknesses`.
 
+### GitHub Actions / CI workflow security
+
+CI config is a real attack surface. AttackMap parses `.github/workflows/*.yml`
+and flags supply-chain and code-execution risks, each a finding with an ATT&CK
+mapping:
+
+| Kind | Catches | Severity |
+|---|---|---|
+| `script_injection` | attacker-controlled context (`github.event.*.{title,body,message,…}`, `github.head_ref`) interpolated into a `run:` step | HIGH |
+| `pr_target_checkout` | `pull_request_target` + checkout of the PR head ref (untrusted code with secrets in scope) | HIGH |
+| `unpinned_action` | `uses: org/action@tag\|branch` instead of a pinned commit SHA | branch = MEDIUM, semver tag = LOW |
+| `secret_in_run` | `${{ secrets.* }}` expanded into a shell step (pass via `env:` instead) | MEDIUM |
+| `broad_permissions` | `permissions: write-all` at workflow or job level | MEDIUM |
+| `self_hosted_pr` | self-hosted runner on a `pull_request`/`pull_request_target` trigger | HIGH / MEDIUM |
+
+A hardened workflow — SHA-pinned actions, scoped `permissions:`, secrets via
+`env:`, no untrusted-context interpolation — produces nothing. Results appear
+under `scan.workflow_issues`.
+
 ### Broken object-level authorization (BOLA / IDOR)
 
 OWASP API Security #1. AttackMap flags a route as a BOLA/IDOR candidate when it
