@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .analyzer import identify_attack_surfaces
 from .exploitability import best_by_sink_kind, score_exploitability
 from .models import AttackPath, AttackSurface, AttackTechnique, Finding, Route, ScanResult, TaintChain
+from .route_auth_fusion import synthesize_unauthenticated_routes
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -1157,6 +1158,12 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 tags=["exposed-endpoint", "auth-missing"],
             )
         )
+
+    # Fuse per-route middleware/guard chains + auth_hints into precise
+    # "unauthenticated state-changing route" findings (#140). Complements the
+    # category-specific findings above (webhook/admin/upload/auth) by covering
+    # the general public_api mutating-route case with per-route chain resolution.
+    findings.extend(synthesize_unauthenticated_routes(scan, runtime_surfaces))
 
     if public_integration_surfaces and not any(h.hint in {"jwt", "oauth", "bearer", "token"} for h in scan.auth_hints):
         findings.append(

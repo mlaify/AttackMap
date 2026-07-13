@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-07-13
+
+### Added
+
+- **Unauthenticated state-changing route synthesis (#140).** A fusion pass turns
+  noisy raw `auth_hints` into a *conclusion*: one precise finding listing the
+  public, state-changing (`POST/PUT/PATCH/DELETE`) `public_api` routes that have
+  **no authentication/authorization control on their own chain**. Unlike the
+  file-windowed `auth_signals` heuristic (which lets a route inherit a
+  neighbor's auth code), this resolves the control per route:
+  - **Express/Koa/Fastify** — an auth middleware in the route's argument list or
+    a global `app.use(...)`/`router.use(...)`.
+  - **FastAPI/Flask** — an auth decorator (`@login_required`, `@jwt_required`, …),
+    a `dependencies=[Depends(...)]` on the route, `Depends(<auth>)`/`Security(...)`
+    in the handler signature, or a router-level dependency.
+  - **Spring** — `@PreAuthorize`/`@PostAuthorize`/`@Secured`/`@RolesAllowed` on the
+    method or controller class, or a global security policy requiring auth.
+
+  Each evidence line names the route and the resolved chain outcome. Routes
+  behind a control produce nothing; the sensitive categories (webhook/admin/
+  upload/auth) keep their own dedicated findings, so there's no double-reporting.
+  `auth_hints` emission is unchanged. Adds `T1190` mapping.
+
 ## [0.4.9] - 2026-07-12
 
 ### Changed

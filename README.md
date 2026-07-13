@@ -361,6 +361,21 @@ A hardened workflow — SHA-pinned actions, scoped `permissions:`, secrets via
 `env:`, no untrusted-context interpolation — produces nothing. Results appear
 under `scan.workflow_issues`.
 
+### Unauthenticated state-changing routes
+
+Raw `auth_hints` are signals, not conclusions — a monorepo emits hundreds. A
+fusion pass turns them into one precise finding: the public, state-changing
+(`POST/PUT/PATCH/DELETE`) routes with **no auth control on their own chain**. It
+resolves the control *per route* rather than by file proximity:
+
+- **Express/Koa/Fastify** — auth middleware in the route's arguments, or a global `app.use(...)` / `router.use(...)`.
+- **FastAPI/Flask** — an auth decorator, `dependencies=[Depends(...)]`, `Depends(<auth>)` / `Security(...)` in the signature, or a router-level dependency.
+- **Spring** — `@PreAuthorize` / `@Secured` / `@RolesAllowed` on the method or controller, or a global "authenticated" policy.
+
+Routes behind a control produce nothing, and the sensitive categories
+(webhook/admin/upload/auth) keep their own dedicated findings — so this only
+adds the general mutating-endpoint case, with the resolved chain as evidence.
+
 ### Broken object-level authorization (BOLA / IDOR)
 
 OWASP API Security #1. AttackMap flags a route as a BOLA/IDOR candidate when it
