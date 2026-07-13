@@ -288,6 +288,19 @@ template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findin
 are evidence, not proof; confidence tapers with hop distance. Chains appear in
 `attackmap-report.json` under `scan.taint_chains`.
 
+**Sanitizer awareness.** When a sink-appropriate neutralizer is present in the
+sink file — `shlex.quote` / `escapeshellarg` (shell), `secure_filename` / path
+allow-listers (`open`), `is_safe_url` (redirect), `markupsafe.escape` (SSTI),
+driver escapers (SQL), mongo-sanitize (NoSQL) — the chain is marked
+`sanitized`, its confidence is downgraded well below the finding threshold, and
+the neutralizer is recorded in `sanitizer_evidence`. Sanitized chains stay in
+`scan.taint_chains` for audit but don't raise a HIGH finding or earn an
+exploitability score. Detection is file-granular (matching the import-walk's
+granularity), so it trades a little recall for precision. To extend the table,
+add a high-signal, sink-appropriate `(label, regex)` entry to
+`_SANITIZER_PATTERNS` in [`taint.py`](src/attackmap/taint.py) — keep it specific
+(a vague `validate(` would hide real bugs).
+
 Test and spec files (`tests/`, `__tests__/`, `*.test.*`, `test_*.py`, …) are
 excluded from all the heuristic passes above by default, since dangerous
 patterns in test scaffolding are rarely real exposure. Set

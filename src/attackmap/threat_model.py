@@ -916,7 +916,9 @@ def _best_taint_for_route(
     candidates = [
         c
         for c in taint_by_file.get(route.file, ())
-        if c.route_path == route.path and c.route_method == route.method
+        if c.route_path == route.path
+        and c.route_method == route.method
+        and not c.sanitized  # #137: a neutralized path isn't a probable exploit
     ]
     if not candidates:
         return None
@@ -1539,6 +1541,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     # route, ordered by the spec's declaration.
     taint_by_kind: dict[str, list] = {}
     for chain in scan.taint_chains:
+        # Sanitized chains (#137) are neutralized before the sink — keep them
+        # as evidence in scan.taint_chains but don't raise a finding for them.
+        if chain.sanitized:
+            continue
         if chain.sink_kind in _TAINT_FINDING_SPEC:
             taint_by_kind.setdefault(chain.sink_kind, []).append(chain)
     taint_findings_by_kind: dict[str, Finding] = {}

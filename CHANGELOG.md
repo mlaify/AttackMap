@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-07-12
+
+### Changed
+
+- **Taint: sanitizer / validator awareness (#137).** The taint walk now
+  recognizes sink-appropriate neutralizers in the sink file — `shlex.quote` /
+  `escapeshellarg` (shell), `secure_filename` / path allow-listers (`open`),
+  `is_safe_url` (open redirect), `markupsafe.escape` (SSTI), driver escapers
+  (SQL), mongo-sanitize (NoSQL). When one is present, the chain is marked
+  `sanitized`, its confidence is downgraded below the finding threshold, and the
+  neutralizer is recorded in the new `TaintChain.sanitizer_evidence` field.
+  Sanitized chains are retained in `scan.taint_chains` for audit but no longer
+  raise a HIGH taint finding or earn an exploitability score — cutting a class
+  of false positives where input is escaped/validated/bound before the sink.
+  Detection is file-granular (matching the import-walk); the table is easy to
+  extend via `_SANITIZER_PATTERNS` in `taint.py` (see README).
+
 ## [0.4.8] - 2026-07-12
 
 ### Added
