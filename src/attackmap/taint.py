@@ -268,6 +268,61 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+# --- Sanitizer / validator awareness (#137) --------------------------------
+# When a known neutralizer for a sink kind appears in the sink file, the
+# tainted value is likely escaped/validated/bound/allow-listed before the
+# sink — so the chain is marked `sanitized` and its confidence downgraded
+# (kept as evidence, not dropped). The import-graph walk is file-granular,
+# so detection is file-granular too: a sink-appropriate neutralizer anywhere
+# in the sink file counts. This trades a little recall for precision, which
+# is the whole point of the pass (precision-first).
+#
+# To extend: add a `(label, regex)` entry under the relevant sink kind. Keep
+# patterns HIGH-SIGNAL and sink-appropriate — a vague `validate(` would hide
+# real bugs (a false negative is worse than a downgrade here), so only match
+# neutralizers whose presence genuinely implies the sink is defended.
+_SANITIZER_PATTERNS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
+    "subprocess_shell": (
+        ("shlex.quote", re.compile(r"\bshlex\.quote\s*\(")),
+        ("pipes.quote", re.compile(r"\bpipes\.quote\s*\(")),
+        ("escapeshellarg/escapeshellcmd", re.compile(r"\b(?:escapeshellarg|escapeshellcmd)\s*\(")),
+    ),
+    "sql_execute": (
+        ("mysqli_real_escape_string", re.compile(r"\bmysqli_real_escape_string\s*\(")),
+        ("pg_escape_*", re.compile(r"\bpg_escape_(?:string|literal|identifier)\s*\(")),
+    ),
+    "dynamic_open": (
+        ("werkzeug.secure_filename", re.compile(r"\bsecure_filename\s*\(")),
+        ("os.path.basename", re.compile(r"\bos\.path\.basename\s*\(")),
+        ("path allow-list (realpath+startswith)", re.compile(r"\brealpath\s*\(")),
+    ),
+    "ssti": (
+        ("markupsafe.escape", re.compile(r"\b(?:markupsafe\.)?escape\s*\(")),
+        ("bleach.clean", re.compile(r"\bbleach\.clean\s*\(")),
+    ),
+    "open_redirect": (
+        ("is_safe_url", re.compile(r"\bis_safe_url\s*\(")),
+        ("url_has_allowed_host_and_scheme", re.compile(r"\burl_has_allowed_host_and_scheme\s*\(")),
+    ),
+    "ssrf": (
+        ("ipaddress.ip_address guard", re.compile(r"\bipaddress\.ip_address\s*\(")),
+        ("allow-list check", re.compile(r"\b(?:is_allowed_url|allowed_hosts|url_allowlist)\b")),
+    ),
+    "nosql_injection": (
+        ("mongo-sanitize", re.compile(r"\b(?:mongoSanitize|mongo_sanitize|sanitize)\s*\(")),
+    ),
+}
+
+
+def _find_sanitizer(kind: str, content: str) -> str | None:
+    """Return a label for the first sink-appropriate neutralizer present in
+    `content`, or None. File-granular, matching the walk's granularity."""
+    for label, pattern in _SANITIZER_PATTERNS.get(kind, ()):
+        if pattern.search(content):
+            return label
+    return None
+
+
 # --- Public API ------------------------------------------------------------
 
 
@@ -768,15 +823,22 @@ def _is_parameterized_sql(content: str, match: re.Match[str], suffix: str = "") 
 
 def _find_sinks(
     files: dict[str, Path], root: Path
-) -> dict[str, list[tuple[str, int, str]]]:
-    """rel_path -> list of (sink_kind, line_number, evidence_snippet)."""
-    out: dict[str, list[tuple[str, int, str]]] = {}
+) -> dict[str, list[tuple[str, int, str, str | None]]]:
+    """rel_path -> list of (sink_kind, line_number, evidence_snippet, sanitizer_label).
+
+    `sanitizer_label` is set when a sink-appropriate neutralizer is present in
+    the same file (#137) — the walk uses it to mark the chain sanitized.
+    """
+    out: dict[str, list[tuple[str, int, str, str | None]]] = {}
     for rel, abs_path in files.items():
         try:
             content = abs_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        hits: list[tuple[str, int, str]] = []
+        hits: list[tuple[str, int, str, str | None]] = []
+        # Per-file sanitizer lookup is memoized per sink kind — the same file
+        # may hold several sinks of one kind.
+        sanitizer_by_kind: dict[str, str | None] = {}
         for kind, pattern in _SINK_PATTERNS:
             for match in pattern.finditer(content):
                 # Suppress ungated "dangerous-regardless" sinks whose argument
@@ -789,7 +851,9 @@ def _find_sinks(
                     continue
                 line = content.count("\n", 0, match.start()) + 1
                 snippet = _line_snippet(content, match.start())
-                hits.append((kind, line, snippet))
+                if kind not in sanitizer_by_kind:
+                    sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
+                hits.append((kind, line, snippet, sanitizer_by_kind[kind]))
         if hits:
             out[rel] = hits
     return out
@@ -810,7 +874,7 @@ def _walk_from_route(
     route: Route,
     route_file: str,
     graph: dict[str, set[str]],
-    sinks_by_file: dict[str, list[tuple[str, int, str]]],
+    sinks_by_file: dict[str, list[tuple[str, int, str, str | None]]],
 ) -> list[TaintChain]:
     """BFS out from route_file, up to _MAX_HOPS. Emit chains at each sink."""
     visited: dict[str, int] = {route_file: 0}
@@ -822,7 +886,12 @@ def _walk_from_route(
         current = queue.popleft()
         current_hops = visited[current]
 
-        for kind, line, snippet in sinks_by_file.get(current, []):
+        for kind, line, snippet, sanitizer in sinks_by_file.get(current, []):
+            confidence = _confidence_for_hops(current_hops)
+            if sanitizer is not None:
+                # A neutralizer is present at the sink — likely defended.
+                # Downgrade well below the HIGH threshold, keep as evidence.
+                confidence = round(confidence * 0.4, 2)
             chains.append(
                 TaintChain(
                     route_path=route.path,
@@ -834,7 +903,9 @@ def _walk_from_route(
                     hops=current_hops,
                     files=_reconstruct_path(route_file, current, parents),
                     evidence_text=snippet,
-                    confidence=_confidence_for_hops(current_hops),
+                    confidence=confidence,
+                    sanitized=sanitizer is not None,
+                    sanitizer_evidence=sanitizer,
                 )
             )
 

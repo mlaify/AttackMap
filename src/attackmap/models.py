@@ -308,6 +308,13 @@ class TaintChain(BaseModel):
     files: list[str] = Field(default_factory=list)
     evidence_text: str | None = None
     confidence: float = 0.6
+    # Sanitizer awareness (#137). When a known neutralizer for this sink kind
+    # is present in the sink file (escaper/validator/parameter-binder/
+    # allow-lister), the chain is marked sanitized and its confidence is
+    # downgraded — the tainted value is likely neutralized before the sink.
+    # `sanitizer_evidence` names the neutralizer so the chain stays auditable.
+    sanitized: bool = False
+    sanitizer_evidence: str | None = None
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
