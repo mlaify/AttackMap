@@ -812,6 +812,59 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
 }
 
 
+# Rank for picking the most severe issue in an aggregated group.
+_SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+# CI-workflow security (#142). Severity is taken from the emitted issues (some
+# kinds tier per instance — e.g. unpinned semver tag vs. branch ref), so the
+# spec carries only the taxonomy, title, remediation, and ATT&CK mapping.
+_WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "script_injection": {
+        "title": "CI script injection via untrusted context in a run: step",
+        "mitigation": "Never interpolate `${{ github.event.* }}` / `github.head_ref` directly into a run: script — a crafted issue/PR title or branch name runs arbitrary shell. Bind the value to an `env:` variable and reference it as `\"$ENVVAR\"` so it's passed as data, not expanded into the command.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "pr_target_checkout": {
+        "title": "pull_request_target checks out untrusted PR code",
+        "mitigation": "`pull_request_target` runs with the base repo's secrets in scope. Don't check out and build the PR head ref in that context. Use `pull_request` for untrusted code, or check out only the base ref and never run fork-supplied build/test scripts with secrets available.",
+        "technique_id": "T1195",
+        "technique_name": "Supply Chain Compromise",
+        "tactic": "Initial Access",
+    },
+    "unpinned_action": {
+        "title": "Unpinned GitHub Action (not pinned to a commit SHA)",
+        "mitigation": "Pin third-party actions to a full 40-character commit SHA (`uses: org/action@<sha>`), not a moving tag or branch. A tag/branch lets the action owner — or anyone who compromises them — change what runs in your pipeline. Dependabot can keep the pinned SHAs updated.",
+        "technique_id": "T1195.001",
+        "technique_name": "Supply Chain Compromise: Compromise Software Dependencies and Development Tools",
+        "tactic": "Initial Access",
+    },
+    "secret_in_run": {
+        "title": "Secret interpolated into a run: shell step",
+        "mitigation": "Don't expand `${{ secrets.* }}` directly into a run: script — it can leak via the command line (`ps`), step logs, or a child process. Pass the secret through the step's `env:` block and reference it as an environment variable.",
+        "technique_id": "T1552",
+        "technique_name": "Unsecured Credentials",
+        "tactic": "Credential Access",
+    },
+    "broad_permissions": {
+        "title": "Over-broad GITHUB_TOKEN permissions (write-all)",
+        "mitigation": "Set least-privilege `permissions:` per job (default to `contents: read` and grant only what a job needs). `write-all` gives a compromised step or action full write access to the repo, releases, packages, and more.",
+        "technique_id": "T1078",
+        "technique_name": "Valid Accounts",
+        "tactic": "Privilege Escalation",
+    },
+    "self_hosted_pr": {
+        "title": "Self-hosted runner exposed to pull-request code",
+        "mitigation": "Self-hosted runners on a `pull_request`/`pull_request_target` trigger let fork PRs run arbitrary code on your infrastructure (and persist between jobs). Use ephemeral GitHub-hosted runners for public-repo PR workflows, or gate self-hosted jobs behind an environment/approval and never on `pull_request_target`.",
+        "technique_id": "T1584.004",
+        "technique_name": "Compromise Infrastructure: Server",
+        "tactic": "Resource Development",
+    },
+}
+
+
 _ANOMALY_FINDING_SPEC: dict[str, dict[str, str]] = {
     "auth_outlier": {
         "severity": "high",
@@ -1391,6 +1444,44 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["novel-vuln"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
+
+    # CI workflow security (#142). One aggregated finding per issue kind; the
+    # finding severity is the max over that kind's issues (some kinds tier per
+    # instance — semver-tag vs. branch unpinned action, PR vs. PR-target runner).
+    workflow_by_kind: dict[str, list] = {}
+    for issue in scan.workflow_issues:
+        workflow_by_kind.setdefault(issue.kind, []).append(issue)
+    for kind, spec in _WORKFLOW_FINDING_SPEC.items():
+        items = workflow_by_kind.get(kind)
+        if not items:
+            continue
+        severity = max((i.severity for i in items), key=_SEVERITY_ORDER.__getitem__)
+        evidence = []
+        for i in items[:10]:
+            loc = f"{i.file}:{i.line}" if i.line else i.file
+            detail = f" — {i.evidence_text}" if i.evidence_text else ""
+            ctx = f" [{i.context}]" if i.context else ""
+            evidence.append(f"{loc}{ctx}{detail}")
+        if len(items) > 10:
+            evidence.append(f"+{len(items) - 10} more occurrence(s)")
+        findings.append(
+            Finding(
+                title=spec["title"],
+                severity=severity,  # type: ignore[arg-type]
+                evidence=evidence,
+                mitigation=spec["mitigation"],
+                confidence="high",
+                tags=["ci-security", "supply-chain"],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],

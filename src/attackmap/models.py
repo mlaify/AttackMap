@@ -203,6 +203,35 @@ class WebHardeningIssue(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class WorkflowIssue(BaseModel):
+    """A CI-workflow security issue in a GitHub Actions file (#142).
+
+    Emitted by the built-in workflow scanner over ``.github/workflows/*.yml``.
+    Every issue is a positively-present misconfiguration (an unpinned action,
+    an untrusted-code checkout under ``pull_request_target``, a secret or an
+    attacker-controlled context interpolated into a shell step, ``write-all``
+    permissions, a self-hosted runner on a PR trigger) — a hardened workflow
+    produces nothing.
+    """
+
+    kind: Literal[
+        "unpinned_action",
+        "pr_target_checkout",
+        "secret_in_run",
+        "script_injection",
+        "broad_permissions",
+        "self_hosted_pr",
+    ]
+    file: str
+    line: int | None = None
+    # Human-readable location within the workflow (job / step) so evidence
+    # points somewhere actionable even when a precise line isn't available.
+    context: str | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class CryptoWeakness(BaseModel):
     """An insecure-cryptography or weak-randomness usage (#70).
 
@@ -548,6 +577,7 @@ class ScanResult(BaseModel):
     crypto_weaknesses: list[CryptoWeakness] = Field(default_factory=list)
     web_hardening_issues: list[WebHardeningIssue] = Field(default_factory=list)
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
+    workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
     files_scanned: int = 0
 
