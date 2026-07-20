@@ -25,7 +25,8 @@ managers who need to triage an unfamiliar codebase.
 ### The macOS app
 
 Prefer a GUI? AttackMap ships a native macOS front-end that drives this CLI and
-renders every result view — install with `brew install --cask mlaify/tap/attackmap-app`.
+renders every result view — install with `brew install --cask mlaify/tap/attackmap-app`
+(the cask depends on the `attackmap` formula, so this pulls the CLI too).
 
 | Overview | Exploitability |
 |---|---|
