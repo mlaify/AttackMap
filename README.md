@@ -22,6 +22,17 @@ managers who need to triage an unfamiliar codebase.
 > not proof. See [Project status](#project-status) for what's solid and what's
 > still maturing.
 
+### The macOS app
+
+Prefer a GUI? AttackMap ships a native macOS front-end that drives this CLI and
+renders every result view — install with `brew install --cask mlaify/tap/attackmap-app`.
+
+| Overview | Exploitability |
+|---|---|
+| [![AttackMap macOS app — overview](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/04-overview.png)](https://docs.matthewd.xyz/gui/) | [![AttackMap macOS app — exploitability](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/06-exploitability-ranked.png)](https://docs.matthewd.xyz/gui/) |
+
+*Scanning OWASP Juice Shop. Full walkthrough in the [macOS app docs](https://docs.matthewd.xyz/gui/); source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac).*
+
 ---
 
 ## Quickstart
