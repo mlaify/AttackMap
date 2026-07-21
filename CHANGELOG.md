@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-07-21
+
+### Added
+
+- **Query-parameter, RPC-method & GraphQL authorization scoping (#139).** BOLA/
+  IDOR detection previously only saw resource ids in the URL path. It now also
+  flags object references arriving as an **id-bearing query parameter**
+  (`?orderId=`), an **RPC method** (AT Protocol XRPC `/xrpc/…getRecord`, tRPC
+  `user.byId` — id-fetching object operations), and a **GraphQL field**
+  (`user(id: ID!)`, scanning `.graphql`/`.gql` files and inline SDL in code).
+  RPC/GraphQL object-access operations satisfy the datastore-reachability
+  condition intrinsically. Authorization is still suppressed by the existing
+  ownership markers, and now also by a GraphQL `@auth` / `@hasRole` / `@authenticated`
+  schema directive on the field. `BolaCandidate` gains a `surface` field
+  (`path_param` / `query_param` / `rpc_method` / `graphql_field`), and GraphQL
+  mutations are treated as HIGH (write) findings.
+
 ## [0.4.13] - 2026-07-21
 
 ### Added

@@ -239,3 +239,143 @@ def test_scan_repo_respects_ownership_check(tmp_path: Path) -> None:
     )
     scan = scan_repo(tmp_path)
     assert scan.authz_candidates == []
+
+
+# ---------------------------------------------------------------------------
+# #139: query-parameter & RPC-method & GraphQL scoping
+# ---------------------------------------------------------------------------
+
+
+def test_xrpc_id_bearing_method_flagged(tmp_path: Path) -> None:
+    (tmp_path / "handler.py").write_text(
+        "def get_record(uri):\n    return db.query(uri)\n", encoding="utf-8"
+    )
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/xrpc/com.atproto.repo.getRecord", method="ANY", file="handler.py")],
+        databases=[DatabaseHint(kind="sqlite", file="handler.py")],
+    )
+    cands = analyze_authz(scan, tmp_path)
+    assert len(cands) == 1
+    assert cands[0].surface == "rpc_method"
+    assert cands[0].id_param == "com.atproto.repo.getRecord"
+
+
+def test_xrpc_non_object_method_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "handler.py").write_text("def x():\n    return db.query('x')\n", encoding="utf-8")
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/xrpc/com.atproto.server.createSession", method="ANY", file="handler.py")],
+        databases=[DatabaseHint(kind="sqlite", file="handler.py")],
+    )
+    assert analyze_authz(scan, tmp_path) == []
+
+
+def test_query_param_id_flagged(tmp_path: Path) -> None:
+    (tmp_path / "handler.py").write_text("def x():\n    return db.query('x')\n", encoding="utf-8")
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/api/orders?orderId=5", method="GET", file="handler.py")],
+        databases=[DatabaseHint(kind="sqlite", file="handler.py")],
+    )
+    cands = analyze_authz(scan, tmp_path)
+    assert len(cands) == 1
+    assert cands[0].surface == "query_param"
+    assert cands[0].id_param == "orderId"
+
+
+def test_query_param_non_id_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "handler.py").write_text("def x():\n    return db.query('x')\n", encoding="utf-8")
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/api/orders?page=2&sort=asc", method="GET", file="handler.py")],
+        databases=[DatabaseHint(kind="sqlite", file="handler.py")],
+    )
+    assert analyze_authz(scan, tmp_path) == []
+
+
+def test_rpc_ownership_check_suppresses(tmp_path: Path) -> None:
+    (tmp_path / "handler.py").write_text(
+        "def get_record(uri):\n"
+        "    if uri.owner_id != current_user.id:\n"
+        "        raise Forbidden()\n"
+        "    return db.query(uri)\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/xrpc/com.atproto.repo.getRecord", method="ANY", file="handler.py")],
+        databases=[DatabaseHint(kind="sqlite", file="handler.py")],
+    )
+    assert analyze_authz(scan, tmp_path) == []
+
+
+def test_graphql_id_field_flagged(tmp_path: Path) -> None:
+    (tmp_path / "schema.graphql").write_text(
+        "type Query {\n"
+        "  user(id: ID!): User\n"
+        "  feed(limit: Int): [Post]\n"
+        "}\n"
+        "type Mutation {\n"
+        "  deleteOrder(orderId: String!): Boolean\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[])
+    cands = analyze_authz(scan, tmp_path)
+    by_field = {c.route_path: c for c in cands}
+    assert "graphql:user" in by_field
+    assert by_field["graphql:user"].surface == "graphql_field"
+    assert by_field["graphql:user"].route_method == "QUERY"
+    assert "graphql:deleteOrder" in by_field
+    assert by_field["graphql:deleteOrder"].route_method == "MUTATION"
+    # A field with no id argument is not an object reference.
+    assert "graphql:feed" not in by_field
+
+
+def test_graphql_auth_directive_suppresses(tmp_path: Path) -> None:
+    (tmp_path / "schema.graphql").write_text(
+        "type Query {\n"
+        "  account(id: ID!): Account @auth\n"
+        "  secret(id: ID!): Secret @hasRole(role: ADMIN)\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[])
+    assert analyze_authz(scan, tmp_path) == []
+
+
+def test_graphql_inline_sdl_in_code_scanned(tmp_path: Path) -> None:
+    (tmp_path / "schema.ts").write_text(
+        "export const typeDefs = gql`\n"
+        "  type Query {\n"
+        "    document(docId: ID!): Document\n"
+        "  }\n"
+        "`;\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[])
+    cands = analyze_authz(scan, tmp_path)
+    assert any(c.route_path == "graphql:document" for c in cands)
+
+
+def test_bola_finding_evidence_cites_surface(tmp_path: Path) -> None:
+    scan = ScanResult(
+        root=str(tmp_path),
+        authz_candidates=[
+            BolaCandidate(
+                route_path="/xrpc/com.atproto.repo.getRecord",
+                route_method="ANY",
+                route_file="h.py",
+                id_param="com.atproto.repo.getRecord",
+                surface="rpc_method",
+                reaches_db=True,
+                db_evidence="RPC object-access method",
+            )
+        ],
+    )
+    findings = [f for f in generate_findings(scan) if "broken-authorization" in f.tags]
+    assert findings
+    joined = "\n".join(findings[0].evidence)
+    assert "RPC method" in joined
+    assert "com.atproto.repo.getRecord" in joined
