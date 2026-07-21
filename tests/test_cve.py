@@ -479,3 +479,16 @@ def test_transitive_dep_offline_served_from_warm_cache(tmp_path: Path) -> None:
     assert s2.cached == 1
     assert len(v2) == 1
     assert v2[0].resolution_path == "a > b > sample-pkg"
+
+
+def test_resolved_pep440_version_not_mangled(tmp_path: Path) -> None:
+    """A lockfile-pinned PEP 440 version (e.g. 1.0.post1) is queried verbatim,
+    not normalized to 1.0.0 (#143)."""
+    dep = DependencyHint(
+        name="sample-pkg", version="1.0.post1", ecosystem="pypi",
+        file="poetry.lock", resolved=True, direct=True,
+    )
+    transport, calls = _stub_transport({"sample-pkg": {"vulns": []}})
+    query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
+    assert calls
+    assert '"version": "1.0.post1"' in calls[0][1].decode("utf-8")

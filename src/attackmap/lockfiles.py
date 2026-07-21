@@ -14,12 +14,14 @@ Supported lockfiles:
     - poetry.lock          (Poetry)           → pypi
     - uv.lock              (uv)               → pypi
     - Cargo.lock           (Cargo)            → cargo
-    - go.sum               (Go modules)       → go
 
-When a lockfile supersedes a range-only manifest (npm / pypi / cargo), the
-manifest hints for that ecosystem are dropped in favour of the exact
-resolution — see ``analyze_sbom`` in ``sbom.py``. Go is special: ``go.mod``
-already carries exact versions, so go.sum only supplements it.
+Go is intentionally NOT resolved from ``go.sum``: that file is a checksum
+history and can retain modules absent from the current build list, so emitting
+every line would over-report. ``go.mod`` already pins exact versions and flags
+``// indirect`` deps, so the manifest parser in ``sbom.py`` fully covers Go.
+
+When a lockfile supersedes a range-only manifest, it does so only for the
+manifest in the *same directory* — see ``analyze_sbom`` in ``sbom.py``.
 
 Parsing is defensive: a malformed lockfile yields ``[]`` rather than raising.
 """
@@ -35,8 +37,8 @@ from pathlib import Path
 
 from .models import DependencyHint
 
-# Ecosystems whose manifests carry only ranges — a lockfile here fully
-# supersedes the manifest. Go is excluded (go.mod is already exact).
+# Ecosystems whose manifests carry only ranges — a lockfile here supersedes
+# the same-directory manifest.
 SUPERSEDING_ECOSYSTEMS = frozenset({"npm", "pypi", "cargo"})
 
 _LOCKFILE_NAMES = {
@@ -45,7 +47,6 @@ _LOCKFILE_NAMES = {
     "poetry.lock",
     "uv.lock",
     "Cargo.lock",
-    "go.sum",
 }
 
 _MAX_DEPTH = 4  # slightly deeper than manifests — lockfiles can nest
@@ -55,45 +56,49 @@ _MAX_DEPTH = 4  # slightly deeper than manifests — lockfiles can nest
 class _Graph:
     """A resolved dependency graph for one lockfile.
 
-    ``nodes`` maps a package name to ``(version, dev)``. ``edges`` maps a
-    package name to the names it depends on. ``roots`` are the direct
-    dependencies (entry points for path reconstruction). When a parser cannot
-    determine roots explicitly, leave ``roots`` empty and the resolver falls
-    back to "a node no one depends on is a root".
+    ``instances`` maps each distinct installed package ``(name, version)`` to
+    its dev flag — keyed by (name, version) so multiple installed versions of
+    the same package are all preserved (npm hoisting). ``edges`` and ``roots``
+    are name-based (lockfile dependency references are by name), used only for
+    best-effort path reconstruction. When a parser can name the direct
+    dependencies explicitly it fills ``roots``; otherwise the resolver falls
+    back to "a name nothing depends on is a root".
     """
 
     ecosystem: str
-    nodes: dict[str, tuple[str, bool]] = field(default_factory=dict)
+    instances: dict[tuple[str, str], bool] = field(default_factory=dict)
     edges: dict[str, set[str]] = field(default_factory=dict)
     roots: set[str] = field(default_factory=set)
 
 
-def parse_lockfiles(root: str | Path) -> tuple[list[DependencyHint], set[str]]:
+def parse_lockfiles(root: str | Path) -> tuple[list[DependencyHint], set[tuple[str, str]]]:
     """Walk ``root`` for lockfiles.
 
-    Returns ``(hints, superseded_ecosystems)`` — the resolved dependency hints
-    and the set of ecosystems whose range-only manifests should be dropped.
+    Returns ``(hints, superseded)`` where ``superseded`` is a set of
+    ``(ecosystem, directory)`` pairs — the range-only manifests in those exact
+    directories should be dropped in favour of the exact resolution.
     """
     root_path = Path(root).resolve()
     if not root_path.exists() or not root_path.is_dir():
         return [], set()
 
     hints: list[DependencyHint] = []
-    superseded: set[str] = set()
+    superseded: set[tuple[str, str]] = set()
     for lockfile in _iter_lockfiles(root_path):
         rel = str(lockfile.relative_to(root_path)).replace("\\", "/")
+        directory = str(Path(rel).parent).replace("\\", "/")
         try:
             graph = _parse_lockfile(lockfile)
         except (OSError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError, json.JSONDecodeError):
             continue
-        if graph is None or not graph.nodes:
+        if graph is None or not graph.instances:
             continue
         file_hints = _graph_to_hints(graph, rel)
         for hint in file_hints:
             hint.source_analyzer = "sbom"
         hints.extend(file_hints)
         if graph.ecosystem in SUPERSEDING_ECOSYSTEMS:
-            superseded.add(graph.ecosystem)
+            superseded.add((graph.ecosystem, directory))
     return hints, superseded
 
 
@@ -127,8 +132,6 @@ def _parse_lockfile(path: Path) -> _Graph | None:
         return _parse_uv_lock(path)
     if name == "Cargo.lock":
         return _parse_cargo_lock(path)
-    if name == "go.sum":
-        return _parse_go_sum(path)
     return None
 
 
@@ -136,16 +139,15 @@ def _parse_lockfile(path: Path) -> _Graph | None:
 
 
 def _graph_to_hints(graph: _Graph, rel: str) -> list[DependencyHint]:
-    """Reconstruct a resolution path for every node and emit hints."""
-    roots = graph.roots or _implicit_roots(graph)
-    paths = _shortest_paths(graph, roots)
+    """Reconstruct a resolution path for every installed instance and emit."""
+    names = {name for (name, _v) in graph.instances}
+    roots = graph.roots or _implicit_roots(graph, names)
+    paths = _shortest_paths(graph, roots, names)
     hints: list[DependencyHint] = []
-    for name, (version, dev) in sorted(graph.nodes.items()):
+    for (name, version), dev in sorted(graph.instances.items()):
         path = paths.get(name)
         is_direct = name in roots
-        via = None
-        if path is not None and len(path) > 1:
-            via = " > ".join(path)
+        via = " > ".join(path) if path is not None and len(path) > 1 else None
         hints.append(
             DependencyHint(
                 name=name,
@@ -162,25 +164,25 @@ def _graph_to_hints(graph: _Graph, rel: str) -> list[DependencyHint]:
     return hints
 
 
-def _implicit_roots(graph: _Graph) -> set[str]:
-    """Roots = nodes nothing else depends on (reverse-graph heuristic)."""
+def _implicit_roots(graph: _Graph, names: set[str]) -> set[str]:
+    """Roots = names nothing else depends on (reverse-graph heuristic)."""
     depended_on: set[str] = set()
     for children in graph.edges.values():
         depended_on.update(children)
-    roots = {name for name in graph.nodes if name not in depended_on}
-    # Degenerate cycle-only graph: fall back to treating every node as a root
-    # so nothing is silently dropped from the CVE scan.
-    return roots or set(graph.nodes)
+    roots = {name for name in names if name not in depended_on}
+    # Degenerate cycle-only graph: treat every name as a root so nothing is
+    # silently dropped from the CVE scan.
+    return roots or set(names)
 
 
-def _shortest_paths(graph: _Graph, roots: set[str]) -> dict[str, list[str]]:
-    """BFS from every root; record the shortest name-path to each node."""
-    paths: dict[str, list[str]] = {r: [r] for r in roots if r in graph.nodes}
+def _shortest_paths(graph: _Graph, roots: set[str], names: set[str]) -> dict[str, list[str]]:
+    """BFS from every root; record the shortest name-path to each name."""
+    paths: dict[str, list[str]] = {r: [r] for r in roots if r in names}
     queue: deque[str] = deque(paths)
     while queue:
         current = queue.popleft()
         for child in sorted(graph.edges.get(current, ())):
-            if child in paths or child not in graph.nodes:
+            if child in paths or child not in names:
                 continue
             paths[child] = paths[current] + [child]
             queue.append(child)
@@ -213,7 +215,7 @@ def _pkg_name_from_path(pkg_path: str) -> str | None:
 def _parse_package_lock_v3(packages: dict, graph: _Graph) -> None:
     # The "" entry is the root project; its deps are the direct dependencies.
     root_meta = packages.get("") or {}
-    for section, dev in (("dependencies", False), ("devDependencies", True)):
+    for section in ("dependencies", "devDependencies"):
         for dep in (root_meta.get(section) or {}):
             graph.roots.add(dep)
     for pkg_path, meta in packages.items():
@@ -224,12 +226,13 @@ def _parse_package_lock_v3(packages: dict, graph: _Graph) -> None:
         if not name or not isinstance(version, str):
             continue
         dev = bool(meta.get("dev", False))
-        graph.nodes[name] = (version, dev)
+        # Keyed by (name, version): a hoisted x@2 and a nested x@1 both survive.
+        graph.instances[(name, version)] = graph.instances.get((name, version), False) or dev
         children = set()
         for section in ("dependencies", "optionalDependencies", "peerDependencies"):
             children.update((meta.get(section) or {}).keys())
         if children:
-            graph.edges[name] = children
+            graph.edges.setdefault(name, set()).update(children)
 
 
 def _parse_package_lock_v1(deps: dict, graph: _Graph, *, is_root: bool = True) -> None:
@@ -239,7 +242,7 @@ def _parse_package_lock_v1(deps: dict, graph: _Graph, *, is_root: bool = True) -
         version = meta.get("version")
         if isinstance(version, str):
             dev = bool(meta.get("dev", False))
-            graph.nodes[name] = (version, dev)
+            graph.instances[(name, version)] = graph.instances.get((name, version), False) or dev
             if is_root:
                 graph.roots.add(name)
             requires = meta.get("requires") or {}
@@ -290,7 +293,7 @@ def _parse_pnpm_lock(path: Path) -> _Graph | None:
         name = m.group("name")
         version = m.group("version").strip()
         dev = bool(meta.get("dev", False)) if isinstance(meta, dict) else False
-        graph.nodes[name] = (version, dev)
+        graph.instances[(name, version)] = graph.instances.get((name, version), False) or dev
         if isinstance(meta, dict):
             children = set()
             for key in ("dependencies", "optionalDependencies"):
@@ -298,7 +301,7 @@ def _parse_pnpm_lock(path: Path) -> _Graph | None:
                 if isinstance(deps, dict):
                     children.update(deps.keys())
             if children:
-                graph.edges[name] = children
+                graph.edges.setdefault(name, set()).update(children)
     return graph
 
 
@@ -311,6 +314,12 @@ def _parse_toml_packages(path: Path, ecosystem: str) -> _Graph:
     packages = data.get("package")
     if not isinstance(packages, list):
         return graph
+
+    # First pass: collect entries and identify local/workspace packages (the
+    # repo's own crates/projects). These are NOT third-party deps — their
+    # direct dependencies are the project's direct dependencies.
+    entries: list[tuple[str, str, bool, bool, set[str]]] = []
+    direct_names: set[str] = set()
     for pkg in packages:
         if not isinstance(pkg, dict):
             continue
@@ -318,11 +327,35 @@ def _parse_toml_packages(path: Path, ecosystem: str) -> _Graph:
         version = pkg.get("version")
         if not isinstance(name, str) or not isinstance(version, str):
             continue
-        # poetry marks dev deps with category/groups; uv/cargo don't reliably.
         dev = pkg.get("category") == "dev" or "dev" in (pkg.get("groups") or [])
-        graph.nodes[name] = (version, bool(dev))
-        graph.edges.setdefault(name, set()).update(_toml_dep_names(pkg.get("dependencies")))
+        deps = _toml_dep_names(pkg.get("dependencies"))
+        is_local = _is_local_toml_pkg(pkg, ecosystem)
+        entries.append((name, version, bool(dev), is_local, deps))
+        if is_local:
+            direct_names.update(deps)
+
+    for name, version, dev, is_local, deps in entries:
+        if is_local:
+            continue  # the project itself is not an SBOM entry
+        graph.instances[(name, version)] = graph.instances.get((name, version), False) or dev
+        if deps:
+            graph.edges.setdefault(name, set()).update(deps)
+    graph.roots = direct_names  # empty → resolver falls back to reverse-graph
     return graph
+
+
+def _is_local_toml_pkg(pkg: dict, ecosystem: str) -> bool:
+    """True for the repo's own crate/project entry (not a third-party dep).
+
+    Cargo workspace members have no ``source``; uv's project package has an
+    editable/virtual source. Poetry never lists the root project in its lock.
+    """
+    source = pkg.get("source")
+    if ecosystem == "cargo":
+        return source is None
+    if ecosystem == "pypi":  # uv.lock
+        return isinstance(source, dict) and ("editable" in source or "virtual" in source)
+    return False
 
 
 def _toml_dep_names(deps) -> set[str]:
@@ -352,24 +385,3 @@ def _parse_uv_lock(path: Path) -> _Graph:
 
 def _parse_cargo_lock(path: Path) -> _Graph:
     return _parse_toml_packages(path, "cargo")
-
-
-# --- go: go.sum ------------------------------------------------------------
-
-# `module version hash` and `module version/go.mod hash`.
-_GO_SUM_LINE_RE = re.compile(r"^(?P<name>\S+)\s+(?P<version>v\S+?)(?:/go\.mod)?\s+h1:")
-
-
-def _parse_go_sum(path: Path) -> _Graph:
-    graph = _Graph(ecosystem="go")
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        m = _GO_SUM_LINE_RE.match(raw.strip())
-        if not m:
-            continue
-        name = m.group("name")
-        version = m.group("version")
-        # go.sum carries no dependency graph and no direct/indirect flag; the
-        # richer signal comes from go.mod (parsed as a manifest). Mark these
-        # transitive — go.mod's direct entries win when both are present.
-        graph.nodes.setdefault(name, (version, False))
-    return graph

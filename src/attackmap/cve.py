@@ -115,7 +115,13 @@ def query_vulnerabilities(
         osv_eco = _OSV_ECOSYSTEM.get(dep.ecosystem)
         if osv_eco is None:
             continue
-        concrete = resolve_concrete_version(dep.version)
+        if dep.resolved and dep.version:
+            # Lockfile-resolved versions are already exact — query them
+            # verbatim so PEP 440 forms like `1.0.post1` / `1!2.3.0` aren't
+            # mangled by range normalization (#143). Only strip Go's `v`.
+            concrete = dep.version.lstrip("v") if dep.ecosystem == "go" else dep.version
+        else:
+            concrete = resolve_concrete_version(dep.version)
         if concrete is None:
             summary.skipped_no_version += 1
             continue

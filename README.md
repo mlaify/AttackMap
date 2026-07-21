@@ -508,15 +508,20 @@ are kept verbatim (`^4.16.0`, `>=2,<3`, `latest`).
 *exact* resolved versions and the full **transitive** tree — where most
 known-vulnerable dependencies actually live. Resolved entries set
 `resolved=true`, mark `direct`/transitive, and carry a `via` resolution path
-(`express > body-parser > qs`). A lockfile supersedes its range-only manifest
-for that ecosystem.
+(`express > body-parser > qs`). A lockfile supersedes the range-only manifest
+in its **own directory** (so a monorepo's per-service lockfiles don't shadow
+each other).
 
 | Lockfile | Ecosystem |
 |---|---|
 | `package-lock.json` (v1/v2/v3), `pnpm-lock.yaml` | npm |
 | `poetry.lock`, `uv.lock` | PyPI |
 | `Cargo.lock` | Cargo |
-| `go.sum` (supplements the already-exact `go.mod`) | Go |
+
+Go needs no lockfile pass: `go.mod` already pins exact versions and flags
+`// indirect` (transitive) deps, so it's treated as resolved directly.
+(`go.sum` is a checksum history, not the build list, so it is not used for
+inventory.)
 
 ### CVE cross-reference (opt-in)
 

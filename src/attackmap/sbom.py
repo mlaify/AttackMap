@@ -65,17 +65,17 @@ def analyze_sbom(root: str | Path) -> list[DependencyHint]:
 
     lock_hints, superseded = parse_lockfiles(root_path)
 
-    # Drop range-only manifest hints for ecosystems a lockfile has resolved.
-    kept_manifest = [h for h in manifest_hints if h.ecosystem not in superseded]
-    # go.sum only supplements go.mod (which is already exact); drop go.sum
-    # entries the manifest already resolved to the same version.
-    gomod_keys = {(h.name, h.version) for h in kept_manifest if h.ecosystem == "go"}
-    merged_locks = [
-        h for h in lock_hints
-        if not (h.ecosystem == "go" and (h.name, h.version) in gomod_keys)
+    # Drop a range-only manifest hint only when a lockfile of the same
+    # ecosystem sits in the *same directory* — so a monorepo's lockfile in
+    # service A doesn't silently exclude service B's un-locked manifest (#143).
+    def _dir(rel: str) -> str:
+        return str(Path(rel).parent).replace("\\", "/")
+
+    kept_manifest = [
+        h for h in manifest_hints if (h.ecosystem, _dir(h.file)) not in superseded
     ]
 
-    hints = kept_manifest + merged_locks
+    hints = kept_manifest + lock_hints
     for hint in hints:
         hint.source_analyzer = "sbom"
 
