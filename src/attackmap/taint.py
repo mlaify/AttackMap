@@ -85,14 +85,23 @@ _JS_IMPORT_RE = re.compile(
 # resolvable binding, so their edges are always kept (import-graph fallback).
 
 # Import/require statements are stripped before collecting used identifiers so
-# a symbol that appears *only* on its own import line reads as unused.
+# a symbol that appears *only* in its own import statement reads as unused. The
+# patterns cover multi-line forms: parenthesized (`from x import (\n a,\n b\n)`)
+# and backslash-continued (`from x import \` <nl> `a`) Python imports, and the
+# `const { a } = require('…')` CommonJS binding declaration (whose left-hand side
+# must be stripped too, else the binding always looks used).
 _PY_IMPORT_LINE_RE = re.compile(
-    r"^[ \t]*(?:from\s+[\w.]+\s+import\b[^\n]*|import\s+[^\n]*)$", re.MULTILINE
+    r"""^[ \t]*(?:
+            from\s+[\w.]+\s+import\s+(?:\*|\([^)]*\)|(?:\\\n|[^\n#])+)
+          | import\s+(?:\\\n|[^\n#])+
+        )""",
+    re.MULTILINE | re.VERBOSE,
 )
 _JS_IMPORT_STMT_RE = re.compile(
-    r"""import\s+[^;'"]*?\s+from\s+["'][^"']+["']  # import … from '…'
-        | import\s+["'][^"']+["']                  # side-effect import '…'
-        | require\s*\(\s*["'][^"']+["']\s*\)        # require('…')
+    r"""import\s+[^;'"]*?\s+from\s+["'][^"']+["']       # import … from '…'
+        | import\s+["'][^"']+["']                       # side-effect import '…'
+        | (?:(?:const|let|var)\s+(?:\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*)?
+          require\s*\(\s*["'][^"']+["']\s*\)             # [const … =] require('…')
     """,
     re.VERBOSE,
 )
@@ -635,9 +644,10 @@ def _resolve_py_module(
     return None
 
 
-# from X import a, b as c  |  from X import (a, b)  |  from X import *
+# from X import a, b as c  |  from X import (a,\n b)  |  from X import *
+#   |  from X import \<nl> a   (parenthesized + backslash continuations)
 _PY_FROM_IMPORT_RE = re.compile(
-    r"^[ \t]*from\s+(?P<mod>[\w.]+)\s+import\s+(?P<names>\*|\([^)]*\)|[^\n#]+)",
+    r"^[ \t]*from\s+(?P<mod>[\w.]+)\s+import\s+(?P<names>\*|\([^)]*\)|(?:\\\n|[^\n#])+)",
     re.MULTILINE,
 )
 # import a, b.c as d
@@ -667,7 +677,10 @@ def _resolve_py_imports_named(
         if raw == "*":
             _add(target, None)  # star import — keep edge unconditionally
             continue
-        for part in raw.strip("()").split(","):
+        # Normalize multi-line forms: drop parens and backslash/newline
+        # continuations so `(a,\n b)` and `\<nl> a` split cleanly.
+        raw = raw.strip("()").replace("\\", " ").replace("\n", " ")
+        for part in raw.split(","):
             part = part.strip()
             if not part:
                 continue

@@ -128,6 +128,61 @@ def test_attribute_use_keeps_edge(tmp_path: Path) -> None:
     assert [c for c in scan.taint_chains if c.sink_file.endswith("runner.py")]
 
 
+def test_parenthesized_multiline_dead_import_is_pruned(tmp_path: Path) -> None:
+    """A parenthesized multi-line import whose symbol is never used is pruned."""
+    (tmp_path / "worker.py").write_text(
+        "def go(expr):\n    return eval(expr)\n", encoding="utf-8"
+    )
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "from worker import (\n    go,\n)\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/x')\n"
+        "def x():\n"
+        "    return 'ok'\n",  # go never called
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert not [c for c in scan.taint_chains if c.sink_file.endswith("worker.py")]
+
+
+def test_backslash_continued_import_that_is_called_keeps_edge(tmp_path: Path) -> None:
+    """Recall guard: a backslash-continued import whose symbol IS called must
+    keep its edge (the module resolves and the sink stays reachable)."""
+    (tmp_path / "worker.py").write_text(
+        "def go(expr):\n    return eval(expr)\n", encoding="utf-8"
+    )
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request\n"
+        "from worker import \\\n    go\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/y')\n"
+        "def y():\n"
+        "    return go(request.args['expr'])\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert [c for c in scan.taint_chains if c.sink_file.endswith("worker.py")]
+
+
+def test_commonjs_dead_require_binding_is_pruned(tmp_path: Path) -> None:
+    """`const { run } = require('./worker')` where `run` is never used is
+    pruned — the LHS binding is stripped before the usage check."""
+    (tmp_path / "worker.js").write_text(
+        "function run(expr) { return eval(expr); }\nmodule.exports = { run };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.js").write_text(
+        "const express = require('express');\n"
+        "const { run } = require('./worker');\n"  # run never called
+        "const app = express();\n"
+        "app.get('/z', (req, res) => res.send('ok'));\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert not [c for c in scan.taint_chains if c.sink_file.endswith("worker.js")]
+
+
 def test_hop_zero_when_route_and_sink_share_file(tmp_path: Path) -> None:
     handler = tmp_path / "handler.py"
     handler.write_text(
