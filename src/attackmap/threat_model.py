@@ -1337,8 +1337,18 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     # finding for reads, per the OWASP API #1 severity shape.
     bola = scan.authz_candidates
     if bola:
-        write_candidates = [c for c in bola if c.route_method in {"POST", "PUT", "PATCH", "DELETE"}]
-        read_candidates = [c for c in bola if c.route_method not in {"POST", "PUT", "PATCH", "DELETE"}]
+        # Object identifiers arrive via path params, query params, RPC methods
+        # (XRPC/tRPC), or GraphQL fields (#139). A write is any mutating HTTP
+        # verb or a GraphQL mutation.
+        _write_methods = {"POST", "PUT", "PATCH", "DELETE", "MUTATION"}
+        _surface_label = {
+            "path_param": "path id",
+            "query_param": "query param",
+            "rpc_method": "RPC method",
+            "graphql_field": "field arg",
+        }
+        write_candidates = [c for c in bola if c.route_method in _write_methods]
+        read_candidates = [c for c in bola if c.route_method not in _write_methods]
         for group, severity, verb in (
             (write_candidates, "high", "modify"),
             (read_candidates, "medium", "read"),
@@ -1346,7 +1356,9 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             if not group:
                 continue
             evidence = [
-                f"{c.route_method} {c.route_path} (id param `{c.id_param}`) in {c.route_file} — {c.db_evidence}"
+                f"{c.route_method} {c.route_path} "
+                f"({_surface_label.get(c.surface, 'id')} `{c.id_param}`) "
+                f"in {c.route_file} — {c.db_evidence}"
                 for c in group[:10]
             ]
             if len(group) > 10:
@@ -1962,11 +1974,12 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
     # it keys off scan.authz_candidates.
     bola = scan.authz_candidates
     if bola:
+        _bola_write_methods = {"POST", "PUT", "PATCH", "DELETE", "MUTATION"}
         top = min(
             bola,
-            key=lambda c: (c.route_method not in {"POST", "PUT", "PATCH", "DELETE"}, c.route_file),
+            key=lambda c: (c.route_method not in _bola_write_methods, c.route_file),
         )
-        action = "modify" if top.route_method in {"POST", "PUT", "PATCH", "DELETE"} else "read"
+        action = "modify" if top.route_method in _bola_write_methods else "read"
         paths.append(
             AttackPath(
                 name="Object-level authorization bypass (BOLA/IDOR)",

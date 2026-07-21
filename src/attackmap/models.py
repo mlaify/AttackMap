@@ -275,7 +275,10 @@ class BolaCandidate(BaseModel):
     route_method: str
     route_file: str
     route_line: int | None = None
-    id_param: str  # the resource-id parameter detected in the route
+    id_param: str  # the resource-id parameter/method detected
+    # Where the object identifier arrives (#139): a path template param, an
+    # id-bearing query parameter, an RPC method (XRPC/tRPC), or a GraphQL field.
+    surface: Literal["path_param", "query_param", "rpc_method", "graphql_field"] = "path_param"
     reaches_db: bool = False
     db_evidence: str = ""  # how DB reachability was established
     has_ownership_check: bool = False  # True → suppressed (not a candidate)

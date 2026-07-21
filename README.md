@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.4.13).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.14).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -423,18 +423,22 @@ adds the general mutating-endpoint case, with the resolved chain as evidence.
 OWASP API Security #1. AttackMap flags a route as a BOLA/IDOR candidate when it
 composes three signals it already has:
 
-1. the route takes a **resource id** in the path (`/users/{id}`,
-   `/orders/:orderId`, `/docs/<int:doc_id>`), and
-2. it **reaches a datastore** — a DB hint in the same file/module, or a taint
-   chain from the route to a SQL execute sink, and
+1. the route takes a **resource id** — via a **path** template (`/users/{id}`,
+   `/orders/:orderId`), an id-bearing **query parameter** (`?orderId=`), an
+   **RPC method** (XRPC `/xrpc/…getRecord`, tRPC `user.byId`), or a **GraphQL
+   field** (`user(id: ID!)`) — and
+2. it **reaches a datastore** — a DB hint in the same file/module, a taint chain
+   from the route to a SQL execute sink, or (for RPC/GraphQL) an object-access
+   operation, and
 3. **no ownership/authorization check** is visible near the handler
-   (`current_user`, `request.user`, `authorize`, a policy/guard, or a
-   `filter_by(user_id=…)`-style scoped query).
+   (`current_user`, `request.user`, `authorize`, a policy/guard, a
+   `filter_by(user_id=…)`-style scoped query, or a GraphQL `@auth`/`@hasRole`
+   schema directive on the field).
 
-Write routes (POST/PUT/PATCH/DELETE) are HIGH, reads MEDIUM. Candidates appear
-under `scan.authz_candidates`; the ownership-marker scan is the main
-false-positive reducer, so a well-scoped handler is not flagged. Path-template
-routes today; query-parameter and RPC-method ids are future work.
+Write operations (POST/PUT/PATCH/DELETE, GraphQL mutations) are HIGH, reads
+MEDIUM. Candidates appear under `scan.authz_candidates` (each carrying its
+`surface`); the ownership-marker scan is the main false-positive reducer, so a
+well-scoped handler or an `@auth`-guarded field is not flagged.
 
 ### Anomaly / outlier detection
 
@@ -693,7 +697,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.13) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.14) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
@@ -728,8 +732,9 @@ pre-1.0 and heuristic.
 
 **Still maturing:**
 
-- Taint is Python/JS/TS/Go/PHP and path-template scoped; query-param / RPC-method
-  authorization and more languages are planned.
+- BOLA/IDOR authorization now covers path templates, query parameters, RPC
+  methods (XRPC/tRPC), and GraphQL fields; deeper resolver-level GraphQL
+  ownership analysis and more languages are planned.
 - The taint walk is call-graph-aware for Python/JS/TS (import edges are pruned to
   symbols actually used in the file) but still approximates: symbol *use* is not a
   proven data-carrying call, and Go/PHP keep the plain import-graph. Precision
