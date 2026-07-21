@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 
 from attackmap.analyzers import AnalyzerSignals, get_builtin_analyzers, merge_analyzer_signals
@@ -868,14 +869,39 @@ def test_hardcoded_npm_token_detected(tmp_path: Path) -> None:
 def test_subresource_integrity_hash_not_flagged_as_secret(tmp_path: Path) -> None:
     """SRI / lockfile integrity digests are high-entropy base64 but are
     public asset fingerprints, not credentials (#141)."""
-    sri = "sha384-" + "oqVuAfXRKap7fdgcCY5uykM6R9GqQ8K9uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC"
+    # A valid sha384 digest: 48 raw bytes → 64 base64 chars.
+    sri = "sha384-" + base64.b64encode(bytes(range(48))).decode()
     scan = _scan_source(tmp_path, f'INTEGRITY = "{sri}"\n')
     assert not _has_kind(scan, "high_entropy")
+
+
+def test_secret_that_merely_starts_with_algo_prefix_still_flagged(tmp_path: Path) -> None:
+    """A genuine high-entropy value whose body is NOT a correct-length
+    digest must not be suppressed just because it starts with `sha256-`."""
+    body = "aB9x2z8Kq7Vn3W6yF1jH5tR4mE0uC8pI6oXsL7dSqW3eR9tY1uZ"  # 100+ once prefixed
+    scan = _scan_source(tmp_path, f'token = "sha256-{body}"\n')
+    assert _has_kind(scan, "high_entropy")
 
 
 def test_uuid_not_flagged_as_secret(tmp_path: Path) -> None:
     scan = _scan_source(tmp_path, 'REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000"\n')
     assert not _has_kind(scan, "high_entropy")
+
+
+def test_openai_placeholder_with_hyphens_not_flagged(tmp_path: Path) -> None:
+    """The bare `sk-` legacy shape is alphanumeric-only, so hyphenated
+    placeholders are not misclassified as a live OpenAI credential (#141)."""
+    scan = _scan_source(tmp_path, 'OPENAI = "sk-this-is-a-long-placeholder-value-goes-here"\n')
+    assert not _has_kind(scan, "openai_key")
+
+
+def test_typed_secret_redacted_in_evidence_text(tmp_path: Path) -> None:
+    """The raw credential must never survive into evidence_text — it is
+    serialized into report.json (#141)."""
+    scan = _scan_source(tmp_path, f'GL = "{_GITLAB}"\n')
+    hint = _hint_of_kind(scan, "gitlab_pat")
+    assert _GITLAB not in (hint.evidence_text or "")
+    assert "…" in (hint.evidence_text or "")
 
 
 def test_route_extraction_ignores_non_router_method_calls(tmp_path: Path) -> None:

@@ -17,16 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing AWS / GitHub / Slack / Stripe / SendGrid / Mailgun / Twilio / Google /
   Anthropic / PEM / JWT detectors. Each fires at confidence `1.0` with a
   provider-specific `kind`, and the raw value is redacted before it reaches any
-  report. The OpenAI matcher carries a negative lookahead so Anthropic's
-  `sk-ant-…` keys keep their own (more specific) `kind` rather than being
-  double-reported.
+  report — including inside the evidence snippet (`evidence_text`), so the full
+  credential never survives into `attackmap-report.json`. OpenAI keys are split
+  by documented shape (`sk-proj-`, `sk-svcacct-`, and the 48-char alphanumeric
+  legacy form), which keeps hyphenated placeholders from being misclassified and
+  keeps Anthropic's `sk-ant-…` keys on their own more-specific `kind`.
 
 ### Changed
 
 - **Entropy fallback calibration (#141).** The generic high-entropy secret
   detector now suppresses two more well-known non-secret high-entropy shapes,
   extending the #96 charset guard: Subresource-Integrity / lockfile integrity
-  digests (`sha256-…`, `sha384-…`, `sha512-…`) and canonical UUIDs. Typed
+  digests (`sha256-…`, `sha384-…`, `sha512-…`) and canonical UUIDs. Integrity
+  digests are validated as correct-length base64 (not just prefix-matched), so a
+  genuine secret that merely starts with `sha256-` is still reported. Typed
   provider matches continue to take precedence over the entropy hit for the same
   span, so a recognized key is never also reported as a bare high-entropy blob.
 

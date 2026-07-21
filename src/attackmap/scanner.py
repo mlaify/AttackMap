@@ -281,12 +281,16 @@ HARDCODED_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(AIza[A-Za-z0-9_-]{35,42})\b"), "google_api_key"),
     # Anthropic API key (long, characteristic prefix)
     (re.compile(r"\b(sk-ant-[A-Za-z0-9_-]{40,})\b"), "anthropic_key"),
-    # OpenAI API key — legacy `sk-<48 alnum>`, project keys `sk-proj-…`,
-    # and service-account keys `sk-svcacct-…`. The negative lookahead keeps
-    # Anthropic's `sk-ant-` keys on their own (more specific) kind and stops
-    # this from double-matching them. Stripe uses an underscore (`sk_live_`),
-    # so there is no overlap there.
-    (re.compile(r"\b(sk-(?!ant-)(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,})\b"), "openai_key"),
+    # OpenAI API keys, one pattern per documented shape so each enforces
+    # its own length/charset (a loose `sk-…{20,}` would classify hyphenated
+    # placeholders like `sk-this-is-a-placeholder` as a live credential).
+    #   - project keys:         `sk-proj-<token>`
+    #   - service-account keys: `sk-svcacct-<token>`
+    #   - legacy keys:          `sk-<48 alphanumerics>` (no `-`/`_`, which
+    #     also keeps Anthropic's hyphenated `sk-ant-…` on its own kind).
+    (re.compile(r"\b(sk-proj-[A-Za-z0-9_-]{20,})\b"), "openai_key"),
+    (re.compile(r"\b(sk-svcacct-[A-Za-z0-9_-]{20,})\b"), "openai_key"),
+    (re.compile(r"\b(sk-[A-Za-z0-9]{48,})\b"), "openai_key"),
     # GitLab personal / project / group access tokens.
     (re.compile(r"\b(glpat-[A-Za-z0-9_-]{20,})\b"), "gitlab_pat"),
     # npm automation / publish tokens.
@@ -333,6 +337,18 @@ def _line_snippet(content: str, offset: int, *, max_chars: int = _SNIPPET_MAX_CH
     if len(line) > max_chars:
         line = line[: max_chars - 1] + "…"
     return line
+
+
+def _redacted_snippet(
+    content: str, offset: int, literal: str, *, redact: bool = True
+) -> str:
+    """Line snippet with the matched secret masked in place. Evidence text
+    is serialized into report.json, so the raw credential must never survive
+    into it — only the redacted head/tail form does."""
+    snippet = _line_snippet(content, offset)
+    if redact and literal in snippet:
+        snippet = snippet.replace(literal, _redact_secret(literal))
+    return snippet
 
 
 def should_scan(path: Path) -> bool:
@@ -791,10 +807,12 @@ def _looks_like_secret_candidate(value: str) -> bool:
     if all(c in "0123456789abcdef" for c in value.lower()):
         # Pure hex — commit SHAs, hashes. Not a secret in code.
         return False
-    if value.startswith(_INTEGRITY_HASH_PREFIXES):
+    if _is_integrity_digest(value):
         # Subresource-integrity / lockfile integrity digests
         # (`sha384-…`, `sha512-…`). High-entropy base64, but they are
-        # published fingerprints of public assets, not secrets (#141).
+        # published fingerprints of public assets, not secrets (#141). The
+        # body is verified as a correct-length base64 digest so a real
+        # credential that merely starts with `sha256-` is not suppressed.
         return False
     if _UUID_RE.match(value):
         # Canonical UUID — an identifier, not a credential.
@@ -836,13 +854,17 @@ def _append_hardcoded_secret_hints(result: ScanResult, relative: str, content: s
                 continue
             seen.add(key)
             matched_spans.append((match.start(), match.end()))
-            display_name = _redact_secret(literal) if kind != "pem_private_key" else literal
+            # PEM only captures the (non-secret) header line — keep it verbatim.
+            # Everything else is redacted in both the name *and* the evidence
+            # snippet so the raw credential never reaches report.json.
+            redact = kind != "pem_private_key"
+            display_name = _redact_secret(literal) if redact else literal
             result.secret_hints.append(
                 SecretHint(
                     name=display_name,
                     file=relative,
                     line=line,
-                    evidence_text=_line_snippet(content, match.start()),
+                    evidence_text=_redacted_snippet(content, match.start(), literal, redact=redact),
                     confidence=1.0,
                     kind=kind,
                 )
@@ -874,7 +896,7 @@ def _append_hardcoded_secret_hints(result: ScanResult, relative: str, content: s
                 name=_redact_secret(literal),
                 file=relative,
                 line=line,
-                evidence_text=_line_snippet(content, pos),
+                evidence_text=_redacted_snippet(content, pos, literal),
                 confidence=0.7,
                 kind="high_entropy",
             )
@@ -895,10 +917,31 @@ def _looks_like_charset(value: str) -> bool:
     return any(marker in value for marker in _CHARSET_MARKERS)
 
 
-# Integrity-digest prefixes (Subresource Integrity, lockfile `integrity`
-# fields). These are high-entropy base64 but are public asset fingerprints,
-# not credentials — the entropy fallback must not treat them as secrets.
-_INTEGRITY_HASH_PREFIXES = ("sha256-", "sha384-", "sha512-", "sha1-", "md5-")
+# Integrity-digest algorithms (Subresource Integrity, lockfile `integrity`
+# fields) and their raw digest byte-lengths. These are high-entropy base64
+# but are public asset fingerprints, not credentials.
+_INTEGRITY_DIGEST_BYTES = {"md5": 16, "sha1": 20, "sha256": 32, "sha384": 48, "sha512": 64}
+
+
+def _is_integrity_digest(value: str) -> bool:
+    """True if ``value`` is an `<algo>-<base64>` integrity digest whose body
+    decodes to the algorithm's expected length. Length-checking the body
+    keeps a genuine secret that merely starts with `sha256-` from being
+    suppressed as if it were a public fingerprint."""
+    algo, sep, body = value.partition("-")
+    if not sep:
+        return False
+    expected = _INTEGRITY_DIGEST_BYTES.get(algo.lower())
+    if expected is None or not body:
+        return False
+    stripped = body.rstrip("=")
+    padding = "=" * ((4 - len(stripped) % 4) % 4)
+    try:
+        decoded = base64.b64decode(stripped + padding, validate=True)
+    except (ValueError, binascii.Error):
+        return False
+    return len(decoded) == expected
+
 
 # Canonical UUID (8-4-4-4-12 hex). An identifier, not a credential.
 _UUID_RE = re.compile(
