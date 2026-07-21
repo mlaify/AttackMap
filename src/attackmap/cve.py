@@ -144,6 +144,10 @@ def query_vulnerabilities(
                 continue
             seen_keys.add(fingerprint)
             vuln.source_analyzer = "cve"
+            # Carry lockfile provenance (#143) so a transitive CVE can report
+            # how it was pulled in.
+            vuln.direct = dep.direct
+            vuln.resolution_path = dep.via or ""
             vulns.append(vuln)
 
     vulns.sort(

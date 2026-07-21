@@ -108,12 +108,12 @@ class SecretHint(BaseModel):
 
 
 class DependencyHint(BaseModel):
-    """A single third-party dependency declared in a manifest (#48).
+    """A single third-party dependency declared in a manifest or lockfile.
 
-    Emitted by the SBOM analyzer. Slice 1 covers direct dependencies
-    only (no lockfile parsing) — the ``version`` field carries whatever
-    the manifest wrote verbatim (``^4.16.0``, ``>=2,<3``, ``latest``,
-    etc.); consumers that need a resolved version look at lockfiles.
+    Manifests (#48) carry version *ranges* verbatim (``^4.16.0``, ``>=2,<3``,
+    ``latest``) and only direct dependencies. Lockfiles (#143) carry *exact*
+    resolved versions and the full transitive tree — those hints set
+    ``resolved=True`` and populate ``direct`` / ``via``.
     """
 
     name: str
@@ -126,6 +126,13 @@ class DependencyHint(BaseModel):
     # these differently: a dev-time RCE still matters, but a dev-only
     # dep isn't part of the shipped attack surface.
     dev: bool = False
+    # Lockfile-sourced provenance (#143). ``resolved`` marks an exact pinned
+    # version (skip range-guessing in the CVE lookup). ``direct`` is False for
+    # a transitive dependency; ``via`` is its resolution path from a direct
+    # dependency, e.g. ``"express > body-parser > qs"``.
+    resolved: bool = False
+    direct: bool = True
+    via: str | None = None
     evidence_text: str | None = None
     source_analyzer: str | None = _PROVENANCE_FIELD
 
@@ -336,6 +343,12 @@ class Vulnerability(BaseModel):
     package_name: str
     package_version: str
     ecosystem: Literal["pypi", "npm", "go", "cargo", "composer"]
+    # Lockfile provenance (#143): False when the vulnerable package is a
+    # transitive dependency; ``resolution_path`` is its chain from a direct
+    # dependency (``"express > body-parser > qs"``) so the finding can say how
+    # the vulnerable code was pulled in.
+    direct: bool = True
+    resolution_path: str = ""
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 

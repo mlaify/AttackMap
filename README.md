@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.4.12).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.13).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -501,8 +501,22 @@ of the common manifest files:
 | Composer (PHP) | `composer.json` (require + require-dev; platform reqs skipped) |
 
 Each entry appears in `attackmap-report.json` under `scan.dependencies` with
-`{name, version, ecosystem, file, dev}`. Version ranges are kept verbatim
-(`^4.16.0`, `>=2,<3`, `latest`) — this slice does not resolve lockfiles.
+`{name, version, ecosystem, file, dev, resolved, direct, via}`. Manifest ranges
+are kept verbatim (`^4.16.0`, `>=2,<3`, `latest`).
+
+**Lockfile resolution (#143).** When a lockfile is present it is parsed for
+*exact* resolved versions and the full **transitive** tree — where most
+known-vulnerable dependencies actually live. Resolved entries set
+`resolved=true`, mark `direct`/transitive, and carry a `via` resolution path
+(`express > body-parser > qs`). A lockfile supersedes its range-only manifest
+for that ecosystem.
+
+| Lockfile | Ecosystem |
+|---|---|
+| `package-lock.json` (v1/v2/v3), `pnpm-lock.yaml` | npm |
+| `poetry.lock`, `uv.lock` | PyPI |
+| `Cargo.lock` | Cargo |
+| `go.sum` (supplements the already-exact `go.mod`) | Go |
 
 ### CVE cross-reference (opt-in)
 
@@ -523,9 +537,12 @@ attackmap analyze . --cve
   the network.
 - **Offline-tolerant.** If the network's unavailable but the cache is warm,
   cached results still surface; only fresh queries are skipped.
-- **Version resolution is best-effort.** Manifest ranges (`^4.16.0`,
-  `>=2.28,<3`) resolve to a queryable lower-bound; OSV does the range math.
-  Unpinned specs (`*`, `latest`) are skipped.
+- **Exact when a lockfile exists.** Lockfile-resolved dependencies (direct and
+  transitive) are queried at their pinned version, and a vulnerable transitive
+  dep is reported with its resolution path. For range-only manifests with no
+  lockfile, version resolution is best-effort — ranges (`^4.16.0`, `>=2.28,<3`)
+  resolve to a queryable lower-bound and OSV does the range math; unpinned specs
+  (`*`, `latest`) are skipped.
 
 The structured vulnerability list is available under
 `scan.vulnerabilities` in `attackmap-report.json` with
@@ -671,7 +688,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.12) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.13) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
@@ -712,7 +729,9 @@ pre-1.0 and heuristic.
   symbols actually used in the file) but still approximates: symbol *use* is not a
   proven data-carrying call, and Go/PHP keep the plain import-graph. Precision
   over recall; findings are evidence, not proof.
-- CVE lookup resolves a best-effort concrete version, not full lockfile ranges.
+- CVE lookup uses exact lockfile-resolved versions (direct + transitive) when a
+  lockfile is present; range-only manifests without a lockfile still fall back to
+  a best-effort concrete version.
 - Anomaly / exploitability reasoning is route-cohort and taint-chain scoped.
 
 ---

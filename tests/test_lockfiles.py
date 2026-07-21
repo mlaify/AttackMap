@@ -1,0 +1,277 @@
+"""Tests for lockfile resolution (#143)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from attackmap.lockfiles import parse_lockfiles
+from attackmap.sbom import analyze_sbom
+
+
+def _by_name(hints):
+    return {h.name: h for h in hints}
+
+
+# --- npm: package-lock.json ------------------------------------------------
+
+
+def _write_package_lock_v3(root: Path) -> None:
+    (root / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {
+                        "dependencies": {"express": "^4.18.0"},
+                        "devDependencies": {"jest": "^29.0.0"},
+                    },
+                    "node_modules/express": {
+                        "version": "4.18.2",
+                        "dependencies": {"body-parser": "1.20.1"},
+                    },
+                    "node_modules/body-parser": {
+                        "version": "1.20.1",
+                        "dependencies": {"qs": "6.11.0"},
+                    },
+                    "node_modules/qs": {"version": "6.11.0"},
+                    "node_modules/jest": {"version": "29.5.0", "dev": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_package_lock_v3_resolves_exact_versions_and_transitive_path(tmp_path: Path) -> None:
+    _write_package_lock_v3(tmp_path)
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert superseded == {"npm"}
+    by_name = _by_name(hints)
+
+    # Direct, exact version.
+    assert by_name["express"].version == "4.18.2"
+    assert by_name["express"].direct is True
+    assert by_name["express"].resolved is True
+
+    # Transitive with a full resolution path (AC1 + AC2).
+    assert by_name["qs"].version == "6.11.0"
+    assert by_name["qs"].direct is False
+    assert by_name["qs"].via == "express > body-parser > qs"
+
+    # Dev dependency preserved.
+    assert by_name["jest"].dev is True
+
+
+def test_package_lock_v1_nested_dependencies(tmp_path: Path) -> None:
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 1,
+                "dependencies": {
+                    "express": {
+                        "version": "4.18.2",
+                        "requires": {"body-parser": "1.20.1"},
+                        "dependencies": {
+                            "body-parser": {"version": "1.20.1"},
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    hints, _ = parse_lockfiles(tmp_path)
+    by_name = _by_name(hints)
+    assert by_name["express"].version == "4.18.2"
+    assert by_name["express"].direct is True
+    assert by_name["body-parser"].version == "1.20.1"
+    assert by_name["body-parser"].direct is False
+
+
+# --- pypi: poetry.lock / uv.lock -------------------------------------------
+
+
+def test_poetry_lock_transitive_path_and_dev(tmp_path: Path) -> None:
+    (tmp_path / "poetry.lock").write_text(
+        """
+[[package]]
+name = "flask"
+version = "2.3.2"
+category = "main"
+[package.dependencies]
+werkzeug = ">=2.3.0"
+
+[[package]]
+name = "werkzeug"
+version = "2.3.6"
+category = "main"
+
+[[package]]
+name = "pytest"
+version = "7.4.0"
+category = "dev"
+""",
+        encoding="utf-8",
+    )
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert superseded == {"pypi"}
+    by_name = _by_name(hints)
+    assert by_name["flask"].version == "2.3.2"
+    assert by_name["flask"].direct is True
+    assert by_name["werkzeug"].version == "2.3.6"
+    assert by_name["werkzeug"].direct is False
+    assert by_name["werkzeug"].via == "flask > werkzeug"
+    assert by_name["pytest"].dev is True
+
+
+def test_uv_lock_resolves_packages(tmp_path: Path) -> None:
+    (tmp_path / "uv.lock").write_text(
+        """
+[[package]]
+name = "httpx"
+version = "0.25.0"
+dependencies = [{ name = "httpcore" }]
+
+[[package]]
+name = "httpcore"
+version = "0.18.0"
+""",
+        encoding="utf-8",
+    )
+    hints, _ = parse_lockfiles(tmp_path)
+    by_name = _by_name(hints)
+    assert by_name["httpx"].version == "0.25.0"
+    assert by_name["httpcore"].version == "0.18.0"
+    assert by_name["httpcore"].via == "httpx > httpcore"
+
+
+# --- cargo: Cargo.lock -----------------------------------------------------
+
+
+def test_cargo_lock_transitive_path(tmp_path: Path) -> None:
+    (tmp_path / "Cargo.lock").write_text(
+        """
+[[package]]
+name = "myapp"
+version = "0.1.0"
+dependencies = ["serde"]
+
+[[package]]
+name = "serde"
+version = "1.0.190"
+dependencies = ["serde_derive"]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.190"
+""",
+        encoding="utf-8",
+    )
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert superseded == {"cargo"}
+    by_name = _by_name(hints)
+    assert by_name["serde"].version == "1.0.190"
+    assert by_name["serde_derive"].via == "myapp > serde > serde_derive"
+
+
+# --- npm: pnpm-lock.yaml ---------------------------------------------------
+
+
+def test_pnpm_lock_roots_and_transitive(tmp_path: Path) -> None:
+    (tmp_path / "pnpm-lock.yaml").write_text(
+        """lockfileVersion: '6.0'
+importers:
+  .:
+    dependencies:
+      lodash:
+        specifier: ^4.17.0
+        version: 4.17.21
+packages:
+  /lodash@4.17.21:
+    resolution: {integrity: sha512-abc}
+    dev: false
+  /minimist@1.2.5:
+    resolution: {integrity: sha512-def}
+    dev: false
+""",
+        encoding="utf-8",
+    )
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert superseded == {"npm"}
+    by_name = _by_name(hints)
+    assert by_name["lodash"].version == "4.17.21"
+    assert by_name["lodash"].direct is True
+    assert by_name["minimist"].version == "1.2.5"
+
+
+# --- go: go.sum ------------------------------------------------------------
+
+
+def test_go_sum_exact_versions(tmp_path: Path) -> None:
+    (tmp_path / "go.sum").write_text(
+        "github.com/gin-gonic/gin v1.9.0 h1:abc=\n"
+        "github.com/gin-gonic/gin v1.9.0/go.mod h1:def=\n"
+        "golang.org/x/sys v0.5.0/go.mod h1:ghi=\n",
+        encoding="utf-8",
+    )
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert superseded == set()  # go.sum only supplements go.mod
+    by_name = _by_name(hints)
+    assert by_name["github.com/gin-gonic/gin"].version == "v1.9.0"
+    assert by_name["github.com/gin-gonic/gin"].resolved is True
+    # The two go.sum lines for one module collapse to a single hint.
+    assert len([h for h in hints if h.name == "github.com/gin-gonic/gin"]) == 1
+
+
+def test_malformed_lockfile_is_skipped(tmp_path: Path) -> None:
+    (tmp_path / "package-lock.json").write_text("{ not valid json", encoding="utf-8")
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert hints == []
+    assert superseded == set()
+
+
+# --- supersede behaviour via analyze_sbom ----------------------------------
+
+
+def test_lockfile_supersedes_range_manifest(tmp_path: Path) -> None:
+    """A package-lock resolves exact versions; the range-only package.json
+    hints for npm are dropped in favour of them."""
+    (tmp_path / "package.json").write_text(
+        json.dumps({"dependencies": {"express": "^4.18.0"}}), encoding="utf-8"
+    )
+    _write_package_lock_v3(tmp_path)
+    hints = analyze_sbom(tmp_path)
+    express = [h for h in hints if h.name == "express"]
+    # Only the resolved (exact) express survives, not the "^4.18.0" range.
+    assert len(express) == 1
+    assert express[0].version == "4.18.2"
+    assert express[0].resolved is True
+
+
+def test_manifest_kept_when_no_lockfile(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"dependencies": {"express": "^4.18.0"}}), encoding="utf-8"
+    )
+    hints = analyze_sbom(tmp_path)
+    express = [h for h in hints if h.name == "express"]
+    assert len(express) == 1
+    assert express[0].version == "^4.18.0"
+    assert express[0].resolved is False
+
+
+def test_go_mod_marked_resolved_with_direct_flag(tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text(
+        "module example.com/app\n\n"
+        "go 1.21\n\n"
+        "require (\n"
+        "\tgithub.com/gin-gonic/gin v1.9.0\n"
+        "\tgolang.org/x/sys v0.5.0 // indirect\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    hints = analyze_sbom(tmp_path)
+    by_name = _by_name(hints)
+    assert by_name["github.com/gin-gonic/gin"].resolved is True
+    assert by_name["github.com/gin-gonic/gin"].direct is True
+    assert by_name["golang.org/x/sys"].direct is False  # // indirect
