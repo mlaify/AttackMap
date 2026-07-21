@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-07-21
+
+### Added
+
+- **`--triage` LLM mode (#145).** A prioritization pass over the *existing*
+  heuristic findings (complementing `--hunt`, which discovers new leads). It has
+  the LLM cluster findings by root cause, de-duplicate them, and rank them into a
+  shortlist that cites real `finding_id`s — organization, not discovery, under
+  the same grounding contract as `--llm`/`--hunt` (it may not invent findings).
+  Output is written to `triage.md`. When no LLM backend is available it degrades
+  to a **deterministic** score-ordered, root-cause-clustered shortlist (new
+  `triage.py`) rather than erroring — the ordering is a pure function of the
+  findings (severity → exploitability → score → title), so runs are reproducible
+  and diff cleanly. The evidence pack now also carries each finding's stable
+  `finding_id`, `score`, and `exploitability`.
+
 ## [0.4.14] - 2026-07-21
 
 ### Added

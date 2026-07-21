@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.4.14).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.15).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -138,6 +138,7 @@ Every `attackmap analyze` run writes:
 | `defensive-review-llm.md` *(with `--llm`)* | Claude-narrated review |
 | `defensive-review-llm.meta.json` *(with `--llm`)* | Backend, model, token usage |
 | `vulnerability-hypotheses.md` *(with `--hunt`)* | LLM-generated, evidence-cited exploit-chain **hypotheses** to confirm (leads, not detections) |
+| `triage.md` *(with `--triage`)* | Clustered, de-duplicated, ranked shortlist of the existing findings (LLM-backed; deterministic fallback) |
 
 ### GitHub Code Scanning integration
 
@@ -605,6 +606,14 @@ a human must verify. Uses the same auth/backend resolution as `--llm`.
 Layered on top: **MITRE ATT&CK technique mappings** on every insight and
 **detection opportunities** (Sigma/KQL/Splunk-style hints) for each weakness.
 
+**6. Triage (`--triage`).** Where `--hunt` finds *new* leads, `--triage`
+distills the *existing* heuristic findings: `attackmap analyze . --triage` has
+the LLM cluster them by root cause, de-duplicate, and rank into a prioritized
+shortlist that cites real finding IDs (it organizes, it never invents). Output
+goes to `triage.md`. When no LLM backend is available it degrades to a
+**deterministic**, score-ordered, clustered shortlist — reproducible enough to
+diff across runs — rather than erroring.
+
 ---
 
 ## Supported ecosystems
@@ -653,6 +662,7 @@ attackmap analyze <path> --llm --llm-provider openai --llm-model gpt-5.5   # any
 attackmap analyze <path> --hunt          # LLM vulnerability-hypothesis hunt (leads to confirm)
 attackmap analyze <path> --hunt --verify # adjudicate each lead vs. source (confirmed/refuted/review)
 attackmap analyze <path> --remediate     # LLM review-first fix suggestions (remediation.md)
+attackmap analyze <path> --triage        # cluster/dedupe/rank existing findings (triage.md; deterministic fallback)
 attackmap analyze <path> --pr-comment pr.md   # Markdown PR summary comment for CI
 
 # CI / PR diff gating
@@ -697,7 +707,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.14) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.15) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
@@ -719,8 +729,9 @@ pre-1.0 and heuristic.
   explainable 0–100 "exploitable now" score that ranks route→sink combinations
   and folds in known-vulnerable dependencies on the path.
 - **`--hunt`** (LLM exploit-chain hypotheses) with **`--verify`** (adjudicate
-  each lead CONFIRMED/REFUTED/NEEDS-REVIEW against the actual source), and
-  **`--remediate`** (review-first fix suggestions).
+  each lead CONFIRMED/REFUTED/NEEDS-REVIEW against the actual source),
+  **`--remediate`** (review-first fix suggestions), and **`--triage`**
+  (cluster/dedupe/rank existing findings, with a deterministic fallback).
 - SBOM inventory (5 ecosystems) + OSV.dev CVE cross-reference (`--cve`).
 - Output: Markdown + JSON + **SARIF 2.1.0** + **Mermaid / Graphviz** diagrams;
   **diff/baseline** PR gating; a reusable **GitHub Action + PR bot**; optional
