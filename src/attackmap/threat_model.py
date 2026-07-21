@@ -1974,11 +1974,12 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
     # it keys off scan.authz_candidates.
     bola = scan.authz_candidates
     if bola:
+        _bola_write_methods = {"POST", "PUT", "PATCH", "DELETE", "MUTATION"}
         top = min(
             bola,
-            key=lambda c: (c.route_method not in {"POST", "PUT", "PATCH", "DELETE"}, c.route_file),
+            key=lambda c: (c.route_method not in _bola_write_methods, c.route_file),
         )
-        action = "modify" if top.route_method in {"POST", "PUT", "PATCH", "DELETE"} else "read"
+        action = "modify" if top.route_method in _bola_write_methods else "read"
         paths.append(
             AttackPath(
                 name="Object-level authorization bypass (BOLA/IDOR)",

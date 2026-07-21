@@ -271,11 +271,17 @@ def test_xrpc_non_object_method_not_flagged(tmp_path: Path) -> None:
     assert analyze_authz(scan, tmp_path) == []
 
 
-def test_query_param_id_flagged(tmp_path: Path) -> None:
-    (tmp_path / "handler.py").write_text("def x():\n    return db.query('x')\n", encoding="utf-8")
+def test_query_param_id_read_in_handler_flagged(tmp_path: Path) -> None:
+    # The id arrives as a query parameter read in the handler body (#139).
+    (tmp_path / "handler.py").write_text(
+        "def get_orders():\n"
+        "    oid = request.args.get('orderId')\n"
+        "    return db.query('SELECT * FROM orders WHERE id=' + oid)\n",
+        encoding="utf-8",
+    )
     scan = ScanResult(
         root=str(tmp_path),
-        routes=[Route(path="/api/orders?orderId=5", method="GET", file="handler.py")],
+        routes=[Route(path="/api/orders", method="GET", file="handler.py")],
         databases=[DatabaseHint(kind="sqlite", file="handler.py")],
     )
     cands = analyze_authz(scan, tmp_path)
@@ -284,11 +290,29 @@ def test_query_param_id_flagged(tmp_path: Path) -> None:
     assert cands[0].id_param == "orderId"
 
 
-def test_query_param_non_id_not_flagged(tmp_path: Path) -> None:
-    (tmp_path / "handler.py").write_text("def x():\n    return db.query('x')\n", encoding="utf-8")
+def test_query_param_fastapi_signature_flagged(tmp_path: Path) -> None:
+    (tmp_path / "handler.py").write_text(
+        "def read_doc(docId: str = Query(...)):\n    return db.query(docId)\n",
+        encoding="utf-8",
+    )
     scan = ScanResult(
         root=str(tmp_path),
-        routes=[Route(path="/api/orders?page=2&sort=asc", method="GET", file="handler.py")],
+        routes=[Route(path="/api/docs", method="GET", file="handler.py")],
+        databases=[DatabaseHint(kind="sqlite", file="handler.py")],
+    )
+    cands = analyze_authz(scan, tmp_path)
+    assert len(cands) == 1
+    assert cands[0].id_param == "docId"
+
+
+def test_query_param_non_id_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "handler.py").write_text(
+        "def x():\n    page = request.args.get('page')\n    return db.query('x')\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/api/orders", method="GET", file="handler.py")],
         databases=[DatabaseHint(kind="sqlite", file="handler.py")],
     )
     assert analyze_authz(scan, tmp_path) == []
@@ -379,3 +403,70 @@ def test_bola_finding_evidence_cites_surface(tmp_path: Path) -> None:
     joined = "\n".join(findings[0].evidence)
     assert "RPC method" in joined
     assert "com.atproto.repo.getRecord" in joined
+
+
+def test_graphql_test_fixture_schema_excluded(tmp_path: Path) -> None:
+    """SDL under a test/fixture path is a low-quality source — not flagged."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "schema.graphql").write_text(
+        "type Query {\n  user(id: ID!): User\n}\n", encoding="utf-8"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[])
+    assert analyze_authz(scan, tmp_path) == []
+
+
+def test_graphql_resolver_ownership_suppresses(tmp_path: Path) -> None:
+    """A field with no SDL directive but whose resolver enforces ownership is
+    not a candidate (#139 — resolver-level auth)."""
+    (tmp_path / "schema.graphql").write_text(
+        "type Query {\n  document(id: ID!): Document\n}\n", encoding="utf-8"
+    )
+    (tmp_path / "resolvers.ts").write_text(
+        "export const resolvers = {\n"
+        "  Query: {\n"
+        "    document: (parent, { id }, ctx) => {\n"
+        "      if (!ctx.current_user) throw new Error('unauthorized');\n"
+        "      return db.documents.find(id, ctx.current_user.id);\n"
+        "    },\n"
+        "  },\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[])
+    assert analyze_authz(scan, tmp_path) == []
+
+
+def test_graphql_custom_root_operation_types(tmp_path: Path) -> None:
+    """Custom root types declared via `schema { query: RootQuery }` are scanned."""
+    (tmp_path / "schema.graphql").write_text(
+        "schema {\n  query: RootQuery\n  mutation: RootMutation\n}\n"
+        "type RootQuery {\n  account(id: ID!): Account\n}\n"
+        "type RootMutation {\n  deleteAccount(id: ID!): Boolean\n}\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[])
+    cands = analyze_authz(scan, tmp_path)
+    by_field = {c.route_path: c for c in cands}
+    assert by_field["graphql:account"].route_method == "QUERY"
+    assert by_field["graphql:deleteAccount"].route_method == "MUTATION"
+
+
+def test_graphql_mutation_narrated_as_write_in_attack_path(tmp_path: Path) -> None:
+    """A GraphQL mutation BOLA candidate is a write, not a read, in attack paths."""
+    scan = ScanResult(
+        root=str(tmp_path),
+        authz_candidates=[
+            BolaCandidate(
+                route_path="graphql:deleteAccount",
+                route_method="MUTATION",
+                route_file="schema.graphql",
+                id_param="id",
+                surface="graphql_field",
+                reaches_db=True,
+                db_evidence="GraphQL mutation field resolves an object by `id`",
+            )
+        ],
+    )
+    paths = [p for p in generate_attack_paths(scan) if "BOLA" in p.name or "IDOR" in p.name]
+    assert paths
+    assert "modify" in " ".join(paths[0].steps).lower()

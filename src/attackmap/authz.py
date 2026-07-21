@@ -29,6 +29,7 @@ import re
 from pathlib import Path
 
 from .models import BolaCandidate, Route, ScanResult
+from .srcpaths import is_test_file, is_vendored_file
 
 # Path parameter forms across frameworks:
 #   {id} {user_id} {int:id}        Flask / FastAPI / Starlette
@@ -65,6 +66,18 @@ _GRAPHQL_AUTH_DIRECTIVE_RE = re.compile(
     r"@(?:auth|authenticated|isAuthenticated|authorized|hasRole|hasScopes?"
     r"|requiresScopes?|requireAuth|requiresAuth|hasPermission|policy|private|acl)\b",
     re.IGNORECASE,
+)
+
+# Query-parameter scoping (#139). In real framework code the id arrives in the
+# handler body, not the registered path — so scan the route's file for an
+# id-shaped query-parameter *access* (`req.query.userId`, `request.args.get('id')`,
+# `orderId: str = Query(...)`, `searchParams.get('docId')`, …).
+_QUERY_ACCESS_RES = (
+    re.compile(r"\b(?:req|request|ctx|c)\s*\.\s*(?:query|args|GET|query_params)\s*\.\s*(\w+)"),
+    re.compile(r"""\b(?:req|request|ctx|c)\s*\.\s*(?:query|args|GET|query_params)\s*\[\s*['"](\w+)['"]"""),
+    re.compile(r"""\b(?:req|request|ctx|c)\s*\.\s*(?:query|args|GET|query_params)\s*\.\s*get\s*\(\s*['"](\w+)['"]"""),
+    re.compile(r"""\bsearchParams\s*\.\s*get\s*\(\s*['"](\w+)['"]"""),
+    re.compile(r"""\b(\w+)\s*:\s*[\w\[\]|. ]+?=\s*Query\s*\("""),  # FastAPI `id: str = Query(...)`
 )
 
 # Ownership / authorization markers. If ANY appear in the route's file we
@@ -109,22 +122,30 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         if c.sink_kind == "sql_execute"
     }
 
-    # Cache file-content ownership-marker checks per file.
-    ownership_cache: dict[str, bool] = {}
+    # Cache per-file content (read at most once per route file).
+    content_cache: dict[str, str | None] = {}
 
     seen: set[tuple[str, str, str, str]] = set()
     candidates: list[BolaCandidate] = []
 
     for route in scan.routes:
-        surface = _id_bearing_surface(route)
+        content = _read_file_content(route.file, root_path, content_cache)
+
+        # Path-encoded surfaces (RPC method, path template param) first; then
+        # fall back to an id-shaped query-parameter access in the handler body.
+        surface = _path_based_surface(route.path)
+        if surface is None and content:
+            qp = _query_param_in_handler(content)
+            if qp is not None:
+                surface = ("query_param", qp)
         if surface is None:
             continue
         surface_kind, id_param = surface
 
-        # RPC methods and GraphQL fields are object-access operations by
-        # definition — they read/write a specific object by id — so the "reaches
-        # a datastore" condition is satisfied intrinsically. HTTP path/query
-        # surfaces still require an observed datastore link (#139).
+        # RPC methods are object-access operations by definition — they read/
+        # write a specific object by id — so the "reaches a datastore" condition
+        # is satisfied intrinsically. HTTP path/query surfaces still require an
+        # observed datastore link (#139).
         if surface_kind == "rpc_method":
             reaches_db, db_evidence = True, "RPC object-access method"
         else:
@@ -134,7 +155,7 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         if not reaches_db:
             continue
 
-        has_check = _file_has_ownership_marker(route.file, root_path, ownership_cache)
+        has_check = bool(content and _OWNERSHIP_MARKERS.search(content))
 
         key = (route.method, route.path, route.file, id_param)
         if key in seen:
@@ -187,19 +208,14 @@ def _resource_id_param(path: str) -> str | None:
     return None
 
 
-def _id_bearing_surface(route: Route) -> tuple[str, str] | None:
-    """Where an object identifier arrives on this route, if any (#139).
-
-    Returns ``(surface_kind, identifier)`` for the first surface found:
-    an RPC method (XRPC/tRPC), an id-bearing query parameter, or a path
-    template parameter."""
-    rpc = _rpc_method_surface(route.path)
+def _path_based_surface(path: str) -> tuple[str, str] | None:
+    """Object-identifier surfaces encoded in the route path (#139): an RPC
+    method (XRPC/tRPC) or a path-template parameter. Query parameters are
+    resolved from the handler body separately (they aren't in the path)."""
+    rpc = _rpc_method_surface(path)
     if rpc is not None:
         return ("rpc_method", rpc)
-    query = _query_param_surface(route.path)
-    if query is not None:
-        return ("query_param", query)
-    path_param = _resource_id_param(route.path)
+    path_param = _resource_id_param(path)
     if path_param is not None:
         return ("path_param", path_param)
     return None
@@ -222,16 +238,29 @@ def _rpc_method_surface(path: str) -> str | None:
     return None
 
 
-def _query_param_surface(path: str) -> str | None:
-    """An id-shaped query parameter (`?userId=`, `?doc_id=`), if present."""
-    if "?" not in path:
-        return None
-    query = path.split("?", 1)[1]
-    for pair in re.split(r"[&;]", query):
-        name = pair.split("=", 1)[0].strip()
-        if name and _ID_PARAM_RE.search(name):
-            return name
+def _query_param_in_handler(content: str) -> str | None:
+    """An id-shaped query parameter read in the handler file, if any — e.g.
+    `req.query.userId`, `request.args.get('doc_id')`, `id: str = Query(...)`."""
+    for regex in _QUERY_ACCESS_RES:
+        for match in regex.finditer(content):
+            name = match.group(1)
+            if name and _ID_PARAM_RE.search(name):
+                return name
     return None
+
+
+def _read_file_content(rel_file: str, root: Path, cache: dict[str, str | None]) -> str | None:
+    if rel_file in cache:
+        return cache[rel_file]
+    content: str | None = None
+    try:
+        path = root / rel_file
+        if path.is_file() and path.stat().st_size <= _MAX_FILE_BYTES:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, ValueError):
+        content = None
+    cache[rel_file] = content
+    return content
 
 
 def _db_reachability(
@@ -250,23 +279,6 @@ def _db_reachability(
     return False, ""
 
 
-def _file_has_ownership_marker(
-    rel_file: str, root: Path, cache: dict[str, bool]
-) -> bool:
-    if rel_file in cache:
-        return cache[rel_file]
-    path = root / rel_file
-    result = False
-    try:
-        if path.is_file() and path.stat().st_size <= _MAX_FILE_BYTES:
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            result = _OWNERSHIP_MARKERS.search(content) is not None
-    except (OSError, ValueError):
-        result = False
-    cache[rel_file] = result
-    return result
-
-
 # --- GraphQL SDL scoping (#139) --------------------------------------------
 
 _GRAPHQL_EXTS = {".graphql", ".gql"}
@@ -275,56 +287,92 @@ _GRAPHQL_SKIP_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", ".
 _GRAPHQL_MAX_DEPTH = 6
 _GRAPHQL_MAX_FILES = 2000
 
-# `type Query { ... }` / `extend type Mutation { ... }` (SDL field blocks don't
-# nest braces, so a non-greedy match to the first `}` is sufficient).
-_GRAPHQL_ROOT_BLOCK_RE = re.compile(
-    r"(?:extend\s+)?type\s+(?P<kind>Query|Mutation)\b[^{]*\{(?P<body>.*?)\}",
-    re.DOTALL,
-)
 # One field definition: `name(args): ReturnType [@directives]`.
 _GRAPHQL_FIELD_RE = re.compile(
     r"(?P<name>\w+)\s*(?:\((?P<args>[^)]*)\))?\s*:\s*(?P<rest>[^\n]*)"
 )
+# `schema { query: RootQuery  mutation: RootMutation }` custom root types.
+_GRAPHQL_SCHEMA_BLOCK_RE = re.compile(r"schema\s*\{(?P<body>[^}]*)\}", re.DOTALL)
+_GRAPHQL_SCHEMA_ROOT_RE = re.compile(r"\b(query|mutation)\s*:\s*(\w+)", re.IGNORECASE)
+_GRAPHQL_SDL_MARKER_RE = re.compile(r"type\s+(?:Query|Mutation)\b|schema\s*\{")
 
 
 def _graphql_bola_candidates(root: Path, seen: set) -> list[BolaCandidate]:
     """Scan the repo's GraphQL SDL for id-bearing Query/Mutation fields that
-    lack an authorization directive (#139). GraphQL fields aren't routes, so
-    they're modeled here as ``graphql_field`` surfaces."""
+    lack an authorization check (#139). GraphQL fields aren't routes, so
+    they're modeled here as ``graphql_field`` surfaces. Authorization can be an
+    SDL directive on the field OR an ownership check in the resolver code."""
+    files = list(_iter_graphql_files(root))
+    # Resolver-side auth: files carrying an ownership marker (`current_user`,
+    # `authorize`, …). A field defined as a resolver in such a file is treated
+    # as authorized even without an SDL directive.
+    auth_resolver_texts = [text for _rel, text in files if _OWNERSHIP_MARKERS.search(text)]
+
     candidates: list[BolaCandidate] = []
-    for rel, text in _iter_graphql_sdl(root):
-        for match in _GRAPHQL_ROOT_BLOCK_RE.finditer(text):
-            is_mutation = match.group("kind") == "Mutation"
-            for field in _GRAPHQL_FIELD_RE.finditer(match.group("body")):
-                name = field.group("name")
-                args = field.group("args") or ""
-                rest = field.group("rest") or ""
-                arg_id = _graphql_id_arg(args)
-                if arg_id is None:
-                    continue
-                # An auth directive on the field means authorization is enforced.
-                if _GRAPHQL_AUTH_DIRECTIVE_RE.search(args + " " + rest):
-                    continue
-                method = "MUTATION" if is_mutation else "QUERY"
-                route_path = f"graphql:{name}"
-                key = (method, route_path, rel, arg_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                candidates.append(
-                    BolaCandidate(
-                        route_path=route_path,
-                        route_method=method,
-                        route_file=rel,
-                        id_param=arg_id,
-                        surface="graphql_field",
-                        reaches_db=True,
-                        db_evidence=f"GraphQL {method.lower()} field resolves an object by `{arg_id}`",
-                        has_ownership_check=False,
-                        source_analyzer="authz",
+    for rel, text in files:
+        for type_name, method in _graphql_root_types(text).items():
+            for body in _graphql_type_bodies(text, type_name):
+                for field in _GRAPHQL_FIELD_RE.finditer(body):
+                    name = field.group("name")
+                    args = field.group("args") or ""
+                    rest = field.group("rest") or ""
+                    arg_id = _graphql_id_arg(args)
+                    if arg_id is None:
+                        continue
+                    # Suppress when an SDL directive OR a resolver enforces auth.
+                    if _GRAPHQL_AUTH_DIRECTIVE_RE.search(args + " " + rest):
+                        continue
+                    if _graphql_resolver_authorizes(name, auth_resolver_texts):
+                        continue
+                    route_path = f"graphql:{name}"
+                    key = (method, route_path, rel, arg_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(
+                        BolaCandidate(
+                            route_path=route_path,
+                            route_method=method,
+                            route_file=rel,
+                            id_param=arg_id,
+                            surface="graphql_field",
+                            reaches_db=True,
+                            db_evidence=f"GraphQL {method.lower()} field resolves an object by `{arg_id}`",
+                            has_ownership_check=False,
+                            source_analyzer="authz",
+                        )
                     )
-                )
     return candidates
+
+
+def _graphql_root_types(text: str) -> dict[str, str]:
+    """Map GraphQL root type names → method (`QUERY`/`MUTATION`). Includes the
+    conventional `Query`/`Mutation` plus any custom roots from a `schema {…}`
+    declaration (`schema { query: RootQuery }`)."""
+    roots = {"Query": "QUERY", "Mutation": "MUTATION"}
+    schema = _GRAPHQL_SCHEMA_BLOCK_RE.search(text)
+    if schema:
+        for op, type_name in _GRAPHQL_SCHEMA_ROOT_RE.findall(schema.group("body")):
+            roots[type_name] = "MUTATION" if op.lower() == "mutation" else "QUERY"
+    return roots
+
+
+def _graphql_type_bodies(text: str, type_name: str):
+    """Yield the field-block body of each `type <type_name> { … }` (SDL field
+    blocks don't nest braces, so a non-greedy match to the first `}` works)."""
+    pattern = re.compile(
+        r"(?:extend\s+)?type\s+" + re.escape(type_name) + r"\b[^{]*\{(.*?)\}",
+        re.DOTALL,
+    )
+    for match in pattern.finditer(text):
+        yield match.group(1)
+
+
+def _graphql_resolver_authorizes(field_name: str, auth_resolver_texts: list[str]) -> bool:
+    """True if the field is defined as a resolver (`name(` / `name:`) in a file
+    that also contains an ownership marker — i.e. auth lives in the resolver."""
+    resolver_ref = re.compile(r"\b" + re.escape(field_name) + r"\s*[(:]")
+    return any(resolver_ref.search(text) for text in auth_resolver_texts)
 
 
 def _graphql_id_arg(args: str) -> str | None:
@@ -343,9 +391,11 @@ def _graphql_id_arg(args: str) -> str | None:
     return None
 
 
-def _iter_graphql_sdl(root: Path):
-    """Yield ``(rel_path, text)`` for files that may hold GraphQL SDL: `.graphql`
-    / `.gql` files, and code files that contain a `type Query`/`type Mutation`."""
+def _iter_graphql_files(root: Path):
+    """Yield ``(rel_path, text)`` for files relevant to GraphQL authz: `.graphql`
+    / `.gql` files, and code files that either contain SDL (`type Query`, a
+    `schema {…}`) or an ownership marker (candidate resolver). Test/fixture and
+    vendored files are excluded per the repo's source-quality policy (#139)."""
     count = 0
 
     def walk(directory: Path, depth: int):
@@ -366,6 +416,9 @@ def _iter_graphql_sdl(root: Path):
             suffix = entry.suffix.lower()
             if suffix not in _GRAPHQL_EXTS and suffix not in _GRAPHQL_CODE_EXTS:
                 continue
+            rel = _norm(str(entry.relative_to(root)))
+            if is_test_file(rel) or is_vendored_file(rel):
+                continue
             try:
                 if entry.stat().st_size > _MAX_FILE_BYTES:
                     continue
@@ -373,9 +426,10 @@ def _iter_graphql_sdl(root: Path):
             except (OSError, ValueError):
                 continue
             count += 1
-            if suffix in _GRAPHQL_CODE_EXTS and "type Query" not in text and "type Mutation" not in text:
+            if suffix in _GRAPHQL_CODE_EXTS and not (
+                _GRAPHQL_SDL_MARKER_RE.search(text) or _OWNERSHIP_MARKERS.search(text)
+            ):
                 continue
-            rel = _norm(str(entry.relative_to(root)))
             yield rel, text
 
     yield from walk(root, 1)
