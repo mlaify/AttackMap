@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.4.11).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.12).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -296,7 +296,11 @@ left on).
 
 Sinks that are only dangerous with attacker-controlled input (SSRF, SSTI, NoSQL,
 open redirect, `open`) are gated on a request-shaped identifier in the call — a constant URL or
-template is not flagged. It's a heuristic (import-edge ≠ call-edge), so findings
+template is not flagged. The walk is **call-graph-aware** (#138): for Python and
+JS/TS an import edge is kept only when the imported symbol is actually used in
+the file, so a dead import no longer fans a route out to that module's sinks
+(the plain import-graph remains the fallback for namespace/star/side-effect
+imports and for Go/PHP). It's still a heuristic (use ≉ proven call), so findings
 are evidence, not proof; confidence tapers with hop distance. Chains appear in
 `attackmap-report.json` under `scan.taint_chains`.
 
@@ -656,9 +660,10 @@ introduces a new HIGH finding.
   Dependabot go deeper on transitive resolution and lockfiles. AttackMap's
   value is folding the CVE signal into an architecture-aware narrative
   ("this public route reaches this vulnerable ORM").
-- **A true taint engine.** The data-flow pass is a heuristic import-graph walk
-  (import-edge ≈ call-edge), not sound interprocedural taint analysis. It
-  favors precision over recall; findings are evidence, not proof.
+- **A true taint engine.** The data-flow pass is a heuristic call-graph-refined
+  import-graph walk (edges pruned to used symbols, but symbol *use* ≉ a proven
+  data-carrying call), not sound interprocedural taint analysis. It favors
+  precision over recall; findings are evidence, not proof.
 - **Exhaustive.** AttackMap is heuristic by design. Findings are confidence-tiered
   with explicit guardrails for stale signals.
 
@@ -666,7 +671,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.11) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.12) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
@@ -703,7 +708,9 @@ pre-1.0 and heuristic.
 
 - Taint is Python/JS/TS/Go/PHP and path-template scoped; query-param / RPC-method
   authorization and more languages are planned.
-- The import-graph taint walk approximates call-edges with import-edges — precision
+- The taint walk is call-graph-aware for Python/JS/TS (import edges are pruned to
+  symbols actually used in the file) but still approximates: symbol *use* is not a
+  proven data-carrying call, and Go/PHP keep the plain import-graph. Precision
   over recall; findings are evidence, not proof.
 - CVE lookup resolves a best-effort concrete version, not full lockfile ranges.
 - Anomaly / exploitability reasoning is route-cohort and taint-chain scoped.

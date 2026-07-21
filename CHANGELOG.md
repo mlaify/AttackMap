@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-07-21
+
+### Changed
+
+- **Call-graph-aware taint edges (#138).** The import-graph taint walk now prunes
+  edges that aren't backed by a real use of the imported symbol: for Python and
+  JS/TS, an import edge is kept only when at least one of the names it binds is
+  actually referenced/called in the importing file. A dead import (imported but
+  never called) no longer fans a route out to that module's sinks — reducing the
+  "imported-but-uncalled sink" over-linking called out in the README. The plain
+  import-graph remains the fallback for namespace/star/side-effect/dynamic
+  imports (no resolvable binding) and for Go/PHP, so recall is preserved.
+  Same-file (hop-0) sinks are unaffected — a locally-called sink is still linked
+  without any top-level import. On the real-world corpus (OWASP Juice Shop) the
+  emitted chain set is unchanged (no regression, no new hangs).
+
 ## [0.4.11] - 2026-07-21
 
 ### Added
