@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 
 from attackmap.analyzers import AnalyzerSignals, get_builtin_analyzers, merge_analyzer_signals
@@ -823,6 +824,84 @@ def test_real_high_entropy_secret_still_flagged(tmp_path: Path) -> None:
     )
     result = scan_repo(tmp_path)
     assert any(s.kind == "high_entropy" for s in result.secret_hints)
+
+
+# ---------------------------------------------------------------------------
+# #141: typed provider-signature detection + entropy calibration.
+# ---------------------------------------------------------------------------
+
+# Assembled from fragments (see note above) so the checked-in test source
+# never contains a full-length match for push-protection scanners.
+_OPENAI_LEGACY = "sk-" + "T3BlbkFJ" + "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+_OPENAI_PROJECT = "sk-" + "proj-" + "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+_GITLAB = "glpat-" + "abcdefghijklmnopqrstuvwx"
+_NPM = "npm_" + "abcdefghijklmnopqrstuvwxyz0123456789"  # npm_ + 36
+
+
+def test_hardcoded_openai_legacy_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'OPENAI = "{_OPENAI_LEGACY}"\n')
+    assert _has_kind(scan, "openai_key")
+
+
+def test_hardcoded_openai_project_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'OPENAI = "{_OPENAI_PROJECT}"\n')
+    assert _has_kind(scan, "openai_key")
+
+
+def test_anthropic_key_not_misclassified_as_openai(tmp_path: Path) -> None:
+    """`sk-ant-…` must keep its own (more specific) kind and must not
+    also surface as a generic OpenAI hit for the same span."""
+    scan = _scan_source(tmp_path, f'KEY = "{_ANTHROPIC}"\n')
+    assert _has_kind(scan, "anthropic_key")
+    assert not _has_kind(scan, "openai_key")
+
+
+def test_hardcoded_gitlab_pat_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'GL = "{_GITLAB}"\n')
+    assert _has_kind(scan, "gitlab_pat")
+
+
+def test_hardcoded_npm_token_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'//registry.npmjs.org/:_authToken="{_NPM}"\n')
+    assert _has_kind(scan, "npm_token")
+
+
+def test_subresource_integrity_hash_not_flagged_as_secret(tmp_path: Path) -> None:
+    """SRI / lockfile integrity digests are high-entropy base64 but are
+    public asset fingerprints, not credentials (#141)."""
+    # A valid sha384 digest: 48 raw bytes → 64 base64 chars.
+    sri = "sha384-" + base64.b64encode(bytes(range(48))).decode()
+    scan = _scan_source(tmp_path, f'INTEGRITY = "{sri}"\n')
+    assert not _has_kind(scan, "high_entropy")
+
+
+def test_secret_that_merely_starts_with_algo_prefix_still_flagged(tmp_path: Path) -> None:
+    """A genuine high-entropy value whose body is NOT a correct-length
+    digest must not be suppressed just because it starts with `sha256-`."""
+    body = "aB9x2z8Kq7Vn3W6yF1jH5tR4mE0uC8pI6oXsL7dSqW3eR9tY1uZ"  # 100+ once prefixed
+    scan = _scan_source(tmp_path, f'token = "sha256-{body}"\n')
+    assert _has_kind(scan, "high_entropy")
+
+
+def test_uuid_not_flagged_as_secret(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, 'REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000"\n')
+    assert not _has_kind(scan, "high_entropy")
+
+
+def test_openai_placeholder_with_hyphens_not_flagged(tmp_path: Path) -> None:
+    """The bare `sk-` legacy shape is alphanumeric-only, so hyphenated
+    placeholders are not misclassified as a live OpenAI credential (#141)."""
+    scan = _scan_source(tmp_path, 'OPENAI = "sk-this-is-a-long-placeholder-value-goes-here"\n')
+    assert not _has_kind(scan, "openai_key")
+
+
+def test_typed_secret_redacted_in_evidence_text(tmp_path: Path) -> None:
+    """The raw credential must never survive into evidence_text — it is
+    serialized into report.json (#141)."""
+    scan = _scan_source(tmp_path, f'GL = "{_GITLAB}"\n')
+    hint = _hint_of_kind(scan, "gitlab_pat")
+    assert _GITLAB not in (hint.evidence_text or "")
+    assert "…" in (hint.evidence_text or "")
 
 
 def test_route_extraction_ignores_non_router_method_calls(tmp_path: Path) -> None:
