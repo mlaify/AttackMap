@@ -25,6 +25,7 @@ import re
 import tomllib
 from pathlib import Path
 
+from .lockfiles import parse_lockfiles
 from .models import DependencyHint
 
 _MAX_DEPTH = 3
@@ -42,20 +43,39 @@ _SKIP_DIRS = {
 
 
 def analyze_sbom(root: str | Path) -> list[DependencyHint]:
-    """Walk ``root`` and return a deduped list of DependencyHint records."""
+    """Walk ``root`` and return a deduped list of DependencyHint records.
+
+    Manifests contribute direct deps with verbatim version ranges. Lockfiles
+    (#143) contribute exact resolved versions and the transitive tree; where a
+    lockfile supersedes a range-only manifest (npm/pypi/cargo) the manifest
+    hints for that ecosystem are dropped in favour of the exact resolution.
+    """
     root_path = Path(root).resolve()
     if not root_path.exists() or not root_path.is_dir():
         return []
 
-    hints: list[DependencyHint] = []
+    manifest_hints: list[DependencyHint] = []
     for manifest in _iter_manifests(root_path):
         rel = str(manifest.relative_to(root_path)).replace("\\", "/")
         try:
-            hints.extend(_parse_manifest(manifest, rel))
+            manifest_hints.extend(_parse_manifest(manifest, rel))
         except (OSError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError, json.JSONDecodeError):
             # A malformed manifest shouldn't sink the whole scan; skip it.
             continue
 
+    lock_hints, superseded = parse_lockfiles(root_path)
+
+    # Drop a range-only manifest hint only when a lockfile of the same
+    # ecosystem sits in the *same directory* — so a monorepo's lockfile in
+    # service A doesn't silently exclude service B's un-locked manifest (#143).
+    def _dir(rel: str) -> str:
+        return str(Path(rel).parent).replace("\\", "/")
+
+    kept_manifest = [
+        h for h in manifest_hints if (h.ecosystem, _dir(h.file)) not in superseded
+    ]
+
+    hints = kept_manifest + lock_hints
     for hint in hints:
         hint.source_analyzer = "sbom"
 
@@ -285,6 +305,10 @@ def _parse_go_mod(path: Path, rel: str) -> list[DependencyHint]:
                         file=rel,
                         line=lineno,
                         dev=is_indirect,
+                        # go.mod pins exact versions and flags indirect
+                        # (transitive) deps — treat it as a resolved lockfile.
+                        resolved=True,
+                        direct=not is_indirect,
                         evidence_text=raw.strip(),
                     )
                 )
@@ -294,6 +318,7 @@ def _parse_go_mod(path: Path, rel: str) -> list[DependencyHint]:
             body = stripped[len("require "):].split("//", 1)[0].strip()
             m = _GO_REQUIRE_LINE_RE.match(body)
             if m:
+                is_indirect = "// indirect" in raw
                 hints.append(
                     DependencyHint(
                         name=m.group("name"),
@@ -301,6 +326,9 @@ def _parse_go_mod(path: Path, rel: str) -> list[DependencyHint]:
                         ecosystem="go",
                         file=rel,
                         line=lineno,
+                        dev=is_indirect,
+                        resolved=True,
+                        direct=not is_indirect,
                         evidence_text=raw.strip(),
                     )
                 )

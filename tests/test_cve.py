@@ -401,3 +401,94 @@ def test_cli_cve_with_no_deps_does_not_call_lookup(
     result = runner.invoke(app, ["analyze", str(repo), "--output", str(tmp_path / "out"), "--cve"])
     assert result.exit_code == 0
     assert called == []
+
+
+# ---------------------------------------------------------------------------
+# Transitive dependency provenance (#143)
+# ---------------------------------------------------------------------------
+
+
+def test_transitive_dep_vuln_carries_resolution_path(tmp_path: Path) -> None:
+    """A vulnerable transitive dep resolved from a lockfile flows through the
+    lookup with its resolution path attached (AC2)."""
+    transitive = DependencyHint(
+        name="sample-pkg",
+        version="1.0.0",
+        ecosystem="pypi",
+        file="poetry.lock",
+        resolved=True,
+        direct=False,
+        via="flask > jinja2 > sample-pkg",
+    )
+    transport, _ = _stub_transport({"sample-pkg": {"vulns": [_osv_vuln()]}})
+    vulns, _ = query_vulnerabilities([transitive], cache_dir=tmp_path, transport=transport)
+    assert len(vulns) == 1
+    assert vulns[0].direct is False
+    assert vulns[0].resolution_path == "flask > jinja2 > sample-pkg"
+
+
+def test_transitive_vuln_finding_cites_resolution_path(tmp_path: Path) -> None:
+    scan = ScanResult(
+        root="/",
+        vulnerabilities=[
+            Vulnerability(
+                id="GHSA-test-1234",
+                summary="Path traversal.",
+                severity="high",
+                package_name="sample-pkg",
+                package_version="1.0.0",
+                ecosystem="pypi",
+                direct=False,
+                resolution_path="flask > jinja2 > sample-pkg",
+            )
+        ],
+    )
+    findings = [f for f in generate_findings(scan) if "cve" in f.tags]
+    assert findings
+    joined = "\n".join(findings[0].evidence)
+    assert "flask > jinja2 > sample-pkg" in joined
+    assert "ransitive" in joined  # "Transitive ... resolution path"
+
+
+def test_resolved_exact_version_is_queried_verbatim(tmp_path: Path) -> None:
+    """A lockfile-resolved exact version is queried as-is (not guessed)."""
+    dep = DependencyHint(
+        name="sample-pkg", version="1.2.4", ecosystem="pypi",
+        file="poetry.lock", resolved=True, direct=True,
+    )
+    transport, calls = _stub_transport({"sample-pkg": {"vulns": []}})
+    query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
+    assert calls, "expected one OSV query"
+    assert '"version": "1.2.4"' in calls[0][1].decode("utf-8")
+
+
+def test_transitive_dep_offline_served_from_warm_cache(tmp_path: Path) -> None:
+    """AC3: once cached, a transitive dep's CVE resolves offline."""
+    dep = DependencyHint(
+        name="sample-pkg", version="1.0.0", ecosystem="pypi",
+        file="poetry.lock", resolved=True, direct=False, via="a > b > sample-pkg",
+    )
+    warm_transport, _ = _stub_transport({"sample-pkg": {"vulns": [_osv_vuln()]}})
+    v1, s1 = query_vulnerabilities([dep], cache_dir=tmp_path, transport=warm_transport)
+    assert s1.queried == 1 and len(v1) == 1
+
+    def offline(url: str, body: bytes) -> bytes:
+        raise OSError("network down")
+
+    v2, s2 = query_vulnerabilities([dep], cache_dir=tmp_path, transport=offline)
+    assert s2.cached == 1
+    assert len(v2) == 1
+    assert v2[0].resolution_path == "a > b > sample-pkg"
+
+
+def test_resolved_pep440_version_not_mangled(tmp_path: Path) -> None:
+    """A lockfile-pinned PEP 440 version (e.g. 1.0.post1) is queried verbatim,
+    not normalized to 1.0.0 (#143)."""
+    dep = DependencyHint(
+        name="sample-pkg", version="1.0.post1", ecosystem="pypi",
+        file="poetry.lock", resolved=True, direct=True,
+    )
+    transport, calls = _stub_transport({"sample-pkg": {"vulns": []}})
+    query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
+    assert calls
+    assert '"version": "1.0.post1"' in calls[0][1].decode("utf-8")

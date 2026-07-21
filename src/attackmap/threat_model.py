@@ -1300,6 +1300,17 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 f"{v.id}{aliases} [{v.severity}{score}]: {summary_snip}{ref_part}"
             )
         finding_severity = "high" if top_severity == 0 else ("medium" if top_severity == 1 else "low")
+        # Transitive-dependency provenance (#143): cite the resolution path so a
+        # reviewer can see the vulnerable package was pulled in indirectly.
+        transitive = next((v for v in pkg_vulns if not v.direct), None)
+        provenance_lines: list[str] = []
+        if transitive is not None:
+            if transitive.resolution_path:
+                provenance_lines.append(
+                    f"Transitive dependency — resolution path: {transitive.resolution_path}"
+                )
+            else:
+                provenance_lines.append("Transitive (indirect) dependency")
         findings.append(
             Finding(
                 title=f"Vulnerable dependency: {name}@{version} ({eco})",
@@ -1307,6 +1318,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[
                     f"{len(pkg_vulns)} known advisor{'y' if len(pkg_vulns) == 1 else 'ies'} for "
                     f"{title_severity_word}-severity impact",
+                    *provenance_lines,
                     *evidence_lines[:10],
                 ],
                 mitigation=(

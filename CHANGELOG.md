@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-07-21
+
+### Added
+
+- **Lockfile version resolution (#143).** A new `lockfiles.py` parses the common
+  lockfiles for *exact* resolved versions and the full **transitive** dependency
+  tree — `package-lock.json` (v1/v2/v3) and `pnpm-lock.yaml` (npm), `poetry.lock`
+  and `uv.lock` (PyPI), and `Cargo.lock` (Cargo). Resolved `DependencyHint`s set
+  `resolved=True`, flag `direct` vs transitive, and carry a `via` resolution path
+  (`express > body-parser > qs`) reconstructed by a BFS over the dependency
+  graph. Multiple installed versions of one package are all preserved, and the
+  project's own workspace/local package is excluded from the inventory. A
+  lockfile supersedes the range-only manifest in its **own directory** (monorepo
+  services don't shadow each other). Go is resolved directly from `go.mod`
+  (already exact, `// indirect` flagged); `go.sum` is a checksum history, not the
+  build list, so it is not used.
+- The CVE scan now queries lockfile-resolved dependencies (direct **and**
+  transitive) at their pinned versions instead of guessing a lower bound, and a
+  vulnerable transitive dependency is reported with its resolution path
+  (`Vulnerability.direct` / `Vulnerability.resolution_path`, surfaced in the
+  finding evidence). Resolved versions are queried verbatim, so exact PEP 440
+  pins (`1.0.post1`, `1!2.3.0`) aren't normalized away. The existing offline OSV
+  cache is unchanged.
+
 ## [0.4.12] - 2026-07-21
 
 ### Changed
