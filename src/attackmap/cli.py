@@ -25,6 +25,7 @@ from .diff import (
 )
 from .graph import build_graph
 from .llm_review import LlmReviewError, generate_llm_review
+from .triage import render_triage_fallback
 from .progress import create_progress
 from .recon_to_analysis import translate_recon
 from .report import render_console_summary, render_pr_comment, write_reports
@@ -51,6 +52,15 @@ REMEDIATION_BANNER = (
     "> the smallest change to remove a weakness class; review the diff, confirm the\n"
     "> intent (e.g. whether a route should require auth), and run the verification\n"
     "> step before applying. No exploit code.\n\n"
+)
+
+# Prepended to triage.md (#145): a prioritized view of the EXISTING findings,
+# not new discoveries.
+TRIAGE_BANNER = (
+    "> 🗂️ **Prioritized shortlist of existing findings — not new discoveries.**\n"
+    "> Triage clusters, de-duplicates, and ranks the heuristic findings AttackMap\n"
+    "> already produced so you can work them top-down. Each item cites a real\n"
+    "> finding id; no new findings are invented here.\n\n"
 )
 
 
@@ -109,6 +119,11 @@ def analyze(
         False,
         "--remediate",
         help="Remediation mode (#106): have Claude propose concrete, review-first fixes per finding (suggested diffs / precise instructions, grounded in evidence) to remediation.md. Uses the same LLM auth/backend as --llm.",
+    ),
+    triage: bool = typer.Option(
+        False,
+        "--triage",
+        help="Triage mode (#145): cluster, de-duplicate, and rank the EXISTING heuristic findings into a prioritized shortlist (citing real finding IDs) at triage.md. LLM-backed when available; degrades to a deterministic score-ordered fallback when no backend is present.",
     ),
     baseline: str | None = typer.Option(
         None,
@@ -480,6 +495,72 @@ def analyze(
                 f"Remediation suggestions written to: {rem_md_path.resolve()} "
                 f"(backend={rem_result.backend})"
             )
+
+    if triage:
+        if llm_backend not in {"auto", "api", "cli"}:
+            raise typer.BadParameter(
+                f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
+            )
+        tri_effort_value = None
+        if llm_effort is not None:
+            if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
+                raise typer.BadParameter(
+                    f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
+                )
+            tri_effort_value = llm_effort  # type: ignore[assignment]
+        output_path = Path(output)
+        tri_md_path = output_path / "triage.md"
+        tri_meta_path = output_path / "triage.meta.json"
+        tri_backend = "deterministic"
+        tri_model: str | None = None
+        tri_stop: str | None = None
+        tri_usage: dict = {}
+        try:
+            typer.echo("")
+            typer.echo(
+                f"Triaging findings via {llm_display} (backend={llm_backend})..."
+            )
+            scan_progress.stage(f"{llm_display} is triaging findings (backend={llm_backend})")
+            try:
+                tri_result = generate_llm_review(
+                    scan,
+                    attack_surfaces,
+                    findings,
+                    attack_paths,
+                    model=llm_model,
+                    effort=tri_effort_value,  # type: ignore[arg-type]
+                    backend=llm_backend,  # type: ignore[arg-type]
+                    mode="triage",
+                    speed=llm_speed,  # type: ignore[arg-type]
+                    provider=llm_provider,  # type: ignore[arg-type]
+                )
+            finally:
+                scan_progress.done()
+            markdown = TRIAGE_BANNER + tri_result.markdown + "\n"
+            tri_backend = tri_result.backend
+            tri_model = tri_result.model
+            tri_stop = tri_result.stop_reason
+            tri_usage = tri_result.usage
+        except LlmReviewError as exc:
+            # No LLM backend / call failed — degrade to the deterministic,
+            # reproducible score-ordered shortlist rather than erroring (#145).
+            typer.echo(f"Triage LLM unavailable ({exc}); using deterministic ordering.", err=True)
+            markdown = TRIAGE_BANNER + render_triage_fallback(scan, findings) + "\n"
+        tri_md_path.write_text(markdown, encoding="utf-8")
+        tri_meta_path.write_text(
+            json.dumps(
+                {
+                    "backend": tri_backend,
+                    "model": tri_model,
+                    "stop_reason": tri_stop,
+                    "usage": tri_usage,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        typer.echo(f"Triage shortlist written to: {tri_md_path.resolve()} (backend={tri_backend})")
 
     if diff_exit_code:
         raise typer.Exit(code=diff_exit_code)

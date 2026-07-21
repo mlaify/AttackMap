@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .diff import finding_id
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .security_overlay import build_security_overlay
 
@@ -133,6 +134,36 @@ Evidence pack (JSON):
 """
 
 
+TRIAGE_SYSTEM_PROMPT = """You are AttackMap Triage Analyst. You do NOT find new issues — you ORGANIZE the existing heuristic findings in the evidence pack into a prioritized, de-duplicated, clustered shortlist a reviewer can work top-down.
+
+Hard rules:
+- Use ONLY findings already in the evidence pack. Do NOT invent findings, routes, files, sinks, data stores, or CVEs. Every item you list MUST cite the finding's `finding_id` (and may cite `finding:N`).
+- Do NOT change a finding's severity or evidence. You may group related findings and explain WHY they cluster (shared root cause, same trust boundary, same asset), but the underlying facts stay as given.
+- Cluster by root cause (e.g. "missing authorization", "injection reachable from public routes", "vulnerable dependencies", "weak crypto"). Within and across clusters, rank by severity, then exploitability, then score.
+- Be concise: a ranked list, each item one or two lines. Lead with the cluster that most needs attention.
+
+For each shortlist item:
+- **[rank] finding_id — title** (severity, and exploitability/score if present)
+- one-line rationale: why it ranks here / what it clusters with.
+
+End with a one-paragraph "start here" summary naming the top cluster and the single highest-priority finding_id."""
+
+
+TRIAGE_USER_PROMPT = """Triage the existing findings for this repository into a ranked, clustered shortlist.
+
+Requirements:
+- Organize ONLY the findings in the evidence pack; cite each by `finding_id`.
+- Cluster by root cause; rank by severity, then exploitability, then score.
+- Do not invent or re-score findings; this is prioritization, not discovery.
+
+Repository context:
+{repo_context}
+
+Evidence pack (JSON):
+{evidence_json}
+"""
+
+
 @dataclass(frozen=True)
 class RenderedReviewPrompt:
     system: str
@@ -201,9 +232,12 @@ def _evidence_pack(
     findings_payload = [
         {
             "id": f"finding:{idx + 1}",
+            "finding_id": finding_id(finding.title),
             "title": finding.title,
             "severity": finding.severity,
             "confidence": finding.confidence,
+            "score": finding.score,
+            "exploitability": finding.exploitability,
             "evidence": finding.evidence[:10],
             "mitigation": finding.mitigation,
         }
@@ -455,6 +489,26 @@ def render_hunt_verify_prompts(
     return RenderedReviewPrompt(
         system=HUNT_VERIFY_SYSTEM_PROMPT.strip(),
         user=HUNT_VERIFY_USER_PROMPT.format(
+            repo_context=_repo_context(scan), evidence_json=evidence_json
+        ).strip(),
+        evidence_json=evidence_json,
+    )
+
+
+def render_triage_prompts(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+) -> RenderedReviewPrompt:
+    """Render the triage prompts (#145): cluster/dedupe/rank the EXISTING
+    findings into a shortlist that cites real finding IDs — organization, not
+    discovery."""
+    evidence_payload = _evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    evidence_json = json.dumps(evidence_payload, indent=2, sort_keys=True)
+    return RenderedReviewPrompt(
+        system=TRIAGE_SYSTEM_PROMPT.strip(),
+        user=TRIAGE_USER_PROMPT.format(
             repo_context=_repo_context(scan), evidence_json=evidence_json
         ).strip(),
         evidence_json=evidence_json,

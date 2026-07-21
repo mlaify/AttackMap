@@ -35,6 +35,7 @@ from .review_prompts import (
     render_hunt_verify_prompts,
     render_remediation_prompts,
     render_review_prompts,
+    render_triage_prompts,
 )
 
 DEFAULT_MODEL = "claude-opus-4-8"
@@ -599,7 +600,7 @@ def generate_llm_review(
     client: Any | None = None,
     backend: LlmBackend = "auto",
     cli_runner: Any | None = None,
-    mode: Literal["review", "hunt", "hunt_verify", "remediate"] = "review",
+    mode: Literal["review", "hunt", "hunt_verify", "remediate", "triage"] = "review",
     speed: Literal["standard", "fast"] = "standard",
     provider: LlmProvider = "claude",
     openai_client: Any | None = None,
@@ -623,6 +624,7 @@ def generate_llm_review(
         "hunt": render_hunt_prompts,
         "hunt_verify": render_hunt_verify_prompts,
         "remediate": render_remediation_prompts,
+        "triage": render_triage_prompts,
     }.get(mode, render_review_prompts)
     rendered = render(scan, attack_surfaces, findings, attack_paths)
 
