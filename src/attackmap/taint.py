@@ -48,11 +48,6 @@ _SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES | _PHP_SUFFI
 
 # --- Import extraction -----------------------------------------------------
 
-_PY_IMPORT_RE = re.compile(
-    r"^\s*(?:from\s+(?P<from_mod>[\w.]+)\s+import\b|import\s+(?P<mod>[\w., ]+))",
-    re.MULTILINE,
-)
-
 # Go imports: single `import "path"` and block `import ( "a"\n alias "b" )`.
 # We only resolve INTRA-repo packages (those under the module path from go.mod).
 _GO_IMPORT_RE = re.compile(r'\bimport\s+(?:"(?P<single>[^"]+)"|\((?P<block>[^)]*)\))', re.DOTALL)
@@ -78,6 +73,39 @@ _JS_IMPORT_RE = re.compile(
     """,
     re.VERBOSE,
 )
+
+# --- Call-graph awareness (#138) -------------------------------------------
+# The import graph over-links: importing a module links a route to *every*
+# sink in that module even when the imported symbol is never called. To
+# approximate real call-edges we prune an import edge whose bound symbols are
+# never *used* (called or referenced) in the importing file — a dead import no
+# longer fans out to that module's sinks. This is recall-safe: an edge is only
+# dropped when we have explicit binding names AND none appears outside its own
+# import statement. Namespace/star/side-effect/dynamic imports carry no
+# resolvable binding, so their edges are always kept (import-graph fallback).
+
+# Import/require statements are stripped before collecting used identifiers so
+# a symbol that appears *only* on its own import line reads as unused.
+_PY_IMPORT_LINE_RE = re.compile(
+    r"^[ \t]*(?:from\s+[\w.]+\s+import\b[^\n]*|import\s+[^\n]*)$", re.MULTILINE
+)
+_JS_IMPORT_STMT_RE = re.compile(
+    r"""import\s+[^;'"]*?\s+from\s+["'][^"']+["']  # import … from '…'
+        | import\s+["'][^"']+["']                  # side-effect import '…'
+        | require\s*\(\s*["'][^"']+["']\s*\)        # require('…')
+    """,
+    re.VERBOSE,
+)
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _used_identifiers(content: str, suffix: str) -> set[str]:
+    """Identifiers that appear in ``content`` outside of import statements —
+    i.e. names that are actually referenced or called."""
+    stripper = _PY_IMPORT_LINE_RE if suffix in _PY_SUFFIXES else _JS_IMPORT_STMT_RE
+    body = stripper.sub(" ", content)
+    return set(_IDENTIFIER_RE.findall(body))
+
 
 # --- Sink patterns ---------------------------------------------------------
 
@@ -530,7 +558,13 @@ def _resolve_php_imports(
 
 
 def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str]]:
-    """rel_path -> set of rel_paths this file imports (intra-repo only)."""
+    """rel_path -> set of rel_paths this file imports (intra-repo only).
+
+    For Python and JS/TS, import edges are pruned to those whose bound symbols
+    are actually used in the importing file (call-graph awareness, #138). Go
+    and PHP keep the plain import-graph (no pruning) — their binding shapes are
+    not resolved here, so every edge is kept as a fallback.
+    """
     graph: dict[str, set[str]] = {rel: set() for rel in files}
     go_module = _go_module_path(root)
     go_dirs = _go_dir_index(files)
@@ -541,34 +575,43 @@ def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str
         except (OSError, UnicodeDecodeError):
             continue
         if abs_path.suffix in _PY_SUFFIXES:
-            graph[rel].update(_resolve_py_imports(content, rel, files))
+            edges = _resolve_py_imports_named(content, rel, files)
+            graph[rel].update(_prune_unused_edges(edges, content, ".py"))
         elif abs_path.suffix in _GO_SUFFIXES:
             graph[rel].update(_resolve_go_imports(content, go_module, go_dirs))
         elif abs_path.suffix in _PHP_SUFFIXES:
             graph[rel].update(_resolve_php_imports(content, rel, files, root, php_psr4))
-        else:
-            graph[rel].update(_resolve_js_imports(content, rel, files, root))
+        else:  # JS/TS
+            edges = _resolve_js_imports_named(content, rel, files, root)
+            graph[rel].update(_prune_unused_edges(edges, content, ".js"))
     return graph
 
 
-def _resolve_py_imports(content: str, from_rel: str, files: dict[str, Path]) -> set[str]:
-    from_path = Path(from_rel)
-    package_parts = from_path.parent.parts  # containing package as parts
-    out: set[str] = set()
-    for match in _PY_IMPORT_RE.finditer(content):
-        module = match.group("from_mod")
-        names_only = match.group("mod")
-        if module:
-            candidates = [module]
-        elif names_only:
-            candidates = [n.strip().split(" as ")[0].split(".")[0] for n in names_only.split(",")]
-        else:
-            continue
-        for candidate in candidates:
-            resolved = _resolve_py_module(candidate, package_parts, files)
-            if resolved is not None:
-                out.add(resolved)
-    return out
+def _prune_unused_edges(
+    edges: dict[str, set[str]], content: str, suffix: str
+) -> set[str]:
+    """Keep an edge unless it has explicit binding names none of which are used
+    in ``content``. Edges with no resolvable bindings (empty set) are always
+    kept — the import-graph fallback for namespace/star/side-effect imports."""
+    used = _used_identifiers(content, suffix)
+    kept: set[str] = set()
+    for target, names in edges.items():
+        if names and names.isdisjoint(used):
+            continue  # dead import — no call/reference backs this edge (#138)
+        kept.add(target)
+    return kept
+
+
+def _resolve_js_imports_named(
+    content: str, from_rel: str, files: dict[str, Path], root: Path
+) -> dict[str, set[str]]:
+    """target rel -> bound names, for pruning. A target reached only through a
+    side-effect / dynamic import (no named binding) maps to an empty set, which
+    keeps its edge unconditionally."""
+    edges: dict[str, set[str]] = {t: set() for t in _resolve_js_imports(content, from_rel, files, root)}
+    for name, target in _named_import_modules(content, from_rel, files, root).items():
+        edges.setdefault(target, set()).add(name)
+    return edges
 
 
 def _resolve_py_module(
@@ -590,6 +633,62 @@ def _resolve_py_module(
         if norm in files:
             return norm
     return None
+
+
+# from X import a, b as c  |  from X import (a, b)  |  from X import *
+_PY_FROM_IMPORT_RE = re.compile(
+    r"^[ \t]*from\s+(?P<mod>[\w.]+)\s+import\s+(?P<names>\*|\([^)]*\)|[^\n#]+)",
+    re.MULTILINE,
+)
+# import a, b.c as d
+_PY_PLAIN_IMPORT_RE = re.compile(r"^[ \t]*import\s+(?P<mods>[\w., ]+)", re.MULTILINE)
+
+
+def _resolve_py_imports_named(
+    content: str, from_rel: str, files: dict[str, Path]
+) -> dict[str, set[str]]:
+    """target rel -> the binding names it introduces, for edge pruning (#138).
+
+    A ``from X import *`` (unknown bindings) maps to an empty set, so its edge is
+    always kept. Mirrors ``_resolve_py_imports`` for module resolution."""
+    package_parts = Path(from_rel).parent.parts
+    edges: dict[str, set[str]] = {}
+
+    def _add(target: str | None, name: str | None) -> None:
+        if target is None:
+            return
+        bucket = edges.setdefault(target, set())
+        if name is not None:
+            bucket.add(name)
+
+    for match in _PY_FROM_IMPORT_RE.finditer(content):
+        target = _resolve_py_module(match.group("mod"), package_parts, files)
+        raw = match.group("names").strip()
+        if raw == "*":
+            _add(target, None)  # star import — keep edge unconditionally
+            continue
+        for part in raw.strip("()").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            binding = part.split(" as ")[-1].strip()  # alias if present
+            if binding.isidentifier():
+                _add(target, binding)
+    for match in _PY_PLAIN_IMPORT_RE.finditer(content):
+        for item in match.group("mods").split(","):
+            item = item.strip()
+            if not item:
+                continue
+            if " as " in item:
+                mod_part, binding = item.split(" as ", 1)
+                binding = binding.strip()
+            else:
+                mod_part = item
+                binding = item.split(".")[0].strip()  # `import a.b.c` binds `a`
+            target = _resolve_py_module(mod_part.split(" as ")[0].split(".")[0], package_parts, files)
+            if binding.isidentifier():
+                _add(target, binding)
+    return edges
 
 
 def _resolve_js_imports(

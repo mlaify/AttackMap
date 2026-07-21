@@ -15,6 +15,7 @@ from attackmap.threat_model import generate_findings
 FIXTURES = Path(__file__).parent / "fixtures"
 PY_REPO = FIXTURES / "taint_repo"
 JS_REPO = FIXTURES / "taint_js_repo"
+CALLGRAPH_REPO = FIXTURES / "taint_callgraph_repo"
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,69 @@ def test_isolated_sink_not_reachable_from_any_route() -> None:
     scan = scan_repo(PY_REPO)
     for chain in scan.taint_chains:
         assert not chain.sink_file.endswith("isolated/lonely.py")
+
+
+# ---------------------------------------------------------------------------
+# Call-graph-aware edges (#138): prune import edges whose bound symbols are
+# never used, keep locally-called sinks.
+# ---------------------------------------------------------------------------
+
+
+def test_imported_but_uncalled_sink_is_not_linked() -> None:
+    """AC1: `routes/app.py` imports `run_report` from a module with an eval()
+    sink but never calls/references it — a dead import. The edge must be pruned
+    so no chain reaches that sink."""
+    scan = scan_repo(CALLGRAPH_REPO)
+    assert not [
+        c for c in scan.taint_chains if c.sink_file.endswith("services/reporting.py")
+    ], "dead import should not fan out to the module's sink"
+
+
+def test_locally_called_sink_is_linked_without_import() -> None:
+    """AC2: a sink defined and called within the same file (no cross-file
+    import) is still linked."""
+    scan = scan_repo(CALLGRAPH_REPO)
+    local = [
+        c
+        for c in scan.taint_chains
+        if c.route_path == "/local-eval" and c.sink_kind == "eval"
+    ]
+    assert local
+    assert local[0].hops == 0
+    assert local[0].sink_file.endswith("routes/local.py")
+
+
+def test_imported_and_called_sink_is_still_linked() -> None:
+    """Control: an import that IS called keeps its edge (import-graph is not
+    thrown away, just refined)."""
+    scan = scan_repo(CALLGRAPH_REPO)
+    live = [
+        c
+        for c in scan.taint_chains
+        if c.route_path == "/compute" and c.sink_file.endswith("services/calc.py")
+    ]
+    assert live
+    assert live[0].hops == 1
+
+
+def test_attribute_use_keeps_edge(tmp_path: Path) -> None:
+    """`import runner; runner.go(...)` uses the binding via attribute access,
+    not a bare `go(` call. The edge must still be kept — the pruning tests
+    *use*, not literal call syntax."""
+    (tmp_path / "runner.py").write_text(
+        "def go(expr):\n    return eval(expr)\n", encoding="utf-8"
+    )
+    (tmp_path / "route.py").write_text(
+        "from flask import Flask, request\n"
+        "import runner\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/run')\n"
+        "def run():\n"
+        "    return runner.go(request.args['expr'])\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert [c for c in scan.taint_chains if c.sink_file.endswith("runner.py")]
 
 
 def test_hop_zero_when_route_and_sink_share_file(tmp_path: Path) -> None:
