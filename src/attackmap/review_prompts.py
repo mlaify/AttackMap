@@ -504,7 +504,14 @@ def render_triage_prompts(
     """Render the triage prompts (#145): cluster/dedupe/rank the EXISTING
     findings into a shortlist that cites real finding IDs — organization, not
     discovery."""
-    evidence_payload = _evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    # Pre-rank by the triage priority (severity → exploitability → score) and
+    # dedupe before the evidence pack applies its finding cap, so the pack's
+    # top-N are the actual top priorities — otherwise the LLM could miss a
+    # high-exploitability finding the deterministic fallback would surface (#145).
+    from .triage import rank_findings
+
+    ranked = rank_findings(findings)
+    evidence_payload = _evidence_pack(scan, attack_surfaces, ranked, attack_paths)
     evidence_json = json.dumps(evidence_payload, indent=2, sort_keys=True)
     return RenderedReviewPrompt(
         system=TRIAGE_SYSTEM_PROMPT.strip(),

@@ -107,11 +107,13 @@ def render_triage_fallback(scan: ScanResult, findings: list[Finding]) -> str:
         clusters.setdefault(label, []).append(finding)
         cluster_priority[label] = priority
 
-    # Order clusters by the severity of their best finding, then fixed priority
-    # — the cluster that most needs attention leads, deterministically.
+    # Order clusters by the FULL priority of their best finding (severity, then
+    # exploitability, then score), then fixed cluster priority as a stable
+    # tiebreaker — so the leading cluster is the one containing the top-ranked
+    # finding, matching the "Start here" summary below.
     ordered_labels = sorted(
         clusters,
-        key=lambda label: (_sort_key(clusters[label][0])[0], cluster_priority[label], label),
+        key=lambda label: (_sort_key(clusters[label][0]), cluster_priority[label], label),
     )
 
     lines: list[str] = [

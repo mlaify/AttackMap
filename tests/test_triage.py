@@ -100,6 +100,46 @@ def test_triage_prompt_pack_includes_finding_ids() -> None:
     assert finding_id("BOLA/IDOR on modify routes") in ids
 
 
+def test_triage_pack_preranks_before_the_30_finding_cap() -> None:
+    """With >30 findings, the highest-exploitability one must reach the pack
+    even if the upstream (severity/score/title) order would push it past the
+    cap (#145 — pack pre-ranking)."""
+    scan = ScanResult(root="/x")
+    # 34 same-severity/score findings; the true top by exploitability has a
+    # title that sorts LAST, so an unranked title-order slice would drop it.
+    findings = [
+        Finding(title=f"zzz finding {i:02d}", severity="high", mitigation="x",
+                tags=["exposed-endpoint"], score=100, exploitability=1)
+        for i in range(33)
+    ]
+    top = Finding(title="zzz top exploitable", severity="high", mitigation="x",
+                  tags=["exposed-endpoint"], score=100, exploitability=99)
+    findings.append(top)
+    rendered = render_triage_prompts(scan, [], findings, [])
+    pack = json.loads(rendered.evidence_json)
+    ids = {f["finding_id"] for f in pack["findings"]}
+    assert finding_id("zzz top exploitable") in ids
+
+
+def test_fallback_cluster_order_respects_exploitability() -> None:
+    """Two clusters at the same severity: the one with the more exploitable
+    finding leads, matching the 'Start here' summary (#145)."""
+    scan = ScanResult(root="/x")
+    findings = [
+        # Authorization cluster: HIGH but low exploitability.
+        Finding(title="Weak authz check", severity="high", mitigation="x",
+                tags=["broken-authorization"], score=100, exploitability=10),
+        # Injection cluster: HIGH and highly exploitable → should lead.
+        Finding(title="SQL injection reachable from public route", severity="high",
+                mitigation="x", tags=["injection"], score=100, exploitability=95),
+    ]
+    md = render_triage_fallback(scan, findings)
+    # The injection cluster heading appears before the authorization one.
+    assert md.index("Injection & unsafe data flow") < md.index("Authorization & access control")
+    # And "Start here" names the injection finding.
+    assert finding_id("SQL injection reachable from public route") in md.split("Start here")[1]
+
+
 # --- CLI end-to-end --------------------------------------------------------
 
 
