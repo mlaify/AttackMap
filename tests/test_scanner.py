@@ -825,6 +825,59 @@ def test_real_high_entropy_secret_still_flagged(tmp_path: Path) -> None:
     assert any(s.kind == "high_entropy" for s in result.secret_hints)
 
 
+# ---------------------------------------------------------------------------
+# #141: typed provider-signature detection + entropy calibration.
+# ---------------------------------------------------------------------------
+
+# Assembled from fragments (see note above) so the checked-in test source
+# never contains a full-length match for push-protection scanners.
+_OPENAI_LEGACY = "sk-" + "T3BlbkFJ" + "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+_OPENAI_PROJECT = "sk-" + "proj-" + "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+_GITLAB = "glpat-" + "abcdefghijklmnopqrstuvwx"
+_NPM = "npm_" + "abcdefghijklmnopqrstuvwxyz0123456789"  # npm_ + 36
+
+
+def test_hardcoded_openai_legacy_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'OPENAI = "{_OPENAI_LEGACY}"\n')
+    assert _has_kind(scan, "openai_key")
+
+
+def test_hardcoded_openai_project_key_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'OPENAI = "{_OPENAI_PROJECT}"\n')
+    assert _has_kind(scan, "openai_key")
+
+
+def test_anthropic_key_not_misclassified_as_openai(tmp_path: Path) -> None:
+    """`sk-ant-…` must keep its own (more specific) kind and must not
+    also surface as a generic OpenAI hit for the same span."""
+    scan = _scan_source(tmp_path, f'KEY = "{_ANTHROPIC}"\n')
+    assert _has_kind(scan, "anthropic_key")
+    assert not _has_kind(scan, "openai_key")
+
+
+def test_hardcoded_gitlab_pat_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'GL = "{_GITLAB}"\n')
+    assert _has_kind(scan, "gitlab_pat")
+
+
+def test_hardcoded_npm_token_detected(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, f'//registry.npmjs.org/:_authToken="{_NPM}"\n')
+    assert _has_kind(scan, "npm_token")
+
+
+def test_subresource_integrity_hash_not_flagged_as_secret(tmp_path: Path) -> None:
+    """SRI / lockfile integrity digests are high-entropy base64 but are
+    public asset fingerprints, not credentials (#141)."""
+    sri = "sha384-" + "oqVuAfXRKap7fdgcCY5uykM6R9GqQ8K9uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC"
+    scan = _scan_source(tmp_path, f'INTEGRITY = "{sri}"\n')
+    assert not _has_kind(scan, "high_entropy")
+
+
+def test_uuid_not_flagged_as_secret(tmp_path: Path) -> None:
+    scan = _scan_source(tmp_path, 'REQUEST_ID = "550e8400-e29b-41d4-a716-446655440000"\n')
+    assert not _has_kind(scan, "high_entropy")
+
+
 def test_route_extraction_ignores_non_router_method_calls(tmp_path: Path) -> None:
     """`x.get("s")` on a non-router receiver with a non-URL string is not a
     route — `headers.delete`, `params.get`, config lookups (#99)."""

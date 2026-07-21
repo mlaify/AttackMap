@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.4.10).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.11).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -354,6 +354,32 @@ identifier; cipher/ECB tokens are matched case-sensitively so algorithm names
 aren't confused with prose (e.g. the French word "des"). Results appear under
 `scan.crypto_weaknesses`.
 
+### Hard-coded secret detection
+
+Two layers, precision-first. **Typed provider-signature detectors** recognize the
+distinctive shapes of leaked keys and fire at high confidence with a
+provider-specific `kind`:
+
+| Provider | Prefix / shape |
+|---|---|
+| AWS | `AKIA…` / `ASIA…` |
+| GitHub | `ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` |
+| OpenAI | `sk-…` / `sk-proj-…` / `sk-svcacct-…` |
+| Anthropic | `sk-ant-…` |
+| GitLab / npm | `glpat-…` / `npm_…` |
+| Stripe / Slack / Google | `sk_live_…` / `xox[bpsare]-…` / `AIza…` |
+| SendGrid / Mailgun / Twilio | `SG.…` / `key-…` / `AC…` SID |
+| PEM / JWT | `-----BEGIN … PRIVATE KEY-----` / `eyJ….eyJ….…` (header verified) |
+
+Below the typed layer, a **Shannon-entropy fallback** catches high-entropy
+literals that don't match a known provider. It is calibrated to stay quiet:
+pure-hex hashes, URLs, version/number strings, base64/base32 alphabet constants
+(#96), Subresource-Integrity / lockfile digests (`sha384-…`), and UUIDs are
+suppressed, and a typed match always takes precedence over the entropy hit for
+the same span. Values are redacted (`ghp_…6789`) before they reach any report —
+the raw secret never appears. No liveness verification is performed. Results
+appear as `scan.secret_hints`.
+
 ### GitHub Actions / CI workflow security
 
 CI config is a real attack surface. AttackMap parses `.github/workflows/*.yml`
@@ -640,7 +666,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.10) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.11) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**

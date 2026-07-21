@@ -281,6 +281,16 @@ HARDCODED_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(AIza[A-Za-z0-9_-]{35,42})\b"), "google_api_key"),
     # Anthropic API key (long, characteristic prefix)
     (re.compile(r"\b(sk-ant-[A-Za-z0-9_-]{40,})\b"), "anthropic_key"),
+    # OpenAI API key — legacy `sk-<48 alnum>`, project keys `sk-proj-…`,
+    # and service-account keys `sk-svcacct-…`. The negative lookahead keeps
+    # Anthropic's `sk-ant-` keys on their own (more specific) kind and stops
+    # this from double-matching them. Stripe uses an underscore (`sk_live_`),
+    # so there is no overlap there.
+    (re.compile(r"\b(sk-(?!ant-)(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,})\b"), "openai_key"),
+    # GitLab personal / project / group access tokens.
+    (re.compile(r"\b(glpat-[A-Za-z0-9_-]{20,})\b"), "gitlab_pat"),
+    # npm automation / publish tokens.
+    (re.compile(r"\b(npm_[A-Za-z0-9]{36})\b"), "npm_token"),
     # PEM private-key block — match `-----BEGIN [<algo> ]PRIVATE KEY-----`,
     # covering both bare `-----BEGIN PRIVATE KEY-----` and prefixed forms
     # (`RSA`, `EC`, `DSA`, `OPENSSH`, `ENCRYPTED`). Capture just the header
@@ -781,6 +791,14 @@ def _looks_like_secret_candidate(value: str) -> bool:
     if all(c in "0123456789abcdef" for c in value.lower()):
         # Pure hex — commit SHAs, hashes. Not a secret in code.
         return False
+    if value.startswith(_INTEGRITY_HASH_PREFIXES):
+        # Subresource-integrity / lockfile integrity digests
+        # (`sha384-…`, `sha512-…`). High-entropy base64, but they are
+        # published fingerprints of public assets, not secrets (#141).
+        return False
+    if _UUID_RE.match(value):
+        # Canonical UUID — an identifier, not a credential.
+        return False
     if "/" in value and value.count("/") > 2:
         # Looks like a URL path fragment.
         return False
@@ -875,6 +893,18 @@ _CHARSET_MARKERS = (
 
 def _looks_like_charset(value: str) -> bool:
     return any(marker in value for marker in _CHARSET_MARKERS)
+
+
+# Integrity-digest prefixes (Subresource Integrity, lockfile `integrity`
+# fields). These are high-entropy base64 but are public asset fingerprints,
+# not credentials — the entropy fallback must not treat them as secrets.
+_INTEGRITY_HASH_PREFIXES = ("sha256-", "sha384-", "sha512-", "sha1-", "md5-")
+
+# Canonical UUID (8-4-4-4-12 hex). An identifier, not a credential.
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 def _is_jwt_shape(literal: str) -> bool:
