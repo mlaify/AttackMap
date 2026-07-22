@@ -298,8 +298,20 @@ def _add_usage(total: dict[str, int], usage: dict | None) -> None:
             total[key] = total.get(key, 0) + value
 
 
-def _usage_sum(usage: dict[str, int]) -> int:
-    return sum(v for v in usage.values() if isinstance(v, int))
+def _account(total: dict[str, int], result) -> None:
+    """Accumulate a call's usage, keeping ``output_tokens`` a best-effort count
+    for the budget guardrail. Backends that don't report it (e.g. the Codex
+    CLI) get an estimate from the response length (~4 chars/token) so
+    ``--hunt-budget`` still bounds them."""
+    usage = getattr(result, "usage", None) or {}
+    _add_usage(total, usage)
+    if not usage.get("output_tokens"):
+        total["output_tokens"] = total.get("output_tokens", 0) + max(1, len(result.markdown) // 4)
+
+
+def _output_spent(usage: dict[str, int]) -> int:
+    """Output tokens spent so far — the unit `--hunt-budget` is measured in."""
+    return usage.get("output_tokens", 0)
 
 
 def _generate_round(
@@ -326,7 +338,7 @@ def _generate_round(
         if critic_hint:
             kwargs["critic_hint"] = critic_hint
         g = llm_call("hunt_generate", **kwargs)
-        _add_usage(usage_total, g.usage)
+        _account(usage_total, g)
         backend, model, last_markdown = g.backend, g.model, g.markdown
         parsed = parse_hypotheses(g.markdown)
         if lens is not None:
@@ -370,7 +382,7 @@ def run_majority_verify(
         dry = 0
         critic_hint: str | None = None
         for _ in range(max_rounds):
-            if token_budget and _usage_sum(usage_total) >= token_budget:
+            if token_budget and _output_spent(usage_total) >= token_budget:
                 break
             rounds_run += 1
             avoid = [h.title for h in accumulated] or None
@@ -388,13 +400,13 @@ def run_majority_verify(
             dry = 0
             # Seed the next round unless we're done or out of budget.
             more_rounds_left = rounds_run < max_rounds
-            budget_left = not (token_budget and _usage_sum(usage_total) >= token_budget)
+            budget_left = not (token_budget and _output_spent(usage_total) >= token_budget)
             if more_rounds_left and budget_left and accumulated:
                 crit = llm_call(
                     "hunt_critic",
                     hypotheses=[{"id": h.id, "title": h.title, "evidence": h.evidence} for h in accumulated],
                 )
-                _add_usage(usage_total, crit.usage)
+                _account(usage_total, crit)
                 critic_hint = crit.markdown
         hypotheses = accumulated
     elif lenses and len(lenses) > 1:
@@ -422,7 +434,7 @@ def run_majority_verify(
     per_pass: list[dict[str, tuple[Verdict, str]]] = []
     for _ in range(votes):
         sk = llm_call("hunt_skeptic", hypotheses=hyp_dicts)
-        _add_usage(usage_total, sk.usage)
+        _account(usage_total, sk)
         per_pass.append(parse_verdicts(sk.markdown))
 
     consensus = combine_verdicts(hypotheses, per_pass)

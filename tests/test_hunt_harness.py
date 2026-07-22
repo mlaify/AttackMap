@@ -366,6 +366,61 @@ def test_loop_respects_token_budget() -> None:
     assert res.usage["output_tokens"] >= 12  # stopped after crossing the budget
 
 
+def test_budget_counts_only_output_tokens() -> None:
+    """A huge input pack must not exhaust an output-token budget (#147c)."""
+    rounds = [f"=== HYPOTHESES ===\nH1: distinct issue module_{i}_widget [evidence: taint:{i}]\n" for i in range(6)]
+    state = {"n": 0}
+
+    def llm_call(mode, hypotheses=None, lens=None, avoid_titles=None, critic_hint=None):
+        if mode == "hunt_generate":
+            md = rounds[min(state["n"], len(rounds) - 1)]
+            state["n"] += 1
+            return LlmReviewResult(markdown=md, model="m", stop_reason=None,
+                                   usage={"input_tokens": 100000, "output_tokens": 5}, backend="api")
+        if mode == "hunt_critic":
+            return LlmReviewResult(markdown="- x", model="m", stop_reason=None,
+                                   usage={"input_tokens": 100000, "output_tokens": 5}, backend="api")
+        return LlmReviewResult(markdown="VERDICT H1: REFUTED — x", model="m", stop_reason=None,
+                               usage={"output_tokens": 5}, backend="api")
+
+    res = run_majority_verify(None, [], [], [], votes=1, llm_call=llm_call,
+                              max_rounds=6, dry_streak=1, token_budget=25)
+    # Input tokens (100k+) would have stopped it after round 1 if counted; only
+    # output tokens (10/round) count, so several rounds run.
+    assert res.rounds >= 2
+
+
+def test_budget_estimated_when_backend_reports_no_usage() -> None:
+    """The Codex CLI reports no usage — the budget still bounds it via an
+    output-length estimate (#147c)."""
+    state = {"n": 0}
+
+    def llm_call(mode, hypotheses=None, lens=None, avoid_titles=None, critic_hint=None):
+        if mode == "hunt_generate":
+            md = f"=== HYPOTHESES ===\nH1: distinct lead alpha_{state['n']}_beta reaches a sink [evidence: taint:{state['n']}]\n"
+            state["n"] += 1
+            return LlmReviewResult(markdown=md, model="m", stop_reason=None, usage={}, backend="cli")
+        if mode == "hunt_critic":
+            return LlmReviewResult(markdown="x" * 40, model="m", stop_reason=None, usage={}, backend="cli")
+        return LlmReviewResult(markdown="VERDICT H1: REFUTED — x", model="m", stop_reason=None, usage={}, backend="cli")
+
+    res = run_majority_verify(None, [], [], [], votes=1, llm_call=llm_call,
+                              max_rounds=10, dry_streak=1, token_budget=50)
+    assert res.rounds < 10  # estimate enforced the budget despite empty usage
+
+
+def test_critic_prompt_includes_evidence() -> None:
+    from attackmap.models import ScanResult
+    from attackmap.review_prompts import render_critic_prompts
+
+    rendered = render_critic_prompts(
+        ScanResult(root="/x"), [], [], [],
+        [{"id": "H1", "title": "SQLi", "evidence": "taint:1"}],
+    )
+    pack = json.loads(rendered.evidence_json)
+    assert pack["hypotheses"][0]["evidence"] == "taint:1"
+
+
 def test_critic_seeds_next_round_with_avoid_titles() -> None:
     rounds = [
         "=== HYPOTHESES ===\nH1: SQLi at db.py [evidence: taint:1]\n",

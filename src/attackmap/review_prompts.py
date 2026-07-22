@@ -618,7 +618,12 @@ def render_critic_prompts(
     """Completeness-critic pass (#147c): given the leads found so far, name the
     untried modalities / gaps that should seed the next round."""
     pack = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
-    pack["hypotheses"] = [{"id": h["id"], "title": h["title"]} for h in hypotheses]
+    # Keep the cited evidence ids so the critic can tell covered surfaces/chains
+    # from genuinely untried ones (#147c).
+    pack["hypotheses"] = [
+        {"id": h["id"], "title": h["title"], "evidence": h.get("evidence", "")}
+        for h in hypotheses
+    ]
     evidence_json = json.dumps(pack, indent=2, sort_keys=True)
     return RenderedReviewPrompt(
         system=HUNT_CRITIC_SYSTEM_PROMPT.strip(),
