@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.21] - 2026-07-22
+
+### Added
+
+- **Capability-reach enumeration under `--recall` (#148b).** Second slice of
+  recall mode (epic #150). The default taint pass only flags network/template/
+  filesystem/redirect sinks when the argument is request-shaped (a constant URL
+  or path is fine). Recall now additionally surfaces the reach to the
+  *capability itself* — a new `_CAPABILITY_PATTERNS` matches the bare call form
+  (`requests.get(…)`, `httpx`/`urlopen`/`axios`/`fetch`, `render_template_string`/
+  `Template(`, `open(`, `redirect(`/`res.redirect(`) with **no request-token
+  gate**, so it lists reaches a signature-based pass misses. These are
+  recall-only, marked `speculative` (their own LOW-severity finding, out of
+  `--fail-on-new-high`), deduped against any gated hit at the same line (a
+  genuine request-derived sink stays a confirmed finding, not a duplicate), and
+  still bounded to what a route reaches. NoSQL is deliberately excluded — a bare
+  `.find(` is overwhelmingly JS array iteration without the request-token gate.
+  Adjudicate with `--hunt --verify`.
+
 ## [0.4.20] - 2026-07-22
 
 ### Added

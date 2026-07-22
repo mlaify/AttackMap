@@ -223,3 +223,64 @@ def test_speculative_sql_chain_ignored_by_authz(tmp_path: Path) -> None:
         ],
     )
     assert analyze_authz(scan, tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# capability-reach enumeration (#148b)
+# ---------------------------------------------------------------------------
+
+
+def _capability_repo(root: Path, body_line: str) -> ScanResult:
+    _write(root, "app.py", f"import requests\n\n\ndef handler(request):\n    {body_line}\n")
+    return ScanResult(root=str(root), routes=[Route(path="/x", method="GET", file="app.py", line=4)])
+
+
+def test_default_ignores_constant_url_network_call(tmp_path: Path) -> None:
+    """A constant-URL network call is not a signature hit — default stays quiet."""
+    scan = _capability_repo(tmp_path, 'return requests.get("https://api.internal/health")')
+    assert not [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "ssrf"]
+
+
+def test_capability_reach_surfaces_constant_url_as_speculative(tmp_path: Path) -> None:
+    """Recall surfaces the reach to the network capability even with no
+    request-derived argument — speculative (#148b acceptance)."""
+    scan = _capability_repo(tmp_path, 'return requests.get("https://api.internal/health")')
+    ssrf = [c for c in analyze_taint(scan, tmp_path, recall=recall_config()) if c.sink_kind == "ssrf"]
+    assert len(ssrf) == 1
+    assert ssrf[0].speculative is True
+
+
+def test_capability_reach_does_not_duplicate_request_derived_sink(tmp_path: Path) -> None:
+    """When the argument IS request-derived, the gated pass already fires — the
+    capability pass must not emit a duplicate speculative hit at the same line."""
+    scan = _capability_repo(tmp_path, 'return requests.get(request.args["url"])')
+    ssrf = [c for c in analyze_taint(scan, tmp_path, recall=recall_config()) if c.sink_kind == "ssrf"]
+    assert len(ssrf) == 1
+    # The genuine request-derived reach stays a confirmed (non-speculative) hit.
+    assert ssrf[0].speculative is False
+
+
+def test_capability_reach_covers_fs_template_redirect(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "app.py",
+        "from flask import redirect, render_template_string\n\n\n"
+        "def handler():\n"
+        '    render_template_string("hello")\n'
+        '    open("/etc/config")\n'
+        '    return redirect("/home")\n',
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/x", method="GET", file="app.py", line=4)])
+    kinds = {
+        c.sink_kind
+        for c in analyze_taint(scan, tmp_path, recall=recall_config())
+        if c.speculative
+    }
+    assert {"ssti", "dynamic_open", "open_redirect"} <= kinds
+
+
+def test_capability_reach_off_without_recall(tmp_path: Path) -> None:
+    scan = _capability_repo(tmp_path, 'return requests.get("https://api.internal/health")')
+    # Even the widest non-capability knobs don't enumerate bare capabilities.
+    cfg = RecallConfig(max_hops=4, include_static_args=True)  # capability_reach=False
+    assert not [c for c in analyze_taint(scan, tmp_path, recall=cfg) if c.sink_kind == "ssrf"]

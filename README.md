@@ -324,15 +324,25 @@ patterns in test scaffolding are rarely real exposure. Set
 `ATTACKMAP_INCLUDE_TESTS=1` to scan them too (e.g. for test-quality reviews).
 
 **Recall mode (`--recall`).** Aggressiveness is only useful *behind* a verifier —
-so `--recall` widens taint discovery (raises the max import-hop depth from 2 to
-4, and surfaces reaches the default pass conservatively hides, like a
-static-literal-looking `eval`/`exec`/deserialize argument) and marks the extra
-reach **speculative** instead of asserting it. Speculative chains carry
-downgraded confidence, get their own LOW-severity finding (`SPECULATIVE (recall
-mode)…`), and are kept **out of `--fail-on-new-high`** — they are leads for
-`--hunt --verify` / `--triage` to adjudicate, not detections. Default behavior
-is unchanged; pair `--recall` with `--hunt --verify` to widen the net and then
-adjudicate what it catches.
+so `--recall` widens taint discovery and marks the extra reach **speculative**
+instead of asserting it. It:
+
+- raises the max import-hop depth (2 → 4) and per-route visit budget;
+- surfaces reaches the default pass conservatively hides, like a
+  static-literal-looking `eval`/`exec`/deserialize argument;
+- **enumerates capability-reach**: every reach to a powerful capability —
+  network (`requests`/`httpx`/`axios`/`fetch`/`urlopen`), template
+  (`render_template_string`/`Template`), filesystem (`open`), redirect
+  (`redirect`/`res.redirect`) — even with **no known-bad pattern**, i.e. the
+  bare call without a request-derived argument (a genuine request-derived sink
+  still fires once, as a confirmed finding, not a duplicate).
+
+Speculative chains carry downgraded confidence, get their own LOW-severity
+finding (`SPECULATIVE (recall mode)…`), are excluded from every asserted
+downstream pass (exploitability, BOLA, attack paths), and are kept **out of
+`--fail-on-new-high`** — they are leads for `--hunt --verify` / `--triage` to
+adjudicate, not detections. Default behavior is unchanged; pair `--recall` with
+`--hunt --verify` to widen the net and then adjudicate what it catches.
 
 ### Web hardening gaps
 
