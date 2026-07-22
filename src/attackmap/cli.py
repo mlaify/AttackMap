@@ -17,6 +17,13 @@ from .analyzers import (
     select_requested_analyzers,
 )
 from .cve import query_vulnerabilities
+from .fleet import (
+    FleetRepoResult,
+    FleetScan,
+    fleet_repo_ids,
+    fleet_summary_json,
+    render_fleet_summary,
+)
 from .diff import (
     FindingSnapshot,
     diff_findings,
@@ -66,9 +73,133 @@ TRIAGE_BANNER = (
 )
 
 
+def _run_fleet(
+    repo_paths: list[Path],
+    *,
+    output: str,
+    module: list[str] | None,
+    recall: bool,
+    cve: bool,
+    no_suppress: bool,
+    suppress_file: str | None,
+    progress_format: str,
+    no_progress: bool,
+    fleet_incompatible: dict[str, bool],
+) -> None:
+    """Multi-repo fleet scan (#146a). Scans each repo independently — reusing the
+    same building blocks a single-repo run uses — writes per-repo reports into
+    ``output/<repo_id>/``, and assembles a fleet summary. No cross-repo detection
+    yet (that is #146b–#146d); this is the foundation."""
+    active_flags = [flag for flag, on in fleet_incompatible.items() if on]
+    if active_flags:
+        raise typer.BadParameter(
+            f"{', '.join(sorted(active_flags))} not yet supported in multi-repo mode — "
+            "run one repository at a time for these (fleet-aware wiring lands in #146b+)."
+        )
+
+    selected_analyzers = None
+    if module:
+        try:
+            selected_analyzers = select_requested_analyzers(module, auto_install=True)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+    output_root = Path(output)
+    repo_ids = fleet_repo_ids(repo_paths)
+    fleet = FleetScan()
+
+    for repo_id, repo_path in zip(repo_ids, repo_paths):
+        typer.echo("")
+        typer.echo(f"── {repo_id}  ({repo_path}) ──")
+        active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
+        scan_progress = create_progress(progress_format, no_progress=no_progress)
+        scan = analyze_repository(
+            repo_path, analyzers=active_analyzers, progress=scan_progress, recall=recall
+        )
+        if cve and scan.dependencies:
+            try:
+                vulns, _cve_summary = query_vulnerabilities(scan.dependencies)
+            finally:
+                scan_progress.done()
+            scan.vulnerabilities = vulns
+
+        graph = build_graph(scan)
+        analysis = translate_recon(scan)
+        attack_surfaces = analysis.attack_surfaces
+        findings = analysis.findings
+        attack_paths = analysis.attack_paths
+        architecture_md = summarize_architecture(scan, graph)
+        attack_surface_md = summarize_attack_surface(scan, attack_surfaces)
+
+        suppressed_findings: list = []
+        if not no_suppress:
+            explicit = Path(suppress_file) if suppress_file else None
+            if explicit is not None and not explicit.exists():
+                raise typer.BadParameter(f"Suppress file not found: {explicit}")
+            suppset, sup_warnings = collect_suppressions(repo_path, findings, explicit_file=explicit)
+            for warning in sup_warnings:
+                typer.echo(f"Suppression warning: {warning}", err=True)
+            outcome = apply_suppressions(findings, suppset)
+            findings = outcome.active
+            suppressed_findings = outcome.suppressed
+
+        defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
+        repo_out = output_root / repo_id
+        write_reports(
+            repo_out,
+            scan,
+            architecture_md,
+            attack_surface_md,
+            defensive_review_md,
+            attack_surfaces,
+            findings,
+            attack_paths,
+            analyzer_metadata=[
+                {
+                    "name": metadata.name,
+                    "description": metadata.description,
+                    "scope": metadata.scope,
+                    "ecosystems": list(metadata.ecosystems),
+                }
+                for metadata in (get_analyzer_metadata(a) for a in active_analyzers)
+            ],
+            suppressed=suppressed_findings,
+        )
+        typer.echo(render_console_summary(scan, findings, attack_paths))
+        fleet.results.append(
+            FleetRepoResult(
+                repo_id=repo_id,
+                root=str(repo_path),
+                report_dir=str(repo_out.resolve()),
+                scan=scan,
+                findings=findings,
+                attack_paths=attack_paths,
+                suppressed_count=len(suppressed_findings),
+            )
+        )
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "fleet-summary.md").write_text(
+        render_fleet_summary(fleet) + "\n", encoding="utf-8"
+    )
+    (output_root / "fleet-summary.json").write_text(
+        json.dumps(fleet_summary_json(fleet), indent=2) + "\n", encoding="utf-8"
+    )
+    typer.echo("")
+    typer.echo(
+        f"Fleet: {fleet.repo_count} repositories, {fleet.total_findings()} finding(s). "
+        f"Summary written to: {(output_root / 'fleet-summary.md').resolve()}"
+    )
+
+
 @app.command()
 def analyze(
-    path: str = typer.Argument(".", help="Path to the repository to analyze."),
+    paths: list[str] | None = typer.Argument(
+        None,
+        help="Path(s) to the repository(ies) to analyze. Pass two or more for a "
+        "cross-repo fleet scan (#146a): each is scanned into its own report "
+        "subdirectory and a fleet summary is written alongside. Defaults to '.'.",
+    ),
     output: str = typer.Option("reports", "--output", "-o", help="Directory for generated reports."),
     format: str = typer.Option("all", "--format", help="Output format: all, markdown, or json."),
     module: list[str] | None = typer.Option(
@@ -198,9 +329,45 @@ def analyze(
         help="Path to a suppression baseline, overriding auto-discovery of .attackmap-suppress.yaml at the repo root (#144).",
     ),
 ) -> None:
-    repo_path = Path(path).resolve()
-    if not repo_path.exists():
-        raise typer.BadParameter(f"Path does not exist: {repo_path}")
+    repo_paths = [Path(p).resolve() for p in (paths or ["."])]
+    for rp in repo_paths:
+        if not rp.exists():
+            raise typer.BadParameter(f"Path does not exist: {rp}")
+
+    # Validate progress format before either branch, so the fleet path enforces
+    # the same option semantics as a single-repo run (#146a).
+    if progress_format not in {"auto", "tty", "json", "none"}:
+        raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
+
+    # Multi-repo fleet mode (#146a): scan each repo independently and assemble a
+    # fleet view. Dispatched here so the single-repo path below is untouched.
+    if len(repo_paths) > 1:
+        _run_fleet(
+            repo_paths,
+            output=output,
+            module=module,
+            recall=recall,
+            cve=cve,
+            no_suppress=no_suppress,
+            suppress_file=suppress_file,
+            progress_format=progress_format,
+            no_progress=no_progress,
+            # Single-repo-only features aren't fleet-aware yet — reject rather
+            # than silently ignore, so the user isn't surprised (#146b+ wire them).
+            fleet_incompatible={
+                "--baseline": baseline is not None,
+                "--diff-output": diff_output is not None,
+                "--fail-on-new-high": fail_on_new_high,
+                "--pr-comment": pr_comment is not None,
+                "--llm": llm,
+                "--hunt": hunt,
+                "--remediate": remediate,
+                "--triage": triage,
+            },
+        )
+        return
+
+    repo_path = repo_paths[0]
     # Validate diff-mode flag combinations before doing any real work.
     if fail_on_new_high and baseline is None:
         raise typer.BadParameter("--fail-on-new-high requires --baseline to be set.")
@@ -216,8 +383,7 @@ def analyze(
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
 
-    if progress_format not in {"auto", "tty", "json", "none"}:
-        raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
+    # (--progress-format is validated up-front, before the fleet dispatch.)
     if llm_speed not in {"standard", "fast"}:
         raise typer.BadParameter("--llm-speed must be one of: standard, fast.")
     if llm_provider not in {"claude", "openai"}:

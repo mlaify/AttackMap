@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.22] - 2026-07-22
+
+### Added
+
+- **Multi-repo fleet input (#146a).** First phase of cross-repo analysis (epic
+  #150). `attackmap analyze repoA repoB …` now accepts two or more repositories:
+  each is scanned **independently** into its own `ScanResult` (own root, own
+  relative paths — no cross-repo collisions), its reports are written to
+  `output/<repo_id>/`, and a top-level `fleet-summary.md` + `fleet-summary.json`
+  index the run (per-repo severity counts, top findings, links). New `fleet.py`
+  holds the pure `FleetScan`/`FleetRepoResult` container and summary rendering
+  (the input surface the later cross-repo phases build on). Repo ids are
+  slugified directory names, disambiguated on collision (`api`, `api-2`, …).
+  This phase adds **no** cross-repo detection — contract linking, cross-boundary
+  taint, and trust-gap analysis land in #146b–#146d. **Single-repo invocation
+  (one path) is byte-for-byte unchanged**; single-repo-only flags (`--baseline`,
+  `--diff-output`, `--fail-on-new-high`, `--pr-comment`, `--llm`, `--hunt`,
+  `--remediate`, `--triage`) are rejected in multi-repo mode until they're made
+  fleet-aware.
+
 ## [0.4.21] - 2026-07-22
 
 ### Added
