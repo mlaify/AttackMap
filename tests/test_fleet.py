@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from attackmap.cli import app
+from attackmap.contracts import ContractLink
 from attackmap.fleet import (
     FleetRepoResult,
     FleetScan,
     fleet_repo_ids,
     fleet_summary_json,
+    render_fleet_graph_mermaid,
     render_fleet_summary,
 )
 from attackmap.models import Finding, ScanResult
@@ -100,6 +103,59 @@ def test_fleet_summary_json_shape() -> None:
     repo = data["repos"][0]
     assert repo["repo_id"] == "svc-a"
     assert repo["severity_counts"] == {"high": 1, "medium": 0, "low": 0}
+    assert data["cross_repo_links"] == []
+
+
+# ---------------------------------------------------------------------------
+# cross-repo links (#146b) rendering
+# ---------------------------------------------------------------------------
+
+
+def _link() -> ContractLink:
+    return ContractLink(
+        client_repo="client",
+        server_repo="server",
+        method="GET",
+        path_template="api/orders/*",
+        client_target="http://order-svc/api/orders/",
+        client_file="c.py",
+        client_line=3,
+        server_route_path="/api/orders/<id>",
+        server_file="s.py",
+        server_line=5,
+    )
+
+
+def test_summary_lists_cross_repo_links() -> None:
+    fleet = FleetScan(
+        results=[_result("client", []), _result("server", [])], links=[_link()]
+    )
+    md = render_fleet_summary(fleet)
+    assert "Cross-repo links" in md
+    assert "1 client→server contract link(s)" in md
+    assert "`client`" in md and "`server`" in md
+    assert "/api/orders/<id>" in md and "c.py:3" in md
+
+
+def test_fleet_graph_mermaid_has_edge_citing_both_sides() -> None:
+    fleet = FleetScan(
+        results=[_result("client", []), _result("server", [])], links=[_link()]
+    )
+    graph = render_fleet_graph_mermaid(fleet)
+    assert "flowchart LR" in graph
+    assert '"client"' in graph and '"server"' in graph
+    assert "GET /api/orders/*" in graph
+    assert "-->" in graph  # a directed cross-repo edge exists
+
+
+def test_fleet_summary_json_includes_links() -> None:
+    fleet = FleetScan(results=[_result("client", []), _result("server", [])], links=[_link()])
+    data = fleet_summary_json(fleet)
+    assert len(data["cross_repo_links"]) == 1
+    link = data["cross_repo_links"][0]
+    assert link["client_repo"] == "client" and link["server_repo"] == "server"
+    assert link["client_location"] == "c.py:3"
+    assert link["server_location"] == "s.py:5"
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +216,35 @@ def test_multi_repo_missing_path_errors(tmp_path: Path) -> None:
     result = runner.invoke(app, ["analyze", str(a), str(tmp_path / "nope")])
     assert result.exit_code != 0
     assert "does not exist" in _norm(result.output)
+
+
+def test_multi_repo_links_client_to_server_end_to_end(tmp_path: Path) -> None:
+    client = tmp_path / "client"
+    client.mkdir()
+    (client / "app.py").write_text(
+        'import requests\n\n\ndef get(oid):\n'
+        '    return requests.get("http://order-svc/api/orders/" + oid)\n',
+        encoding="utf-8",
+    )
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "api.py").write_text(
+        "from flask import Flask\napp = Flask(__name__)\n\n\n"
+        '@app.route("/api/orders/<id>")\ndef order(id):\n'
+        '    return db.execute("SELECT * FROM orders WHERE id=" + id)\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["analyze", str(client), str(server), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    assert (out / "fleet-graph.md").exists()
+    data = json.loads((out / "fleet-summary.json").read_text())
+    links = data["cross_repo_links"]
+    assert len(links) == 1
+    assert links[0]["client_repo"] == "client"
+    assert links[0]["server_repo"] == "server"
+    assert links[0]["server_route_path"] == "/api/orders/<id>"
+    assert "1 cross-repo link(s)" in result.output
 
 
 def test_multi_repo_validates_progress_format(tmp_path: Path) -> None:

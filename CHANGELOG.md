@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.23] - 2026-07-22
+
+### Added
+
+- **Cross-repo contract linking + fleet graph (#146b).** Second phase of
+  cross-repo analysis (epic #150). In a multi-repo (`analyze repoA repoB …`)
+  run, AttackMap now links one repo's **outbound HTTP calls** to another repo's
+  **routes** — the client↔server seam. New `contracts.py` matches by normalized
+  path template + method: concrete ids and path params collapse to `*` so
+  `/users/123` ↔ `/users/{id}` ↔ `/users/:id` align, and the common
+  string-concatenation idiom (`base + "/api/orders/" + oid`, captured up to the
+  trailing slash) links to the templated route while staying distinct from the
+  bare collection route. Precision guards: a static segment must anchor the path
+  (a bare `/{id}` won't link), infra/static routes are excluded, methods must be
+  compatible, and client ≠ server. The fleet summary gains a **Cross-repo links**
+  table (each link cites both sides — caller `file:line` and served route), and
+  a new `fleet-graph.md` renders the repo-to-repo graph as Mermaid. `ExternalCall`
+  now captures the HTTP `method`. Single-repo behavior unchanged. Richer linking
+  dimensions (RPC callers, shared schemas, queues, DB tables, token iss/aud) and
+  the cross-boundary taint / trust-gap detections that ride these links land in
+  #146c–#146d.
+
 ## [0.4.22] - 2026-07-22
 
 ### Added

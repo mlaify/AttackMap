@@ -26,6 +26,11 @@ class ExternalCall(BaseModel):
     target: str
     file: str
     line: int | None = None
+    # HTTP verb of the outbound call, upper-cased (GET/POST/…), when the call
+    # syntax carries one (`requests.get`, `axios.post`). `None` when unknown
+    # (e.g. bare `fetch(url)`). Used by cross-repo contract linking (#146b) to
+    # match an outbound call to another repo's route by method + path.
+    method: str | None = None
     evidence_text: str | None = None
     source_analyzer: str | None = _PROVENANCE_FIELD
 

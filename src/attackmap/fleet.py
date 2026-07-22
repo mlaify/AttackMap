@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .contracts import ContractLink
+
 if TYPE_CHECKING:
     from .models import AttackPath, Finding, ScanResult
 
@@ -85,6 +87,9 @@ class FleetScan:
     """A multi-repo analysis run — the input surface for cross-repo phases."""
 
     results: list[FleetRepoResult] = field(default_factory=list)
+    # Cross-repo client→server contract links (#146b), computed once all repos
+    # are scanned. Empty until the linker runs.
+    links: list[ContractLink] = field(default_factory=list)
 
     @property
     def repo_count(self) -> int:
@@ -135,11 +140,53 @@ def render_fleet_summary(fleet: FleetScan) -> str:
                 lines.append(f"  - **[{f.severity.upper()}]** {f.title}")
         lines.append("")
 
+    lines.append("## Cross-repo links (#146b)")
+    lines.append("")
+    if fleet.links:
+        loc = lambda f, ln: f"{f}:{ln}" if ln else f  # noqa: E731
+        lines.append(
+            f"{len(fleet.links)} client→server contract link(s) — an outbound call "
+            "in one repo matched to a route another repo serves:"
+        )
+        lines.append("")
+        lines.append("| Client | Call | → | Server | Route |")
+        lines.append("|---|---|---|---|---|")
+        for lk in fleet.links:
+            lines.append(
+                f"| `{lk.client_repo}` | `{lk.method} {lk.client_target}` "
+                f"[{loc(lk.client_file, lk.client_line)}] | → | `{lk.server_repo}` | "
+                f"`{lk.method} {lk.server_route_path}` [{loc(lk.server_file, lk.server_line)}] |"
+            )
+        lines.append("")
+    else:
+        lines.append("_No cross-repo client→server HTTP links detected._")
+        lines.append("")
+
     lines.append(
-        "_Phase 1 (#146a): per-repo reports assembled into a fleet view. "
-        "Cross-repo contract linking, cross-boundary taint, and trust-gap "
-        "detection land in #146b–#146d._"
+        "_Cross-boundary taint and trust-gap detection over these links land in "
+        "#146c–#146d._"
     )
+    return "\n".join(lines)
+
+
+def render_fleet_graph_mermaid(fleet: FleetScan) -> str:
+    """A Mermaid flowchart of the fleet: one node per repo, one edge per distinct
+    client→server route link (labeled with the served contract)."""
+    lines = ["```mermaid", "flowchart LR"]
+    ids = {r.repo_id for r in fleet.results}
+    node_id = {rid: f"R{i}" for i, rid in enumerate(sorted(ids))}
+    for rid in sorted(ids):
+        lines.append(f'    {node_id[rid]}["{rid}"]')
+    # Collapse multiple links between the same pair to one edge per route.
+    seen: set[tuple[str, str, str, str]] = set()
+    for lk in fleet.links:
+        edge = (lk.client_repo, lk.server_repo, lk.method, lk.path_template)
+        if edge in seen or lk.client_repo not in node_id or lk.server_repo not in node_id:
+            continue
+        seen.add(edge)
+        label = f"{lk.method} /{lk.path_template}"
+        lines.append(f'    {node_id[lk.client_repo]} -->|"{label}"| {node_id[lk.server_repo]}')
+    lines.append("```")
     return "\n".join(lines)
 
 
@@ -159,6 +206,23 @@ def fleet_summary_json(fleet: FleetScan) -> dict:
             }
             for r in fleet.results
         ],
+        "cross_repo_links": [
+            {
+                "client_repo": lk.client_repo,
+                "server_repo": lk.server_repo,
+                "method": lk.method,
+                "path_template": lk.path_template,
+                "client_target": lk.client_target,
+                "client_location": f"{lk.client_file}:{lk.client_line}"
+                if lk.client_line
+                else lk.client_file,
+                "server_route_path": lk.server_route_path,
+                "server_location": f"{lk.server_file}:{lk.server_line}"
+                if lk.server_line
+                else lk.server_file,
+            }
+            for lk in fleet.links
+        ],
     }
 
 
@@ -167,5 +231,6 @@ __all__ = [
     "FleetScan",
     "fleet_repo_ids",
     "fleet_summary_json",
+    "render_fleet_graph_mermaid",
     "render_fleet_summary",
 ]

@@ -110,11 +110,20 @@ EXPRESS_USE_PATTERN = re.compile(
 )
 METHOD_LIST_PATTERN = re.compile(r"['\"](GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|ALL)['\"]", re.IGNORECASE)
 
+# Named groups: `method` (optional — absent for bare `fetch`) and `url`. The
+# method feeds cross-repo contract linking (#146b); `fetch` leaves it None.
 EXTERNAL_CALL_PATTERNS = [
-    re.compile(r"requests\.(get|post|put|delete|patch)\(['\"]([^'\"]+)['\"]"),
-    re.compile(r"axios\.(get|post|put|delete|patch)\(['\"]([^'\"]+)['\"]"),
-    re.compile(r"fetch\(['\"]([^'\"]+)['\"]"),
+    re.compile(r"requests\.(?P<method>get|post|put|delete|patch)\(['\"](?P<url>[^'\"]+)['\"]"),
+    re.compile(r"axios\.(?P<method>get|post|put|delete|patch)\(['\"](?P<url>[^'\"]+)['\"]"),
+    re.compile(r"fetch\(['\"](?P<url>[^'\"]+)['\"]"),
 ]
+
+
+def _external_call_fields(match: "re.Match[str]") -> tuple[str, str | None]:
+    """Extract (url, upper-cased method or None) from an EXTERNAL_CALL match."""
+    groups = match.groupdict()
+    method = groups.get("method")
+    return groups["url"], (method.upper() if method else None)
 
 DB_KEYWORDS = {
     "postgres": "postgresql",
@@ -704,10 +713,11 @@ def scan_repo(
 
         for pattern in EXTERNAL_CALL_PATTERNS:
             for match in pattern.finditer(content):
-                target = match.groups()[-1]
+                target, method = _external_call_fields(match)
                 result.external_calls.append(
                     ExternalCall(
                         target=target,
+                        method=method,
                         file=relative,
                         line=_line_of(content, match.start()),
                         evidence_text=_line_snippet(content, match.start()),
