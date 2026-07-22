@@ -553,11 +553,15 @@ def render_hunt_generate_prompts(
     findings: list[Finding],
     attack_paths: list[AttackPath],
     lens: str | None = None,
+    avoid_titles: list[str] | None = None,
+    critic_hint: str | None = None,
 ) -> RenderedReviewPrompt:
     """Hunt generation pass for the multi-pass harness (#147a): produces ranked
     hypotheses PLUS a machine-readable `=== HYPOTHESES ===` list the harness
     parses into a fixed, id-keyed set for independent verification. With a
-    ``lens`` (#147b), the pass is primed to specialise in one failure mode."""
+    ``lens`` (#147b) the pass specialises in one failure mode; with
+    ``avoid_titles`` / ``critic_hint`` (#147c) it is told what earlier rounds
+    already found and which untried angles to pursue."""
     evidence_payload = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
     evidence_json = json.dumps(evidence_payload, indent=2, sort_keys=True)
     system = HUNT_GENERATE_SYSTEM_PROMPT.strip()
@@ -567,9 +571,60 @@ def render_hunt_generate_prompts(
             f"\n\nLENS — this pass specialises in: {preamble}\n"
             "Lead with hypotheses of THIS class; you may note others but prioritise this lens."
         )
+    if avoid_titles:
+        listed = "\n".join(f"- {t}" for t in avoid_titles[:40])
+        system += (
+            "\n\nEarlier rounds ALREADY surfaced these leads — do NOT restate them; "
+            f"only emit genuinely NEW hypotheses:\n{listed}"
+        )
+    if critic_hint and critic_hint.strip():
+        system += (
+            "\n\nA completeness critic flagged these untried angles / gaps to pursue "
+            f"this round:\n{critic_hint.strip()[:2000]}"
+        )
     return RenderedReviewPrompt(
         system=system,
         user=HUNT_USER_PROMPT.format(repo_context=_repo_context(scan), evidence_json=evidence_json).strip(),
+        evidence_json=evidence_json,
+    )
+
+
+HUNT_CRITIC_SYSTEM_PROMPT = """You are AttackMap Hunt Completeness Critic. You are given the evidence pack and the vulnerability hypotheses surfaced so far (evidence pack key `hypotheses`). Your ONLY job is to name what has NOT yet been examined — so the next hunting round can go there.
+
+Point at:
+- Failure-mode classes not yet represented among the hypotheses (races/TOCTOU, business-logic, trust boundaries, deserialization, SSRF-to-internal, secret misuse, authz gaps).
+- Attack surfaces / assets / taint chains in the evidence pack that no hypothesis has touched.
+- Assumptions asserted but not yet checked against code.
+
+Output a short, concrete bulleted list of untried angles and gaps — no new full hypotheses, no restating what's already listed, no prose preamble. If coverage looks genuinely complete, say so in one line."""
+
+HUNT_CRITIC_USER_PROMPT = """Name the untried angles and coverage gaps for the next hunting round — a short bulleted list, grounded in the evidence pack. Do not restate the hypotheses already found.
+
+Repository context:
+{repo_context}
+
+Evidence pack (JSON):
+{evidence_json}
+"""
+
+
+def render_critic_prompts(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+    hypotheses: list[dict],
+) -> RenderedReviewPrompt:
+    """Completeness-critic pass (#147c): given the leads found so far, name the
+    untried modalities / gaps that should seed the next round."""
+    pack = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    pack["hypotheses"] = [{"id": h["id"], "title": h["title"]} for h in hypotheses]
+    evidence_json = json.dumps(pack, indent=2, sort_keys=True)
+    return RenderedReviewPrompt(
+        system=HUNT_CRITIC_SYSTEM_PROMPT.strip(),
+        user=HUNT_CRITIC_USER_PROMPT.format(
+            repo_context=_repo_context(scan), evidence_json=evidence_json
+        ).strip(),
         evidence_json=evidence_json,
     )
 

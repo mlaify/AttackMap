@@ -288,6 +288,7 @@ class MajorityVerifyResult:
     consensus: list[Consensus]
     backend: str
     model: str
+    rounds: int = 1
     usage: dict[str, int] = field(default_factory=dict)
 
 
@@ -295,6 +296,43 @@ def _add_usage(total: dict[str, int], usage: dict | None) -> None:
     for key, value in (usage or {}).items():
         if isinstance(value, int):
             total[key] = total.get(key, 0) + value
+
+
+def _usage_sum(usage: dict[str, int]) -> int:
+    return sum(v for v in usage.values() if isinstance(v, int))
+
+
+def _generate_round(
+    llm_call: Callable,
+    lenses: list[str] | None,
+    avoid_titles: list[str] | None,
+    critic_hint: str | None,
+    usage_total: dict[str, int],
+) -> tuple[list[list[Hypothesis]], str, str, str]:
+    """One generation round. With multiple lenses, one specialised pass each
+    (#147b); otherwise a single generalist pass. Returns
+    ``(passes, backend, model, last_markdown)``."""
+    passes: list[list[Hypothesis]] = []
+    backend = model = last_markdown = ""
+    lens_list = lenses if (lenses and len(lenses) > 1) else [None]
+    for lens in lens_list:
+        # Pass optional priming only when set, so simple injected llm_calls
+        # (single-round / multi-lens paths) don't need those kwargs.
+        kwargs: dict = {}
+        if lens is not None:
+            kwargs["lens"] = lens
+        if avoid_titles:
+            kwargs["avoid_titles"] = avoid_titles
+        if critic_hint:
+            kwargs["critic_hint"] = critic_hint
+        g = llm_call("hunt_generate", **kwargs)
+        _add_usage(usage_total, g.usage)
+        backend, model, last_markdown = g.backend, g.model, g.markdown
+        parsed = parse_hypotheses(g.markdown)
+        if lens is not None:
+            parsed = [replace(h, lenses=(lens,)) for h in parsed]
+        passes.append(parsed)
+    return passes, backend, model, last_markdown
 
 
 def run_majority_verify(
@@ -306,39 +344,77 @@ def run_majority_verify(
     votes: int,
     llm_call: Callable,
     lenses: list[str] | None = None,
+    max_rounds: int = 1,
+    dry_streak: int = 1,
+    token_budget: int | None = None,
 ) -> MajorityVerifyResult:
     """Generate hypotheses, then adjudicate them with ``votes`` independent
     skeptics and combine by majority vote.
 
-    ``llm_call(mode, hypotheses=None, lens=None)`` runs one LLM pass and returns
-    an ``LlmReviewResult`` — injected so the orchestration is testable offline
-    and so the caller owns model/backend/provider selection. With ``lenses``
-    (more than one), generation fans out one specialised pass per lens and the
-    results are deduped into a single list (#147b).
+    ``llm_call(mode, hypotheses=None, lens=None, avoid_titles=None,
+    critic_hint=None)`` runs one LLM pass and returns an ``LlmReviewResult`` —
+    injected so the orchestration is testable offline. With ``lenses`` (>1),
+    generation fans out one specialised pass per lens and dedupes (#147b). With
+    ``max_rounds`` > 1 (#147c), generation LOOPS: each round accumulates the new
+    (deduped) leads and a completeness critic seeds the next round's untried
+    angles; it stops after ``dry_streak`` consecutive rounds add nothing new, the
+    round cap, or the ``token_budget`` (output tokens) — whichever comes first.
     """
     usage_total: dict[str, int] = {}
     gen_backend = gen_model = ""
     last_markdown = ""
+    rounds_run = 0
 
-    if lenses and len(lenses) > 1:
-        passes: list[list[Hypothesis]] = []
-        for lens in lenses:
-            g = llm_call("hunt_generate", lens=lens)
-            _add_usage(usage_total, g.usage)
-            gen_backend, gen_model, last_markdown = g.backend, g.model, g.markdown
-            passes.append([replace(h, lenses=(lens,)) for h in parse_hypotheses(g.markdown)])
+    if max_rounds > 1:
+        accumulated: list[Hypothesis] = []
+        dry = 0
+        critic_hint: str | None = None
+        for _ in range(max_rounds):
+            if token_budget and _usage_sum(usage_total) >= token_budget:
+                break
+            rounds_run += 1
+            avoid = [h.title for h in accumulated] or None
+            passes, gb, gm, last_markdown = _generate_round(
+                llm_call, lenses, avoid, critic_hint, usage_total
+            )
+            gen_backend, gen_model = gb or gen_backend, gm or gen_model
+            before = len(accumulated)
+            accumulated = dedupe_hypotheses([accumulated, *passes] if accumulated else passes)
+            if len(accumulated) <= before:
+                dry += 1
+                if dry >= dry_streak:
+                    break
+                continue
+            dry = 0
+            # Seed the next round unless we're done or out of budget.
+            more_rounds_left = rounds_run < max_rounds
+            budget_left = not (token_budget and _usage_sum(usage_total) >= token_budget)
+            if more_rounds_left and budget_left and accumulated:
+                crit = llm_call(
+                    "hunt_critic",
+                    hypotheses=[{"id": h.id, "title": h.title, "evidence": h.evidence} for h in accumulated],
+                )
+                _add_usage(usage_total, crit.usage)
+                critic_hint = crit.markdown
+        hypotheses = accumulated
+    elif lenses and len(lenses) > 1:
+        rounds_run = 1
+        passes, gen_backend, gen_model, last_markdown = _generate_round(
+            llm_call, lenses, None, None, usage_total
+        )
         hypotheses = dedupe_hypotheses(passes)
     else:
-        g = llm_call("hunt_generate")
-        _add_usage(usage_total, g.usage)
-        gen_backend, gen_model, last_markdown = g.backend, g.model, g.markdown
-        hypotheses = parse_hypotheses(g.markdown)
+        rounds_run = 1
+        passes, gen_backend, gen_model, last_markdown = _generate_round(
+            llm_call, None, None, None, usage_total
+        )
+        hypotheses = passes[0] if passes else []
 
     if not hypotheses:
         # Nothing parseable to vote on — hand back the generation output as-is.
         report = last_markdown if last_markdown.strip() else "_No hypotheses were surfaced._\n"
         return MajorityVerifyResult(
-            report=report, hypothesis_count=0, votes=votes,
+            report=report, hypothesis_count=0, votes=votes, rounds=rounds_run,
             consensus=[], backend=gen_backend, model=gen_model, usage=usage_total,
         )
 
@@ -355,6 +431,7 @@ def run_majority_verify(
         report=report,
         hypothesis_count=len(hypotheses),
         votes=votes,
+        rounds=rounds_run,
         consensus=consensus,
         backend=gen_backend,
         model=gen_model,

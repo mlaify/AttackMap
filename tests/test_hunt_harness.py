@@ -300,6 +300,90 @@ def test_multilens_generation_fans_out_and_dedupes() -> None:
     assert res.hypothesis_count == 3
 
 
+# --- loop-until-dry / critic / budget (#147c) ------------------------------
+
+
+def _gen(md, out=5):
+    return LlmReviewResult(markdown=md, model="m", stop_reason=None,
+                           usage={"output_tokens": out}, backend="api")
+
+
+def _rounds_llm_call(round_markdowns, *, capture=None):
+    """Build an llm_call that returns successive generation rounds, canned
+    critic + refuting skeptic passes, optionally recording call kwargs."""
+    state = {"n": 0}
+
+    def llm_call(mode, hypotheses=None, lens=None, avoid_titles=None, critic_hint=None):
+        if capture is not None:
+            capture.append({"mode": mode, "avoid_titles": avoid_titles, "critic_hint": critic_hint})
+        if mode == "hunt_generate":
+            md = round_markdowns[min(state["n"], len(round_markdowns) - 1)]
+            state["n"] += 1
+            return _gen(md)
+        if mode == "hunt_critic":
+            return _gen("- try TOCTOU on balance update\n- check deserialization sinks")
+        return _gen("VERDICT H1: REFUTED — x\nVERDICT H2: REFUTED — x\nVERDICT H3: REFUTED — x")
+
+    return llm_call
+
+
+def test_loop_stops_when_a_round_finds_nothing_new() -> None:
+    rounds = [
+        "=== HYPOTHESES ===\nH1: SQLi at db.py [evidence: taint:1]\n",
+        "=== HYPOTHESES ===\nH1: SSRF via req.query.url [evidence: taint:3]\n",  # new
+        "=== HYPOTHESES ===\nH1: SQLi at db.py [evidence: taint:1]\n",  # restatement → dry
+    ]
+    cap: list[dict] = []
+    res = run_majority_verify(
+        None, [], [], [], votes=1, llm_call=_rounds_llm_call(rounds, capture=cap),
+        max_rounds=9, dry_streak=1,
+    )
+    assert res.rounds == 3  # stopped at the dry round, not all 9
+    assert res.hypothesis_count == 2
+    gen_calls = [c for c in cap if c["mode"] == "hunt_generate"]
+    assert len(gen_calls) == 3
+
+
+def test_loop_respects_max_rounds_cap() -> None:
+    # Every round yields a fresh lead, so only the cap stops it.
+    rounds = [f"=== HYPOTHESES ===\nH1: distinct issue in module_{i}_widget [evidence: taint:{i}]\n" for i in range(10)]
+    res = run_majority_verify(
+        None, [], [], [], votes=1, llm_call=_rounds_llm_call(rounds), max_rounds=3, dry_streak=1,
+    )
+    assert res.rounds == 3
+    assert res.hypothesis_count == 3
+
+
+def test_loop_respects_token_budget() -> None:
+    rounds = [f"=== HYPOTHESES ===\nH1: distinct issue in module_{i}_widget [evidence: taint:{i}]\n" for i in range(10)]
+    # Each generation ~5 output tokens + critic ~5; a 12-token budget allows a
+    # couple rounds, not all 10.
+    res = run_majority_verify(
+        None, [], [], [], votes=1, llm_call=_rounds_llm_call(rounds),
+        max_rounds=10, dry_streak=1, token_budget=12,
+    )
+    assert res.rounds < 10
+    assert res.usage["output_tokens"] >= 12  # stopped after crossing the budget
+
+
+def test_critic_seeds_next_round_with_avoid_titles() -> None:
+    rounds = [
+        "=== HYPOTHESES ===\nH1: SQLi at db.py [evidence: taint:1]\n",
+        "=== HYPOTHESES ===\nH1: TOCTOU on balance update [evidence: taint:2]\n",
+    ]
+    cap: list[dict] = []
+    run_majority_verify(
+        None, [], [], [], votes=1, llm_call=_rounds_llm_call(rounds, capture=cap),
+        max_rounds=2, dry_streak=1,
+    )
+    # A critic pass ran between the two productive rounds.
+    assert any(c["mode"] == "hunt_critic" for c in cap)
+    # The 2nd generation round was told what to avoid + given the critic hint.
+    gen2 = [c for c in cap if c["mode"] == "hunt_generate"][1]
+    assert gen2["avoid_titles"] and any("SQLi" in t for t in gen2["avoid_titles"])
+    assert gen2["critic_hint"] and "TOCTOU" in gen2["critic_hint"]
+
+
 # --- CLI end-to-end --------------------------------------------------------
 
 
@@ -369,6 +453,36 @@ def test_cli_hunt_lenses_routes_through_harness(tmp_path: Path, monkeypatch) -> 
     assert result.exit_code == 0, result.output
     meta = json.loads((out / "vulnerability-hypotheses.meta.json").read_text(encoding="utf-8"))
     assert len(meta["lenses"]) == 2
+
+
+def test_cli_hunt_rounds_routes_through_harness(tmp_path: Path, monkeypatch) -> None:
+    """`--hunt-rounds 2` engages the loop harness; meta records rounds_run."""
+    rounds = [
+        "=== HYPOTHESES ===\nH1: eval of request arg [evidence: taint:1]\n",
+        "=== HYPOTHESES ===\nH1: eval of request arg [evidence: taint:1]\n",  # dry
+    ]
+    state = {"n": 0}
+
+    def fake(*args, **kwargs):
+        mode = kwargs.get("mode")
+        if mode == "hunt_generate":
+            md = rounds[min(state["n"], len(rounds) - 1)]
+            state["n"] += 1
+            return _result(md)
+        if mode == "hunt_critic":
+            return _result("- try races")
+        return _result("VERDICT H1: REFUTED — constant")
+
+    monkeypatch.setattr("attackmap.cli.generate_llm_review", fake)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["analyze", str(_repo(tmp_path)), "--output", str(out),
+         "--hunt", "--verify", "--hunt-rounds", "2", "--verify-votes", "1"],
+    )
+    assert result.exit_code == 0, result.output
+    meta = json.loads((out / "vulnerability-hypotheses.meta.json").read_text(encoding="utf-8"))
+    assert meta["rounds_run"] >= 1
 
 
 def test_cli_verify_votes_1_uses_single_pass(tmp_path: Path, monkeypatch) -> None:

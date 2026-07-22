@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-07-21
+
+### Added
+
+- **Loop-until-dry hunting + completeness critic + budget caps (#147c).** Third
+  slice of the hunt harness (epic #150). `--hunt-rounds N` loops the generation
+  stage for up to N rounds: each round is told what earlier rounds already found
+  (so it only emits genuinely new leads), its output is deduped and accumulated,
+  and a **completeness critic** pass names untried failure-mode classes / unread
+  surfaces / unchecked assumptions to seed the next round. The loop **stops early
+  once a round adds nothing new** (loop-until-dry), at the round cap, or when
+  `--hunt-budget T` output tokens are spent — whichever comes first. Combines
+  with `--hunt-lenses` (each round can fan out per lens) and the #147a
+  majority-vote verifier that adjudicates the accumulated set. Token usage across
+  every generation/critic/skeptic call is aggregated; the meta records
+  `rounds_run`. All opt-in; default `--hunt-rounds 1` is unchanged behavior.
+
 ## [0.4.17] - 2026-07-21
 
 ### Added

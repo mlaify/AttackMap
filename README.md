@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.4.17).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.18).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -612,7 +612,11 @@ only one skeptic would confirm is dropped. **`--hunt-lenses N`** additionally
 fans generation out into N independent passes, each specialised in one failure
 mode (auth-bypass, TOCTOU/race, IDOR, deserialization, SSRF-to-internal,
 secret-misuse), and dedupes the leads across passes before verifying — more
-unique novel leads than a single generalist pass.
+unique novel leads than a single generalist pass. **`--hunt-rounds N`** loops
+generation for up to N rounds, accumulating new (deduped) leads while a
+completeness critic seeds each next round with untried angles, and stops early
+once a round finds nothing new; **`--hunt-budget T`** caps the multi-round output
+tokens.
 This is the verifier the unknown-bug initiative
 ([`docs/unknown-bug-epic.md`](docs/unknown-bug-epic.md)) is built on;
 `--verify-votes 1` is the classic single pass.
@@ -677,6 +681,7 @@ attackmap analyze <path> --hunt          # LLM vulnerability-hypothesis hunt (le
 attackmap analyze <path> --hunt --verify # adjudicate each lead vs. source (confirmed/refuted/review)
 attackmap analyze <path> --hunt --verify --verify-votes 3   # majority vote of N independent skeptics (default 3; 1 = single pass)
 attackmap analyze <path> --hunt --verify --hunt-lenses 4     # N lens-specialised generation passes, deduped, then verified
+attackmap analyze <path> --hunt --verify --hunt-rounds 4     # loop-until-dry generation (completeness critic seeds each round)
 attackmap analyze <path> --remediate     # LLM review-first fix suggestions (remediation.md)
 attackmap analyze <path> --triage        # cluster/dedupe/rank existing findings (triage.md; deterministic fallback)
 attackmap analyze <path> --pr-comment pr.md   # Markdown PR summary comment for CI
@@ -723,7 +728,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.17) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.18) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
