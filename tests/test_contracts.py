@@ -147,3 +147,48 @@ def test_deterministic_and_deduped() -> None:
     # Same (client file/line, server route) collapses to one link.
     assert len(links) == 1
     assert isinstance(links[0], ContractLink)
+
+
+# ---------------------------------------------------------------------------
+# Codex review regressions (#146b)
+# ---------------------------------------------------------------------------
+
+
+def test_test_and_vendored_callers_excluded() -> None:
+    # A call from a test/fixture or vendored file is not production architecture.
+    for bad_file in ("tests/test_client.py", "vendor/lib/http.js"):
+        client = ScanResult(
+            root="a",
+            external_calls=[ExternalCall(target="http://b/api/orders/1", method="GET", file=bad_file)],
+        )
+        server = _server("b", "/api/orders/{id}")
+        assert link_contracts([("a", client), ("b", server)]) == [], bad_file
+
+
+def test_two_verbs_same_target_survive_merge() -> None:
+    # merge identity now includes method, so GET+POST /items don't collapse (#146b).
+    from attackmap.analyzers import merge_analyzer_results
+
+    r1 = ScanResult(
+        root="a", external_calls=[ExternalCall(target="http://b/api/items/1", method="GET", file="c.py")]
+    )
+    r2 = ScanResult(
+        root="a", external_calls=[ExternalCall(target="http://b/api/items/1", method="POST", file="c.py")]
+    )
+    merged = merge_analyzer_results([r1, r2], root="a")
+    methods = {c.method for c in merged.external_calls if c.target == "http://b/api/items/1"}
+    assert methods == {"GET", "POST"}
+
+
+def test_bare_fetch_defaults_to_get_and_parses_init_method(tmp_path) -> None:
+    from attackmap.scanner import scan_repo
+
+    (tmp_path / "client.js").write_text(
+        'fetch("http://b/api/items/1");\n'
+        'fetch("http://b/api/items/2", { method: "POST" });\n',
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    by_target = {c.target: c.method for c in scan.external_calls}
+    assert by_target.get("http://b/api/items/1") == "GET"
+    assert by_target.get("http://b/api/items/2") == "POST"

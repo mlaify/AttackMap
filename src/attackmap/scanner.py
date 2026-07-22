@@ -110,20 +110,37 @@ EXPRESS_USE_PATTERN = re.compile(
 )
 METHOD_LIST_PATTERN = re.compile(r"['\"](GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|ALL)['\"]", re.IGNORECASE)
 
-# Named groups: `method` (optional — absent for bare `fetch`) and `url`. The
-# method feeds cross-repo contract linking (#146b); `fetch` leaves it None.
+# Named groups: `method` (the verb) and `url`. `requests`/`axios` carry the verb
+# in the call syntax; for `fetch` the verb lives in an optional init object
+# (`fetch(url, {method: "POST"})`), captured as `fmethod` when present — a bare
+# `fetch(url)` is a GET by the fetch spec. The method feeds cross-repo contract
+# linking (#146b).
 EXTERNAL_CALL_PATTERNS = [
     re.compile(r"requests\.(?P<method>get|post|put|delete|patch)\(['\"](?P<url>[^'\"]+)['\"]"),
     re.compile(r"axios\.(?P<method>get|post|put|delete|patch)\(['\"](?P<url>[^'\"]+)['\"]"),
-    re.compile(r"fetch\(['\"](?P<url>[^'\"]+)['\"]"),
+    re.compile(
+        r"fetch\(['\"](?P<url>[^'\"]+)['\"]"
+        r"(?:\s*,\s*\{[^}]*?method\s*:\s*['\"](?P<fmethod>[A-Za-z]+)['\"])?"
+    ),
 ]
 
 
 def _external_call_fields(match: "re.Match[str]") -> tuple[str, str | None]:
-    """Extract (url, upper-cased method or None) from an EXTERNAL_CALL match."""
+    """Extract (url, upper-cased method) from an EXTERNAL_CALL match.
+
+    `requests`/`axios` supply the verb directly. A `fetch` call resolves to its
+    init `method` when present, else GET (the fetch default) — never the
+    match-anything `None`, which would fan one call out to every route verb.
+    `None` is reserved for calls whose method is genuinely unknown (e.g. config
+    file URLs) and should match any verb.
+    """
     groups = match.groupdict()
-    method = groups.get("method")
-    return groups["url"], (method.upper() if method else None)
+    if groups.get("method"):
+        return groups["url"], groups["method"].upper()
+    if match.group(0).lstrip().startswith("fetch"):
+        fmethod = groups.get("fmethod")
+        return groups["url"], (fmethod.upper() if fmethod else "GET")
+    return groups["url"], None
 
 DB_KEYWORDS = {
     "postgres": "postgresql",

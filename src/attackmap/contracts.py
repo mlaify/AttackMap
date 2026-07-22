@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from .models import ExternalCall, Route, ScanResult
-from .srcpaths import is_infra_route
+from .srcpaths import is_infra_route, is_test_file, is_vendored_file
 
 # A path segment that is a concrete instance id rather than a static resource
 # name: an explicit path param (`{id}`, `:id`, `<id>`), an all-digits segment,
@@ -95,9 +95,18 @@ def _method_compatible(call_method: str | None, route_method: str) -> bool:
     return call_method.upper() == rm
 
 
+def _excluded_source(rel_file: str) -> bool:
+    """Test/spec/fixture and vendored/generated files are not production
+    architecture — a cross-repo link anchored on one is noise. Honors the same
+    `ATTACKMAP_INCLUDE_TESTS`/`_VENDORED` opt-ins as the rest of the scanner."""
+    return is_test_file(rel_file) or is_vendored_file(rel_file)
+
+
 def _linkable_calls(scan: ScanResult) -> list[tuple[ExternalCall, tuple[str, ...]]]:
     out: list[tuple[ExternalCall, tuple[str, ...]]] = []
     for call in scan.external_calls:
+        if _excluded_source(call.file):
+            continue
         norm = _normalize_path(call.target, client=True)
         if norm is None:
             continue
@@ -110,6 +119,8 @@ def _linkable_calls(scan: ScanResult) -> list[tuple[ExternalCall, tuple[str, ...
 def _linkable_routes(scan: ScanResult) -> list[tuple[Route, tuple[str, ...]]]:
     out: list[tuple[Route, tuple[str, ...]]] = []
     for route in scan.routes:
+        if _excluded_source(route.file):
+            continue
         if is_infra_route(route.path):
             continue
         norm = _normalize_path(route.path)
