@@ -266,6 +266,17 @@ def test_dedupe_does_not_merge_distinct_leads() -> None:
     assert len(dedupe_hypotheses(passes)) == 2
 
 
+def test_dedupe_keeps_same_class_at_different_endpoints_separate() -> None:
+    """Similar titles at DIFFERENT endpoints (disjoint evidence) must not merge
+    — otherwise a skeptic could confirm one using the other's evidence (#147b)."""
+    passes = [
+        [Hypothesis("H1", "Missing ownership check on GET /orders/{id}", evidence="surface:3")],
+        [Hypothesis("H1", "Missing ownership check on GET /users/{id}", evidence="surface:7")],
+    ]
+    merged = dedupe_hypotheses(passes)
+    assert len(merged) == 2
+
+
 def test_multilens_generation_fans_out_and_dedupes() -> None:
     # Both lenses surface the same missing-ownership lead (near-identical
     # phrasing + shared evidence) plus one unique lead each.

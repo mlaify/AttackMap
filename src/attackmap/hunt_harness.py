@@ -118,15 +118,16 @@ def _jaccard(a: frozenset, b: frozenset) -> float:
 
 
 def _same_lead(t_a, e_a, t_b, e_b) -> bool:
-    """Two hypotheses describe the same lead. Title similarity is primary;
-    shared cited-evidence ids lower the bar (they point at the same chain)."""
+    """Two hypotheses describe the same lead. Requires an identity signal — an
+    identical significant-token set, or shared cited-evidence ids plus similar
+    wording. Title similarity ALONE never merges: "… on /orders/{id}" and
+    "… on /users/{id}" are ~0.67 similar but are distinct leads on distinct
+    chains, so collapsing them would let a skeptic confirm one using the other's
+    evidence (#147b)."""
     if t_a and t_a == t_b:
-        return True
-    sim = _jaccard(t_a, t_b)
-    if sim >= 0.6:
-        return True
-    if sim >= 0.4 and (e_a & e_b):
-        return True
+        return True  # identical significant tokens — same lead text
+    if (e_a & e_b) and _jaccard(t_a, t_b) >= 0.4:
+        return True  # same cited chain + similar wording
     return False
 
 
