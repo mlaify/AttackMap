@@ -79,12 +79,18 @@ def test_merge_schema_attrs_are_unique() -> None:
         (
             "external_calls",
             [
-                ExternalCall(target="https://a.example", file="x.py"),
-                ExternalCall(target="https://a.example", file="x.py"),  # dup → dropped
-                ExternalCall(target="https://b.example", file="x.py"),
-                ExternalCall(target="https://a.example", file="y.py"),
+                ExternalCall(target="https://a.example", method="GET", file="x.py"),
+                ExternalCall(target="https://a.example", method="GET", file="x.py"),  # dup → dropped
+                ExternalCall(target="https://a.example", method="POST", file="x.py"),  # verb differs → kept
+                ExternalCall(target="https://b.example", method="GET", file="x.py"),
+                ExternalCall(target="https://a.example", method="GET", file="y.py"),
             ],
-            [("https://a.example", "x.py"), ("https://b.example", "x.py"), ("https://a.example", "y.py")],
+            [
+                ("https://a.example", "GET", "x.py"),
+                ("https://a.example", "POST", "x.py"),
+                ("https://b.example", "GET", "x.py"),
+                ("https://a.example", "GET", "y.py"),
+            ],
         ),
         (
             "databases",

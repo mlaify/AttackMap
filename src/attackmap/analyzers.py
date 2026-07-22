@@ -47,6 +47,7 @@ from .scanner import (
     DB_KEYWORDS,
     DB_PATTERNS,
     EXTERNAL_CALL_PATTERNS,
+    _external_call_fields,
     SECRET_PATTERNS,
     extract_routes,
     scan_repo,
@@ -104,7 +105,10 @@ class ExternalCallAnalyzer:
         calls: list[ExternalCall] = []
         for pattern in EXTERNAL_CALL_PATTERNS:
             for match in pattern.finditer(context.content):
-                calls.append(ExternalCall(target=match.groups()[-1], file=context.relative_path))
+                target, method = _external_call_fields(match)
+                calls.append(
+                    ExternalCall(target=target, method=method, file=context.relative_path)
+                )
         return AnalyzerSignals(external_calls=calls)
 
 

@@ -76,9 +76,13 @@ attackmap analyze ./service-a ./service-b ./gateway --output reports
 
 Each repo is scanned independently into its own `reports/<repo>/` directory, and
 a `reports/fleet-summary.md` (+ `.json`) indexes the run with per-repo severity
-counts and top findings. Single-repo behavior is unchanged. This is the
-foundation for cross-repo seam analysis — contract linking, cross-boundary
-taint, and trust-gap detection — which builds on the fleet view (epic #150).
+counts and top findings. AttackMap then **links the seams**: it matches one
+repo's outbound HTTP calls to another repo's routes (by normalized path template
++ method — `base + "/api/orders/" + id` in a caller aligns with `/api/orders/{id}`
+served elsewhere), lists each client→server link (citing both sides) in the fleet
+summary, and renders the repo-to-repo graph to `reports/fleet-graph.md`.
+Single-repo behavior is unchanged. Cross-boundary taint and trust-gap detection
+over these links build on the fleet view (epic #150).
 
 ---
 

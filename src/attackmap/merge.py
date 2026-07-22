@@ -52,7 +52,10 @@ class MergeRule:
 # duplicates (by key) are suppressed.
 MERGE_SCHEMA: tuple[MergeRule, ...] = (
     MergeRule("routes", lambda item: (item.path, item.method, item.file)),
-    MergeRule("external_calls", lambda item: (item.target, item.file)),
+    # Method is part of the identity (#146b): two verbs on the same target in one
+    # file (GET + POST /items) are distinct calls, not duplicates — collapsing
+    # them would drop a method before cross-repo contract linking runs.
+    MergeRule("external_calls", lambda item: (item.target, item.method, item.file)),
     MergeRule("databases", lambda item: (item.kind, item.file)),
     MergeRule("auth_hints", lambda item: (item.hint, item.file)),
     MergeRule("service_hints", lambda item: (item.hint, item.file)),

@@ -17,11 +17,13 @@ from .analyzers import (
     select_requested_analyzers,
 )
 from .cve import query_vulnerabilities
+from .contracts import link_contracts
 from .fleet import (
     FleetRepoResult,
     FleetScan,
     fleet_repo_ids,
     fleet_summary_json,
+    render_fleet_graph_mermaid,
     render_fleet_summary,
 )
 from .diff import (
@@ -178,6 +180,10 @@ def _run_fleet(
             )
         )
 
+    # Cross-repo contract linking (#146b): match one repo's outbound calls to
+    # another repo's routes, over the assembled fleet.
+    fleet.links = link_contracts([(r.repo_id, r.scan) for r in fleet.results])
+
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "fleet-summary.md").write_text(
         render_fleet_summary(fleet) + "\n", encoding="utf-8"
@@ -185,9 +191,13 @@ def _run_fleet(
     (output_root / "fleet-summary.json").write_text(
         json.dumps(fleet_summary_json(fleet), indent=2) + "\n", encoding="utf-8"
     )
+    (output_root / "fleet-graph.md").write_text(
+        render_fleet_graph_mermaid(fleet) + "\n", encoding="utf-8"
+    )
     typer.echo("")
     typer.echo(
-        f"Fleet: {fleet.repo_count} repositories, {fleet.total_findings()} finding(s). "
+        f"Fleet: {fleet.repo_count} repositories, {fleet.total_findings()} finding(s), "
+        f"{len(fleet.links)} cross-repo link(s). "
         f"Summary written to: {(output_root / 'fleet-summary.md').resolve()}"
     )
 
