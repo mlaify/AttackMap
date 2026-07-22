@@ -610,6 +610,7 @@ def generate_llm_review(
     openai_client: Any | None = None,
     codex_runner: Any | None = None,
     hypotheses: list[dict] | None = None,
+    lens: str | None = None,
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling an LLM.
@@ -630,11 +631,15 @@ def generate_llm_review(
         rendered = render_skeptic_prompts(
             scan, attack_surfaces, findings, attack_paths, hypotheses or []
         )
+    elif mode == "hunt_generate":
+        # Generation can be primed with a failure-mode lens (#147b).
+        rendered = render_hunt_generate_prompts(
+            scan, attack_surfaces, findings, attack_paths, lens=lens
+        )
     else:
         render = {
             "hunt": render_hunt_prompts,
             "hunt_verify": render_hunt_verify_prompts,
-            "hunt_generate": render_hunt_generate_prompts,
             "remediate": render_remediation_prompts,
             "triage": render_triage_prompts,
         }.get(mode, render_review_prompts)

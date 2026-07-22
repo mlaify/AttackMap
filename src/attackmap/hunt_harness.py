@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from .review_prompts import HYPOTHESIS_MARKER
@@ -35,6 +35,7 @@ class Hypothesis:
     id: str
     title: str
     evidence: str = ""  # the `[evidence: …]` ids cited by the generation pass
+    lenses: tuple[str, ...] = ()  # which failure-mode lens passes surfaced it (#147b)
 
 
 @dataclass
@@ -91,6 +92,76 @@ def parse_hypotheses(markdown: str) -> list[Hypothesis]:
         title = re.sub(r"\s*\[evidence:.*?\]\s*$", "", raw, flags=re.IGNORECASE).strip()
         out.append(Hypothesis(id=hid, title=title, evidence=evidence))
     return out
+
+
+# --- Cross-pass dedupe (#147b) --------------------------------------------
+
+_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "in", "on", "to", "and", "or", "via", "with", "for",
+    "at", "by", "from", "into", "that", "this", "is", "are", "reaches", "reach",
+})
+
+
+def _title_tokens(title: str) -> frozenset[str]:
+    words = re.findall(r"[A-Za-z0-9_./]+", title.lower())
+    return frozenset(w for w in words if len(w) > 2 and w not in _STOPWORDS)
+
+
+def _evidence_ids(evidence: str) -> frozenset[str]:
+    return frozenset(t.strip() for t in re.split(r"[,\s]+", evidence.lower()) if ":" in t)
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    if not a and not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _same_lead(t_a, e_a, t_b, e_b) -> bool:
+    """Two hypotheses describe the same lead. Title similarity is primary;
+    shared cited-evidence ids lower the bar (they point at the same chain)."""
+    if t_a and t_a == t_b:
+        return True
+    sim = _jaccard(t_a, t_b)
+    if sim >= 0.6:
+        return True
+    if sim >= 0.4 and (e_a & e_b):
+        return True
+    return False
+
+
+def dedupe_hypotheses(passes: list[list[Hypothesis]]) -> list[Hypothesis]:
+    """Merge hypotheses across passes (e.g. different lenses) into one fixed,
+    freshly re-numbered (H1..Hn) list. Restatements of the same lead collapse
+    into a single entry that unions their evidence ids and lens tags. Pure and
+    deterministic given the input order."""
+    kept: list[Hypothesis] = []
+    tokens: list[frozenset[str]] = []
+    evsets: list[frozenset[str]] = []
+    for pass_hyps in passes:
+        for h in pass_hyps:
+            t = _title_tokens(h.title)
+            e = _evidence_ids(h.evidence)
+            merged_into = None
+            for i in range(len(kept)):
+                if _same_lead(tokens[i], evsets[i], t, e):
+                    merged_into = i
+                    break
+            if merged_into is not None:
+                existing = kept[merged_into]
+                new_ev = sorted(evsets[merged_into] | e)
+                new_lenses = tuple(dict.fromkeys(existing.lenses + h.lenses))
+                kept[merged_into] = replace(
+                    existing,
+                    evidence=", ".join(new_ev) if new_ev else existing.evidence,
+                    lenses=new_lenses,
+                )
+                evsets[merged_into] = evsets[merged_into] | e
+            else:
+                kept.append(h)
+                tokens.append(t)
+                evsets.append(e)
+    return [replace(h, id=f"H{i + 1}") for i, h in enumerate(kept)]
 
 
 def parse_verdicts(markdown: str) -> dict[str, tuple[Verdict, str]]:
@@ -233,24 +304,41 @@ def run_majority_verify(
     *,
     votes: int,
     llm_call: Callable,
+    lenses: list[str] | None = None,
 ) -> MajorityVerifyResult:
-    """Generate hypotheses once, then adjudicate them with ``votes`` independent
+    """Generate hypotheses, then adjudicate them with ``votes`` independent
     skeptics and combine by majority vote.
 
-    ``llm_call(mode, hypotheses=None)`` runs one LLM pass and returns an
-    ``LlmReviewResult`` — injected so the orchestration is testable offline and
-    so the caller owns model/backend/provider selection.
+    ``llm_call(mode, hypotheses=None, lens=None)`` runs one LLM pass and returns
+    an ``LlmReviewResult`` — injected so the orchestration is testable offline
+    and so the caller owns model/backend/provider selection. With ``lenses``
+    (more than one), generation fans out one specialised pass per lens and the
+    results are deduped into a single list (#147b).
     """
     usage_total: dict[str, int] = {}
-    gen = llm_call("hunt_generate")
-    _add_usage(usage_total, gen.usage)
-    hypotheses = parse_hypotheses(gen.markdown)
+    gen_backend = gen_model = ""
+    last_markdown = ""
+
+    if lenses and len(lenses) > 1:
+        passes: list[list[Hypothesis]] = []
+        for lens in lenses:
+            g = llm_call("hunt_generate", lens=lens)
+            _add_usage(usage_total, g.usage)
+            gen_backend, gen_model, last_markdown = g.backend, g.model, g.markdown
+            passes.append([replace(h, lenses=(lens,)) for h in parse_hypotheses(g.markdown)])
+        hypotheses = dedupe_hypotheses(passes)
+    else:
+        g = llm_call("hunt_generate")
+        _add_usage(usage_total, g.usage)
+        gen_backend, gen_model, last_markdown = g.backend, g.model, g.markdown
+        hypotheses = parse_hypotheses(g.markdown)
+
     if not hypotheses:
         # Nothing parseable to vote on — hand back the generation output as-is.
-        report = gen.markdown if gen.markdown.strip() else "_No hypotheses were surfaced._\n"
+        report = last_markdown if last_markdown.strip() else "_No hypotheses were surfaced._\n"
         return MajorityVerifyResult(
             report=report, hypothesis_count=0, votes=votes,
-            consensus=[], backend=gen.backend, model=gen.model, usage=usage_total,
+            consensus=[], backend=gen_backend, model=gen_model, usage=usage_total,
         )
 
     hyp_dicts = [{"id": h.id, "title": h.title, "evidence": h.evidence} for h in hypotheses]
@@ -267,7 +355,7 @@ def run_majority_verify(
         hypothesis_count=len(hypotheses),
         votes=votes,
         consensus=consensus,
-        backend=gen.backend,
-        model=gen.model,
+        backend=gen_backend,
+        model=gen_model,
         usage=usage_total,
     )
