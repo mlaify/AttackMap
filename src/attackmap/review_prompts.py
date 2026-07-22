@@ -562,7 +562,12 @@ def render_skeptic_prompts(
     ``{"id": "H1", "title": "…"}`` dicts (kept plain to avoid an import cycle)."""
     pack = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
     pack["code_excerpts"] = _code_excerpts(scan, findings)
-    pack["hypotheses"] = [{"id": h["id"], "title": h["title"]} for h in hypotheses]
+    # Keep the cited evidence ids so each skeptic can locate the exact chain it
+    # is adjudicating, not just guess from a terse title (#147a).
+    pack["hypotheses"] = [
+        {"id": h["id"], "title": h["title"], "evidence": h.get("evidence", "")}
+        for h in hypotheses
+    ]
     evidence_json = json.dumps(pack, indent=2, sort_keys=True)
     return RenderedReviewPrompt(
         system=HUNT_SKEPTIC_SYSTEM_PROMPT.strip(),

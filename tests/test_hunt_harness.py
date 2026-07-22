@@ -115,7 +115,7 @@ def test_combine_is_pure_and_records_tally() -> None:
     passes = [{"H1": _v("confirmed", "why")}, {"H1": _v("confirmed", "yep")}, {"H1": _v("refuted", "no")}]
     c = combine_verdicts([Hypothesis("H1", "x")], passes)[0]
     assert (c.confirmed, c.refuted, c.needs_review) == (2, 1, 0)
-    assert any("why" in r for r in c.reasons)
+    assert any("why" in reason for _verdict, reason in c.reasons)
 
 
 # --- render_consensus_report ----------------------------------------------
@@ -169,6 +169,54 @@ def test_run_majority_verify_lowers_false_positive_vs_single_vote() -> None:
     assert verdicts["H1"] == "refuted"  # minority confirm → dropped
     assert verdicts["H2"] == "refuted"
     assert calls["n"] == 3  # exactly `votes` skeptic passes
+
+
+def test_parse_hypotheses_retains_cited_evidence() -> None:
+    md = "=== HYPOTHESES ===\nH1: SQLi at db.py [evidence: surface:2, taint:1]\n"
+    h = parse_hypotheses(md)[0]
+    assert h.title == "SQLi at db.py"
+    assert h.evidence == "surface:2, taint:1"
+
+
+def test_report_quotes_reason_matching_consensus_verdict() -> None:
+    # First skeptic dissents (refuted), majority confirms — the shown reason
+    # must agree with the CONFIRMED consensus, not the dissent.
+    cons = combine_verdicts(
+        [Hypothesis("H1", "x")],
+        [
+            {"H1": _v("refuted", "looked parameterized")},
+            {"H1": _v("confirmed", "clearly interpolated")},
+            {"H1": _v("confirmed", "untrusted into query")},
+        ],
+    )
+    md = render_consensus_report(cons, 3)
+    assert "## Confirmed (1)" in md
+    assert "clearly interpolated" in md or "untrusted into query" in md
+    assert "looked parameterized" not in md
+
+
+def test_needs_review_majority_is_needs_review_not_confirmed() -> None:
+    passes = [{"H1": _v("needs_review")}, {"H1": _v("needs_review")}, {"H1": _v("confirmed")}]
+    assert combine_verdicts([Hypothesis("H1", "x")], passes)[0].verdict == "needs_review"
+
+
+def test_run_majority_verify_aggregates_usage_and_passes_evidence() -> None:
+    gen_md = "=== HYPOTHESES ===\nH1: SQLi [evidence: taint:1]\n"
+    seen_evidence = []
+
+    def llm_call(mode, hypotheses=None):
+        if mode == "hunt_generate":
+            return LlmReviewResult(markdown=gen_md, model="m", stop_reason=None,
+                                   usage={"input_tokens": 10, "output_tokens": 5}, backend="api")
+        seen_evidence.append(hypotheses[0]["evidence"])
+        return LlmReviewResult(markdown="VERDICT H1: REFUTED — no", model="m", stop_reason=None,
+                               usage={"input_tokens": 3, "output_tokens": 2}, backend="api")
+
+    res = run_majority_verify(None, [], [], [], votes=2, llm_call=llm_call)
+    # gen (10/5) + 2 skeptics (3/2 each) = 16 input, 9 output.
+    assert res.usage == {"input_tokens": 16, "output_tokens": 9}
+    # Every skeptic received the cited evidence ids, not just a bare title.
+    assert seen_evidence == ["taint:1", "taint:1"]
 
 
 def test_run_majority_verify_no_hypotheses_returns_generation() -> None:

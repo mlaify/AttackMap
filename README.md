@@ -605,9 +605,10 @@ a human must verify. Uses the same auth/backend resolution as `--llm`.
 
 With `--verify`, each hypothesis is adjudicated against the actual source at its
 cited locations. **`--verify-votes N`** (default 3) turns that into a jury: **N
-independent skeptics** each adjudicate the same fixed hypothesis list, and the
-consensus is a **majority vote that defaults to REFUTED** on ties, missing
-votes, or uncertainty — so a lead only one skeptic would confirm is dropped.
+independent skeptics** each adjudicate the same fixed hypothesis list. A lead is
+**CONFIRMED only on a strict majority** (NEEDS_REVIEW only when a majority flags
+the evidence as insufficient); ties and uncertainty are **REFUTED** — so a lead
+only one skeptic would confirm is dropped.
 This is the verifier the unknown-bug initiative
 ([`docs/unknown-bug-epic.md`](docs/unknown-bug-epic.md)) is built on;
 `--verify-votes 1` is the classic single pass.

@@ -119,7 +119,7 @@ def analyze(
     verify_votes: int = typer.Option(
         3,
         "--verify-votes",
-        help="With --hunt --verify: number of independent skeptic passes to adjudicate each hypothesis; the consensus is a majority vote, defaulting to REFUTED on ties/uncertainty (#147a). 1 = the classic single-pass verify.",
+        help="With --hunt --verify: number of independent skeptic passes to adjudicate each hypothesis. A lead is CONFIRMED only on a strict majority (NEEDS_REVIEW only if a majority flags the evidence insufficient); ties/uncertainty are REFUTED (#147a). 1 = the classic single-pass verify.",
     ),
     remediate: bool = typer.Option(
         False,
@@ -431,7 +431,7 @@ def analyze(
                     scan_progress.done()
                 hunt_markdown = jury.report
                 hunt_backend, hunt_model = jury.backend, jury.model
-                hunt_stop, hunt_usage = None, {}
+                hunt_stop, hunt_usage = None, jury.usage
                 hunt_extra_meta = {
                     "verify_votes": jury.votes,
                     "hypothesis_count": jury.hypothesis_count,

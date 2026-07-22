@@ -9,8 +9,10 @@ verification into a jury:
    machine-readable `=== HYPOTHESES ===` list we parse into a fixed, id-keyed set.
 2. **N independent skeptics** (`hunt_skeptic` mode) each adjudicate that SAME
    list against the real source — no skeptic sees another's verdict.
-3. **Combine by majority vote**, *defaulting to REFUTED* on ties, missing
-   votes, or uncertainty. A lead survives only if a strict majority confirms it.
+3. **Combine by majority vote.** A lead is CONFIRMED only on a strict majority
+   of confirmations; NEEDS_REVIEW only when a strict majority flags the evidence
+   as insufficient; otherwise REFUTED. Ties, splits, missing votes, and
+   uncertainty never confirm — confirmation is the outcome that must clear a bar.
 
 `combine_verdicts` is a pure function (unit-tested); the LLM calls are injected
 so the orchestration is testable offline.
@@ -32,6 +34,7 @@ Verdict = Literal["confirmed", "refuted", "needs_review"]
 class Hypothesis:
     id: str
     title: str
+    evidence: str = ""  # the `[evidence: …]` ids cited by the generation pass
 
 
 @dataclass
@@ -42,7 +45,9 @@ class Consensus:
     confirmed: int = 0
     refuted: int = 0
     needs_review: int = 0
-    reasons: list[str] = field(default_factory=list)
+    # (verdict, reason) per skeptic that gave one, so the report can quote a
+    # reason that agrees with the consensus verdict.
+    reasons: list[tuple[Verdict, str]] = field(default_factory=list)
 
 
 # `H1: title [evidence: …]` lines in the generation pass's marker block.
@@ -78,9 +83,13 @@ def parse_hypotheses(markdown: str) -> list[Hypothesis]:
         if hid in seen:
             continue
         seen.add(hid)
-        # Trim a trailing "[evidence: …]" annotation from the title.
-        title = re.sub(r"\s*\[evidence:.*?\]\s*$", "", match.group(2), flags=re.IGNORECASE).strip()
-        out.append(Hypothesis(id=hid, title=title))
+        raw = match.group(2).strip()
+        # Split the clean title from its "[evidence: …]" annotation, but KEEP
+        # the evidence ids — the skeptics need them to locate the cited chain.
+        ev_match = re.search(r"\[evidence:\s*(.*?)\]\s*$", raw, flags=re.IGNORECASE)
+        evidence = ev_match.group(1).strip() if ev_match else ""
+        title = re.sub(r"\s*\[evidence:.*?\]\s*$", "", raw, flags=re.IGNORECASE).strip()
+        out.append(Hypothesis(id=hid, title=title, evidence=evidence))
     return out
 
 
@@ -102,10 +111,14 @@ def combine_verdicts(
     hypotheses: list[Hypothesis],
     per_pass: list[dict[str, tuple[Verdict, str]]],
 ) -> list[Consensus]:
-    """Majority-vote the skeptic passes, **defaulting to REFUTED** on
-    uncertainty. A hypothesis is CONFIRMED only with a strict majority of
-    CONFIRMED votes; NEEDS_REVIEW only with a strict majority of review votes;
-    everything else — ties, splits, missing votes — is REFUTED.
+    """Combine the skeptic passes into a per-hypothesis consensus:
+
+    - **CONFIRMED** only with a *strict majority* of CONFIRMED votes.
+    - **NEEDS_REVIEW** only with a *strict majority* explicitly flagging the
+      excerpt as insufficient (a genuine "a human should read this" signal).
+    - **REFUTED** for everything else — ties, splits, missing votes, and any
+      other uncertainty. Confirmation is the thing that must clear a majority
+      bar; when in doubt a lead is refuted, never confirmed.
 
     Pure function: no I/O, deterministic given its inputs.
     """
@@ -113,7 +126,7 @@ def combine_verdicts(
     results: list[Consensus] = []
     for hyp in hypotheses:
         confirmed = refuted = needs = 0
-        reasons: list[str] = []
+        reasons: list[tuple[Verdict, str]] = []
         for votes in per_pass:
             entry = votes.get(hyp.id)
             if entry is None:
@@ -127,7 +140,7 @@ def combine_verdicts(
             else:
                 refuted += 1
             if reason:
-                reasons.append(f"[{verdict}] {reason}")
+                reasons.append((verdict, reason))
         if total and confirmed * 2 > total:
             final: Verdict = "confirmed"
         elif total and needs * 2 > total:
@@ -161,8 +174,10 @@ def render_consensus_report(consensus: list[Consensus], votes: int) -> str:
     lines = [
         "# AttackMap hunt — verified hypotheses",
         "",
-        f"_Majority vote of {votes} independent skeptic pass(es); "
-        "default-to-refuted on ties, missing votes, or uncertainty._",
+        f"_Majority vote of {votes} independent skeptic pass(es). A lead is "
+        "CONFIRMED only on a strict majority; NEEDS_REVIEW only when a majority "
+        "flags the evidence as insufficient; otherwise REFUTED — ties and "
+        "uncertainty never confirm._",
         "",
     ]
     ordered = sorted(consensus, key=lambda c: (_VERDICT_ORDER[c.verdict], c.id))
@@ -177,10 +192,20 @@ def render_consensus_report(consensus: list[Consensus], votes: int) -> str:
             if c.needs_review:
                 tally += f", {c.needs_review} needs-review"
             lines.append(f"- `{c.id}` — **{c.title}** ({tally})")
-            if c.reasons:
-                lines.append(f"  - {c.reasons[0]}")
+            reason = _reason_for(c)
+            if reason:
+                lines.append(f"  - {reason}")
         lines.append("")
     return "\n".join(lines)
+
+
+def _reason_for(c: Consensus) -> str:
+    """Quote a skeptic reason that AGREES with the consensus verdict, so a
+    Confirmed item never shows a dissenting `[refuted]` justification."""
+    for verdict, reason in c.reasons:
+        if verdict == c.verdict:
+            return reason
+    return c.reasons[0][1] if c.reasons else ""
 
 
 @dataclass
@@ -191,6 +216,13 @@ class MajorityVerifyResult:
     consensus: list[Consensus]
     backend: str
     model: str
+    usage: dict[str, int] = field(default_factory=dict)
+
+
+def _add_usage(total: dict[str, int], usage: dict | None) -> None:
+    for key, value in (usage or {}).items():
+        if isinstance(value, int):
+            total[key] = total.get(key, 0) + value
 
 
 def run_majority_verify(
@@ -209,20 +241,23 @@ def run_majority_verify(
     ``LlmReviewResult`` — injected so the orchestration is testable offline and
     so the caller owns model/backend/provider selection.
     """
+    usage_total: dict[str, int] = {}
     gen = llm_call("hunt_generate")
+    _add_usage(usage_total, gen.usage)
     hypotheses = parse_hypotheses(gen.markdown)
     if not hypotheses:
         # Nothing parseable to vote on — hand back the generation output as-is.
         report = gen.markdown if gen.markdown.strip() else "_No hypotheses were surfaced._\n"
         return MajorityVerifyResult(
             report=report, hypothesis_count=0, votes=votes,
-            consensus=[], backend=gen.backend, model=gen.model,
+            consensus=[], backend=gen.backend, model=gen.model, usage=usage_total,
         )
 
-    hyp_dicts = [{"id": h.id, "title": h.title} for h in hypotheses]
+    hyp_dicts = [{"id": h.id, "title": h.title, "evidence": h.evidence} for h in hypotheses]
     per_pass: list[dict[str, tuple[Verdict, str]]] = []
     for _ in range(votes):
         sk = llm_call("hunt_skeptic", hypotheses=hyp_dicts)
+        _add_usage(usage_total, sk.usage)
         per_pass.append(parse_verdicts(sk.markdown))
 
     consensus = combine_verdicts(hypotheses, per_pass)
@@ -234,4 +269,5 @@ def run_majority_verify(
         consensus=consensus,
         backend=gen.backend,
         model=gen.model,
+        usage=usage_total,
     )

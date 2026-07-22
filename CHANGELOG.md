@@ -14,10 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **N-skeptic majority-vote hunt verification (#147a).** First slice of the
   multi-pass hunt harness (epic #150). `--hunt --verify` can now run **N
   independent skeptic passes** (`--verify-votes`, default 3) that each adjudicate
-  the *same* fixed, id-keyed hypothesis list against the real source; the
-  consensus is a **majority vote that defaults to REFUTED** on ties, missing
-  votes, or uncertainty — so a lead only a single skeptic would confirm is
-  dropped, measurably lowering false positives vs. single-vote verify. New
+  the *same* fixed, id-keyed hypothesis list (with its cited evidence ids)
+  against the real source. A lead is **CONFIRMED only on a strict majority**
+  (NEEDS_REVIEW only when a majority flags the evidence insufficient); ties and
+  uncertainty are **REFUTED** — so a lead only a single skeptic would confirm is
+  dropped, measurably lowering false positives vs. single-vote verify. Token
+  usage is aggregated across all jury calls. New
   `hunt_harness.py` (pure, unit-tested `combine_verdicts` + hypothesis/verdict
   parsers + orchestration), a `hunt_generate` pass that emits a machine-readable
   `=== HYPOTHESES ===` list, and a `hunt_skeptic` mode. `--verify-votes 1`
