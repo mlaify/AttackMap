@@ -463,9 +463,12 @@ dangerous sink (from the taint pass). When a strong majority guard the request
 before the sink, that pattern is mined as an implicit invariant and the handler
 that reaches the same sink kind with no preceding guard is flagged, citing the
 mined rule (e.g. "9 of 10 handlers that reach a database (SQL execute) sink
-apply an auth/validation guard before it"). Sanitized chains are excluded so
-only genuinely undefended flows form the cohort — it measures the code against
-its own norm and needs no signature.
+apply an auth/validation guard before it"). It reasons only about **same-file**
+flows, where guard-before-sink ordering is actually verifiable (a cross-file
+sink could be called before an `authorize(...)` that textually follows it), and
+counts one handler per declaration regardless of how many verbs it exposes.
+Sanitized chains are excluded so only genuinely undefended flows form the cohort
+— it measures the code against its own norm and needs no signature.
 
 Everything is peer-relative and **confidence scales with how consistent the
 cohort is** — a lone deviation among many agreeing siblings is likelier a mistake

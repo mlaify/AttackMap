@@ -309,6 +309,18 @@ def _method_outliers(key: str, members: list[Route]) -> list[Anomaly]:
 # --- Mined-invariant pass (#149a) ------------------------------------------
 
 
+@dataclass
+class _InvHandler:
+    """One handler in a sink cohort: its analysis file + declaration line, the
+    verbs it is registered under, and the same-file chains it reaches."""
+
+    file: str
+    line: int | None
+    path: str
+    methods: set[str]
+    chains: list
+
+
 def _invariant_violations(scan: ScanResult, ctx: _SignalCtx) -> list[Anomaly]:
     """Mine a "guard the request before the sink" invariant per sink kind and
     flag the handler that violates it.
@@ -320,65 +332,93 @@ def _invariant_violations(scan: ScanResult, ctx: _SignalCtx) -> list[Anomaly]:
     reaches the same sink kind with no preceding guard is flagged, citing the
     mined rule. Signature-free: the code is measured against its own norm.
 
-    Sanitized chains (#137) are excluded — a sink-local neutralizer is a
-    different control from a handler guard, and dropping them keeps the cohort
-    (and any violator) to genuinely undefended flows, which is the precise set.
+    Scope decisions that keep the high-severity signal precise:
+
+    - **Same-file flows only** (``hops == 0``). "Guard before the sink" is a
+      statement about ordering, and ordering is only verifiable when the guard
+      and the sink live in one file. A downstream (cross-file) sink could be
+      called before an ``authorize(...)`` that textually follows it, so we
+      don't guess — cross-file chains are simply out of scope here.
+    - **Anchored on the chain's own file.** The taint pass reasons from the
+      module that *defines* the handler (#107), which for a central-registration
+      Node app is not the route's registration file. Analysis therefore anchors
+      on ``chain.route_file``; a matching ``Route`` supplies the declaration line
+      for a precise per-handler span, and a resolved handler module with no such
+      match falls back to a whole-file span.
+    - **Per handler, not per verb.** One handler registered for several methods
+      emits one ``Route`` per verb; cohort identity is the handler (file +
+      declaration line), so multi-verb handlers count once.
+    - **Sanitized chains excluded** (#137) — a sink-local neutralizer is a
+      different control from a handler guard, so dropping them keeps the cohort
+      to genuinely undefended flows.
     """
-    # Route lookup, keyed by the identity a taint chain carries. Line-less
-    # routes are skipped: without a declaration line the handler span (and so
-    # "before the sink") can't be bounded, and precision matters more than the
-    # marginal recall here.
-    route_by_key: dict[tuple[str, str, str], Route] = {}
+    # (file, method, path) -> declaration line, for handlers whose defining file
+    # is the file the chain is anchored on (inline / decorator handlers).
+    line_by_key: dict[tuple[str, str, str], int] = {}
     for route in scan.routes:
         if is_test_file(route.file) or route.line is None:
             continue
-        route_by_key.setdefault((route.file, route.method, route.path), route)
+        line_by_key.setdefault((route.file, route.method, route.path), route.line)
 
-    # sink_kind -> { route_key -> (route, [chains to this kind]) }
-    per_kind: dict[str, dict[tuple[str, str, str], tuple[Route, list]]] = {}
+    # sink_kind -> { handler_id -> _InvHandler }
+    per_kind: dict[str, dict[tuple[str, object], _InvHandler]] = {}
     for chain in scan.taint_chains:
-        if chain.sanitized:
+        # Same-file, undefended flows only (see the scope notes above); for
+        # hops == 0 the sink file is the anchor file, so one test covers both.
+        if chain.sanitized or chain.hops != 0:
             continue
-        if is_test_file(chain.route_file) or is_test_file(chain.sink_file):
+        anchor_file = chain.route_file
+        if is_test_file(anchor_file):
             continue
-        key = (chain.route_file, chain.route_method, chain.route_path)
-        route = route_by_key.get(key)
-        if route is None:
-            continue
+        line = line_by_key.get((anchor_file, chain.route_method, chain.route_path))
+        # Handler identity: (file, decl line) when known, else (file, path) so a
+        # resolved handler module's several verbs still collapse to one handler.
+        handler_id: tuple[str, object] = (
+            (anchor_file, line) if line is not None else (anchor_file, chain.route_path)
+        )
         cohort = per_kind.setdefault(chain.sink_kind, {})
-        _, chains = cohort.setdefault(key, (route, []))
-        chains.append(chain)
+        handler = cohort.get(handler_id)
+        if handler is None:
+            handler = _InvHandler(
+                file=anchor_file, line=line, path=chain.route_path, methods=set(), chains=[]
+            )
+            cohort[handler_id] = handler
+        handler.methods.add(chain.route_method)
+        handler.chains.append(chain)
 
     out: list[Anomaly] = []
     for kind, cohort in per_kind.items():
-        members = list(cohort.values())
-        if len(members) < _MIN_INVARIANT_COHORT:
+        handlers = list(cohort.values())
+        if len(handlers) < _MIN_INVARIANT_COHORT:
             continue
-        guarded: list[Route] = []
-        unguarded: list[Route] = []
-        for route, chains in members:
-            if all(_guard_before_sink(route, c.sink_file, c.sink_line, ctx) for c in chains):
-                guarded.append(route)
+        guarded: list[_InvHandler] = []
+        unguarded: list[_InvHandler] = []
+        for handler in handlers:
+            if all(
+                _guard_before_sink(handler.file, handler.line, c.sink_file, c.sink_line, ctx)
+                for c in handler.chains
+            ):
+                guarded.append(handler)
             else:
-                unguarded.append(route)
-        if not _is_outlier_split(len(guarded), len(unguarded), len(members)):
+                unguarded.append(handler)
+        if not _is_outlier_split(len(guarded), len(unguarded), len(handlers)):
             continue
         label = _SINK_LABELS.get(kind, kind)
         invariant = (
-            f"{len(guarded)} of {len(members)} handlers that reach a {label} sink "
+            f"{len(guarded)} of {len(handlers)} handlers that reach a {label} sink "
             f"apply an auth/validation guard before it"
         )
-        examples = _peer_examples(guarded)
-        for route in unguarded:
+        examples = _handler_examples(guarded)
+        for handler in unguarded:
             out.append(
                 Anomaly(
                     kind="invariant_violation",
-                    route_path=route.path,
-                    route_method=route.method,
-                    route_file=route.file,
-                    route_line=route.line,
+                    route_path=handler.path,
+                    route_method="/".join(sorted(handler.methods)),
+                    route_file=handler.file,
+                    route_line=handler.line,
                     peer_group=f"sink:{kind}",
-                    peer_group_size=len(members),
+                    peer_group_size=len(handlers),
                     consistent_peers=len(guarded),
                     deviation=(
                         f"reaches a {label} sink with no auth/validation guard "
@@ -394,27 +434,40 @@ def _invariant_violations(scan: ScanResult, ctx: _SignalCtx) -> list[Anomaly]:
     return out
 
 
-def _guard_before_sink(
-    route: Route, sink_file: str, sink_line: int | None, ctx: _SignalCtx
-) -> bool:
-    """True if an auth/validation marker guards the handler *before* it reaches
-    the sink.
+def _handler_examples(handlers: list[_InvHandler], limit: int = 3) -> list[str]:
+    seen: list[str] = []
+    for h in handlers:
+        label = f"{'/'.join(sorted(h.methods))} {h.path}"
+        if label not in seen:
+            seen.append(label)
+        if len(seen) >= limit:
+            break
+    return seen
 
-    When the sink lands inside the handler's own span, the marker must appear
-    strictly above the sink line — a guard placed after the sink doesn't defend
-    it. When the sink is elsewhere (a downstream file, or — because the import
-    walk fans a route out to every sink in its file — another handler's body),
-    the ordering test doesn't apply: an entry guard anywhere in this handler's
-    span precedes the reach to that sink by construction, so the whole span
-    counts.
+
+def _guard_before_sink(
+    file: str, line: int | None, sink_file: str, sink_line: int | None, ctx: _SignalCtx
+) -> bool:
+    """True if an auth/validation marker guards the handler *before* the sink.
+
+    The handler span is its declaration line down to the next route (``line``
+    known), or the whole file when the handler is a resolved module with no
+    matching route declaration. The sink is same-file (this pass only reasons
+    about ``hops == 0`` flows): when it sits inside the span the window is
+    tightened to strictly above the sink line — a guard placed *after* the sink
+    doesn't defend it — otherwise (a sink in another handler's body, reached via
+    same-file import fan-out) the whole span counts.
     """
-    lines = _file_lines(route.file, ctx)
-    if not lines or route.line is None:
+    lines = _file_lines(file, ctx)
+    if not lines:
         return False
-    start, end = _span_bounds(route, lines, ctx.file_route_lines.get(route.file, []))
+    if line is None:
+        start, end = 0, len(lines)
+    else:
+        start, end = _span_bounds(line, lines, ctx.file_route_lines.get(file, []))
     # sink_line is 1-based; index sink_line-1 is the sink itself. Only tighten
     # the window to "before the sink" when the sink sits within this span.
-    if sink_file == route.file and sink_line is not None and start < sink_line - 1 < end:
+    if sink_file == file and sink_line is not None and start < sink_line - 1 < end:
         end = sink_line - 1
     if end <= start:
         return False
@@ -515,23 +568,23 @@ def _route_has_signal(route: Route, ctx: _SignalCtx, marker: re.Pattern[str]) ->
         return False
     if route.line is None:
         return marker.search("\n".join(lines)) is not None
-    start, end = _span_bounds(route, lines, ctx.file_route_lines.get(route.file, []))
+    start, end = _span_bounds(route.line, lines, ctx.file_route_lines.get(route.file, []))
     return marker.search("\n".join(lines[start:end])) is not None
 
 
-def _span_bounds(route: Route, lines: list[str], route_lines: list[int]) -> tuple[int, int]:
-    """Return the 0-based [start, end) slice of ``lines`` owned by ``route``."""
-    assert route.line is not None
-    idx = route.line - 1  # 0-based route declaration line
+def _span_bounds(line: int, lines: list[str], route_lines: list[int]) -> tuple[int, int]:
+    """Return the 0-based [start, end) slice of ``lines`` owned by the handler
+    declared at 1-based ``line``."""
+    idx = line - 1  # 0-based route declaration line
     # End at the next route declaration in the file (its decorators/body
     # belong to it), capped so a huge handler can't swallow the file.
-    next_line = next((ln for ln in route_lines if ln > route.line), None)
-    end = min(len(lines), route.line - 1 + _MAX_SPAN)
+    next_line = next((ln for ln in route_lines if ln > line), None)
+    end = min(len(lines), line - 1 + _MAX_SPAN)
     if next_line is not None:
         end = min(end, next_line - 1)
     # Extend upward over contiguous decorator lines (auth decorator placed
     # above the @route decorator), but not past the previous route.
-    prev_line = next((ln for ln in reversed(route_lines) if ln < route.line), 0)
+    prev_line = next((ln for ln in reversed(route_lines) if ln < line), 0)
     start = idx
     limit = max(prev_line, idx - _DECORATOR_LOOKUP)
     while start - 1 >= limit and lines[start - 1].lstrip().startswith("@"):

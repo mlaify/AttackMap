@@ -575,3 +575,89 @@ def test_invariant_survives_taint_fanout(tmp_path: Path) -> None:
     assert len(violations) == 1
     assert violations[0].route_path == "/api/res4/<id>"
     assert violations[0].consistent_peers == 4
+
+
+def test_invariant_imported_handler_whole_file_span(tmp_path: Path) -> None:
+    """For a central-registration app the taint pass anchors on the handler's
+    defining module, not the route's registration file (#149a P1). Those chains
+    must still form the cohort — analysed as a whole-file span."""
+    routes: list[Route] = []
+    chains: list[TaintChain] = []
+    for i in range(5):
+        hf = f"handlers/h{i}.py"
+        (tmp_path / "handlers").mkdir(exist_ok=True)
+        body = ["def handler(req):"]
+        if i < 4:
+            body.append("    current_user.assert_can_read(req)")
+        sink_line = len(body) + 1
+        body.append('    return db.execute("SELECT * FROM t WHERE id=" + req.params.id)')
+        (tmp_path / hf).write_text("\n".join(body), encoding="utf-8")
+        # Route registered centrally (different file) — no line match for hf.
+        routes.append(Route(path=f"/api/r{i}", method="GET", file="server.ts", line=i + 1))
+        chains.append(
+            TaintChain(
+                route_path=f"/api/r{i}", route_method="GET", route_file=hf,
+                sink_kind="sql_execute", sink_file=hf, sink_line=sink_line, hops=0,
+                files=[hf],
+            )
+        )
+    scan = ScanResult(root=str(tmp_path), routes=routes, taint_chains=chains)
+    violations = [a for a in find_anomalies(scan, tmp_path) if a.kind == "invariant_violation"]
+    assert len(violations) == 1
+    assert violations[0].route_path == "/api/r4"
+    assert violations[0].peer_group_size == 5
+
+
+def test_invariant_counts_handlers_not_verbs(tmp_path: Path) -> None:
+    """A single handler registered under several verbs is one cohort member,
+    not several (#149a P2) — so a lone guarded multi-verb handler plus one
+    unguarded handler is a 2-handler cohort, below the floor, and nothing fires."""
+    filename = "app.py"
+    lines = ["from flask import Flask", "app = Flask(__name__)", ""]
+    routes: list[Route] = []
+    chains: list[TaintChain] = []
+    # One guarded handler exposed on GET/POST/PUT (three Routes, one decl line).
+    decl_line = len(lines) + 1
+    lines.append('@app.route("/api/thing", methods=["GET", "POST", "PUT"])')
+    lines.append("def thing():")
+    lines.append("    current_user.assert_can_read(request)")
+    guard_sink = len(lines) + 1
+    lines.append('    return db.execute("SELECT * FROM t WHERE id=" + request.args["id"])')
+    lines.append("")
+    for verb in ("GET", "POST", "PUT"):
+        routes.append(Route(path="/api/thing", method=verb, file=filename, line=decl_line))
+        chains.append(
+            TaintChain(
+                route_path="/api/thing", route_method=verb, route_file=filename,
+                sink_kind="sql_execute", sink_file=filename, sink_line=guard_sink, hops=0,
+                files=[filename],
+            )
+        )
+    # One unguarded single-verb handler.
+    decl2 = len(lines) + 1
+    lines.append('@app.route("/api/other")')
+    lines.append("def other():")
+    sink2 = len(lines) + 1
+    lines.append('    return db.execute("SELECT * FROM t WHERE id=" + request.args["id"])')
+    routes.append(Route(path="/api/other", method="GET", file=filename, line=decl2))
+    chains.append(
+        TaintChain(
+            route_path="/api/other", route_method="GET", route_file=filename,
+            sink_kind="sql_execute", sink_file=filename, sink_line=sink2, hops=0,
+            files=[filename],
+        )
+    )
+    (tmp_path / filename).write_text("\n".join(lines), encoding="utf-8")
+    scan = ScanResult(root=str(tmp_path), routes=routes, taint_chains=chains)
+    # 2 distinct handlers (< min cohort 4) → no false 3-of-4 invariant.
+    assert not [a for a in find_anomalies(scan, tmp_path) if a.kind == "invariant_violation"]
+
+
+def test_invariant_ignores_cross_file_sinks(tmp_path: Path) -> None:
+    """Cross-file (hops>0) flows are out of scope — ordering is unverifiable, so
+    a downstream sink never establishes or breaks the invariant (#149a P3)."""
+    scan = _sink_cohort(tmp_path, n_guarded=9, n_unguarded=1)
+    for chain in scan.taint_chains:
+        chain.hops = 1
+        chain.sink_file = "services/db.py"
+    assert not [a for a in find_anomalies(scan, tmp_path) if a.kind == "invariant_violation"]
