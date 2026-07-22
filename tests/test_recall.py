@@ -284,3 +284,27 @@ def test_capability_reach_off_without_recall(tmp_path: Path) -> None:
     # Even the widest non-capability knobs don't enumerate bare capabilities.
     cfg = RecallConfig(max_hops=4, include_static_args=True)  # capability_reach=False
     assert not [c for c in analyze_taint(scan, tmp_path, recall=cfg) if c.sink_kind == "ssrf"]
+
+
+def test_capability_reach_not_suppressed_by_file_sanitizer(tmp_path: Path) -> None:
+    """A sanitizer token in the reachable file must not mark a bare
+    capability-reach hit sanitized — that would make generate_findings drop it
+    and silently lose the capability inventory (#148b Codex P2)."""
+    _write(
+        tmp_path,
+        "app.py",
+        "import requests\n\n\n"
+        "def handler():\n"
+        "    if is_safe_url(target):\n"  # a recognized SSRF/redirect sanitizer token
+        '        return requests.get("https://internal/")\n',
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/x", method="GET", file="app.py", line=4)])
+    chains = analyze_taint(scan, tmp_path, recall=recall_config())
+    ssrf = [c for c in chains if c.sink_kind == "ssrf"]
+    assert len(ssrf) == 1
+    assert ssrf[0].speculative is True
+    assert ssrf[0].sanitized is False  # capability reaches carry no sanitizer status
+
+    scan.taint_chains = chains
+    findings = generate_findings(scan, [])
+    assert [f for f in findings if "speculative" in f.tags], "capability finding must survive"

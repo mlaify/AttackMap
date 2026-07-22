@@ -1074,6 +1074,11 @@ def _find_sinks(
         # Capability-reach pass (#148b, recall only): the bare-call form of the
         # request-gated kinds, surfaced even without a request token. Always
         # relaxed → speculative; skipped where the gated pass already fired.
+        # These carry NO sanitizer label: sanitizer status describes a tainted
+        # flow being neutralized, but a capability-reach hit asserts no taint —
+        # a file-level sanitizer token must not mark it sanitized (which would
+        # make generate_findings drop it and silently lose the capability
+        # inventory this pass exists to produce).
         if recall.capability_reach:
             for kind, pattern in _CAPABILITY_PATTERNS:
                 for match in pattern.finditer(content):
@@ -1081,9 +1086,7 @@ def _find_sinks(
                     if (kind, line) in emitted:
                         continue
                     snippet = _line_snippet(content, match.start())
-                    if kind not in sanitizer_by_kind:
-                        sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
-                    hits.append((kind, line, snippet, sanitizer_by_kind[kind], True))
+                    hits.append((kind, line, snippet, None, True))
                     emitted.add((kind, line))
         if hits:
             out[rel] = hits
