@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-07-22
+
+### Added
+
+- **Within-repo invariant mining (#149a).** First slice of signature-free
+  outlier detection (epic #150) — deterministic, no LLM. A new pass in the
+  anomaly detector cohorts handlers not by route-path prefix but by the
+  *dangerous sink kind they reach* (from the taint pass). When a strong
+  majority of those handlers apply an auth/validation guard **before** the sink,
+  that pattern is mined as an implicit invariant and every cohort member that
+  reaches the same sink kind with no preceding guard is flagged — a new
+  `invariant_violation` anomaly whose evidence cites the mined rule (e.g. "9 of
+  10 handlers that reach a database (SQL execute) sink apply an auth/validation
+  guard before it"). Signature-free: it measures the code against its own norm,
+  so it can surface a forgotten guard on a sink pattern no rule anticipates.
+  Precision guardrails: a minimum cohort size, a strong-majority split test
+  (violators must be a small strict minority), and sanitized chains (#137) are
+  excluded so only genuinely undefended flows form the cohort. Confidence scales
+  with the size of the agreeing peer group.
+
 ## [0.4.18] - 2026-07-21
 
 ### Added

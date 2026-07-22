@@ -455,6 +455,20 @@ within each cohort the odd-one-out is reported:
 | `auth_outlier` | siblings carry an auth/authorization signal near the handler; this route doesn't | HIGH |
 | `validation_outlier` | among a cohort's state-changing handlers, peers validate input and this one shows no validation marker | LOW |
 | `method_outlier` | a lone state-changing method in an otherwise read-only cohort | MEDIUM |
+| `invariant_violation` | a mined-invariant outlier: among handlers that reach the same dangerous sink kind, the majority guard the request *before* the sink and this one doesn't — evidence cites the mined rule | HIGH |
+
+The `invariant_violation` kind is the **mined-invariant** pass (#149a): its
+cohort is not a route-path prefix but the set of handlers that reach the same
+dangerous sink (from the taint pass). When a strong majority guard the request
+before the sink, that pattern is mined as an implicit invariant and the handler
+that reaches the same sink kind with no preceding guard is flagged, citing the
+mined rule (e.g. "9 of 10 handlers that reach a database (SQL execute) sink
+apply an auth/validation guard before it"). It reasons only about **same-file**
+flows, where guard-before-sink ordering is actually verifiable (a cross-file
+sink could be called before an `authorize(...)` that textually follows it), and
+counts one handler per declaration regardless of how many verbs it exposes.
+Sanitized chains are excluded so only genuinely undefended flows form the cohort
+— it measures the code against its own norm and needs no signature.
 
 Everything is peer-relative and **confidence scales with how consistent the
 cohort is** — a lone deviation among many agreeing siblings is likelier a mistake

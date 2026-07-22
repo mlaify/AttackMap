@@ -891,6 +891,14 @@ _ANOMALY_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
     },
+    "invariant_violation": {
+        "severity": "high",
+        "title": "Invariant violation — handler reaches a dangerous sink without the guard its peers apply",
+        "mitigation": "Confirm whether the flagged handler should reach this sink unguarded. If not, apply the same auth/validation guard its sibling handlers place before the sink. A mined invariant broken by a single site is a common shape for a forgotten check on an injection or access-control path.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
 }
 
 
@@ -1541,8 +1549,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         for a in items[:10]:
             loc = f"{a.route_file}:{a.route_line}" if a.route_line else a.route_file
             peers = f" (peers: {', '.join(a.peer_examples)})" if a.peer_examples else ""
+            # Cite the mined invariant (invariant_violation) as the norm broken.
+            invariant = f" [invariant: {a.invariant}]" if a.invariant else ""
             evidence.append(
-                f"{a.route_method} {a.route_path} [{loc}] — {a.deviation}{peers} "
+                f"{a.route_method} {a.route_path} [{loc}] — {a.deviation}{invariant}{peers} "
                 f"[confidence={a.confidence:.2f}]"
             )
         if len(items) > 10:

@@ -376,6 +376,8 @@ def _hunt_evidence_pack(
             "route": f"{a.route_method} {a.route_path}",
             "peer_group": a.peer_group,
             "deviation": a.deviation,
+            # The mined invariant the site violates (invariant_violation only).
+            **({"invariant": a.invariant} if a.invariant else {}),
             "confidence": a.confidence,
         }
         for idx, a in enumerate(scan.anomalies[:30])
