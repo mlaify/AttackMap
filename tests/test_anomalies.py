@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from attackmap.anomalies import _peer_key, find_anomalies
-from attackmap.models import Route, ScanResult
+from attackmap.models import Route, ScanResult, TaintChain
 from attackmap.threat_model import generate_findings
 
 
@@ -395,3 +395,183 @@ def test_progress_reported_per_cohort(tmp_path: Path) -> None:
     assert begin["label"] == "Anomaly / outlier detection"
     assert begin["total"] >= 1
     assert any(e["event"] == "advance" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# invariant mining (#149a)
+# ---------------------------------------------------------------------------
+
+
+def _sink_cohort(
+    tmp_path: Path,
+    n_guarded: int,
+    n_unguarded: int,
+    *,
+    guard: str = "    current_user.assert_can_read(id)",
+    filename: str = "handlers.py",
+) -> ScanResult:
+    """Build a file of handlers that all reach a same-file ``db.execute`` sink,
+    ``n_guarded`` of which place an auth guard before the sink line. Returns a
+    ScanResult wired with the matching routes and taint chains."""
+    lines: list[str] = ["from flask import Flask", "app = Flask(__name__)", ""]
+    routes: list[Route] = []
+    chains: list[TaintChain] = []
+    total = n_guarded + n_unguarded
+    for i in range(total):
+        guarded = i < n_guarded
+        path = f"/api/res{i}/<id>"
+        route_line = len(lines) + 1  # the @app.route decorator line (1-based)
+        lines.append(f'@app.route("{path}")')
+        lines.append(f"def handler{i}(id):")
+        if guarded:
+            lines.append(guard)
+        sink_line = len(lines) + 1
+        lines.append('    return db.execute("SELECT * FROM t WHERE id=" + id)')
+        lines.append("")
+        routes.append(Route(path=path, method="GET", file=filename, line=route_line))
+        chains.append(
+            TaintChain(
+                route_path=path,
+                route_method="GET",
+                route_file=filename,
+                sink_kind="sql_execute",
+                sink_file=filename,
+                sink_line=sink_line,
+                hops=0,
+                files=[filename],
+            )
+        )
+    (tmp_path / filename).write_text("\n".join(lines), encoding="utf-8")
+    return ScanResult(root=str(tmp_path), routes=routes, taint_chains=chains)
+
+
+def test_invariant_violation_flags_the_unguarded_handler(tmp_path: Path) -> None:
+    """9 of 10 handlers guard `id` before a SQL sink; the 10th is flagged with
+    the mined invariant as evidence (the #149a acceptance criterion)."""
+    scan = _sink_cohort(tmp_path, n_guarded=9, n_unguarded=1)
+    anomalies = find_anomalies(scan, tmp_path)
+
+    violations = [a for a in anomalies if a.kind == "invariant_violation"]
+    assert len(violations) == 1
+    v = violations[0]
+    assert v.route_path == "/api/res9/<id>"  # the lone unguarded handler
+    assert v.peer_group == "sink:sql_execute"
+    assert v.peer_group_size == 10
+    assert v.consistent_peers == 9
+    assert v.severity == "high"
+    assert v.invariant is not None
+    assert "9 of 10" in v.invariant
+    assert "database (SQL execute)" in v.invariant
+
+
+def test_invariant_surfaced_as_finding_evidence(tmp_path: Path) -> None:
+    scan = _sink_cohort(tmp_path, n_guarded=9, n_unguarded=1)
+    scan.anomalies = find_anomalies(scan, tmp_path)
+    findings = generate_findings(scan, [])
+    inv = next(f for f in findings if "Invariant violation" in f.title)
+    assert inv.severity == "high"
+    assert inv.attack_techniques
+    assert any("invariant:" in e and "9 of 10" in e for e in inv.evidence)
+    assert any("/api/res9/<id>" in e for e in inv.evidence)
+
+
+def test_invariant_needs_strong_majority(tmp_path: Path) -> None:
+    """A split cohort (5 guarded / 5 not) is not a strong-enough pattern."""
+    scan = _sink_cohort(tmp_path, n_guarded=5, n_unguarded=5)
+    anomalies = find_anomalies(scan, tmp_path)
+    assert not [a for a in anomalies if a.kind == "invariant_violation"]
+
+
+def test_invariant_needs_min_cohort(tmp_path: Path) -> None:
+    """Below the cohort floor (2 guarded / 1 not = 3 < 4) nothing fires."""
+    scan = _sink_cohort(tmp_path, n_guarded=2, n_unguarded=1)
+    anomalies = find_anomalies(scan, tmp_path)
+    assert not [a for a in anomalies if a.kind == "invariant_violation"]
+
+
+def test_invariant_ignores_sanitized_chains(tmp_path: Path) -> None:
+    """A sink neutralized at the sink (#137) leaves the flow out of the cohort,
+    so a would-be violator whose chain is sanitized is not flagged."""
+    scan = _sink_cohort(tmp_path, n_guarded=9, n_unguarded=1)
+    for chain in scan.taint_chains:
+        if chain.route_path == "/api/res9/<id>":
+            chain.sanitized = True
+            chain.sanitizer_evidence = "parameterized query"
+    anomalies = find_anomalies(scan, tmp_path)
+    assert not [a for a in anomalies if a.kind == "invariant_violation"]
+
+
+def test_invariant_guard_must_precede_sink(tmp_path: Path) -> None:
+    """A guard placed *after* the sink line does not satisfy the invariant."""
+    filename = "late.py"
+    lines: list[str] = ["from flask import Flask", "app = Flask(__name__)", ""]
+    routes: list[Route] = []
+    chains: list[TaintChain] = []
+    for i in range(10):
+        path = f"/api/res{i}/<id>"
+        route_line = len(lines) + 1
+        lines.append(f'@app.route("{path}")')
+        lines.append(f"def handler{i}(id):")
+        if i < 9:
+            lines.append("    current_user.assert_can_read(id)")
+            sink_line = len(lines) + 1
+            lines.append('    return db.execute("SELECT * FROM t WHERE id=" + id)')
+        else:
+            # sink first, guard afterwards — ordering means this is unguarded.
+            sink_line = len(lines) + 1
+            lines.append('    row = db.execute("SELECT * FROM t WHERE id=" + id)')
+            lines.append("    current_user.assert_can_read(id)")
+            lines.append("    return row")
+        lines.append("")
+        routes.append(Route(path=path, method="GET", file=filename, line=route_line))
+        chains.append(
+            TaintChain(
+                route_path=path, route_method="GET", route_file=filename,
+                sink_kind="sql_execute", sink_file=filename, sink_line=sink_line,
+                hops=0, files=[filename],
+            )
+        )
+    (tmp_path / filename).write_text("\n".join(lines), encoding="utf-8")
+    scan = ScanResult(root=str(tmp_path), routes=routes, taint_chains=chains)
+    violations = [a for a in find_anomalies(scan, tmp_path) if a.kind == "invariant_violation"]
+    assert len(violations) == 1
+    assert violations[0].route_path == "/api/res9/<id>"
+
+
+def test_invariant_survives_taint_fanout(tmp_path: Path) -> None:
+    """The import walk fans a route out to every sink in its file, so a guarded
+    handler also "reaches" foreign sinks in other handlers' bodies. Those
+    foreign reaches must not mark the handler unguarded (regression): only the
+    genuinely guard-less handler is flagged."""
+    filename = "app.py"
+    lines: list[str] = ["from flask import Flask", "app = Flask(__name__)", ""]
+    routes: list[Route] = []
+    sink_lines: dict[str, int] = {}
+    for i in range(5):
+        path = f"/api/res{i}/<id>"
+        route_line = len(lines) + 1
+        lines.append(f'@app.route("{path}")')
+        lines.append(f"def handler{i}(id):")
+        if i < 4:
+            lines.append("    current_user.assert_can_read(id)")
+        sink_line = len(lines) + 1
+        lines.append('    return db.execute("SELECT * FROM t WHERE id=" + id)')
+        lines.append("")
+        routes.append(Route(path=path, method="GET", file=filename, line=route_line))
+        sink_lines[path] = sink_line
+    (tmp_path / filename).write_text("\n".join(lines), encoding="utf-8")
+    # Fan-out: every route reaches every sink in the file (real taint shape).
+    chains = [
+        TaintChain(
+            route_path=r.path, route_method="GET", route_file=filename,
+            sink_kind="sql_execute", sink_file=filename, sink_line=sl, hops=0,
+            files=[filename],
+        )
+        for r in routes
+        for sl in sink_lines.values()
+    ]
+    scan = ScanResult(root=str(tmp_path), routes=routes, taint_chains=chains)
+    violations = [a for a in find_anomalies(scan, tmp_path) if a.kind == "invariant_violation"]
+    assert len(violations) == 1
+    assert violations[0].route_path == "/api/res4/<id>"
+    assert violations[0].consistent_peers == 4

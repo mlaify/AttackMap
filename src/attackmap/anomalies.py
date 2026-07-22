@@ -18,6 +18,14 @@ forgotten decorator or a copy-paste that dropped a guard.
   validate their input and this one shows no validation marker.
 - **method_outlier**: a lone state-changing method exposed in a cohort
   that is otherwise read-only.
+- **invariant_violation** (#149a): the *mined-invariant* pass. Its cohort is
+  not a route-path prefix but the set of handlers that reach the same
+  dangerous sink kind (from the taint pass). When a strong majority guard the
+  request — an auth or validation check *before* the sink — the pass mines
+  that as an implicit invariant and flags the handler that reaches the same
+  sink kind with no guard before it, citing the mined rule as evidence. This
+  is signature-free: it compares the code against itself, so it can surface a
+  forgotten guard on a sink pattern no rule anticipates.
 
 ## Precision
 
@@ -103,6 +111,26 @@ _MAX_FILE_BYTES = 1_000_000
 # A cohort must have at least this many routes to reason about a "norm".
 _MIN_GROUP = 3
 
+# Invariant mining (#149a). A sink cohort must have at least this many distinct
+# handlers before a "guard the request before the sink" invariant is credible —
+# higher than `_MIN_GROUP` because a wrong call here points at a dangerous sink.
+_MIN_INVARIANT_COHORT = 4
+
+# Human labels for the taint sink kinds an invariant is mined over (mirrors
+# threat_model._TAINT_SINK_LABEL; kept local so anomalies.py stays standalone).
+_SINK_LABELS: dict[str, str] = {
+    "sql_execute": "database (SQL execute)",
+    "subprocess_shell": "command execution",
+    "eval": "code eval",
+    "exec": "code exec",
+    "dynamic_open": "filesystem open",
+    "unsafe_deserialization": "unsafe deserialization",
+    "ssti": "template injection",
+    "ssrf": "outbound request (SSRF)",
+    "nosql_injection": "NoSQL query",
+    "open_redirect": "redirect target",
+}
+
 # Leading segments that are transport scaffolding, not the resource itself
 # (`/api`, `/v1`, `/rest`). Stripped so the cohort key lands on the resource
 # root — /api/users, /api/users/<id> and /api/users/export all group as
@@ -158,6 +186,10 @@ def find_anomalies(
         out.extend(_auth_outliers(key, members, ctx))
         out.extend(_method_outliers(key, members))
         out.extend(_validation_outliers(key, members, ctx))
+
+    # Mined-invariant pass (#149a): cohorts of handlers reaching the same
+    # dangerous sink, flagged when the majority guard the request before it.
+    out.extend(_invariant_violations(scan, ctx))
 
     out.sort(key=lambda a: (-a.confidence, a.route_file, a.route_path))
     return out
@@ -272,6 +304,125 @@ def _method_outliers(key: str, members: list[Route]) -> list[Anomaly]:
             source_analyzer="anomalies",
         )
     ]
+
+
+# --- Mined-invariant pass (#149a) ------------------------------------------
+
+
+def _invariant_violations(scan: ScanResult, ctx: _SignalCtx) -> list[Anomaly]:
+    """Mine a "guard the request before the sink" invariant per sink kind and
+    flag the handler that violates it.
+
+    The cohort is not a route-path prefix but the set of handlers that reach
+    the *same dangerous sink kind* (from ``scan.taint_chains``). When a strong
+    majority of those handlers apply an auth/validation guard before the sink,
+    that pattern is mined as an implicit invariant and every cohort member that
+    reaches the same sink kind with no preceding guard is flagged, citing the
+    mined rule. Signature-free: the code is measured against its own norm.
+
+    Sanitized chains (#137) are excluded — a sink-local neutralizer is a
+    different control from a handler guard, and dropping them keeps the cohort
+    (and any violator) to genuinely undefended flows, which is the precise set.
+    """
+    # Route lookup, keyed by the identity a taint chain carries. Line-less
+    # routes are skipped: without a declaration line the handler span (and so
+    # "before the sink") can't be bounded, and precision matters more than the
+    # marginal recall here.
+    route_by_key: dict[tuple[str, str, str], Route] = {}
+    for route in scan.routes:
+        if is_test_file(route.file) or route.line is None:
+            continue
+        route_by_key.setdefault((route.file, route.method, route.path), route)
+
+    # sink_kind -> { route_key -> (route, [chains to this kind]) }
+    per_kind: dict[str, dict[tuple[str, str, str], tuple[Route, list]]] = {}
+    for chain in scan.taint_chains:
+        if chain.sanitized:
+            continue
+        if is_test_file(chain.route_file) or is_test_file(chain.sink_file):
+            continue
+        key = (chain.route_file, chain.route_method, chain.route_path)
+        route = route_by_key.get(key)
+        if route is None:
+            continue
+        cohort = per_kind.setdefault(chain.sink_kind, {})
+        _, chains = cohort.setdefault(key, (route, []))
+        chains.append(chain)
+
+    out: list[Anomaly] = []
+    for kind, cohort in per_kind.items():
+        members = list(cohort.values())
+        if len(members) < _MIN_INVARIANT_COHORT:
+            continue
+        guarded: list[Route] = []
+        unguarded: list[Route] = []
+        for route, chains in members:
+            if all(_guard_before_sink(route, c.sink_file, c.sink_line, ctx) for c in chains):
+                guarded.append(route)
+            else:
+                unguarded.append(route)
+        if not _is_outlier_split(len(guarded), len(unguarded), len(members)):
+            continue
+        label = _SINK_LABELS.get(kind, kind)
+        invariant = (
+            f"{len(guarded)} of {len(members)} handlers that reach a {label} sink "
+            f"apply an auth/validation guard before it"
+        )
+        examples = _peer_examples(guarded)
+        for route in unguarded:
+            out.append(
+                Anomaly(
+                    kind="invariant_violation",
+                    route_path=route.path,
+                    route_method=route.method,
+                    route_file=route.file,
+                    route_line=route.line,
+                    peer_group=f"sink:{kind}",
+                    peer_group_size=len(members),
+                    consistent_peers=len(guarded),
+                    deviation=(
+                        f"reaches a {label} sink with no auth/validation guard "
+                        f"before it, unlike its sibling handlers"
+                    ),
+                    invariant=invariant,
+                    peer_examples=examples,
+                    severity="high",
+                    confidence=_confidence(len(guarded)),
+                    source_analyzer="anomalies",
+                )
+            )
+    return out
+
+
+def _guard_before_sink(
+    route: Route, sink_file: str, sink_line: int | None, ctx: _SignalCtx
+) -> bool:
+    """True if an auth/validation marker guards the handler *before* it reaches
+    the sink.
+
+    When the sink lands inside the handler's own span, the marker must appear
+    strictly above the sink line — a guard placed after the sink doesn't defend
+    it. When the sink is elsewhere (a downstream file, or — because the import
+    walk fans a route out to every sink in its file — another handler's body),
+    the ordering test doesn't apply: an entry guard anywhere in this handler's
+    span precedes the reach to that sink by construction, so the whole span
+    counts.
+    """
+    lines = _file_lines(route.file, ctx)
+    if not lines or route.line is None:
+        return False
+    start, end = _span_bounds(route, lines, ctx.file_route_lines.get(route.file, []))
+    # sink_line is 1-based; index sink_line-1 is the sink itself. Only tighten
+    # the window to "before the sink" when the sink sits within this span.
+    if sink_file == route.file and sink_line is not None and start < sink_line - 1 < end:
+        end = sink_line - 1
+    if end <= start:
+        return False
+    window = "\n".join(lines[start:end])
+    return (
+        _AUTH_MARKERS.search(window) is not None
+        or _VALIDATION_MARKERS.search(window) is not None
+    )
 
 
 # --- Internals -------------------------------------------------------------

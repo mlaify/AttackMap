@@ -170,9 +170,20 @@ class Anomaly(BaseModel):
     signal (or are read-only) and this one doesn't. The bigger and more
     consistent the peer group, the more likely the deviation is a mistake —
     so `confidence` scales with `consistent_peers`.
+
+    `invariant_violation` (#149a) is the mined-invariant variant: the cohort
+    is not a route-path prefix but the set of handlers that reach the same
+    dangerous sink kind, and the norm they establish is a *behavioural*
+    invariant ("guard the request before the sink") rather than a static
+    signal. When set, `invariant` states the mined rule as evidence.
     """
 
-    kind: Literal["auth_outlier", "validation_outlier", "method_outlier"]
+    kind: Literal[
+        "auth_outlier",
+        "validation_outlier",
+        "method_outlier",
+        "invariant_violation",
+    ]
     route_path: str
     route_method: str
     route_file: str
@@ -181,6 +192,10 @@ class Anomaly(BaseModel):
     peer_group_size: int  # total sibling routes in the cohort
     consistent_peers: int  # siblings that exhibit the norm this route breaks
     deviation: str  # human-readable description of what is odd
+    # The mined invariant the flagged site violates (invariant_violation only) —
+    # e.g. "9 of 10 handlers that reach a database (SQL execute) sink apply an
+    # auth/validation guard before it". Cited as evidence.
+    invariant: str | None = None
     peer_examples: list[str] = Field(default_factory=list)  # sample "METHOD path" peers
     severity: Literal["low", "medium", "high"] = "medium"
     confidence: float = 0.5
