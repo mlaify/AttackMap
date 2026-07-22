@@ -147,6 +147,11 @@ def analyze(
         "--triage",
         help="Triage mode (#145): cluster, de-duplicate, and rank the EXISTING heuristic findings into a prioritized shortlist (citing real finding IDs) at triage.md. LLM-backed when available; degrades to a deterministic score-ordered fallback when no backend is present.",
     ),
+    recall: bool = typer.Option(
+        False,
+        "--recall",
+        help="Recall mode (#148a): widen taint discovery — deeper import-hop depth and surfacing reaches the default pass conservatively hides. The extra reach is marked SPECULATIVE and kept out of --fail-on-new-high; pair with --hunt --verify to adjudicate it. Off by default (higher recall, lower precision).",
+    ),
     baseline: str | None = typer.Option(
         None,
         "--baseline",
@@ -226,7 +231,15 @@ def analyze(
         )
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
     scan_progress = create_progress(progress_format, no_progress=no_progress)
-    scan = analyze_repository(repo_path, analyzers=active_analyzers, progress=scan_progress)
+    scan = analyze_repository(
+        repo_path, analyzers=active_analyzers, progress=scan_progress, recall=recall
+    )
+    if recall:
+        speculative = sum(1 for c in scan.taint_chains if c.speculative)
+        typer.echo(
+            f"Recall mode: widened taint discovery, {speculative} speculative "
+            "chain(s) surfaced (marked low-confidence; adjudicate with --hunt --verify)."
+        )
     if cve and scan.dependencies:
         typer.echo(f"Checking {len(scan.dependencies)} dependencies against OSV.dev…")
         scan_progress.stage(f"Checking {len(scan.dependencies)} dependencies against OSV.dev")

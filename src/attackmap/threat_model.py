@@ -928,6 +928,7 @@ def _best_taint_for_route(
         if c.route_path == route.path
         and c.route_method == route.method
         and not c.sanitized  # #137: a neutralized path isn't a probable exploit
+        and not c.speculative  # #148a: an unconfirmed recall lead isn't a probable exploit
     ]
     if not candidates:
         return None
@@ -1581,12 +1582,20 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     # sits behind. One aggregated finding per sink kind reachable from a
     # route, ordered by the spec's declaration.
     taint_by_kind: dict[str, list] = {}
+    speculative_by_kind: dict[str, list] = {}
     for chain in scan.taint_chains:
         # Sanitized chains (#137) are neutralized before the sink — keep them
         # as evidence in scan.taint_chains but don't raise a finding for them.
         if chain.sanitized:
             continue
-        if chain.sink_kind in _TAINT_FINDING_SPEC:
+        if chain.sink_kind not in _TAINT_FINDING_SPEC:
+            continue
+        # Speculative recall chains (#148a) are segregated into their own
+        # clearly-marked, low-severity finding below — so the confirmed finding
+        # (and default behavior) is untouched and they can't trip fail-on-new-high.
+        if chain.speculative:
+            speculative_by_kind.setdefault(chain.sink_kind, []).append(chain)
+        else:
             taint_by_kind.setdefault(chain.sink_kind, []).append(chain)
     taint_findings_by_kind: dict[str, Finding] = {}
     for kind, spec in _TAINT_FINDING_SPEC.items():
@@ -1632,6 +1641,48 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             if scored is not None:
                 finding.exploitability = scored.score
                 finding.exploitability_tier = scored.tier
+
+    # Speculative recall findings (#148a). One low-severity, clearly-marked
+    # finding per sink kind reached only via a widened recall knob (deeper hop
+    # or a relaxed gate). Kept at LOW severity so they stay out of the
+    # `--fail-on-new-high` gate — they're leads for `--hunt --verify` to
+    # adjudicate, not asserted flows. Only ever present in `--recall` scans.
+    for kind, spec in _TAINT_FINDING_SPEC.items():
+        kind_chains = speculative_by_kind.get(kind)
+        if not kind_chains:
+            continue
+        top = min(kind_chains, key=lambda c: (c.hops, -c.confidence))
+        label = _TAINT_SINK_LABEL.get(kind, kind)
+        evidence = [
+            "SPECULATIVE (recall mode): surfaced by widened discovery, not confirmed — "
+            "adjudicate with --hunt --verify",
+            f"route {top.route_method} {top.route_path} in {top.route_file}",
+            f"sink at {top.sink_file}:{top.sink_line} ({label}), {top.hops} hop(s)",
+        ]
+        if len(kind_chains) > 1:
+            evidence.append(f"+{len(kind_chains) - 1} more speculative route(s) reach a {label} sink")
+        findings.append(
+            Finding(
+                title=f"Speculative reach to a {label} sink (recall mode)",
+                severity="low",
+                evidence=evidence,
+                mitigation=(
+                    "Recall mode widened taint discovery to surface this reach; provenance "
+                    "is unconfirmed. Verify whether untrusted input actually reaches the sink "
+                    f"(run `--hunt --verify`). If it does, treat it as a {spec['title'].lower()}."
+                ),
+                confidence="low",
+                tags=["taint-chain", "speculative", "recall"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
 
     if not findings:
         findings.append(

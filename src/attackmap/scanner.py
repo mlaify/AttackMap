@@ -19,7 +19,7 @@ from .srcpaths import is_test_file, is_vendored_file
 from .weaknesses import find_code_weaknesses
 from .webhardening import find_web_hardening_issues
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
-from .taint import analyze_taint
+from .taint import DEFAULT_RECALL, analyze_taint, recall_config
 
 # Scanner responsibilities are intentionally generic-only:
 # - file walking and suffix filtering
@@ -666,6 +666,7 @@ def scan_repo(
     root: str | Path,
     suffixes: set[str] | None = None,
     progress: "ScanProgress | None" = None,
+    recall: bool = False,
 ) -> ScanResult:
     root_path = Path(root).resolve()
     result = ScanResult(root=str(root_path))
@@ -751,7 +752,9 @@ def scan_repo(
     # progress stage.
     if progress is not None:
         progress.stage("Taint / data-flow analysis")
-    result.taint_chains = analyze_taint(result, root_path)
+    result.taint_chains = analyze_taint(
+        result, root_path, recall=recall_config() if recall else DEFAULT_RECALL
+    )
     # SBOM inventory: direct-dep parse of manifest files (#48, slice 1).
     if progress is not None:
         progress.stage("Dependency inventory (SBOM)")

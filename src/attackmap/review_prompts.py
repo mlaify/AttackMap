@@ -356,6 +356,9 @@ def _hunt_evidence_pack(
             "sink": f"{c.sink_file}:{c.sink_line}",
             "hops": c.hops,
             "import_path": c.files[:8],
+            # Recall mode (#148a): flag unconfirmed leads so verify/hunt weighs
+            # them as speculative rather than asserted flows.
+            **({"speculative": True} if c.speculative else {}),
         }
         for idx, c in enumerate(scan.taint_chains[:40])
     ]

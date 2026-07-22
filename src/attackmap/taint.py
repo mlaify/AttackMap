@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import re
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 from .models import Route, ScanResult, TaintChain
@@ -39,6 +40,52 @@ from .srcpaths import is_infra_route, is_test_file, is_vendored_file
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
 _MAX_FILES_VISITED_PER_ROUTE = 40
+
+# Recall mode (#148a). Aggressive discovery is only useful *behind* a verifier —
+# so recall widens the walk, tags the extra reach speculative, and leaves
+# adjudication to `--verify`/`--triage`. The default preset reproduces the
+# conservative pass byte-for-byte; `recall_config()` is the aggressive preset.
+_RECALL_MAX_HOPS = 4
+_RECALL_MAX_FILES_VISITED_PER_ROUTE = 80
+
+
+@dataclass(frozen=True)
+class RecallConfig:
+    """Knobs controlling how aggressively the taint walk discovers chains.
+
+    Defaults == today's conservative pass. In the aggressive preset the extra
+    reach (deeper hops, gates relaxed) is what makes a chain *speculative*: any
+    chain past ``_MAX_HOPS`` or surfaced only because ``include_static_args``
+    lifted the static-literal suppression is tagged so and confidence-docked.
+    """
+
+    max_hops: int = _MAX_HOPS
+    max_files_visited: int = _MAX_FILES_VISITED_PER_ROUTE
+    # Surface sinks whose argument looks like a static literal / local-file read
+    # — the default pass suppresses these (#88 follow-up); recall keeps them as
+    # speculative leads (provenance is a heuristic, not proof).
+    include_static_args: bool = False
+
+    @property
+    def aggressive(self) -> bool:
+        """True when any knob is widened past the conservative default."""
+        return (
+            self.max_hops > _MAX_HOPS
+            or self.max_files_visited > _MAX_FILES_VISITED_PER_ROUTE
+            or self.include_static_args
+        )
+
+
+DEFAULT_RECALL = RecallConfig()
+
+
+def recall_config() -> RecallConfig:
+    """The aggressive `--recall` preset."""
+    return RecallConfig(
+        max_hops=_RECALL_MAX_HOPS,
+        max_files_visited=_RECALL_MAX_FILES_VISITED_PER_ROUTE,
+        include_static_args=True,
+    )
 
 _PY_SUFFIXES = {".py"}
 _JS_TS_SUFFIXES = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
@@ -363,12 +410,18 @@ def _find_sanitizer(kind: str, content: str) -> str | None:
 # --- Public API ------------------------------------------------------------
 
 
-def analyze_taint(scan: ScanResult, root: str | Path | None = None) -> list[TaintChain]:
+def analyze_taint(
+    scan: ScanResult,
+    root: str | Path | None = None,
+    recall: RecallConfig = DEFAULT_RECALL,
+) -> list[TaintChain]:
     """Walk the import graph from each route's file, emit TaintChains.
 
     ``scan.routes`` is treated as the source list. The walk is bounded by
-    ``_MAX_HOPS`` and ``_MAX_FILES_VISITED_PER_ROUTE``; duplicate
-    (route, sink_file, sink_kind, sink_line) tuples are collapsed.
+    ``recall.max_hops`` and ``recall.max_files_visited``; duplicate
+    (route, sink_file, sink_kind, sink_line) tuples are collapsed. Pass an
+    aggressive ``recall`` (see ``recall_config()``) to widen discovery — the
+    extra reach is tagged ``speculative`` on the returned chains (#148a).
     """
     root_path = Path(root or scan.root).resolve()
     if not root_path.exists():
@@ -379,7 +432,7 @@ def analyze_taint(scan: ScanResult, root: str | Path | None = None) -> list[Tain
         return []
 
     graph = _build_import_graph(files, root_path)
-    sinks_by_file = _find_sinks(files, root_path)
+    sinks_by_file = _find_sinks(files, root_path, recall)
 
     seen: set[tuple[str, str, str, int | None]] = set()
     chains: list[TaintChain] = []
@@ -422,7 +475,7 @@ def analyze_taint(scan: ScanResult, root: str | Path | None = None) -> list[Tain
                 seed_files = handler_seeds
 
         for seed in seed_files:
-            for chain in _walk_from_route(route, seed, graph, sinks_by_file):
+            for chain in _walk_from_route(route, seed, graph, sinks_by_file, recall):
                 key = (
                     f"{chain.route_method} {chain.route_path}",
                     chain.sink_file,
@@ -934,38 +987,47 @@ def _is_parameterized_sql(content: str, match: re.Match[str], suffix: str = "") 
 
 
 def _find_sinks(
-    files: dict[str, Path], root: Path
-) -> dict[str, list[tuple[str, int, str, str | None]]]:
-    """rel_path -> list of (sink_kind, line_number, evidence_snippet, sanitizer_label).
+    files: dict[str, Path], root: Path, recall: RecallConfig = DEFAULT_RECALL
+) -> dict[str, list[tuple[str, int, str, str | None, bool]]]:
+    """rel_path -> list of (sink_kind, line_number, evidence_snippet, sanitizer_label, relaxed).
 
     `sanitizer_label` is set when a sink-appropriate neutralizer is present in
     the same file (#137) — the walk uses it to mark the chain sanitized.
+    `relaxed` is True (recall only) when the hit was kept only because
+    ``include_static_args`` lifted the static-literal suppression — the walk
+    marks chains from such hits speculative (#148a).
     """
-    out: dict[str, list[tuple[str, int, str, str | None]]] = {}
+    out: dict[str, list[tuple[str, int, str, str | None, bool]]] = {}
     for rel, abs_path in files.items():
         try:
             content = abs_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        hits: list[tuple[str, int, str, str | None]] = []
+        hits: list[tuple[str, int, str, str | None, bool]] = []
         # Per-file sanitizer lookup is memoized per sink kind — the same file
         # may hold several sinks of one kind.
         sanitizer_by_kind: dict[str, str | None] = {}
         for kind, pattern in _SINK_PATTERNS:
             for match in pattern.finditer(content):
-                # Suppress ungated "dangerous-regardless" sinks whose argument
-                # is a static literal / local-file read (#88 follow-up).
+                # A "dangerous-regardless" sink whose argument is a static
+                # literal / local-file read (#88 follow-up): the default pass
+                # suppresses it; recall keeps it as a speculative lead.
+                relaxed = False
                 if kind in _STATIC_GATED_KINDS and _is_static_local_arg(content, match):
-                    continue
+                    if not recall.include_static_args:
+                        continue
+                    relaxed = True
                 # Suppress parameterized SQL — bind params / builder / placeholders
-                # only — vs. raw string-built queries (#101).
+                # only — vs. raw string-built queries (#101). This is a
+                # correctness filter (bound params aren't injectable), not a
+                # conservatism knob, so it holds even under recall.
                 if kind == "sql_execute" and _is_parameterized_sql(content, match, abs_path.suffix):
                     continue
                 line = content.count("\n", 0, match.start()) + 1
                 snippet = _line_snippet(content, match.start())
                 if kind not in sanitizer_by_kind:
                     sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
-                hits.append((kind, line, snippet, sanitizer_by_kind[kind]))
+                hits.append((kind, line, snippet, sanitizer_by_kind[kind], relaxed))
         if hits:
             out[rel] = hits
     return out
@@ -986,24 +1048,49 @@ def _walk_from_route(
     route: Route,
     route_file: str,
     graph: dict[str, set[str]],
-    sinks_by_file: dict[str, list[tuple[str, int, str, str | None]]],
+    sinks_by_file: dict[str, list[tuple[str, int, str, str | None, bool]]],
+    recall: RecallConfig = DEFAULT_RECALL,
 ) -> list[TaintChain]:
-    """BFS out from route_file, up to _MAX_HOPS. Emit chains at each sink."""
+    """BFS out from route_file, up to ``recall.max_hops``. Emit chains at each
+    sink; tag as speculative any chain that only exists because a recall knob
+    was widened — a relaxed-gate sink, or a sink in a file the *conservative*
+    traversal (default hop depth + visit budget) would never have processed
+    (#148a). Comparing against the default-reachable set covers both the deeper
+    hops and the widened visit cap precisely — a fan-out-heavy graph can push a
+    within-two-hops sink past the 40-file budget, and that reach is speculative
+    too."""
+    # The set of files the conservative pass would actually process — computed
+    # only when a knob is widened (otherwise nothing is speculative and the
+    # traversals are identical).
+    default_reachable: set[str] | None = (
+        _reachable_files(route_file, graph, _MAX_HOPS, _MAX_FILES_VISITED_PER_ROUTE)
+        if recall.aggressive
+        else None
+    )
+
     visited: dict[str, int] = {route_file: 0}
     parents: dict[str, str] = {}
     queue: deque[str] = deque([route_file])
     chains: list[TaintChain] = []
 
-    while queue and len(visited) < _MAX_FILES_VISITED_PER_ROUTE:
+    while queue and len(visited) < recall.max_files_visited:
         current = queue.popleft()
         current_hops = visited[current]
 
-        for kind, line, snippet, sanitizer in sinks_by_file.get(current, []):
+        for kind, line, snippet, sanitizer, relaxed in sinks_by_file.get(current, []):
             confidence = _confidence_for_hops(current_hops)
             if sanitizer is not None:
                 # A neutralizer is present at the sink — likely defended.
                 # Downgrade well below the HIGH threshold, keep as evidence.
                 confidence = round(confidence * 0.4, 2)
+            # A relaxed-gate hit, or a sink the conservative pass would never
+            # have reached, is a discovery lead — mark it and dock confidence so
+            # it can't clear the HIGH bar until the verifier confirms it.
+            speculative = relaxed or (
+                default_reachable is not None and current not in default_reachable
+            )
+            if speculative:
+                confidence = round(confidence * 0.5, 2)
             chains.append(
                 TaintChain(
                     route_path=route.path,
@@ -1018,10 +1105,11 @@ def _walk_from_route(
                     confidence=confidence,
                     sanitized=sanitizer is not None,
                     sanitizer_evidence=sanitizer,
+                    speculative=speculative,
                 )
             )
 
-        if current_hops >= _MAX_HOPS:
+        if current_hops >= recall.max_hops:
             continue
         for neighbor in graph.get(current, ()):  # noqa: SIM118
             if neighbor in visited:
@@ -1030,6 +1118,29 @@ def _walk_from_route(
             parents[neighbor] = current
             queue.append(neighbor)
     return chains
+
+
+def _reachable_files(
+    start: str, graph: dict[str, set[str]], max_hops: int, max_files: int
+) -> set[str]:
+    """The set of files a BFS bounded by ``max_hops`` / ``max_files`` would
+    *process* (pop) from ``start``. Mirrors ``_walk_from_route``'s control flow
+    exactly so it is a faithful model of what the conservative pass reaches —
+    used to decide which recall discoveries are speculative (#148a)."""
+    visited: dict[str, int] = {start: 0}
+    queue: deque[str] = deque([start])
+    processed: set[str] = set()
+    while queue and len(visited) < max_files:
+        current = queue.popleft()
+        processed.add(current)
+        if visited[current] >= max_hops:
+            continue
+        for neighbor in graph.get(current, ()):  # noqa: SIM118
+            if neighbor in visited:
+                continue
+            visited[neighbor] = visited[current] + 1
+            queue.append(neighbor)
+    return processed
 
 
 def _reconstruct_path(start: str, end: str, parents: dict[str, str]) -> list[str]:
