@@ -495,6 +495,84 @@ def render_hunt_verify_prompts(
     )
 
 
+# The multi-pass hunt harness (#147) generates hypotheses once, then has N
+# independent skeptics adjudicate the SAME fixed list. Generation appends a
+# machine-readable block so the harness can extract a stable, id-keyed list.
+HYPOTHESIS_MARKER = "=== HYPOTHESES ==="
+
+HUNT_GENERATE_SYSTEM_PROMPT = (
+    HUNT_SYSTEM_PROMPT
+    + "\n\nAt the very END of your response, output a final section that begins with"
+    f" the EXACT line:\n{HYPOTHESIS_MARKER}\n"
+    "Then one line per hypothesis you surfaced above, numbered in the same order:\n"
+    "H<n>: <one-line title> [evidence: <ids>]\n"
+    "This machine-readable list is REQUIRED and must cover every hypothesis exactly once."
+)
+
+HUNT_SKEPTIC_SYSTEM_PROMPT = """You are an independent AttackMap Hunt Skeptic. You are given a FIXED numbered list of vulnerability hypotheses (evidence pack key `hypotheses`), the structured evidence, and a `code_excerpts` section with the ACTUAL source at cited locations. Adjudicate EACH hypothesis by its id against the shown code — independently, as if no one else has judged it.
+
+Verdicts:
+- CONFIRMED — the shown code clearly exhibits the weakness.
+- REFUTED — the shown code contradicts it (parameterized query, constant arg, auth guard present, static-file sink), OR no provided evidence supports it.
+- NEEDS_REVIEW — the excerpt shown is insufficient to decide.
+
+Bias: refute aggressively. A plausible-but-wrong lead is worse than none. When genuinely unsure, prefer REFUTED over CONFIRMED.
+
+OUTPUT FORMAT — for EVERY hypothesis id, exactly one line, nothing else:
+VERDICT <id>: <CONFIRMED|REFUTED|NEEDS_REVIEW> — <one-line justification citing the excerpt/evidence>
+Emit a line for every id in the list; never invent ids that aren't listed. No CVE assignment, no exploit code."""
+
+HUNT_SKEPTIC_USER_PROMPT = """Independently adjudicate each listed hypothesis against the actual source in `code_excerpts`. One `VERDICT <id>: …` line per hypothesis, no other prose.
+
+Repository context:
+{repo_context}
+
+Evidence pack (JSON):
+{evidence_json}
+"""
+
+
+def render_hunt_generate_prompts(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+) -> RenderedReviewPrompt:
+    """Hunt generation pass for the multi-pass harness (#147a): produces ranked
+    hypotheses PLUS a machine-readable `=== HYPOTHESES ===` list the harness
+    parses into a fixed, id-keyed set for independent verification."""
+    evidence_payload = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    evidence_json = json.dumps(evidence_payload, indent=2, sort_keys=True)
+    return RenderedReviewPrompt(
+        system=HUNT_GENERATE_SYSTEM_PROMPT.strip(),
+        user=HUNT_USER_PROMPT.format(repo_context=_repo_context(scan), evidence_json=evidence_json).strip(),
+        evidence_json=evidence_json,
+    )
+
+
+def render_skeptic_prompts(
+    scan: ScanResult,
+    attack_surfaces: list[AttackSurface],
+    findings: list[Finding],
+    attack_paths: list[AttackPath],
+    hypotheses: list[dict],
+) -> RenderedReviewPrompt:
+    """One independent skeptic pass (#147a): adjudicate a FIXED id-keyed
+    hypothesis list against `code_excerpts`. ``hypotheses`` is a list of
+    ``{"id": "H1", "title": "…"}`` dicts (kept plain to avoid an import cycle)."""
+    pack = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
+    pack["code_excerpts"] = _code_excerpts(scan, findings)
+    pack["hypotheses"] = [{"id": h["id"], "title": h["title"]} for h in hypotheses]
+    evidence_json = json.dumps(pack, indent=2, sort_keys=True)
+    return RenderedReviewPrompt(
+        system=HUNT_SKEPTIC_SYSTEM_PROMPT.strip(),
+        user=HUNT_SKEPTIC_USER_PROMPT.format(
+            repo_context=_repo_context(scan), evidence_json=evidence_json
+        ).strip(),
+        evidence_json=evidence_json,
+    )
+
+
 def render_triage_prompts(
     scan: ScanResult,
     attack_surfaces: list[AttackSurface],

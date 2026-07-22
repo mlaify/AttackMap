@@ -16,7 +16,7 @@ managers who need to triage an unfamiliar codebase.
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 
-> **Status: beta (v0.4.15).** Core engine and 14 analyzer plugins are published
+> **Status: beta (v0.4.16).** Core engine and 14 analyzer plugins are published
 > to PyPI, Homebrew, and GHCR and validated against real-world codebases.
 > AttackMap is heuristic by design — findings are confidence-tiered evidence,
 > not proof. See [Project status](#project-status) for what's solid and what's
@@ -603,6 +603,15 @@ to confirm, not detections.** The same grounding contract as the review applies
 assignment, no exploit code, confidence-tiered, and each lead lists exactly what
 a human must verify. Uses the same auth/backend resolution as `--llm`.
 
+With `--verify`, each hypothesis is adjudicated against the actual source at its
+cited locations. **`--verify-votes N`** (default 3) turns that into a jury: **N
+independent skeptics** each adjudicate the same fixed hypothesis list, and the
+consensus is a **majority vote that defaults to REFUTED** on ties, missing
+votes, or uncertainty — so a lead only one skeptic would confirm is dropped.
+This is the verifier the unknown-bug initiative
+([`docs/unknown-bug-epic.md`](docs/unknown-bug-epic.md)) is built on;
+`--verify-votes 1` is the classic single pass.
+
 Layered on top: **MITRE ATT&CK technique mappings** on every insight and
 **detection opportunities** (Sigma/KQL/Splunk-style hints) for each weakness.
 
@@ -661,6 +670,7 @@ attackmap analyze <path> --llm --llm-provider openai     # use OpenAI/Codex (OPE
 attackmap analyze <path> --llm --llm-provider openai --llm-model gpt-5.5   # any OpenAI model ID, passed through
 attackmap analyze <path> --hunt          # LLM vulnerability-hypothesis hunt (leads to confirm)
 attackmap analyze <path> --hunt --verify # adjudicate each lead vs. source (confirmed/refuted/review)
+attackmap analyze <path> --hunt --verify --verify-votes 3   # majority vote of N independent skeptics (default 3; 1 = single pass)
 attackmap analyze <path> --remediate     # LLM review-first fix suggestions (remediation.md)
 attackmap analyze <path> --triage        # cluster/dedupe/rank existing findings (triage.md; deterministic fallback)
 attackmap analyze <path> --pr-comment pr.md   # Markdown PR summary comment for CI
@@ -707,7 +717,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.15) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.16) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**

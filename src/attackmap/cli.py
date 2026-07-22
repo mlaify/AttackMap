@@ -24,6 +24,7 @@ from .diff import (
     render_diff_markdown,
 )
 from .graph import build_graph
+from .hunt_harness import run_majority_verify
 from .llm_review import LlmReviewError, generate_llm_review
 from .triage import render_triage_fallback
 from .progress import create_progress
@@ -114,6 +115,11 @@ def analyze(
         False,
         "--verify",
         help="With --hunt: adjudicate each hypothesis against the actual source at cited locations — CONFIRMED / REFUTED / NEEDS HUMAN REVIEW (#hunt-verify). AttackMap feeds the code excerpts to the model.",
+    ),
+    verify_votes: int = typer.Option(
+        3,
+        "--verify-votes",
+        help="With --hunt --verify: number of independent skeptic passes to adjudicate each hypothesis; the consensus is a majority vote, defaulting to REFUTED on ties/uncertainty (#147a). 1 = the classic single-pass verify.",
     ),
     remediate: bool = typer.Option(
         False,
@@ -374,57 +380,99 @@ def analyze(
             typer.echo(f"LLM review written to: {llm_md_path.resolve()} (backend={result.backend})")
 
     if hunt:
-        try:
-            hunt_effort_value = None
-            if llm_effort is not None:
-                if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
-                    raise typer.BadParameter(
-                        f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
-                    )
-                hunt_effort_value = llm_effort  # type: ignore[assignment]
-            if llm_backend not in {"auto", "api", "cli"}:
+        hunt_effort_value = None
+        if llm_effort is not None:
+            if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
                 raise typer.BadParameter(
-                    f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
+                    f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
                 )
-            typer.echo("")
-            hunt_mode = "hunt_verify" if verify else "hunt"
-            typer.echo(
-                f"Hunting for vulnerability hypotheses via {llm_display} "
-                f"({'adjudicated against source, ' if verify else ''}backend={llm_backend}, may take a minute)..."
+            hunt_effort_value = llm_effort  # type: ignore[assignment]
+        if llm_backend not in {"auto", "api", "cli"}:
+            raise typer.BadParameter(
+                f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
             )
-            scan_progress.stage(
-                f"{llm_display} is hunting exploit-chain hypotheses"
-                f"{' + verifying against source' if verify else ''} (backend={llm_backend})"
+        typer.echo("")
+        # Majority-vote verification (#147a): opt in with --verify and
+        # --verify-votes > 1. Otherwise keep the classic single-pass path.
+        use_jury = verify and verify_votes and verify_votes > 1
+
+        def _hunt_llm_call(mode: str, hypotheses=None):
+            return generate_llm_review(
+                scan,
+                attack_surfaces,
+                findings,
+                attack_paths,
+                model=llm_model,
+                effort=hunt_effort_value,  # type: ignore[arg-type]
+                backend=llm_backend,  # type: ignore[arg-type]
+                mode=mode,  # type: ignore[arg-type]
+                speed=llm_speed,  # type: ignore[arg-type]
+                provider=llm_provider,  # type: ignore[arg-type]
+                hypotheses=hypotheses,
             )
-            try:
-                hunt_result = generate_llm_review(
-                    scan,
-                    attack_surfaces,
-                    findings,
-                    attack_paths,
-                    model=llm_model,
-                    effort=hunt_effort_value,  # type: ignore[arg-type]
-                    backend=llm_backend,  # type: ignore[arg-type]
-                    mode=hunt_mode,  # type: ignore[arg-type]
-                    speed=llm_speed,  # type: ignore[arg-type]
-                    provider=llm_provider,  # type: ignore[arg-type]
+
+        hunt_extra_meta: dict = {}
+        try:
+            if use_jury:
+                typer.echo(
+                    f"Hunting + adjudicating via {llm_display} "
+                    f"({verify_votes} independent skeptics, backend={llm_backend}, may take a few minutes)..."
                 )
-            finally:
-                scan_progress.done()
+                scan_progress.stage(
+                    f"{llm_display} is hunting + majority-vote verifying "
+                    f"({verify_votes} skeptics, backend={llm_backend})"
+                )
+                try:
+                    jury = run_majority_verify(
+                        scan, attack_surfaces, findings, attack_paths,
+                        votes=verify_votes, llm_call=_hunt_llm_call,
+                    )
+                finally:
+                    scan_progress.done()
+                hunt_markdown = jury.report
+                hunt_backend, hunt_model = jury.backend, jury.model
+                hunt_stop, hunt_usage = None, {}
+                hunt_extra_meta = {
+                    "verify_votes": jury.votes,
+                    "hypothesis_count": jury.hypothesis_count,
+                    "consensus": {
+                        "confirmed": sum(1 for c in jury.consensus if c.verdict == "confirmed"),
+                        "needs_review": sum(1 for c in jury.consensus if c.verdict == "needs_review"),
+                        "refuted": sum(1 for c in jury.consensus if c.verdict == "refuted"),
+                    },
+                }
+            else:
+                hunt_mode = "hunt_verify" if verify else "hunt"
+                typer.echo(
+                    f"Hunting for vulnerability hypotheses via {llm_display} "
+                    f"({'adjudicated against source, ' if verify else ''}backend={llm_backend}, may take a minute)..."
+                )
+                scan_progress.stage(
+                    f"{llm_display} is hunting exploit-chain hypotheses"
+                    f"{' + verifying against source' if verify else ''} (backend={llm_backend})"
+                )
+                try:
+                    hunt_result = _hunt_llm_call(hunt_mode)
+                finally:
+                    scan_progress.done()
+                hunt_markdown = hunt_result.markdown
+                hunt_backend, hunt_model = hunt_result.backend, hunt_result.model
+                hunt_stop, hunt_usage = hunt_result.stop_reason, hunt_result.usage
         except LlmReviewError as exc:
             typer.echo(f"Vulnerability hunt skipped: {exc}", err=True)
         else:
             output_path = Path(output)
             hunt_md_path = output_path / "vulnerability-hypotheses.md"
-            hunt_md_path.write_text(HUNT_BANNER + hunt_result.markdown + "\n", encoding="utf-8")
+            hunt_md_path.write_text(HUNT_BANNER + hunt_markdown + "\n", encoding="utf-8")
             hunt_meta_path = output_path / "vulnerability-hypotheses.meta.json"
             hunt_meta_path.write_text(
                 json.dumps(
                     {
-                        "backend": hunt_result.backend,
-                        "model": hunt_result.model,
-                        "stop_reason": hunt_result.stop_reason,
-                        "usage": hunt_result.usage,
+                        "backend": hunt_backend,
+                        "model": hunt_model,
+                        "stop_reason": hunt_stop,
+                        "usage": hunt_usage,
+                        **hunt_extra_meta,
                     },
                     indent=2,
                 )
@@ -433,7 +481,7 @@ def analyze(
             )
             typer.echo(
                 f"Vulnerability hypotheses written to: {hunt_md_path.resolve()} "
-                f"(backend={hunt_result.backend})"
+                f"(backend={hunt_backend})"
             )
 
     if remediate:
