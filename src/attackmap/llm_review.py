@@ -31,10 +31,12 @@ from typing import Any, Literal
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .review_prompts import (
+    render_hunt_generate_prompts,
     render_hunt_prompts,
     render_hunt_verify_prompts,
     render_remediation_prompts,
     render_review_prompts,
+    render_skeptic_prompts,
     render_triage_prompts,
 )
 
@@ -600,11 +602,14 @@ def generate_llm_review(
     client: Any | None = None,
     backend: LlmBackend = "auto",
     cli_runner: Any | None = None,
-    mode: Literal["review", "hunt", "hunt_verify", "remediate", "triage"] = "review",
+    mode: Literal[
+        "review", "hunt", "hunt_verify", "hunt_generate", "hunt_skeptic", "remediate", "triage"
+    ] = "review",
     speed: Literal["standard", "fast"] = "standard",
     provider: LlmProvider = "claude",
     openai_client: Any | None = None,
     codex_runner: Any | None = None,
+    hypotheses: list[dict] | None = None,
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling an LLM.
@@ -620,13 +625,20 @@ def generate_llm_review(
     """
     resolved_effort = effort or DEFAULT_EFFORT
 
-    render = {
-        "hunt": render_hunt_prompts,
-        "hunt_verify": render_hunt_verify_prompts,
-        "remediate": render_remediation_prompts,
-        "triage": render_triage_prompts,
-    }.get(mode, render_review_prompts)
-    rendered = render(scan, attack_surfaces, findings, attack_paths)
+    if mode == "hunt_skeptic":
+        # The skeptic pass needs the fixed hypothesis list (#147a).
+        rendered = render_skeptic_prompts(
+            scan, attack_surfaces, findings, attack_paths, hypotheses or []
+        )
+    else:
+        render = {
+            "hunt": render_hunt_prompts,
+            "hunt_verify": render_hunt_verify_prompts,
+            "hunt_generate": render_hunt_generate_prompts,
+            "remediate": render_remediation_prompts,
+            "triage": render_triage_prompts,
+        }.get(mode, render_review_prompts)
+        rendered = render(scan, attack_surfaces, findings, attack_paths)
 
     if provider == "openai":
         resolved_model = (
