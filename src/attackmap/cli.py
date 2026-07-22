@@ -334,6 +334,11 @@ def analyze(
         if not rp.exists():
             raise typer.BadParameter(f"Path does not exist: {rp}")
 
+    # Validate progress format before either branch, so the fleet path enforces
+    # the same option semantics as a single-repo run (#146a).
+    if progress_format not in {"auto", "tty", "json", "none"}:
+        raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
+
     # Multi-repo fleet mode (#146a): scan each repo independently and assemble a
     # fleet view. Dispatched here so the single-repo path below is untouched.
     if len(repo_paths) > 1:
@@ -378,8 +383,7 @@ def analyze(
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
 
-    if progress_format not in {"auto", "tty", "json", "none"}:
-        raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
+    # (--progress-format is validated up-front, before the fleet dispatch.)
     if llm_speed not in {"standard", "fast"}:
         raise typer.BadParameter("--llm-speed must be one of: standard, fast.")
     if llm_provider not in {"claude", "openai"}:

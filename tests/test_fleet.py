@@ -51,6 +51,14 @@ def test_fleet_repo_ids_stable_and_unique() -> None:
     assert len(set(ids)) == 3
 
 
+def test_fleet_repo_ids_unique_against_preexisting_suffix() -> None:
+    # `api`, `api`, `api-2`: the disambiguated 2nd (`api-2`) must not collide
+    # with the 3rd input's own name — else reports overwrite each other.
+    ids = fleet_repo_ids([Path("/x/api"), Path("/y/api"), Path("/z/api-2")])
+    assert len(set(ids)) == 3
+    assert ids == ["api", "api-2", "api-2-2"]
+
+
 # ---------------------------------------------------------------------------
 # summary rendering
 # ---------------------------------------------------------------------------
@@ -139,3 +147,14 @@ def test_multi_repo_missing_path_errors(tmp_path: Path) -> None:
     result = runner.invoke(app, ["analyze", str(a), str(tmp_path / "nope")])
     assert result.exit_code != 0
     assert "does not exist" in result.output
+
+
+def test_multi_repo_validates_progress_format(tmp_path: Path) -> None:
+    # --progress-format is validated before the fleet branch, same as single-repo.
+    a = _repo(tmp_path, "svcA")
+    b = _repo(tmp_path, "svcB")
+    result = runner.invoke(
+        app, ["analyze", str(a), str(b), "--progress-format", "bogus", "-o", str(tmp_path / "out")]
+    )
+    assert result.exit_code != 0
+    assert "--progress-format must be one of" in result.output

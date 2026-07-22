@@ -41,14 +41,22 @@ def fleet_repo_ids(paths: list[Path]) -> list[str]:
 
     Two repos with the same basename (``a/service`` and ``b/service``) would
     collide into one report subdirectory, so collisions are disambiguated by
-    appending ``-2``, ``-3``, … in input order. Deterministic for a given input.
+    appending ``-2``, ``-3``, … in input order. Each candidate is checked against
+    **every id already emitted** — not just a per-base counter — so a suffix that
+    coincides with a later input's own name (``api``, ``api``, ``api-2`` →
+    ``api``, ``api-2``, ``api-2-2``) still stays globally unique. Deterministic.
     """
     ids: list[str] = []
-    seen: dict[str, int] = {}
+    used: set[str] = set()
     for path in paths:
         base = _slug(path.name)
-        seen[base] = seen.get(base, 0) + 1
-        ids.append(base if seen[base] == 1 else f"{base}-{seen[base]}")
+        candidate = base
+        n = 1
+        while candidate in used:
+            n += 1
+            candidate = f"{base}-{n}"
+        used.add(candidate)
+        ids.append(candidate)
     return ids
 
 
