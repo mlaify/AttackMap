@@ -114,18 +114,61 @@ Extends the within-repo odd-one-out pass in `anomalies.py` (already threshold-ga
 
 ### #146 — Cross-repo analysis (XL, phased)
 
-Today `cli.py` takes a single `path`; `topology.py` builds a single-repo service
-graph. Phased:
+The last epic lever. The highest-value *unknown* bugs live at the **seams
+between services** — each repo looks locally correct; only a fleet view exposes
+them. Today `cli.py` takes a single `path`; `topology.py` builds a single-repo
+service graph.
 
-1. Multi-repo input (CLI varargs).
-2. Contract linking across repos — HTTP/RPC client↔server route, shared schemas
-   (protobuf / AT-proto lexicon / OpenAPI / GraphQL SDL), queues/topics, shared
-   DB tables, token issuer/audience.
-3. Unified **fleet service graph** (extend `topology.py`).
-4. **Cross-boundary taint** — a value leaving repo A (response/event/queue) that
-   re-enters repo B as trusted input (confused-deputy).
-5. **Trust-assumption gap** — A assumes B enforces authz and vice-versa.
-6. **Contract drift / cross-repo anomaly** — producer adds an authz-relevant
-   field the consumer trusts; the one service that skips a sibling-enforced control.
+**Architecture reality (mapped 2026-07-22).**
+- **Shape = "N per-repo scans → fleet overlay" (Path A).** Lowest blast radius:
+  the scanner, `ScanResult`, and every signal model stay untouched. Each repo is
+  scanned into its own `ScanResult` (own `root`, own relative paths — no
+  collisions), and cross-repo logic runs on the *list* of scans, attributing
+  every fleet finding to a repo id. Rejected Path B (one combined `ScanResult`
+  with repo-namespaced paths) — it forces a repo field onto every signal model
+  and rewrites `scan_repo`'s relativization (`scanner.py:685,697`).
+- **Two prerequisite gaps in existing state:** (1) `ExternalCall` drops the HTTP
+  method at capture (`scanner.py:707`) and has no structured host/path — only a
+  raw `target` string; (2) `topology.py` reduces an outbound URL to a bare
+  host-prefix slug (`_service_from_url`, `topology.py:297`), discarding
+  path/method/scheme and collapsing localhost to `local-service`. Both must be
+  fixed before client↔route linking works.
+- **Linking-dimension cost (only HTTP is cheap):** HTTP client↔route — signals
+  exist (`Route.path/method` + `ExternalCall.target`), needs method preservation
+  + normalization/linking logic, **no new parser**. GraphQL SDL — partially
+  reusable (`authz.py:285-410`). Everything else is **new extraction**: RPC
+  caller side, OpenAPI/Swagger, protobuf/`.proto`, `.json` AT-proto lexicons,
+  queue/topic names, DB table/collection names, token `iss`/`aud`/JWKS.
 
-Single-repo behavior unchanged throughout; multi-repo is opt-in.
+**Phase plan (sub-issues under #146):**
+
+1. **#146a — Multi-repo input + fleet container + reporting.** `analyze repoA
+   repoB …` (CLI varargs). Scan each repo into its own `ScanResult`; wrap in a
+   `FleetScan` (list of `(repo_id, ScanResult)`). Write per-repo reports into
+   `output/<repo>/` subdirs + a top-level fleet index/summary. **No cross-repo
+   logic yet** — pure foundation. Single-repo path (one arg) byte-for-byte
+   unchanged. (Touch-points: `cli.py:71` arg → variadic; loop over
+   `resolve_run_analyzers`/`analyze_repository`/`collect_suppressions`;
+   `report.py` fleet writer.)
+2. **#146b — HTTP contract linking + fleet service graph.** Preserve the HTTP
+   method + structured host/path on `ExternalCall` (model + `scanner.py`).
+   Build a cross-repo linker matching one repo's outbound `(host,path,method)`
+   to another repo's `Route` (template-aligned). Extend `topology.py` to a
+   **fleet graph** with repo-qualified node keys and cross-repo edges. Stretch:
+   GraphQL/RPC and shared-schema linking as additional matchers.
+3. **#146c — Cross-boundary taint (confused-deputy).** Over the fleet links,
+   propagate: a value leaving repo A (response/event/queue) re-entering repo B
+   as a *trusted* input. Verifier-gated (route candidates through #147).
+   **→ AC1:** two linked fixture repos (client + server), a value unvalidated in
+   the caller and trusted in the callee → one cross-boundary finding citing both
+   sides.
+4. **#146d — Trust-assumption gap + cross-repo anomaly.** A assumes B enforces
+   authz and vice-versa → nobody does (**→ AC2:** trust-gap finding across two
+   locally-correct repos). Plus the cross-repo anomaly (the one service skipping
+   a sibling-enforced control) — this is **#149b**, which rides this graph.
+   Contract drift (producer adds an authz-relevant field the consumer trusts) is
+   a stretch item here.
+
+Single-repo behavior unchanged throughout; multi-repo is opt-in. Each phase is
+its own PR; #146c/#146d findings are speculative until the #147 verifier
+adjudicates them.
