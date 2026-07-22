@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -17,6 +18,18 @@ from attackmap.fleet import (
 from attackmap.models import Finding, ScanResult
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _norm(output: str) -> str:
+    """Typer renders BadParameter in a Rich error panel that wraps the message
+    across bordered lines at narrow terminal widths — so a raw substring check
+    is width-dependent. Strip ANSI + box-drawing and collapse whitespace so the
+    message reassembles regardless of wrapping."""
+    text = _ANSI.sub("", output)
+    text = re.sub(r"[│╭╮╰╯─]", " ", text)
+    return " ".join(text.split())
 
 
 def _finding(title: str, severity: str) -> Finding:
@@ -139,14 +152,14 @@ def test_multi_repo_rejects_single_repo_only_flags(tmp_path: Path) -> None:
     b = _repo(tmp_path, "svcB")
     result = runner.invoke(app, ["analyze", str(a), str(b), "--hunt"])
     assert result.exit_code != 0
-    assert "multi-repo mode" in result.output
+    assert "multi-repo mode" in _norm(result.output)
 
 
 def test_multi_repo_missing_path_errors(tmp_path: Path) -> None:
     a = _repo(tmp_path, "svcA")
     result = runner.invoke(app, ["analyze", str(a), str(tmp_path / "nope")])
     assert result.exit_code != 0
-    assert "does not exist" in result.output
+    assert "does not exist" in _norm(result.output)
 
 
 def test_multi_repo_validates_progress_format(tmp_path: Path) -> None:
@@ -157,4 +170,4 @@ def test_multi_repo_validates_progress_format(tmp_path: Path) -> None:
         app, ["analyze", str(a), str(b), "--progress-format", "bogus", "-o", str(tmp_path / "out")]
     )
     assert result.exit_code != 0
-    assert "--progress-format must be one of" in result.output
+    assert "progress-format must be one of" in _norm(result.output)
