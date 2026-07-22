@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-07-21
+
+### Added
+
+- **Multi-lens hunt generation + cross-pass dedupe (#147b).** Second slice of the
+  hunt harness (epic #150). `--hunt-lenses N` fans the generation stage out into
+  N independent passes, each primed to specialise in one failure mode
+  (auth-bypass, TOCTOU/race, business-logic/IDOR, deserialization,
+  SSRF-to-internal, secret-misuse), then **dedupes leads across the passes**
+  before the #147a majority-vote verifier runs — surfacing more *unique* novel
+  leads than a single generalist pass. Restatements of the same lead collapse
+  (title similarity, with shared cited-evidence ids lowering the bar) into one
+  freshly re-numbered entry that unions their evidence and lens tags; the dedupe
+  (`dedupe_hypotheses`) is pure and deterministic. Opt-in and bounded by the lens
+  count (default 1 = single pass); each extra lens costs one generation call.
+  `--hunt-lenses N` engages the harness even at `--verify-votes 1`.
+
 ## [0.4.16] - 2026-07-21
 
 ### Added

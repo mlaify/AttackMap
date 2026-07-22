@@ -532,19 +532,43 @@ Evidence pack (JSON):
 """
 
 
+# Failure-mode LENSES for multi-pass hunting (#147b). Each pass is primed to
+# reason as a specialist in one bug class — independent passes surface more
+# unique, novel leads than a single generalist pass. Order is stable so
+# `--hunt-lenses N` deterministically selects the first N.
+HUNT_LENSES: list[tuple[str, str]] = [
+    ("auth-bypass", "AUTHENTICATION / AUTHORIZATION BYPASS — routes reachable without the auth the cohort enforces, missing ownership checks, privilege escalation, token/session misuse."),
+    ("toctou-race", "RACE CONDITIONS / TOCTOU — check-then-use gaps, non-atomic read-modify-write on shared state, double-spend/replay, concurrent request interleavings."),
+    ("business-logic-idor", "BUSINESS-LOGIC flaws and IDOR/BOLA — object references an attacker can enumerate or tamper, workflow steps that can be skipped or reordered, quantity/price/limit manipulation."),
+    ("deserialization", "UNSAFE DESERIALIZATION / object injection — untrusted data into pickle/yaml.load/ObjectInputStream/unserialize, prototype pollution, mass assignment."),
+    ("ssrf-internal", "SSRF-TO-INTERNAL and outbound-request abuse — request-controlled URLs/hosts reaching internal services, cloud metadata, or the filesystem; open redirects that pivot."),
+    ("secret-misuse", "SECRET / CREDENTIAL MISUSE — hardcoded or logged secrets, weak crypto/JWT handling, secrets crossing a trust boundary, over-broad tokens."),
+]
+_LENS_PREAMBLE = {name: text for name, text in HUNT_LENSES}
+
+
 def render_hunt_generate_prompts(
     scan: ScanResult,
     attack_surfaces: list[AttackSurface],
     findings: list[Finding],
     attack_paths: list[AttackPath],
+    lens: str | None = None,
 ) -> RenderedReviewPrompt:
     """Hunt generation pass for the multi-pass harness (#147a): produces ranked
     hypotheses PLUS a machine-readable `=== HYPOTHESES ===` list the harness
-    parses into a fixed, id-keyed set for independent verification."""
+    parses into a fixed, id-keyed set for independent verification. With a
+    ``lens`` (#147b), the pass is primed to specialise in one failure mode."""
     evidence_payload = _hunt_evidence_pack(scan, attack_surfaces, findings, attack_paths)
     evidence_json = json.dumps(evidence_payload, indent=2, sort_keys=True)
+    system = HUNT_GENERATE_SYSTEM_PROMPT.strip()
+    preamble = _LENS_PREAMBLE.get(lens or "")
+    if preamble:
+        system += (
+            f"\n\nLENS — this pass specialises in: {preamble}\n"
+            "Lead with hypotheses of THIS class; you may note others but prioritise this lens."
+        )
     return RenderedReviewPrompt(
-        system=HUNT_GENERATE_SYSTEM_PROMPT.strip(),
+        system=system,
         user=HUNT_USER_PROMPT.format(repo_context=_repo_context(scan), evidence_json=evidence_json).strip(),
         evidence_json=evidence_json,
     )

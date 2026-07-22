@@ -26,6 +26,7 @@ from .diff import (
 from .graph import build_graph
 from .hunt_harness import run_majority_verify
 from .llm_review import LlmReviewError, generate_llm_review
+from .review_prompts import HUNT_LENSES
 from .triage import render_triage_fallback
 from .progress import create_progress
 from .recon_to_analysis import translate_recon
@@ -120,6 +121,11 @@ def analyze(
         3,
         "--verify-votes",
         help="With --hunt --verify: number of independent skeptic passes to adjudicate each hypothesis. A lead is CONFIRMED only on a strict majority (NEEDS_REVIEW only if a majority flags the evidence insufficient); ties/uncertainty are REFUTED (#147a). 1 = the classic single-pass verify.",
+    ),
+    hunt_lenses: int = typer.Option(
+        1,
+        "--hunt-lenses",
+        help="With --hunt --verify: run N independent generation passes, each specialised in a distinct failure mode (auth-bypass, TOCTOU, IDOR, deserialization, SSRF, secret-misuse), then dedupe across them before verifying (#147b). 1 = a single generalist pass. Costs one extra LLM call per lens.",
     ),
     remediate: bool = typer.Option(
         False,
@@ -392,11 +398,14 @@ def analyze(
                 f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
             )
         typer.echo("")
-        # Majority-vote verification (#147a): opt in with --verify and
-        # --verify-votes > 1. Otherwise keep the classic single-pass path.
-        use_jury = verify and verify_votes and verify_votes > 1
+        # Multi-pass hunt harness (#147a/#147b): opt in with --verify and either
+        # --verify-votes > 1 (jury) or --hunt-lenses > 1 (multi-lens generation).
+        lens_count = max(1, min(hunt_lenses, len(HUNT_LENSES)))
+        jury_votes = max(1, verify_votes)
+        use_jury = verify and (jury_votes > 1 or lens_count > 1)
+        lens_names = [name for name, _ in HUNT_LENSES][:lens_count] if lens_count > 1 else None
 
-        def _hunt_llm_call(mode: str, hypotheses=None):
+        def _hunt_llm_call(mode: str, hypotheses=None, lens=None):
             return generate_llm_review(
                 scan,
                 attack_surfaces,
@@ -409,23 +418,25 @@ def analyze(
                 speed=llm_speed,  # type: ignore[arg-type]
                 provider=llm_provider,  # type: ignore[arg-type]
                 hypotheses=hypotheses,
+                lens=lens,
             )
 
         hunt_extra_meta: dict = {}
         try:
             if use_jury:
+                lens_note = f", {lens_count} lenses" if lens_names else ""
                 typer.echo(
                     f"Hunting + adjudicating via {llm_display} "
-                    f"({verify_votes} independent skeptics, backend={llm_backend}, may take a few minutes)..."
+                    f"({jury_votes} independent skeptics{lens_note}, backend={llm_backend}, may take a few minutes)..."
                 )
                 scan_progress.stage(
                     f"{llm_display} is hunting + majority-vote verifying "
-                    f"({verify_votes} skeptics, backend={llm_backend})"
+                    f"({jury_votes} skeptics{lens_note}, backend={llm_backend})"
                 )
                 try:
                     jury = run_majority_verify(
                         scan, attack_surfaces, findings, attack_paths,
-                        votes=verify_votes, llm_call=_hunt_llm_call,
+                        votes=jury_votes, llm_call=_hunt_llm_call, lenses=lens_names,
                     )
                 finally:
                     scan_progress.done()
@@ -434,6 +445,7 @@ def analyze(
                 hunt_stop, hunt_usage = None, jury.usage
                 hunt_extra_meta = {
                     "verify_votes": jury.votes,
+                    "lenses": lens_names or [],
                     "hypothesis_count": jury.hypothesis_count,
                     "consensus": {
                         "confirmed": sum(1 for c in jury.consensus if c.verdict == "confirmed"),

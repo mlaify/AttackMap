@@ -11,6 +11,7 @@ from attackmap.cli import app
 from attackmap.hunt_harness import (
     Hypothesis,
     combine_verdicts,
+    dedupe_hypotheses,
     parse_hypotheses,
     parse_verdicts,
     render_consensus_report,
@@ -228,6 +229,77 @@ def test_run_majority_verify_no_hypotheses_returns_generation() -> None:
     assert "No credible leads" in res.report
 
 
+# --- cross-pass dedupe (#147b) --------------------------------------------
+
+
+def test_dedupe_merges_restatements_and_keeps_unique() -> None:
+    lens_a = [
+        Hypothesis("H1", "SQL injection at db.py via order id", evidence="taint:1", lenses=("auth-bypass",)),
+        Hypothesis("H2", "Missing auth on /admin", evidence="surface:5", lenses=("auth-bypass",)),
+    ]
+    lens_b = [
+        Hypothesis("H1", "SQL injection reaches db.py order id", evidence="taint:1", lenses=("deserialization",)),
+        Hypothesis("H2", "Unsafe pickle load of session", evidence="taint:9", lenses=("deserialization",)),
+    ]
+    merged = dedupe_hypotheses([lens_a, lens_b])
+    titles = [h.title for h in merged]
+    assert len(merged) == 3  # the two SQLi restatements collapsed
+    assert [h.id for h in merged] == ["H1", "H2", "H3"]  # freshly re-numbered
+    # The merged SQLi lead carries both lenses that surfaced it.
+    sqli = merged[0]
+    assert set(sqli.lenses) == {"auth-bypass", "deserialization"}
+
+
+def test_dedupe_is_deterministic() -> None:
+    passes = [
+        [Hypothesis("H1", "SSRF via req.query.url", evidence="taint:2")],
+        [Hypothesis("H1", "SSRF through request url", evidence="taint:2")],
+    ]
+    assert [h.title for h in dedupe_hypotheses(passes)] == [h.title for h in dedupe_hypotheses(passes)]
+
+
+def test_dedupe_does_not_merge_distinct_leads() -> None:
+    passes = [
+        [Hypothesis("H1", "SQL injection at db.py", evidence="taint:1")],
+        [Hypothesis("H1", "Open redirect in login handler", evidence="surface:8")],
+    ]
+    assert len(dedupe_hypotheses(passes)) == 2
+
+
+def test_dedupe_keeps_same_class_at_different_endpoints_separate() -> None:
+    """Similar titles at DIFFERENT endpoints (disjoint evidence) must not merge
+    — otherwise a skeptic could confirm one using the other's evidence (#147b)."""
+    passes = [
+        [Hypothesis("H1", "Missing ownership check on GET /orders/{id}", evidence="surface:3")],
+        [Hypothesis("H1", "Missing ownership check on GET /users/{id}", evidence="surface:7")],
+    ]
+    merged = dedupe_hypotheses(passes)
+    assert len(merged) == 2
+
+
+def test_multilens_generation_fans_out_and_dedupes() -> None:
+    # Both lenses surface the same missing-ownership lead (near-identical
+    # phrasing + shared evidence) plus one unique lead each.
+    gen_by_lens = {
+        "auth-bypass": "=== HYPOTHESES ===\nH1: Missing ownership check on GET /orders/{id} [evidence: surface:3, taint:1]\nH2: Unauthenticated POST /admin/reset [evidence: surface:5]\n",
+        "business-logic-idor": "=== HYPOTHESES ===\nH1: Missing ownership check on GET /orders/{id} [evidence: surface:3]\nH2: Price manipulation in checkout [evidence: surface:9]\n",
+    }
+    lenses_seen = []
+
+    def llm_call(mode, hypotheses=None, lens=None):
+        if mode == "hunt_generate":
+            lenses_seen.append(lens)
+            return _result(gen_by_lens[lens])
+        return _result("VERDICT H1: REFUTED — x\nVERDICT H2: REFUTED — x\nVERDICT H3: REFUTED — x")
+
+    res = run_majority_verify(
+        None, [], [], [], votes=1, llm_call=llm_call, lenses=["auth-bypass", "business-logic-idor"]
+    )
+    assert lenses_seen == ["auth-bypass", "business-logic-idor"]  # one generation pass per lens
+    # SQLi restatement merged → 3 unique (SQLi, missing-auth, TOCTOU) > 2 per single pass.
+    assert res.hypothesis_count == 3
+
+
 # --- CLI end-to-end --------------------------------------------------------
 
 
@@ -276,6 +348,27 @@ def test_cli_hunt_verify_votes_writes_consensus(tmp_path: Path, monkeypatch) -> 
     meta = json.loads((out / "vulnerability-hypotheses.meta.json").read_text(encoding="utf-8"))
     assert meta["verify_votes"] == 3
     assert meta["consensus"]["confirmed"] == 1
+
+
+def test_cli_hunt_lenses_routes_through_harness(tmp_path: Path, monkeypatch) -> None:
+    """`--hunt-lenses 2` engages the harness even at --verify-votes 1 (#147b)."""
+    gen = "=== HYPOTHESES ===\nH1: eval of request arg [evidence: taint:1]\n"
+
+    def fake(*args, **kwargs):
+        if kwargs.get("mode") == "hunt_generate":
+            return _result(gen)
+        return _result("VERDICT H1: REFUTED — arg is constant")
+
+    monkeypatch.setattr("attackmap.cli.generate_llm_review", fake)
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        ["analyze", str(_repo(tmp_path)), "--output", str(out),
+         "--hunt", "--verify", "--hunt-lenses", "2", "--verify-votes", "1"],
+    )
+    assert result.exit_code == 0, result.output
+    meta = json.loads((out / "vulnerability-hypotheses.meta.json").read_text(encoding="utf-8"))
+    assert len(meta["lenses"]) == 2
 
 
 def test_cli_verify_votes_1_uses_single_pass(tmp_path: Path, monkeypatch) -> None:
