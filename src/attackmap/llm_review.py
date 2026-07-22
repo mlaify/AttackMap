@@ -31,6 +31,7 @@ from typing import Any, Literal
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .review_prompts import (
+    render_critic_prompts,
     render_hunt_generate_prompts,
     render_hunt_prompts,
     render_hunt_verify_prompts,
@@ -603,7 +604,8 @@ def generate_llm_review(
     backend: LlmBackend = "auto",
     cli_runner: Any | None = None,
     mode: Literal[
-        "review", "hunt", "hunt_verify", "hunt_generate", "hunt_skeptic", "remediate", "triage"
+        "review", "hunt", "hunt_verify", "hunt_generate", "hunt_skeptic",
+        "hunt_critic", "remediate", "triage",
     ] = "review",
     speed: Literal["standard", "fast"] = "standard",
     provider: LlmProvider = "claude",
@@ -611,6 +613,8 @@ def generate_llm_review(
     codex_runner: Any | None = None,
     hypotheses: list[dict] | None = None,
     lens: str | None = None,
+    avoid_titles: list[str] | None = None,
+    critic_hint: str | None = None,
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling an LLM.
@@ -632,9 +636,15 @@ def generate_llm_review(
             scan, attack_surfaces, findings, attack_paths, hypotheses or []
         )
     elif mode == "hunt_generate":
-        # Generation can be primed with a failure-mode lens (#147b).
+        # Generation can be primed with a lens (#147b) and prior-round context (#147c).
         rendered = render_hunt_generate_prompts(
-            scan, attack_surfaces, findings, attack_paths, lens=lens
+            scan, attack_surfaces, findings, attack_paths,
+            lens=lens, avoid_titles=avoid_titles, critic_hint=critic_hint,
+        )
+    elif mode == "hunt_critic":
+        # The completeness critic names untried angles from the leads so far (#147c).
+        rendered = render_critic_prompts(
+            scan, attack_surfaces, findings, attack_paths, hypotheses or []
         )
     else:
         render = {

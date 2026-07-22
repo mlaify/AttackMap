@@ -127,6 +127,16 @@ def analyze(
         "--hunt-lenses",
         help="With --hunt --verify: run N independent generation passes, each specialised in a distinct failure mode (auth-bypass, TOCTOU, IDOR, deserialization, SSRF, secret-misuse), then dedupe across them before verifying (#147b). 1 = a single generalist pass. Costs one extra LLM call per lens.",
     ),
+    hunt_rounds: int = typer.Option(
+        1,
+        "--hunt-rounds",
+        help="With --hunt --verify: loop generation for up to N rounds, accumulating new (deduped) leads while a completeness critic seeds each next round with untried angles; stops early once a round finds nothing new (#147c). 1 = a single round.",
+    ),
+    hunt_budget: int = typer.Option(
+        0,
+        "--hunt-budget",
+        help="With --hunt-rounds: stop launching new hunting rounds once this many output tokens have been spent (0 = no budget cap). A guardrail on multi-round cost.",
+    ),
     remediate: bool = typer.Option(
         False,
         "--remediate",
@@ -402,10 +412,12 @@ def analyze(
         # --verify-votes > 1 (jury) or --hunt-lenses > 1 (multi-lens generation).
         lens_count = max(1, min(hunt_lenses, len(HUNT_LENSES)))
         jury_votes = max(1, verify_votes)
-        use_jury = verify and (jury_votes > 1 or lens_count > 1)
+        max_rounds = max(1, hunt_rounds)
+        token_budget = hunt_budget if hunt_budget > 0 else None
+        use_jury = verify and (jury_votes > 1 or lens_count > 1 or max_rounds > 1)
         lens_names = [name for name, _ in HUNT_LENSES][:lens_count] if lens_count > 1 else None
 
-        def _hunt_llm_call(mode: str, hypotheses=None, lens=None):
+        def _hunt_llm_call(mode: str, hypotheses=None, lens=None, avoid_titles=None, critic_hint=None):
             return generate_llm_review(
                 scan,
                 attack_surfaces,
@@ -419,24 +431,28 @@ def analyze(
                 provider=llm_provider,  # type: ignore[arg-type]
                 hypotheses=hypotheses,
                 lens=lens,
+                avoid_titles=avoid_titles,
+                critic_hint=critic_hint,
             )
 
         hunt_extra_meta: dict = {}
         try:
             if use_jury:
                 lens_note = f", {lens_count} lenses" if lens_names else ""
+                round_note = f", up to {max_rounds} rounds" if max_rounds > 1 else ""
                 typer.echo(
                     f"Hunting + adjudicating via {llm_display} "
-                    f"({jury_votes} independent skeptics{lens_note}, backend={llm_backend}, may take a few minutes)..."
+                    f"({jury_votes} independent skeptics{lens_note}{round_note}, backend={llm_backend}, may take a few minutes)..."
                 )
                 scan_progress.stage(
                     f"{llm_display} is hunting + majority-vote verifying "
-                    f"({jury_votes} skeptics{lens_note}, backend={llm_backend})"
+                    f"({jury_votes} skeptics{lens_note}{round_note}, backend={llm_backend})"
                 )
                 try:
                     jury = run_majority_verify(
                         scan, attack_surfaces, findings, attack_paths,
                         votes=jury_votes, llm_call=_hunt_llm_call, lenses=lens_names,
+                        max_rounds=max_rounds, token_budget=token_budget,
                     )
                 finally:
                     scan_progress.done()
@@ -446,6 +462,7 @@ def analyze(
                 hunt_extra_meta = {
                     "verify_votes": jury.votes,
                     "lenses": lens_names or [],
+                    "rounds_run": jury.rounds,
                     "hypothesis_count": jury.hypothesis_count,
                     "consensus": {
                         "confirmed": sum(1 for c in jury.consensus if c.verdict == "confirmed"),
