@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-07-22
+
+### Added
+
+- **Recall mode — `--recall` (#148a).** First slice of verifier-gated aggressive
+  discovery (epic #150). Aggressiveness is only useful *behind* a verifier, so
+  `--recall` widens the taint walk and marks the extra reach speculative rather
+  than asserting it. A new `RecallConfig` (threaded through `analyze_taint`)
+  raises the max import-hop depth (2 → 4) and per-route visit cap, and relaxes
+  the static-literal-argument suppression the default pass applies to
+  eval/exec/deserialize sinks. Any chain surfaced *only* because a knob was
+  widened — past the default hop depth, or through a relaxed gate — is tagged
+  `TaintChain.speculative` with docked confidence. Speculative chains get their
+  own **LOW-severity, clearly-marked finding** per sink kind (`SPECULATIVE
+  (recall mode)…`), kept **out of `--fail-on-new-high`** and left for
+  `--hunt --verify` / `--triage` to adjudicate. Default (non-recall) behavior is
+  byte-for-byte unchanged. Capability-reach enumeration + source/sink expansion
+  land in #148b.
+
 ## [0.4.19] - 2026-07-22
 
 ### Added

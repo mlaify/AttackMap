@@ -323,6 +323,17 @@ excluded from all the heuristic passes above by default, since dangerous
 patterns in test scaffolding are rarely real exposure. Set
 `ATTACKMAP_INCLUDE_TESTS=1` to scan them too (e.g. for test-quality reviews).
 
+**Recall mode (`--recall`).** Aggressiveness is only useful *behind* a verifier —
+so `--recall` widens taint discovery (raises the max import-hop depth from 2 to
+4, and surfaces reaches the default pass conservatively hides, like a
+static-literal-looking `eval`/`exec`/deserialize argument) and marks the extra
+reach **speculative** instead of asserting it. Speculative chains carry
+downgraded confidence, get their own LOW-severity finding (`SPECULATIVE (recall
+mode)…`), and are kept **out of `--fail-on-new-high`** — they are leads for
+`--hunt --verify` / `--triage` to adjudicate, not detections. Default behavior
+is unchanged; pair `--recall` with `--hunt --verify` to widen the net and then
+adjudicate what it catches.
+
 ### Web hardening gaps
 
 Route- and config-level checks for common web misconfigurations, each an

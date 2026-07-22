@@ -225,9 +225,14 @@ class DefaultAnalyzer:
     def name(self) -> str:
         return self.metadata.name
 
-    def analyze(self, root: str | Path, progress: "ScanProgress | None" = None) -> AnalyzerResult:
+    def analyze(
+        self, root: str | Path, progress: "ScanProgress | None" = None, recall: bool = False
+    ) -> AnalyzerResult:
         return scan_repo(
-            root, suffixes=set(CODE_EXTENSIONS) - self._CLAIMED_SUFFIXES, progress=progress
+            root,
+            suffixes=set(CODE_EXTENSIONS) - self._CLAIMED_SUFFIXES,
+            progress=progress,
+            recall=recall,
         )
 
 
@@ -249,8 +254,10 @@ class BuiltinPythonWebAnalyzer:
     def name(self) -> str:
         return self.metadata.name
 
-    def analyze(self, root: str | Path, progress: "ScanProgress | None" = None) -> AnalyzerResult:
-        return scan_repo(root, suffixes={".py"}, progress=progress)
+    def analyze(
+        self, root: str | Path, progress: "ScanProgress | None" = None, recall: bool = False
+    ) -> AnalyzerResult:
+        return scan_repo(root, suffixes={".py"}, progress=progress, recall=recall)
 
 
 class BuiltinJavaScriptWebAnalyzer:
@@ -323,8 +330,10 @@ class BuiltinJavaScriptWebAnalyzer:
             return False
         return False
 
-    def analyze(self, root: str | Path, progress: "ScanProgress | None" = None) -> AnalyzerResult:
-        return scan_repo(root, suffixes=self._JS_SUFFIXES, progress=progress)
+    def analyze(
+        self, root: str | Path, progress: "ScanProgress | None" = None, recall: bool = False
+    ) -> AnalyzerResult:
+        return scan_repo(root, suffixes=self._JS_SUFFIXES, progress=progress, recall=recall)
 
 
 class BuiltinConfigAnalyzer:
@@ -604,12 +613,13 @@ def analyze_repository(
     root: str | Path,
     analyzers: Iterable[Analyzer] | None = None,
     progress: "ScanProgress | None" = None,
+    recall: bool = False,
 ) -> AnalyzerResult:
     repo_root = Path(root).resolve()
     active_analyzers = resolve_run_analyzers(repo_root, analyzers=analyzers)
     results: list[AnalyzerResult] = []
     for analyzer in active_analyzers:
-        result = _call_analyze(analyzer, repo_root, progress)
+        result = _call_analyze(analyzer, repo_root, progress, recall)
         _stamp_provenance(result, analyzer.name)
         results.append(result)
     if not results:
@@ -617,17 +627,26 @@ def analyze_repository(
     return merge_analyzer_results(results, root=repo_root)
 
 
-def _call_analyze(analyzer: Analyzer, root: Path, progress: "ScanProgress | None") -> AnalyzerResult:
-    """Invoke ``analyzer.analyze``, forwarding ``progress`` only to analyzers
-    that accept it. Keeps the plugin ``analyze(root)`` contract intact — old
-    plugins that don't know about progress are called unchanged."""
-    if progress is not None:
-        try:
-            if "progress" in inspect.signature(analyzer.analyze).parameters:
-                return analyzer.analyze(root, progress=progress)  # type: ignore[call-arg]
-        except (TypeError, ValueError):
-            pass
-    return analyzer.analyze(root)
+def _call_analyze(
+    analyzer: Analyzer,
+    root: Path,
+    progress: "ScanProgress | None",
+    recall: bool = False,
+) -> AnalyzerResult:
+    """Invoke ``analyzer.analyze``, forwarding ``progress``/``recall`` only to
+    analyzers that accept them. Keeps the plugin ``analyze(root)`` contract
+    intact — old plugins that don't know about these kwargs are called
+    unchanged, and ``recall`` is only ever passed when it's on."""
+    kwargs: dict[str, object] = {}
+    try:
+        params = inspect.signature(analyzer.analyze).parameters
+        if progress is not None and "progress" in params:
+            kwargs["progress"] = progress
+        if recall and "recall" in params:
+            kwargs["recall"] = recall
+    except (TypeError, ValueError):
+        pass
+    return analyzer.analyze(root, **kwargs)  # type: ignore[call-arg]
 
 
 def _stamp_provenance(result: AnalyzerResult, analyzer_name: str) -> None:

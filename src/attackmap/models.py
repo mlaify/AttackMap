@@ -340,6 +340,13 @@ class TaintChain(BaseModel):
     # `sanitizer_evidence` names the neutralizer so the chain stays auditable.
     sanitized: bool = False
     sanitizer_evidence: str | None = None
+    # Recall mode (#148a). A chain surfaced only because an aggressive knob was
+    # relaxed — beyond the default hop depth, or through a gate the default pass
+    # keeps closed (a static-literal-looking sink argument) — is marked
+    # speculative with downgraded confidence. Speculative chains are discovery
+    # leads for the verifier to adjudicate, not asserted flows: they are kept
+    # out of the `--fail-on-new-high` gate and clearly labelled in reports.
+    speculative: bool = False
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
