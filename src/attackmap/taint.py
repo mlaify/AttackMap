@@ -65,6 +65,11 @@ class RecallConfig:
     # — the default pass suppresses these (#88 follow-up); recall keeps them as
     # speculative leads (provenance is a heuristic, not proof).
     include_static_args: bool = False
+    # Capability-reach enumeration (#148b): surface *every* reach to a powerful
+    # capability (network/template/fs/redirect) even with no known-bad pattern —
+    # the bare call, not just the request-token-gated form. Recall-only,
+    # speculative; the point is to list reaches a signature pass misses.
+    capability_reach: bool = False
 
     @property
     def aggressive(self) -> bool:
@@ -73,6 +78,7 @@ class RecallConfig:
             self.max_hops > _MAX_HOPS
             or self.max_files_visited > _MAX_FILES_VISITED_PER_ROUTE
             or self.include_static_args
+            or self.capability_reach
         )
 
 
@@ -85,6 +91,7 @@ def recall_config() -> RecallConfig:
         max_hops=_RECALL_MAX_HOPS,
         max_files_visited=_RECALL_MAX_FILES_VISITED_PER_ROUTE,
         include_static_args=True,
+        capability_reach=True,
     )
 
 _PY_SUFFIXES = {".py"}
@@ -349,6 +356,36 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         # Express/Koa: res.redirect(req.query.url) ; also res.location(...)
         re.compile(rf"\bres\s*\.\s*(?:redirect|location)\s*\([^)]*{_TAINTED}"),
     ),
+)
+
+
+# --- Capability-reach patterns (#148b) -------------------------------------
+# The bare-call forms of the request-token-gated sink kinds. The default pass
+# only flags these when a request-shaped identifier is in the argument (a
+# constant URL / template / path is fine); capability-reach surfaces the reach
+# to the *capability itself* regardless — recall-only, speculative, deduped
+# against any gated hit at the same line, and bounded to what a route reaches.
+# NoSQL is deliberately omitted: a bare `.find(` is overwhelmingly JS array
+# iteration, not a Mongo query, so without the request-token gate it's noise.
+_CAPABILITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # network (SSRF surface)
+    ("ssrf", re.compile(r"\brequests\.(?:get|post|put|delete|patch|head|request)\s*\(")),
+    ("ssrf", re.compile(r"\bhttpx\.(?:get|post|put|delete|patch|head|request|Client)\s*\(")),
+    ("ssrf", re.compile(r"\b(?:urlopen|urlretrieve)\s*\(")),
+    (
+        "ssrf",
+        re.compile(
+            r"\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\("
+        ),
+    ),
+    # template rendering (SSTI surface)
+    ("ssti", re.compile(r"\brender_template_string\s*\(")),
+    ("ssti", re.compile(r"\bTemplate\s*\(")),
+    # filesystem open (path-traversal surface)
+    ("dynamic_open", re.compile(r"(?<![\w.])open\s*\(")),
+    # redirect (open-redirect surface)
+    ("open_redirect", re.compile(r"\bredirect\s*\(")),
+    ("open_redirect", re.compile(r"\bres\s*\.\s*(?:redirect|location)\s*\(")),
 )
 
 
@@ -993,9 +1030,10 @@ def _find_sinks(
 
     `sanitizer_label` is set when a sink-appropriate neutralizer is present in
     the same file (#137) — the walk uses it to mark the chain sanitized.
-    `relaxed` is True (recall only) when the hit was kept only because
-    ``include_static_args`` lifted the static-literal suppression — the walk
-    marks chains from such hits speculative (#148a).
+    `relaxed` is True (recall only) when the hit was kept only because a gate was
+    lifted — the static-literal suppression (#148a) or the request-token gate a
+    capability-reach hit bypasses (#148b) — and the walk marks chains from such
+    hits speculative.
     """
     out: dict[str, list[tuple[str, int, str, str | None, bool]]] = {}
     for rel, abs_path in files.items():
@@ -1007,6 +1045,9 @@ def _find_sinks(
         # Per-file sanitizer lookup is memoized per sink kind — the same file
         # may hold several sinks of one kind.
         sanitizer_by_kind: dict[str, str | None] = {}
+        # (kind, line) already emitted by the gated pass — so a capability-reach
+        # hit never duplicates a request-derived sink at the same spot.
+        emitted: set[tuple[str, int]] = set()
         for kind, pattern in _SINK_PATTERNS:
             for match in pattern.finditer(content):
                 # A "dangerous-regardless" sink whose argument is a static
@@ -1028,6 +1069,25 @@ def _find_sinks(
                 if kind not in sanitizer_by_kind:
                     sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
                 hits.append((kind, line, snippet, sanitizer_by_kind[kind], relaxed))
+                emitted.add((kind, line))
+
+        # Capability-reach pass (#148b, recall only): the bare-call form of the
+        # request-gated kinds, surfaced even without a request token. Always
+        # relaxed → speculative; skipped where the gated pass already fired.
+        # These carry NO sanitizer label: sanitizer status describes a tainted
+        # flow being neutralized, but a capability-reach hit asserts no taint —
+        # a file-level sanitizer token must not mark it sanitized (which would
+        # make generate_findings drop it and silently lose the capability
+        # inventory this pass exists to produce).
+        if recall.capability_reach:
+            for kind, pattern in _CAPABILITY_PATTERNS:
+                for match in pattern.finditer(content):
+                    line = content.count("\n", 0, match.start()) + 1
+                    if (kind, line) in emitted:
+                        continue
+                    snippet = _line_snippet(content, match.start())
+                    hits.append((kind, line, snippet, None, True))
+                    emitted.add((kind, line))
         if hits:
             out[rel] = hits
     return out
