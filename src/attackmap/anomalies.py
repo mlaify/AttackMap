@@ -365,7 +365,9 @@ def _invariant_violations(scan: ScanResult, ctx: _SignalCtx) -> list[Anomaly]:
     for chain in scan.taint_chains:
         # Same-file, undefended flows only (see the scope notes above); for
         # hops == 0 the sink file is the anchor file, so one test covers both.
-        if chain.sanitized or chain.hops != 0:
+        # Speculative recall chains (#148a) are unconfirmed leads — don't mine
+        # an asserted invariant violation from them.
+        if chain.sanitized or chain.speculative or chain.hops != 0:
             continue
         anchor_file = chain.route_file
         if is_test_file(anchor_file):

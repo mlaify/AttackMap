@@ -928,6 +928,7 @@ def _best_taint_for_route(
         if c.route_path == route.path
         and c.route_method == route.method
         and not c.sanitized  # #137: a neutralized path isn't a probable exploit
+        and not c.speculative  # #148a: an unconfirmed recall lead isn't a probable exploit
     ]
     if not candidates:
         return None

@@ -1053,8 +1053,21 @@ def _walk_from_route(
 ) -> list[TaintChain]:
     """BFS out from route_file, up to ``recall.max_hops``. Emit chains at each
     sink; tag as speculative any chain that only exists because a recall knob
-    was widened — a relaxed-gate sink, or a hop past the conservative
-    ``_MAX_HOPS`` (#148a)."""
+    was widened — a relaxed-gate sink, or a sink in a file the *conservative*
+    traversal (default hop depth + visit budget) would never have processed
+    (#148a). Comparing against the default-reachable set covers both the deeper
+    hops and the widened visit cap precisely — a fan-out-heavy graph can push a
+    within-two-hops sink past the 40-file budget, and that reach is speculative
+    too."""
+    # The set of files the conservative pass would actually process — computed
+    # only when a knob is widened (otherwise nothing is speculative and the
+    # traversals are identical).
+    default_reachable: set[str] | None = (
+        _reachable_files(route_file, graph, _MAX_HOPS, _MAX_FILES_VISITED_PER_ROUTE)
+        if recall.aggressive
+        else None
+    )
+
     visited: dict[str, int] = {route_file: 0}
     parents: dict[str, str] = {}
     queue: deque[str] = deque([route_file])
@@ -1070,10 +1083,12 @@ def _walk_from_route(
                 # A neutralizer is present at the sink — likely defended.
                 # Downgrade well below the HIGH threshold, keep as evidence.
                 confidence = round(confidence * 0.4, 2)
-            # A relaxed-gate hit, or a hop the default pass would never have
-            # reached, is a discovery lead — mark it and dock confidence so it
-            # can't clear the HIGH bar until the verifier confirms it.
-            speculative = relaxed or current_hops > _MAX_HOPS
+            # A relaxed-gate hit, or a sink the conservative pass would never
+            # have reached, is a discovery lead — mark it and dock confidence so
+            # it can't clear the HIGH bar until the verifier confirms it.
+            speculative = relaxed or (
+                default_reachable is not None and current not in default_reachable
+            )
             if speculative:
                 confidence = round(confidence * 0.5, 2)
             chains.append(
@@ -1103,6 +1118,29 @@ def _walk_from_route(
             parents[neighbor] = current
             queue.append(neighbor)
     return chains
+
+
+def _reachable_files(
+    start: str, graph: dict[str, set[str]], max_hops: int, max_files: int
+) -> set[str]:
+    """The set of files a BFS bounded by ``max_hops`` / ``max_files`` would
+    *process* (pop) from ``start``. Mirrors ``_walk_from_route``'s control flow
+    exactly so it is a faithful model of what the conservative pass reaches —
+    used to decide which recall discoveries are speculative (#148a)."""
+    visited: dict[str, int] = {start: 0}
+    queue: deque[str] = deque([start])
+    processed: set[str] = set()
+    while queue and len(visited) < max_files:
+        current = queue.popleft()
+        processed.add(current)
+        if visited[current] >= max_hops:
+            continue
+        for neighbor in graph.get(current, ()):  # noqa: SIM118
+            if neighbor in visited:
+                continue
+            visited[neighbor] = visited[current] + 1
+            queue.append(neighbor)
+    return processed
 
 
 def _reconstruct_path(start: str, end: str, parents: dict[str, str]) -> list[str]:

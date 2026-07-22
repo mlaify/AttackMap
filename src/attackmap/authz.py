@@ -119,7 +119,10 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
     taint_sql_routes = {
         (c.route_method, c.route_path)
         for c in scan.taint_chains
-        if c.sink_kind == "sql_execute"
+        # Speculative recall chains (#148a) are unconfirmed leads — they must
+        # not manufacture an asserted HIGH BOLA finding that could trip the
+        # baseline gate.
+        if c.sink_kind == "sql_execute" and not c.speculative
     }
 
     # Cache per-file content (read at most once per route file).

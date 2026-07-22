@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from attackmap.models import Route, ScanResult
+from attackmap.models import Route, ScanResult, TaintChain
 from attackmap.taint import (
+    _MAX_HOPS,
     DEFAULT_RECALL,
     RecallConfig,
     analyze_taint,
@@ -150,3 +151,75 @@ def test_no_speculative_findings_without_recall(tmp_path: Path) -> None:
     scan.taint_chains = analyze_taint(scan, tmp_path)  # default
     findings = generate_findings(scan, [])
     assert not [f for f in findings if "speculative" in f.tags]
+
+
+# ---------------------------------------------------------------------------
+# visit-cap-only discoveries are speculative too (#148a Codex P1 #2)
+# ---------------------------------------------------------------------------
+
+
+def test_visit_cap_only_discovery_is_speculative(tmp_path: Path) -> None:
+    """A fan-out graph with 45 one-hop sink modules exceeds the default 40-file
+    visit budget. The modules the default pass never processes are recall-only
+    even though they sit within the default hop depth — they must be marked
+    speculative (not just deep-hop chains)."""
+    n = 45
+    imports = "\n".join(f"from m{i} import f{i}" for i in range(n))
+    calls = "\n".join(f"    f{i}(x)" for i in range(n))
+    _write(tmp_path, "a.py", f"{imports}\n\n\ndef handler(x):\n{calls}\n")
+    for i in range(n):
+        _write(tmp_path, f"m{i}.py",
+               f"import subprocess\n\n\ndef f{i}(x):\n    subprocess.run(x, shell=True)\n")
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/x", method="GET", file="a.py", line=n + 3)])
+
+    default = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "subprocess_shell"]
+    aggressive = [c for c in analyze_taint(scan, tmp_path, recall=recall_config())
+                  if c.sink_kind == "subprocess_shell"]
+
+    assert len(aggressive) > len(default)  # widened cap reached more modules
+    spec = [c for c in aggressive if c.speculative]
+    assert spec, "expected visit-cap-only speculative chains"
+    # These are speculative because of the visit cap, not hop depth (all 1 hop).
+    assert all(c.hops <= _MAX_HOPS for c in spec)
+    assert all(not c.speculative for c in default)
+
+
+# ---------------------------------------------------------------------------
+# speculative chains never feed asserted downstream findings (#148a Codex P1 #1)
+# ---------------------------------------------------------------------------
+
+
+def test_speculative_sql_chain_not_scored_exploitable(tmp_path: Path) -> None:
+    from attackmap.exploitability import score_exploitability
+
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/orders/{id}", method="GET", file="r.py", line=1)],
+        taint_chains=[
+            TaintChain(
+                route_path="/orders/{id}", route_method="GET", route_file="r.py",
+                sink_kind="sql_execute", sink_file="db.py", sink_line=3, hops=1,
+                files=["r.py", "db.py"], speculative=True,
+            )
+        ],
+    )
+    assert score_exploitability(scan, []) == []
+
+
+def test_speculative_sql_chain_ignored_by_authz(tmp_path: Path) -> None:
+    from attackmap.authz import analyze_authz
+
+    # A path-param route whose ONLY datastore reachability is a speculative SQL
+    # chain — with the fix it raises no BOLA candidate (would, without it).
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[Route(path="/orders/{id}", method="GET", file="r.py", line=1)],
+        taint_chains=[
+            TaintChain(
+                route_path="/orders/{id}", route_method="GET", route_file="r.py",
+                sink_kind="sql_execute", sink_file="db.py", sink_line=3, hops=1,
+                files=["r.py", "db.py"], speculative=True,
+            )
+        ],
+    )
+    assert analyze_authz(scan, tmp_path) == []
