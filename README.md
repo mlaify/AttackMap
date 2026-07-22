@@ -67,6 +67,19 @@ model ID verbatim.
 Read `reports/defensive-review.md` (heuristic) and `reports/defensive-review-llm.md`
 (LLM-narrated) side by side.
 
+**Multi-repo (fleet) scan.** Pass two or more repositories to scan a whole fleet
+in one run:
+
+```bash
+attackmap analyze ./service-a ./service-b ./gateway --output reports
+```
+
+Each repo is scanned independently into its own `reports/<repo>/` directory, and
+a `reports/fleet-summary.md` (+ `.json`) indexes the run with per-repo severity
+counts and top findings. Single-repo behavior is unchanged. This is the
+foundation for cross-repo seam analysis — contract linking, cross-boundary
+taint, and trust-gap detection — which builds on the fleet view (epic #150).
+
 ---
 
 ## Install
