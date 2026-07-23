@@ -54,7 +54,7 @@ an optional LLM-narrated review and a PR-diff mode.
 
 ## Roadmap
 
-Status as of v0.4.0.
+Status as of v0.4.25.
 
 ### Phase 1 — Signal Quality — *ongoing*
 Cleaner, more accurate signals; precision-first heuristics (e.g. request-container
@@ -104,9 +104,30 @@ A reusable GitHub **Action + PR bot** (inline SARIF annotations + a summary
 comment with the exploitability ranking and diff-gate status), so AttackMap runs
 on every pull request.
 
-### Phase 10 — Local AI Integration — *planned*
+### Phase 10 — Unknown-Bug Discovery — *shipped*
+Finding **novel, un-signatured** bugs by reasoning over a bigger, better-connected
+surface and *verifying hard* — everything gated on, or feeding, one asset: a
+strong verifier.
+
+- **Multi-pass hunt harness.** `--hunt --verify` became a jury: `--verify-votes`
+  (N independent skeptics, majority vote), `--hunt-lenses` (failure-mode-
+  specialist generation passes, deduped), `--hunt-rounds` (loop-until-dry with a
+  completeness critic seeding each round), `--hunt-budget` (token cap).
+- **Within-repo invariant mining.** Signature-free: infer an implicit invariant
+  from repeated structure (handlers guard a request before a sink) and flag the
+  site that violates it.
+- **Recall mode (`--recall`).** Verifier-gated aggressive discovery — widened
+  taint knobs + capability-reach enumeration, all marked speculative and routed
+  through the verifier/triage filter.
+- **Cross-repo / fleet analysis.** `attackmap analyze repoA repoB …` scans a
+  fleet, links outbound calls to peer routes into a service graph, and detects
+  the bugs that live in the seams: cross-boundary (confused-deputy) flows,
+  trust-assumption gaps, and the sibling service that omits a sibling-enforced
+  control. Cross-repo findings are speculative until adjudicated.
+
+### Phase 11 — Local AI Integration — *planned*
 Optional fully-local LLM narrative (today's `--llm` / `--hunt` use the Anthropic
-API or the `claude` CLI).
+API / `claude` CLI, or OpenAI / the `codex` CLI).
 
 ## Long-Term Vision
 

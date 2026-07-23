@@ -729,10 +729,12 @@ scaffolding, testing, and publishing instructions is in
 
 ```bash
 attackmap analyze <path>                 # run a review on a repository
+attackmap analyze repoA repoB gateway    # multi-repo fleet scan (per-repo reports + fleet summary)
 attackmap analyze <path> --output dir    # write outputs to `dir/`
 attackmap analyze <path> --format json   # json | markdown | all (default)
 attackmap analyze <path> --module python --module rust   # only these analyzers
 attackmap analyze <path> --cve           # cross-reference SBOM against OSV.dev
+attackmap analyze <path> --recall        # widen taint discovery (deeper hops, capability-reach); extra reach marked SPECULATIVE
 attackmap analyze <path> --llm           # add LLM narrative (auto-resolve auth)
 attackmap analyze <path> --llm --llm-backend cli         # force Claude CLI
 attackmap analyze <path> --llm --llm-provider openai     # use OpenAI/Codex (OPENAI_API_KEY or `codex` CLI)
@@ -742,6 +744,8 @@ attackmap analyze <path> --hunt --verify # adjudicate each lead vs. source (conf
 attackmap analyze <path> --hunt --verify --verify-votes 3   # majority vote of N independent skeptics (default 3; 1 = single pass)
 attackmap analyze <path> --hunt --verify --hunt-lenses 4     # N lens-specialised generation passes, deduped, then verified
 attackmap analyze <path> --hunt --verify --hunt-rounds 4     # loop-until-dry generation (completeness critic seeds each round)
+attackmap analyze <path> --hunt --verify --hunt-budget 500000  # cap total hunt output tokens across rounds
+attackmap analyze <path> --recall --hunt --verify   # widen the net, then adjudicate the speculative reach
 attackmap analyze <path> --remediate     # LLM review-first fix suggestions (remediation.md)
 attackmap analyze <path> --triage        # cluster/dedupe/rank existing findings (triage.md; deterministic fallback)
 attackmap analyze <path> --pr-comment pr.md   # Markdown PR summary comment for CI
@@ -788,7 +792,7 @@ introduces a new HIGH finding.
 
 ## Project status
 
-AttackMap is **beta** (v0.4.18) — published and validated on real codebases, but
+AttackMap is **beta** (v0.4.25) — published and validated on real codebases, but
 pre-1.0 and heuristic.
 
 **Solid today:**
@@ -806,13 +810,27 @@ pre-1.0 and heuristic.
 - BOLA/IDOR authorization detection (with custom-middleware / guard-arg awareness).
 - Insecure-crypto / weak-randomness (Python/JS/Go/PHP) and web-hardening
   (CORS/CSRF/cookies/CSP/debug) detection.
-- Anomaly / outlier detection and **exploitability fusion** — a deterministic,
-  explainable 0–100 "exploitable now" score that ranks route→sink combinations
-  and folds in known-vulnerable dependencies on the path.
-- **`--hunt`** (LLM exploit-chain hypotheses) with **`--verify`** (adjudicate
-  each lead CONFIRMED/REFUTED/NEEDS-REVIEW against the actual source),
-  **`--remediate`** (review-first fix suggestions), and **`--triage`**
-  (cluster/dedupe/rank existing findings, with a deterministic fallback).
+- Anomaly / outlier detection — including **signature-free invariant mining**
+  (flag the handler that reaches a dangerous sink without the guard its peers
+  apply) — and **exploitability fusion**, a deterministic, explainable 0–100
+  "exploitable now" score that ranks route→sink combinations and folds in
+  known-vulnerable dependencies on the path.
+- **`--hunt`** (LLM exploit-chain hypotheses) with a **verify jury** —
+  **`--verify`** adjudicates each lead CONFIRMED/REFUTED/NEEDS-REVIEW against the
+  actual source; **`--verify-votes`** runs N independent skeptics, **`--hunt-lenses`**
+  fans generation across failure-mode specialists, **`--hunt-rounds`** loops
+  until dry with a completeness critic, **`--hunt-budget`** caps token spend —
+  plus **`--remediate`** (review-first fixes) and **`--triage`**
+  (cluster/dedupe/rank existing findings, deterministic fallback).
+- **`--recall`** — verifier-gated aggressive discovery: widens the taint walk
+  (deeper hops, capability-reach enumeration of every reach to exec/fs/net/
+  deserialize/template/SQL) and marks the extra reach SPECULATIVE, kept out of
+  `--fail-on-new-high` and left for `--hunt --verify` to adjudicate.
+- **Cross-repo / fleet analysis** — `attackmap analyze repoA repoB …` scans a
+  fleet, links one repo's outbound HTTP calls to another's routes, and surfaces
+  bugs that live in the seams: cross-boundary (confused-deputy) flows,
+  trust-assumption gaps, and the sibling service that omits a control its peers
+  enforce. All cross-repo findings are speculative until verified.
 - SBOM inventory (5 ecosystems) + OSV.dev CVE cross-reference (`--cve`).
 - Output: Markdown + JSON + **SARIF 2.1.0** + **Mermaid / Graphviz** diagrams;
   **diff/baseline** PR gating; a reusable **GitHub Action + PR bot**; optional
