@@ -17,8 +17,13 @@ from .analyzers import (
     select_requested_analyzers,
 )
 from .cve import query_vulnerabilities
+from .anomalies import route_auth_signals
 from .contracts import link_contracts
-from .crossrepo import find_cross_boundary_flows
+from .crossrepo import (
+    find_cross_boundary_flows,
+    find_cross_repo_anomalies,
+    find_trust_gaps,
+)
 from .fleet import (
     FleetRepoResult,
     FleetScan,
@@ -187,6 +192,11 @@ def _run_fleet(
     fleet.links = link_contracts(repo_scans)
     # Cross-boundary trust flows (#146c): confused-deputy leads over the links.
     fleet.cross_boundary = find_cross_boundary_flows(fleet.links, repo_scans)
+    # Trust-assumption gaps + cross-repo anomalies (#146d / #149b). Per-route auth
+    # signals are resolved per repo (each with its own root).
+    auth_by_repo = {r.repo_id: route_auth_signals(r.scan, r.root) for r in fleet.results}
+    fleet.trust_gaps = find_trust_gaps(fleet.links, repo_scans, auth_by_repo)
+    fleet.cross_repo_anomalies = find_cross_repo_anomalies(repo_scans, auth_by_repo)
 
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "fleet-summary.md").write_text(
@@ -201,7 +211,9 @@ def _run_fleet(
     typer.echo("")
     typer.echo(
         f"Fleet: {fleet.repo_count} repositories, {fleet.total_findings()} finding(s), "
-        f"{len(fleet.links)} cross-repo link(s). "
+        f"{len(fleet.links)} cross-repo link(s), "
+        f"{len(fleet.cross_boundary)} cross-boundary + {len(fleet.trust_gaps)} trust-gap + "
+        f"{len(fleet.cross_repo_anomalies)} anomaly (all speculative). "
         f"Summary written to: {(output_root / 'fleet-summary.md').resolve()}"
     )
 

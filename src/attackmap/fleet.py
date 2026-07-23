@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .contracts import ContractLink
-from .crossrepo import CrossBoundaryFlow
+from .crossrepo import CrossBoundaryFlow, CrossRepoAnomaly, TrustGap
 
 if TYPE_CHECKING:
     from .models import AttackPath, Finding, ScanResult
@@ -93,6 +93,9 @@ class FleetScan:
     links: list[ContractLink] = field(default_factory=list)
     # Cross-boundary trust flows (#146c) — confused-deputy leads over the links.
     cross_boundary: list[CrossBoundaryFlow] = field(default_factory=list)
+    # Trust-assumption gaps + cross-repo anomalies (#146d / #149b).
+    trust_gaps: list[TrustGap] = field(default_factory=list)
+    cross_repo_anomalies: list[CrossRepoAnomaly] = field(default_factory=list)
 
     @property
     def repo_count(self) -> int:
@@ -193,7 +196,50 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         lines.append("_No cross-boundary trust flows detected._")
         lines.append("")
 
-    lines.append("_Trust-assumption-gap and cross-repo anomaly detection land in #146d._")
+    loc = lambda f, ln: f"{f}:{ln}" if ln else f  # noqa: E731
+
+    lines.append("## Trust-assumption gaps (#146d)")
+    lines.append("")
+    if fleet.trust_gaps:
+        lines.append(
+            f"{len(fleet.trust_gaps)} SPECULATIVE gap(s) — a state-changing call "
+            "crosses a link to a route the callee serves with no auth control "
+            "(if each side assumes the other enforces, nobody does):"
+        )
+        lines.append("")
+        for g in fleet.trust_gaps:
+            lines.append(
+                f"- **[{g.severity.upper()}, SPECULATIVE]** `{g.client_repo}` calls "
+                f"`{g.method} {g.route}` on `{g.server_repo}`, which enforces no "
+                f"authentication. Caller: `{g.client_target}` "
+                f"[{loc(g.client_file, g.client_line)}]; callee route: "
+                f"[{loc(g.server_file, g.server_line)}]."
+            )
+        lines.append("")
+    else:
+        lines.append("_No trust-assumption gaps detected._")
+        lines.append("")
+
+    lines.append("## Cross-repo anomalies (#149b)")
+    lines.append("")
+    if fleet.cross_repo_anomalies:
+        lines.append(
+            f"{len(fleet.cross_repo_anomalies)} SPECULATIVE outlier(s) — a service "
+            "that omits an auth control its siblings enforce on the same route:"
+        )
+        lines.append("")
+        for a in fleet.cross_repo_anomalies:
+            peers = ", ".join(f"`{p}`" for p in a.peers)
+            lines.append(
+                f"- **[{a.severity.upper()}, SPECULATIVE]** `{a.repo}` serves "
+                f"`{a.method} {a.route}` with no auth, but {peers} guard the same "
+                f"`/{a.template}` route."
+            )
+        lines.append("")
+    else:
+        lines.append("_No cross-repo control anomalies detected._")
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -269,6 +315,35 @@ def fleet_summary_json(fleet: FleetScan) -> dict:
                 else cb.server_file,
             }
             for cb in fleet.cross_boundary
+        ],
+        "trust_gaps": [
+            {
+                "client_repo": g.client_repo,
+                "server_repo": g.server_repo,
+                "method": g.method,
+                "route": g.route,
+                "severity": g.severity,
+                "speculative": True,
+                "client_location": f"{g.client_file}:{g.client_line}"
+                if g.client_line
+                else g.client_file,
+                "server_location": f"{g.server_file}:{g.server_line}"
+                if g.server_line
+                else g.server_file,
+            }
+            for g in fleet.trust_gaps
+        ],
+        "cross_repo_anomalies": [
+            {
+                "repo": a.repo,
+                "method": a.method,
+                "route": a.route,
+                "template": a.template,
+                "peers": list(a.peers),
+                "severity": a.severity,
+                "speculative": True,
+            }
+            for a in fleet.cross_repo_anomalies
         ],
     }
 

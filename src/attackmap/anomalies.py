@@ -195,6 +195,32 @@ def find_anomalies(
     return out
 
 
+def route_auth_signals(
+    scan: ScanResult, root: str | Path | None = None
+) -> dict[tuple[str, str, str], bool]:
+    """Per-route authentication/authorization presence for one repo.
+
+    Maps ``(file, method, path)`` → whether an auth/authorization marker appears
+    within that route handler's own span (the same span-bounded detection the
+    within-repo `auth_outlier` pass uses). Exposed for cross-repo trust analysis
+    (#146d): the fleet layer runs it per repo — each with its own root — to spot
+    an unauthenticated route reached across a service boundary, and the sibling
+    service that omits an auth control its peers enforce."""
+    root_path = Path(root or scan.root).resolve()
+    routes = [r for r in scan.routes if not is_test_file(r.file)]
+    line_cache: dict[str, list[str]] = {}
+    file_route_lines: dict[str, list[int]] = {}
+    for route in routes:
+        if route.line is not None:
+            file_route_lines.setdefault(route.file, []).append(route.line)
+    for lines in file_route_lines.values():
+        lines.sort()
+    ctx = _SignalCtx(root_path, line_cache, file_route_lines)
+    return {
+        (r.file, r.method, r.path): _route_has_signal(r, ctx, _AUTH_MARKERS) for r in routes
+    }
+
+
 # --- Heuristics ------------------------------------------------------------
 
 
@@ -608,4 +634,4 @@ def _file_lines(rel_file: str, ctx: _SignalCtx) -> list[str]:
     return lines
 
 
-__all__ = ["find_anomalies"]
+__all__ = ["find_anomalies", "route_auth_signals"]
