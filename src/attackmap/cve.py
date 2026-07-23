@@ -189,27 +189,21 @@ def query_vulnerabilities(
             if not isinstance(result, dict):
                 result = {}
             if result.get("next_page_token"):
-                # A package with >page of advisories (rare): fall back to the
-                # classic single query, which returns everything at once.
-                payload = _fetch_osv(osv_eco, name, concrete, transport, summary)
-                if payload is None:
-                    if progress is not None:
-                        progress.advance(name)
-                    continue
+                # A package with >1 page of advisories (rare): fall back to
+                # the classic single query, following ITS pagination too —
+                # exactly these high-advisory packages paginate there as well.
+                payload = _fetch_osv_paged(osv_eco, name, concrete, transport, summary)
             else:
-                full_entries = []
-                for ref in result.get("vulns") or []:
-                    vuln_id = str(ref.get("id", "")) if isinstance(ref, dict) else ""
-                    if not vuln_id:
-                        continue
-                    entry = details_memo.get(vuln_id)
-                    if entry is None:
-                        entry = _fetch_osv_vuln(vuln_id, transport, summary)
-                        if entry is None:
-                            continue
-                        details_memo[vuln_id] = entry
-                    full_entries.append(entry)
-                payload = {"vulns": full_entries} if full_entries else {}
+                # Assemble the full advisory records for this package. If any
+                # detail fetch fails, the package must NOT be cached — a
+                # partial payload would suppress a known vulnerability for the
+                # whole cache TTL. Treat it as offline for this run instead.
+                payload = _assemble_details(result, details_memo, transport, summary)
+            if payload is None:
+                summary.skipped_offline += 1
+                if progress is not None:
+                    progress.advance(name)
+                continue
             payload_by_key[key] = payload
             _write_cache(cache / (_cache_key(*key) + ".json"), payload, now)
             summary.queried += 1
@@ -523,6 +517,75 @@ def _fetch_osv_batch(
     return results
 
 
+def _assemble_details(
+    result: dict,
+    details_memo: dict[str, dict],
+    transport: Callable[[str, bytes], bytes] | None,
+    summary: LookupSummary,
+) -> dict | None:
+    """Turn one batch result's ID references into full advisory records.
+
+    Returns ``None`` if any advertised detail could not be fetched — the
+    caller must then skip caching the package, because caching a partial
+    payload would suppress a known vulnerability for the whole TTL (P1).
+    """
+    full_entries = []
+    for ref in result.get("vulns") or []:
+        vuln_id = str(ref.get("id", "")) if isinstance(ref, dict) else ""
+        if not vuln_id:
+            continue  # shape anomaly, not a fetch failure — nothing to fetch
+        entry = details_memo.get(vuln_id)
+        if entry is None:
+            entry = _fetch_osv_vuln(vuln_id, transport, summary)
+            if entry is None:
+                return None
+            details_memo[vuln_id] = entry
+        full_entries.append(entry)
+    return {"vulns": full_entries} if full_entries else {}
+
+
+def _fetch_osv_paged(
+    osv_ecosystem: str,
+    name: str,
+    version: str,
+    transport: Callable[[str, bytes], bytes] | None,
+    summary: LookupSummary,
+) -> dict | None:
+    """Classic ``POST /v1/query``, following ``next_page_token`` to the end.
+
+    Returns the union of all pages' ``vulns``, or ``None`` if any page fails
+    — never a partial result, for the same don't-cache-partials reason as
+    :func:`_assemble_details` (P2: single-query responses paginate too).
+    """
+    all_vulns: list[dict] = []
+    page_token: str | None = None
+    while True:
+        query: dict = {
+            "package": {"name": name, "ecosystem": osv_ecosystem},
+            "version": version,
+        }
+        if page_token:
+            query["page_token"] = page_token
+        raw = _http(_OSV_QUERY_URL, json.dumps(query).encode("utf-8"), transport, summary)
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        except json.JSONDecodeError:
+            summary.network_errors += 1
+            return None
+        if not isinstance(payload, dict):
+            summary.network_errors += 1
+            return None
+        all_vulns.extend(payload.get("vulns") or [])
+        page_token = payload.get("next_page_token")
+        if not page_token:
+            break
+        if transport is None:
+            time.sleep(_INTER_REQUEST_SLEEP_S)
+    return {"vulns": all_vulns} if all_vulns else {}
+
+
 def _fetch_osv_vuln(
     vuln_id: str,
     transport: Callable[[str, bytes], bytes] | None,
@@ -565,40 +628,6 @@ def _http(
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         summary.network_errors += 1
         logger.debug("OSV network error for %s: %s", url, exc)
-        return None
-
-
-def _fetch_osv(
-    osv_ecosystem: str,
-    name: str,
-    version: str,
-    transport: Callable[[str, bytes], bytes] | None,
-    summary: LookupSummary,
-) -> dict | None:
-    body = json.dumps(
-        {"package": {"name": name, "ecosystem": osv_ecosystem}, "version": version}
-    ).encode("utf-8")
-    try:
-        if transport is not None:
-            raw = transport(_OSV_QUERY_URL, body)
-        else:
-            request = urllib.request.Request(
-                _OSV_QUERY_URL,
-                data=body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
-                raw = response.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        summary.network_errors += 1
-        summary.skipped_offline += 1
-        logger.debug("OSV network error for %s/%s@%s: %s", osv_ecosystem, name, version, exc)
-        return None
-    try:
-        return json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
-    except json.JSONDecodeError:
-        summary.network_errors += 1
         return None
 
 

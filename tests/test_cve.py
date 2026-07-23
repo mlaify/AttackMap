@@ -321,6 +321,63 @@ def test_query_fetches_shared_vuln_details_once(tmp_path: Path) -> None:
     assert len(detail_calls) == 1
 
 
+def test_query_failed_detail_fetch_is_not_cached(tmp_path: Path) -> None:
+    """Codex P1: if the batch names an advisory but its /v1/vulns/{id} fetch
+    fails, the package must NOT be cached — a cached partial/empty payload
+    would suppress a known vulnerability for the whole TTL. The next run
+    (connectivity restored) must query again and surface the vuln."""
+    from attackmap.cve import _OSV_VULNS_URL
+
+    good_transport, _ = _stub_transport({"sample-pkg": {"vulns": [_osv_vuln()]}})
+
+    def flaky_transport(url: str, body: bytes) -> bytes:
+        if url.startswith(_OSV_VULNS_URL):
+            raise OSError("transient network error")
+        return good_transport(url, body)
+
+    vulns1, s1 = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=flaky_transport)
+    assert vulns1 == []
+    assert s1.queried == 0
+    assert s1.skipped_offline == 1
+
+    # Connectivity restored: no stale cache entry may mask the advisory.
+    vulns2, s2 = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=good_transport)
+    assert [v.id for v in vulns2] == ["GHSA-test-1234"]
+    assert s2.queried == 1
+    assert s2.cached == 0
+
+
+def test_query_fallback_follows_single_query_pagination(tmp_path: Path) -> None:
+    """Codex P2: the single-query fallback must follow /v1/query's OWN
+    next_page_token — the high-advisory packages that enter this branch
+    paginate there too. All pages' vulns are merged; nothing is dropped."""
+    from attackmap.cve import _OSV_BATCH_URL, _OSV_QUERY_URL
+
+    page1 = {"vulns": [_osv_vuln("GHSA-page1-1")], "next_page_token": "page2"}
+    page2 = {"vulns": [_osv_vuln("GHSA-page2-1")]}
+
+    def transport(url: str, body: bytes) -> bytes:
+        if url == _OSV_BATCH_URL:
+            return json.dumps(
+                {"results": [{"vulns": [{"id": "GHSA-page1-1", "modified": ""}], "next_page_token": "tok"}]}
+            ).encode("utf-8")
+        if url == _OSV_QUERY_URL:
+            request = json.loads(body.decode("utf-8"))
+            return json.dumps(page2 if request.get("page_token") == "page2" else page1).encode("utf-8")
+        raise AssertionError(f"unexpected URL {url}")
+
+    vulns, summary = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=transport)
+    assert sorted(v.id for v in vulns) == ["GHSA-page1-1", "GHSA-page2-1"]
+    assert summary.queried == 1
+
+    # And the complete (both-pages) payload is what got cached.
+    vulns_cached, s2 = query_vulnerabilities(
+        [_dep()], cache_dir=tmp_path, transport=transport
+    )
+    assert sorted(v.id for v in vulns_cached) == ["GHSA-page1-1", "GHSA-page2-1"]
+    assert s2.cached == 1
+
+
 def test_query_paginated_batch_result_falls_back_to_single_query(tmp_path: Path) -> None:
     """A batch result carrying next_page_token (rare: >1 page of advisories
     for one package) falls back to the classic full /v1/query for it."""
