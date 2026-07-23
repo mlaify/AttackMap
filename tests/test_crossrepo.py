@@ -291,3 +291,38 @@ def test_cross_repo_anomaly_all_consistent_no_flag() -> None:
         repos.append(r)
         auth[name] = am
     assert find_cross_repo_anomalies(repos, auth) == []
+
+
+# ---------------------------------------------------------------------------
+# Codex review regressions (#146d)
+# ---------------------------------------------------------------------------
+
+
+def test_trust_gap_any_route_uses_client_verb() -> None:
+    # Server route method is ANY (e.g. XRPC surface); client POSTs → still a gap.
+    link = ContractLink(
+        client_repo="client", server_repo="server", method="ANY",
+        path_template="xrpc/com.example.write/*", client_target="http://svc/xrpc/com.example.write/x",
+        client_file="c.py", client_line=4, server_route_path="/xrpc/com.example.write/<x>",
+        server_file="s.py", server_line=5, client_method="POST",
+    )
+    server = ScanResult(root="server", routes=[_route("/xrpc/com.example.write/<x>", "ANY")])
+    auth = {"server": {("s.py", "ANY", "/xrpc/com.example.write/<x>"): False}}
+    gaps = find_trust_gaps([link], [("server", server)], auth)
+    assert len(gaps) == 1
+    assert gaps[0].method == "POST"  # concrete client verb, not ANY
+
+
+def test_cross_repo_anomaly_does_not_mix_methods() -> None:
+    # Two authed GETs + one unauthed POST on the same path must NOT form a cohort
+    # (different verbs are different routes).
+    def repo(name, method, authed):
+        scan = ScanResult(root=name, routes=[_route("/users/<id>", method, file="app.py", line=1)])
+        return (name, scan), {name: {("app.py", method, "/users/<id>"): authed}}
+
+    r1, a1 = repo("a", "GET", True)
+    r2, a2 = repo("b", "GET", True)
+    r3, a3 = repo("c", "POST", False)
+    auth = {**a1, **a2, **a3}
+    # The POST cohort has only 1 repo (<3) and the GET cohort is all-authed → nothing fires.
+    assert find_cross_repo_anomalies([r1, r2, r3], auth) == []

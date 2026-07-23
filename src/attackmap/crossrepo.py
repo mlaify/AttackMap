@@ -250,9 +250,20 @@ def find_trust_gaps(
         if server is None:
             continue
         route = _matching_route(server, link)
+        if route is None:
+            continue
         # Only state-changing actions — a public read is commonly intentional,
         # so requiring a write keeps this to the high-signal "unauth mutation".
-        if route is None or (route.method or "").upper() not in _WRITE_METHODS:
+        # When the server route is method-unspecified (`ANY`, e.g. an XRPC
+        # surface), fall back to the caller's concrete verb so a known POST/PUT/
+        # PATCH/DELETE call still counts.
+        route_method = (route.method or "ANY").upper()
+        client_method = (link.client_method or "").upper()
+        if route_method in _WRITE_METHODS:
+            verb = route_method
+        elif route_method in {"", "ANY"} and client_method in _WRITE_METHODS:
+            verb = client_method
+        else:
             continue
         amap = auth_by_repo.get(link.server_repo, {})
         # Default True (assume protected) when unknown — never over-fire on a
@@ -267,7 +278,7 @@ def find_trust_gaps(
             TrustGap(
                 client_repo=link.client_repo,
                 server_repo=link.server_repo,
-                method=(route.method or "ANY").upper(),
+                method=verb,
                 route=route.path,
                 client_target=link.client_target,
                 client_file=link.client_file,
@@ -288,9 +299,11 @@ def find_cross_repo_anomalies(
     "enforces" a template when every route it serves under that template carries
     an auth signal. Requires a cohort of ≥3 repos and a strong-majority split, so
     a genuinely-split surface isn't nagged. Speculative."""
-    # template -> repo -> list[has_auth] ; plus a representative route per (t,repo)
-    cohort: dict[str, dict[str, list[bool]]] = {}
-    example: dict[tuple[str, str], Route] = {}
+    # (template, method) -> repo -> list[has_auth] ; a representative route per
+    # (template, method, repo). Method is part of the cohort key so a GET and a
+    # POST on the same path aren't treated as the same route (they aren't).
+    cohort: dict[tuple[str, str], dict[str, list[bool]]] = {}
+    example: dict[tuple[str, str, str], Route] = {}
     for repo, scan in repo_scans:
         amap = auth_by_repo.get(repo, {})
         for r in scan.routes:
@@ -299,12 +312,13 @@ def find_cross_repo_anomalies(
             template = route_template(r.path)
             if template is None:
                 continue
+            key = (template, (r.method or "ANY").upper())
             authed = amap.get((r.file, r.method, r.path), False)
-            cohort.setdefault(template, {}).setdefault(repo, []).append(authed)
-            example.setdefault((template, repo), r)
+            cohort.setdefault(key, {}).setdefault(repo, []).append(authed)
+            example.setdefault((*key, repo), r)
 
     out: list[CrossRepoAnomaly] = []
-    for template, by_repo in cohort.items():
+    for (template, method), by_repo in cohort.items():
         if len(by_repo) < 3:  # need enough siblings to establish a norm
             continue
         enforcing = {repo for repo, flags in by_repo.items() if all(flags)}
@@ -313,17 +327,17 @@ def find_cross_repo_anomalies(
             continue
         peers = tuple(sorted(enforcing))
         for repo in omitting:
-            r = example[(template, repo)]
+            r = example[(template, method, repo)]
             out.append(
                 CrossRepoAnomaly(
                     repo=repo,
-                    method=(r.method or "ANY").upper(),
+                    method=method,
                     route=r.path,
                     template=template,
                     peers=peers,
                 )
             )
-    out.sort(key=lambda a: (a.template, a.repo))
+    out.sort(key=lambda a: (a.template, a.method, a.repo))
     return out
 
 
