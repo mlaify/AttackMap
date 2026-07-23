@@ -263,11 +263,29 @@ def _parse_pnpm_lock(path: Path) -> _Graph | None:
         import yaml
     except ImportError:  # pragma: no cover - PyYAML is a declared dependency
         return None
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
+    # pnpm-lock is normally a single YAML document, but some files concatenate
+    # several with `---` separators (e.g. a merge artifact, or a tool that
+    # appends per-workspace lockfiles). Parse every document and merge them, and
+    # never let a malformed-YAML error abort the whole scan — a lockfile we can't
+    # read just yields no dependency hints.
+    try:
+        documents = [
+            doc
+            for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+            if isinstance(doc, dict)
+        ]
+    except yaml.YAMLError:
+        return None
+    if not documents:
         return None
     graph = _Graph(ecosystem="npm")
+    for data in documents:
+        _absorb_pnpm_document(data, graph)
+    return graph
 
+
+def _absorb_pnpm_document(data: dict, graph: _Graph) -> None:
+    """Fold one parsed pnpm-lock YAML document into ``graph`` (roots + packages)."""
     # Roots: importers.'.'.{dependencies,devDependencies} (v6+) or top-level.
     importers = data.get("importers")
     root_sections = []
@@ -285,7 +303,7 @@ def _parse_pnpm_lock(path: Path) -> _Graph | None:
 
     packages = data.get("packages")
     if not isinstance(packages, dict):
-        return graph
+        return
     for raw_key, meta in packages.items():
         m = _PNPM_PKG_KEY_RE.match(str(raw_key))
         if not m:
@@ -302,7 +320,6 @@ def _parse_pnpm_lock(path: Path) -> _Graph | None:
                     children.update(deps.keys())
             if children:
                 graph.edges.setdefault(name, set()).update(children)
-    return graph
 
 
 # --- pypi: poetry.lock / uv.lock; cargo: Cargo.lock (all TOML [[package]]) --

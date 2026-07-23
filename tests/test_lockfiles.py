@@ -211,6 +211,60 @@ packages:
     assert by_name["minimist"].version == "1.2.5"
 
 
+def test_pnpm_lock_multi_document_merges_all(tmp_path: Path) -> None:
+    # Some pnpm-lock.yaml files concatenate several YAML documents with `---`
+    # separators (seen in the wild, e.g. bluesky-social/atproto). A single-doc
+    # load raises yaml.ComposerError and previously aborted the whole scan
+    # (regression). We must parse every document and merge them.
+    (tmp_path / "pnpm-lock.yaml").write_text(
+        """---
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      lodash:
+        specifier: ^4.17.0
+        version: 4.17.21
+packages:
+  lodash@4.17.21:
+    resolution: {integrity: sha512-abc}
+---
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      express:
+        specifier: ^4.18.0
+        version: 4.18.2
+packages:
+  express@4.18.2:
+    resolution: {integrity: sha512-def}
+""",
+        encoding="utf-8",
+    )
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert ("npm", ".") in superseded
+    by_name = _by_name(hints)
+    # Both documents contribute their packages and roots.
+    assert by_name["lodash"].version == "4.17.21"
+    assert by_name["express"].version == "4.18.2"
+    assert by_name["lodash"].direct is True
+    assert by_name["express"].direct is True
+
+
+def test_pnpm_lock_malformed_yaml_yields_no_hints_without_crashing(tmp_path: Path) -> None:
+    # A lockfile we can't parse must never abort the scan — it just yields
+    # no dependency hints.
+    (tmp_path / "pnpm-lock.yaml").write_text(
+        "lockfileVersion: '9.0'\npackages:\n  - : : broken\n   bad indent\n",
+        encoding="utf-8",
+    )
+    # The key property: the call returns (a list) instead of raising a
+    # yaml.YAMLError that would abort the scan.
+    hints, superseded = parse_lockfiles(tmp_path)
+    assert isinstance(hints, list)
+
+
 def test_uv_local_project_excluded_and_deps_direct(tmp_path: Path) -> None:
     # The project package (editable source) is not an SBOM entry; its deps
     # are the direct dependencies.
