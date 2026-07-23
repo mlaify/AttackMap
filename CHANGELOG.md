@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.26] - 2026-07-23
+
+### Fixed
+
+- **Multi-document `pnpm-lock.yaml` no longer aborts the scan.** Some pnpm
+  lockfiles concatenate several YAML documents with `---` separators (seen in
+  the wild, e.g. `bluesky-social/atproto`). `_parse_pnpm_lock` loaded the file
+  with a single-document `yaml.safe_load`, which raised `yaml.ComposerError`;
+  because `parse_lockfiles` didn't catch `yaml.YAMLError`, the exception
+  propagated out of `analyze_sbom` and crashed the entire `analyze` run
+  (exit 1, no report). The parser now reads **every** document via
+  `safe_load_all` and merges their roots + packages, and treats an unparseable
+  lockfile as "no hints" rather than a fatal error — a single bad dependency
+  file can never sink a scan.
+
 ## [0.4.25] - 2026-07-22
 
 ### Added
