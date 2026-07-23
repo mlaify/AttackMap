@@ -7,9 +7,16 @@ and doesn't belong in an offline-only scan.
 
 ## Design summary
 
-- **Endpoint**: ``POST https://api.osv.dev/v1/query`` per (ecosystem,
-  name, version). Full details in a single response; simpler cache
-  semantics than the batch + fetch-by-id combo.
+- **Endpoints**: ``POST https://api.osv.dev/v1/querybatch`` in chunks of
+  up to ``_BATCH_SIZE`` (ecosystem, name, version) tuples — one request
+  covers hundreds of packages instead of one request per package (a
+  lockfile-resolved monorepo can carry thousands of pinned deps; per-
+  package queries took ~15 minutes on such repos). The batch response
+  carries vulnerability IDs only, so full records are then fetched via
+  ``GET https://api.osv.dev/v1/vulns/{id}`` — but only for the handful
+  of packages that actually have advisories, memoized per run. A batch
+  result that paginates (``next_page_token``, rare) falls back to the
+  classic ``POST /v1/query`` for that one package.
 - **Concrete version resolution**: OSV needs a concrete version to
   match against affected ranges. Manifests carry range specs
   (``^4.16.0``, ``>=2.28,<3``, ``latest``); we extract a best-effort
@@ -48,6 +55,10 @@ logger = logging.getLogger(__name__)
 
 
 _OSV_QUERY_URL = "https://api.osv.dev/v1/query"
+_OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+_OSV_VULNS_URL = "https://api.osv.dev/v1/vulns/"
+# OSV accepts up to 1000 queries per batch call; stay comfortably under.
+_BATCH_SIZE = 500
 _OSV_ECOSYSTEM: dict[str, str] = {
     "pypi": "PyPI",
     "npm": "npm",
@@ -85,6 +96,7 @@ def query_vulnerabilities(
     cache_dir: Path | None = None,
     transport: Callable[[str, bytes], bytes] | None = None,
     clock: Callable[[], float] | None = None,
+    progress=None,
 ) -> tuple[list[Vulnerability], LookupSummary]:
     """Look up CVEs for each ``DependencyHint`` and return records.
 
@@ -98,9 +110,15 @@ def query_vulnerabilities(
         supply a per-test tmpdir here.
     transport
         Injectable network transport ``(url, body) -> response_bytes``.
-        Tests pass a stub; default is urllib.
+        Tests pass a stub; default is urllib. Detail lookups pass an
+        empty body (a GET in the default transport).
     clock
         Injectable ``time.time`` for deterministic cache-TTL tests.
+    progress
+        Optional duck-typed progress sink with ``begin(total, label)``
+        and ``advance(current)`` — the CLI passes its ``ScanProgress``
+        so a long lookup renders as a determinate bar, not a stalled
+        spinner.
     """
     cache = _resolve_cache_dir(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
@@ -111,6 +129,12 @@ def query_vulnerabilities(
     summary = LookupSummary()
     seen_keys: set[tuple[str, str, str, str]] = set()
 
+    # Pass 1 — resolve each hint to a concrete queryable version and dedupe
+    # to unique (ecosystem, name, version) packages. A lockfile monorepo can
+    # carry thousands of hints; querying per unique package (batched below)
+    # instead of per hint is what keeps --cve tractable.
+    entries: list[tuple[DependencyHint, tuple[str, str, str]]] = []
+    unique: dict[tuple[str, str, str], tuple[str, str, str]] = {}  # key -> (osv_eco, name, concrete)
     for dep in dependencies:
         osv_eco = _OSV_ECOSYSTEM.get(dep.ecosystem)
         if osv_eco is None:
@@ -125,21 +149,82 @@ def query_vulnerabilities(
         if concrete is None:
             summary.skipped_no_version += 1
             continue
-
         key = (dep.ecosystem, dep.name, concrete)
-        cache_path = cache / (_cache_key(*key) + ".json")
+        entries.append((dep, key))
+        unique.setdefault(key, (osv_eco, dep.name, concrete))
 
-        payload: dict | None = _read_cache(cache_path, now, ttl_seconds)
+    if progress is not None:
+        progress.begin(len(unique), label="Checking dependencies against OSV.dev")
+
+    # Pass 2 — serve unique packages from the cache where fresh.
+    payload_by_key: dict[tuple[str, str, str], dict] = {}
+    for key in unique:
+        cache_path = cache / (_cache_key(*key) + ".json")
+        payload = _read_cache(cache_path, now, ttl_seconds)
         if payload is not None:
+            payload_by_key[key] = payload
             summary.cached += 1
-        else:
-            payload = _fetch_osv(osv_eco, dep.name, concrete, transport, summary)
-            if payload is None:
-                continue  # skipped_offline / network_errors already tallied
-            _write_cache(cache_path, payload, now)
+            if progress is not None:
+                progress.advance(key[1])
+
+    # Pass 3 — batch-query the misses (one POST per _BATCH_SIZE packages),
+    # then fetch full advisory records only for the IDs that actually hit,
+    # memoized so a CVE shared by many packages is fetched once.
+    misses = [key for key in unique if key not in payload_by_key]
+    details_memo: dict[str, dict] = {}
+    for start in range(0, len(misses), _BATCH_SIZE):
+        chunk = misses[start : start + _BATCH_SIZE]
+        results = _fetch_osv_batch([unique[key] for key in chunk], transport, summary)
+        if results is None:
+            # Whole batch unreachable — same offline semantics as before,
+            # tallied per package so the summary line stays meaningful.
+            summary.skipped_offline += len(chunk)
+            if progress is not None:
+                for key in chunk:
+                    progress.advance(key[1])
+            continue
+        for key, result in zip(chunk, results):
+            osv_eco, name, concrete = unique[key]
+            payload: dict | None
+            if not isinstance(result, dict):
+                result = {}
+            if result.get("next_page_token"):
+                # A package with >page of advisories (rare): fall back to the
+                # classic single query, which returns everything at once.
+                payload = _fetch_osv(osv_eco, name, concrete, transport, summary)
+                if payload is None:
+                    if progress is not None:
+                        progress.advance(name)
+                    continue
+            else:
+                full_entries = []
+                for ref in result.get("vulns") or []:
+                    vuln_id = str(ref.get("id", "")) if isinstance(ref, dict) else ""
+                    if not vuln_id:
+                        continue
+                    entry = details_memo.get(vuln_id)
+                    if entry is None:
+                        entry = _fetch_osv_vuln(vuln_id, transport, summary)
+                        if entry is None:
+                            continue
+                        details_memo[vuln_id] = entry
+                    full_entries.append(entry)
+                payload = {"vulns": full_entries} if full_entries else {}
+            payload_by_key[key] = payload
+            _write_cache(cache / (_cache_key(*key) + ".json"), payload, now)
             summary.queried += 1
-            if transport is None:
-                time.sleep(_INTER_REQUEST_SLEEP_S)
+            if progress is not None:
+                progress.advance(name)
+        if transport is None and start + _BATCH_SIZE < len(misses):
+            time.sleep(_INTER_REQUEST_SLEEP_S)
+
+    # Pass 4 — fan the per-package payloads back out to every hint (dedup by
+    # (eco, name, version, id) keeps multi-lockfile repeats from double-emitting).
+    for dep, key in entries:
+        payload = payload_by_key.get(key)
+        if payload is None:
+            continue
+        concrete = key[2]
 
         for entry in payload.get("vulns") or []:
             vuln = _entry_to_vulnerability(entry, dep, concrete)
@@ -402,6 +487,85 @@ def _write_cache(path: Path, payload: dict, now: float) -> None:
     except OSError:
         # Cache is a nice-to-have; a write failure shouldn't sink the run.
         pass
+
+
+def _fetch_osv_batch(
+    packages: list[tuple[str, str, str]],
+    transport: Callable[[str, bytes], bytes] | None,
+    summary: LookupSummary,
+) -> list[dict] | None:
+    """One ``POST /v1/querybatch`` for up to ``_BATCH_SIZE`` packages.
+
+    Returns the ``results`` list (aligned with ``packages`` by index — OSV
+    guarantees request order) or ``None`` on a network/shape failure, in
+    which case the whole chunk is treated as offline.
+    """
+    body = json.dumps(
+        {
+            "queries": [
+                {"package": {"name": name, "ecosystem": osv_eco}, "version": version}
+                for osv_eco, name, version in packages
+            ]
+        }
+    ).encode("utf-8")
+    raw = _http(_OSV_BATCH_URL, body, transport, summary)
+    if raw is None:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except json.JSONDecodeError:
+        summary.network_errors += 1
+        return None
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list) or len(results) != len(packages):
+        summary.network_errors += 1
+        return None
+    return results
+
+
+def _fetch_osv_vuln(
+    vuln_id: str,
+    transport: Callable[[str, bytes], bytes] | None,
+    summary: LookupSummary,
+) -> dict | None:
+    """Fetch one full advisory record via ``GET /v1/vulns/{id}``."""
+    raw = _http(_OSV_VULNS_URL + vuln_id, b"", transport, summary)
+    if raw is None:
+        return None
+    try:
+        entry = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except json.JSONDecodeError:
+        summary.network_errors += 1
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _http(
+    url: str,
+    body: bytes,
+    transport: Callable[[str, bytes], bytes] | None,
+    summary: LookupSummary,
+) -> bytes | None:
+    """One HTTP exchange: POST when ``body`` is non-empty, GET otherwise.
+
+    The injectable ``transport`` sees ``(url, body)`` either way, so test
+    stubs dispatch on the URL.
+    """
+    try:
+        if transport is not None:
+            return transport(url, body)
+        request = urllib.request.Request(
+            url,
+            data=body or None,
+            headers={"Content-Type": "application/json"} if body else {},
+            method="POST" if body else "GET",
+        )
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
+            return response.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        summary.network_errors += 1
+        logger.debug("OSV network error for %s: %s", url, exc)
+        return None
 
 
 def _fetch_osv(

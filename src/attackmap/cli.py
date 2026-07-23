@@ -126,7 +126,9 @@ def _run_fleet(
         )
         if cve and scan.dependencies:
             try:
-                vulns, _cve_summary = query_vulnerabilities(scan.dependencies)
+                vulns, _cve_summary = query_vulnerabilities(
+                    scan.dependencies, progress=scan_progress
+                )
             finally:
                 scan_progress.done()
             scan.vulnerabilities = vulns
@@ -434,9 +436,13 @@ def analyze(
         )
     if cve and scan.dependencies:
         typer.echo(f"Checking {len(scan.dependencies)} dependencies against OSV.dev…")
-        scan_progress.stage(f"Checking {len(scan.dependencies)} dependencies against OSV.dev")
+        # query_vulnerabilities drives a determinate begin/advance bar itself
+        # (per unique package), so big lockfile trees show real progress + ETA
+        # instead of an indeterminate spinner.
         try:
-            vulns, cve_summary = query_vulnerabilities(scan.dependencies)
+            vulns, cve_summary = query_vulnerabilities(
+                scan.dependencies, progress=scan_progress
+            )
         finally:
             scan_progress.done()
         scan.vulnerabilities = vulns

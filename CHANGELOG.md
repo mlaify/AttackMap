@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.27] - 2026-07-23
+
+### Fixed
+
+- **`--cve` no longer crawls for ~15 minutes on big lockfile trees.** The OSV
+  lookup queried `POST /v1/query` once per dependency, sequentially, with an
+  inter-request sleep — after 0.4.26 taught the pnpm parser to read full
+  multi-document lockfiles, a monorepo like `bluesky-social/atproto` resolved
+  to ~2,100 unique packages and the CVE pass sat behind an indeterminate
+  spinner for the duration. The lookup now dedupes hints to unique
+  (ecosystem, name, version) packages, queries **`POST /v1/querybatch`** in
+  chunks of 500, and fetches full advisory records (`GET /v1/vulns/{id}`)
+  only for the packages that actually hit — memoized so a shared CVE is
+  fetched once. Measured on atproto cold-cache: **54s** (was ~14min), 278
+  vulnerabilities, identical output shape. Batch results that paginate fall
+  back to the classic single query for that package; the per-package cache
+  format is unchanged, so existing warm caches keep working.
+
+### Changed
+
+- **`--cve` now reports determinate progress.** The CVE pass drives the
+  progress sink per unique package (`begin`/`advance`), so the TTY shows a
+  real bar + ETA and GUI front-ends (NDJSON progress) render live progress
+  instead of a stalled "checking dependencies" spinner.
+
 ## [0.4.26] - 2026-07-23
 
 ### Fixed
