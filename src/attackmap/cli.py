@@ -18,6 +18,7 @@ from .analyzers import (
 )
 from .cve import query_vulnerabilities
 from .contracts import link_contracts
+from .crossrepo import find_cross_boundary_flows
 from .fleet import (
     FleetRepoResult,
     FleetScan,
@@ -182,7 +183,10 @@ def _run_fleet(
 
     # Cross-repo contract linking (#146b): match one repo's outbound calls to
     # another repo's routes, over the assembled fleet.
-    fleet.links = link_contracts([(r.repo_id, r.scan) for r in fleet.results])
+    repo_scans = [(r.repo_id, r.scan) for r in fleet.results]
+    fleet.links = link_contracts(repo_scans)
+    # Cross-boundary trust flows (#146c): confused-deputy leads over the links.
+    fleet.cross_boundary = find_cross_boundary_flows(fleet.links, repo_scans)
 
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "fleet-summary.md").write_text(

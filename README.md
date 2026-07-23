@@ -81,8 +81,13 @@ repo's outbound HTTP calls to another repo's routes (by normalized path template
 + method — `base + "/api/orders/" + id` in a caller aligns with `/api/orders/{id}`
 served elsewhere), lists each client→server link (citing both sides) in the fleet
 summary, and renders the repo-to-repo graph to `reports/fleet-graph.md`.
-Single-repo behavior is unchanged. Cross-boundary taint and trust-gap detection
-over these links build on the fleet view (epic #150).
+
+Over those links it then flags **cross-boundary trust** (confused-deputy) risks:
+a value one repo forwards across a link that the callee trusts into a dangerous
+sink or an unguarded object access — each repo looks locally fine; the bug is in
+the seam. These are marked **speculative** (leads to adjudicate, citing both the
+caller and callee sites) and listed in the fleet summary. Single-repo behavior is
+unchanged; trust-assumption-gap detection builds on the fleet view next (epic #150).
 
 ---
 
