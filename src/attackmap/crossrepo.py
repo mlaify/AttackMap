@@ -31,22 +31,20 @@ from .contracts import ContractLink
 from .models import ScanResult, TaintChain
 
 # Sink kinds whose reach from a caller-supplied value is a real cross-boundary
-# risk. (Same dangerous set the single-repo taint findings surface; the
-# feeds-attack-path-only kinds like `sql_execute`/`dynamic_open` are included
-# here because across a trust boundary they are the classic confused-deputy.)
-_DANGEROUS_SINKS = frozenset(
-    {
-        "sql_execute",
-        "subprocess_shell",
-        "eval",
-        "exec",
-        "unsafe_deserialization",
-        "ssti",
-        "ssrf",
-        "nosql_injection",
-        "dynamic_open",
-    }
+# risk, split by severity to mirror the single-repo taint policy: injection /
+# code-exec / deserialization / template are HIGH; SSRF, NoSQL and a dynamic
+# file open are MEDIUM (narrower or lower-impact). `sql_execute` is HIGH — across
+# a trust boundary a raw query on caller-supplied data is the classic injection.
+_HIGH_SINKS = frozenset(
+    {"sql_execute", "subprocess_shell", "eval", "exec", "unsafe_deserialization", "ssti"}
 )
+_MEDIUM_SINKS = frozenset({"ssrf", "nosql_injection", "dynamic_open"})
+_DANGEROUS_SINKS = _HIGH_SINKS | _MEDIUM_SINKS
+
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# One notch down, for the recall-speculative downgrade.
+_LOWER = {"high": "medium", "medium": "low", "low": "low"}
 
 
 @dataclass(frozen=True)
@@ -88,10 +86,34 @@ def _route_bola(scan: ScanResult, route: str, method: str):
             cand.route_path == route
             and not cand.has_ownership_check
             and cand.reaches_db
+            # Only a path-param object id is provably the value the caller
+            # supplies via the matched path template — a query/rpc/graphql id
+            # can't be tied to the client call from path matching alone.
+            and cand.surface == "path_param"
             and _method_ok(method, cand.route_method)
         ):
             return cand
     return None
+
+
+def _carries_path_value(link: ContractLink) -> bool:
+    """True when the client forwards a per-request value in the path — the link
+    template has a dynamic (`*`) segment. A fully-static call (e.g. a bare
+    `/orders` collection) forwards no id, so it can't be a confused-deputy on
+    one, even if the server independently taints a query/body value."""
+    return "*" in link.path_template.split("/")
+
+
+def _taint_severity(chain: TaintChain) -> str:
+    sev = "high" if chain.sink_kind in _HIGH_SINKS else "medium"
+    # Recall-surfaced chains (#148a) are unconfirmed reach — dock a notch.
+    return _LOWER[sev] if chain.speculative else sev
+
+
+def _bola_severity(method: str) -> str:
+    # Read-only object reads are medium; state-changing access is high (matches
+    # the single-repo BOLA policy).
+    return "high" if (method or "").upper() in _WRITE_METHODS else "medium"
 
 
 def _method_ok(link_method: str, signal_method: str) -> bool:
@@ -112,6 +134,12 @@ def find_cross_boundary_flows(
         server_scan = scan_by_repo.get(link.server_repo)
         if server_scan is None:
             continue
+        # Provenance gate: the caller must actually forward a path value that the
+        # callee's path-based signal consumes — otherwise the "the caller's value
+        # reaches the sink" claim is unfounded (a static call + an independent
+        # server-side query/body taint is not a confused-deputy).
+        if not _carries_path_value(link):
+            continue
 
         chain = _route_taint(server_scan, link.server_route_path, link.method)
         bola = _route_bola(server_scan, link.server_route_path, link.method)
@@ -121,11 +149,11 @@ def find_cross_boundary_flows(
         if chain is not None:
             basis, detail = "taint", chain.sink_kind
             server_file, server_line = chain.sink_file, chain.sink_line
-            severity = "high"
+            severity = _taint_severity(chain)
         else:
             basis, detail = "bola", f"object access on `{bola.id_param}`"
             server_file, server_line = bola.route_file, bola.route_line
-            severity = "high"
+            severity = _bola_severity(link.method)
 
         key = (link.client_repo, link.server_repo, link.method, link.server_route_path, basis)
         if key in seen:
