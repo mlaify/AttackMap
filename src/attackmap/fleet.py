@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .contracts import ContractLink
+from .crossrepo import CrossBoundaryFlow
 
 if TYPE_CHECKING:
     from .models import AttackPath, Finding, ScanResult
@@ -90,6 +91,8 @@ class FleetScan:
     # Cross-repo client→server contract links (#146b), computed once all repos
     # are scanned. Empty until the linker runs.
     links: list[ContractLink] = field(default_factory=list)
+    # Cross-boundary trust flows (#146c) — confused-deputy leads over the links.
+    cross_boundary: list[CrossBoundaryFlow] = field(default_factory=list)
 
     @property
     def repo_count(self) -> int:
@@ -162,10 +165,35 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         lines.append("_No cross-repo client→server HTTP links detected._")
         lines.append("")
 
-    lines.append(
-        "_Cross-boundary taint and trust-gap detection over these links land in "
-        "#146c–#146d._"
-    )
+    lines.append("## Cross-boundary trust (#146c)")
+    lines.append("")
+    if fleet.cross_boundary:
+        loc = lambda f, ln: f"{f}:{ln}" if ln else f  # noqa: E731
+        lines.append(
+            f"{len(fleet.cross_boundary)} SPECULATIVE confused-deputy flow(s) — a "
+            "value forwarded across a link that the callee trusts into a sink or "
+            "unguarded object access. Adjudicate before acting:"
+        )
+        lines.append("")
+        for cb in fleet.cross_boundary:
+            what = (
+                f"reaches a {cb.detail} sink"
+                if cb.basis == "taint"
+                else f"is an unguarded {cb.detail}"
+            )
+            lines.append(
+                f"- **[{cb.severity.upper()}, SPECULATIVE]** `{cb.client_repo}` calls "
+                f"`{cb.method} {cb.route}` served by `{cb.server_repo}`, which {what} — "
+                f"the caller's value is trusted without the callee re-validating. "
+                f"Caller: `{cb.client_target}` [{loc(cb.client_file, cb.client_line)}]; "
+                f"callee: [{loc(cb.server_file, cb.server_line)}]."
+            )
+        lines.append("")
+    else:
+        lines.append("_No cross-boundary trust flows detected._")
+        lines.append("")
+
+    lines.append("_Trust-assumption-gap and cross-repo anomaly detection land in #146d._")
     return "\n".join(lines)
 
 
@@ -222,6 +250,25 @@ def fleet_summary_json(fleet: FleetScan) -> dict:
                 else lk.server_file,
             }
             for lk in fleet.links
+        ],
+        "cross_boundary_flows": [
+            {
+                "client_repo": cb.client_repo,
+                "server_repo": cb.server_repo,
+                "method": cb.method,
+                "route": cb.route,
+                "basis": cb.basis,
+                "detail": cb.detail,
+                "severity": cb.severity,
+                "speculative": True,
+                "client_location": f"{cb.client_file}:{cb.client_line}"
+                if cb.client_line
+                else cb.client_file,
+                "server_location": f"{cb.server_file}:{cb.server_line}"
+                if cb.server_line
+                else cb.server_file,
+            }
+            for cb in fleet.cross_boundary
         ],
     }
 

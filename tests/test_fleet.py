@@ -247,6 +247,38 @@ def test_multi_repo_links_client_to_server_end_to_end(tmp_path: Path) -> None:
     assert "1 cross-repo link(s)" in result.output
 
 
+def test_multi_repo_cross_boundary_flow_end_to_end(tmp_path: Path) -> None:
+    # client forwards an external id to server, which trusts it into raw SQL (#146c AC1).
+    client = tmp_path / "client"
+    client.mkdir()
+    (client / "app.py").write_text(
+        'import requests\n\n\ndef get(oid):\n'
+        '    return requests.get("http://order-svc/api/orders/" + oid)\n',
+        encoding="utf-8",
+    )
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "api.py").write_text(
+        "from flask import Flask\napp = Flask(__name__)\n\n\n"
+        '@app.route("/api/orders/<id>")\ndef order(id):\n'
+        '    return db.execute("SELECT * FROM orders WHERE id=" + id)\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["analyze", str(client), str(server), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    data = json.loads((out / "fleet-summary.json").read_text())
+    flows = data["cross_boundary_flows"]
+    assert len(flows) == 1
+    f = flows[0]
+    assert f["basis"] == "taint" and f["detail"] == "sql_execute"
+    assert f["client_repo"] == "client" and f["server_repo"] == "server"
+    assert f["speculative"] is True
+    # cites both sides
+    assert f["client_location"].startswith("app.py")
+    assert "SPECULATIVE" in (out / "fleet-summary.md").read_text()
+
+
 def test_multi_repo_validates_progress_format(tmp_path: Path) -> None:
     # --progress-format is validated before the fleet branch, same as single-repo.
     a = _repo(tmp_path, "svcA")

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.24] - 2026-07-22
+
+### Added
+
+- **Cross-boundary trust analysis (#146c).** Third phase of cross-repo analysis
+  (epic #150) — the confused-deputy detection, and the epic's first cross-repo
+  acceptance criterion. Riding the contract links (#146b), a new `crossrepo.py`
+  flags a value that repo A forwards across a link which repo B then **trusts**
+  into a dangerous sink or an unguarded object access — each repo looks locally
+  fine; the bug lives in the seam. Two bases, both reusing B's already-computed
+  per-repo signals (no new scanning): **taint** (the linked server route reaches
+  an unsanitized dangerous sink) and **bola** (the route is an id-bearing object
+  access with no ownership check). Findings are **speculative** — cross-repo
+  trust is a judgement call, so they're leads for the #147 verifier to
+  adjudicate — and each cites *both* sides (the caller's call site and the
+  callee's sink/route). Surfaced in a **Cross-boundary trust** section of the
+  fleet summary and in `fleet-summary.json`. Trust-assumption-gap and cross-repo
+  anomaly detection land in #146d.
+
 ## [0.4.23] - 2026-07-22
 
 ### Added
