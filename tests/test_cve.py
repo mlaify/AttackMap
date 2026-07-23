@@ -129,21 +129,49 @@ def _osv_vuln(
 
 
 def _stub_transport(responses_by_body_hint: dict[str, dict]):
-    """Return a transport that maps request bodies to canned responses.
+    """Return a transport speaking the OSV batch + detail protocol.
 
-    ``responses_by_body_hint`` keys are substrings we expect in the JSON
-    request body (usually the package name); values are the JSON dict
-    to return.
+    ``responses_by_body_hint`` keys are substrings matched against the
+    queried package name; values are classic ``/v1/query``-shaped dicts
+    (``{"vulns": [full entries]}``). The stub answers:
+
+    - ``POST /v1/querybatch`` → per-query ID references derived from the
+      matched canned payload,
+    - ``GET /v1/vulns/{id}`` → the full canned entry for that ID,
+    - ``POST /v1/query`` (pagination fallback) → the canned payload as-is.
     """
     calls: list[tuple[str, bytes]] = []
 
+    def _match(text: str) -> dict | None:
+        for hint, payload in responses_by_body_hint.items():
+            if hint in text:
+                return payload
+        return None
+
     def transport(url: str, body: bytes) -> bytes:
         calls.append((url, body))
-        body_text = body.decode("utf-8")
-        for hint, payload in responses_by_body_hint.items():
-            if hint in body_text:
-                return json.dumps(payload).encode("utf-8")
-        return json.dumps({"vulns": []}).encode("utf-8")
+        if url.endswith("/v1/querybatch"):
+            request = json.loads(body.decode("utf-8"))
+            results = []
+            for query in request["queries"]:
+                payload = _match(query["package"]["name"])
+                if payload and payload.get("vulns"):
+                    results.append(
+                        {"vulns": [{"id": v["id"], "modified": ""} for v in payload["vulns"]]}
+                    )
+                else:
+                    results.append({})
+            return json.dumps({"results": results}).encode("utf-8")
+        if "/v1/vulns/" in url:
+            vuln_id = url.rsplit("/", 1)[1]
+            for payload in responses_by_body_hint.values():
+                for entry in payload.get("vulns", []):
+                    if entry["id"] == vuln_id:
+                        return json.dumps(entry).encode("utf-8")
+            return json.dumps({}).encode("utf-8")
+        # Classic single query (the pagination fallback path).
+        payload = _match(body.decode("utf-8"))
+        return json.dumps(payload if payload else {"vulns": []}).encode("utf-8")
 
     return transport, calls
 
@@ -165,14 +193,14 @@ def test_query_returns_vulnerabilities_from_stubbed_response(tmp_path: Path) -> 
 
 
 def test_query_dedups_repeated_vulns_across_deps(tmp_path: Path) -> None:
-    """Two DependencyHints for the same (eco, name, version) share the
-    same underlying OSV response — we only surface one Vulnerability."""
+    """Two DependencyHints for the same (eco, name, version) dedupe to one
+    unique package — queried once, surfaced once."""
     transport, calls = _stub_transport({"sample-pkg": {"vulns": [_osv_vuln()]}})
     deps = [_dep(), _dep()]  # same fingerprint twice
     vulns, summary = query_vulnerabilities(deps, cache_dir=tmp_path, transport=transport)
     assert len(vulns) == 1
-    # The second call hits the cache we just wrote.
-    assert summary.cached == 1
+    assert summary.queried == 1
+    assert summary.cached == 0
 
 
 def test_query_skips_deps_without_queryable_version(tmp_path: Path) -> None:
@@ -192,8 +220,9 @@ def test_query_uses_cache_on_second_call(tmp_path: Path) -> None:
     transport, calls = _stub_transport({"sample-pkg": {"vulns": [_osv_vuln()]}})
     dep = _dep()
     vulns1, s1 = query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
+    first_run_calls = len(calls)  # one batch POST + one detail GET
     vulns2, s2 = query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
-    assert len(calls) == 1  # transport called once, second run hit cache
+    assert len(calls) == first_run_calls  # second run hit the cache — no network
     assert s1.queried == 1 and s2.cached == 1
     # Vulns from the cached run should mirror the network run.
     assert [v.id for v in vulns2] == [v.id for v in vulns1]
@@ -204,12 +233,14 @@ def test_query_ignores_stale_cache_beyond_ttl(tmp_path: Path, monkeypatch: pytes
     dep = _dep()
     # First call at t=0.
     query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport, clock=lambda: 0.0)
-    assert len(calls) == 1
-    # Second call 25 hours later with default 24h TTL — cache invalidated.
+    first_run_calls = len(calls)
+    assert first_run_calls > 0
+    # Second call 25 hours later with default 24h TTL — cache invalidated,
+    # so the network is hit again.
     monkeypatch.setenv("ATTACKMAP_OSV_CACHE_TTL_HOURS", "24")
     later = 25 * 3600.0
     query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport, clock=lambda: later)
-    assert len(calls) == 2
+    assert len(calls) > first_run_calls
 
 
 def test_query_offline_transport_error_falls_back_gracefully(tmp_path: Path) -> None:
@@ -257,6 +288,146 @@ def test_query_extracts_affected_range_text(tmp_path: Path) -> None:
     transport, _ = _stub_transport({"sample-pkg": {"vulns": [_osv_vuln()]}})
     vulns, _ = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=transport)
     assert vulns[0].affected_range == "affected: >= 0, fixed in 1.2.3"
+
+
+def test_query_batches_many_packages_into_few_requests(tmp_path: Path) -> None:
+    """The whole point of querybatch (#cve-batch): a big lockfile tree must
+    not produce one HTTP request per package. 700 unique clean packages →
+    2 batch POSTs (500 + 200) and zero detail fetches."""
+    from attackmap.cve import _BATCH_SIZE, _OSV_BATCH_URL
+
+    transport, calls = _stub_transport({})
+    deps = [_dep(name=f"pkg-{i}") for i in range(_BATCH_SIZE + 200)]
+    vulns, summary = query_vulnerabilities(deps, cache_dir=tmp_path, transport=transport)
+    assert vulns == []
+    assert summary.queried == _BATCH_SIZE + 200
+    batch_calls = [c for c in calls if c[0] == _OSV_BATCH_URL]
+    assert len(batch_calls) == 2
+    assert len(calls) == 2  # no detail fetches for clean packages
+
+
+def test_query_fetches_shared_vuln_details_once(tmp_path: Path) -> None:
+    """Two packages hit by the same advisory ID → one /v1/vulns/{id} fetch
+    (memoized per run), both packages still emit their Vulnerability."""
+    from attackmap.cve import _OSV_VULNS_URL
+
+    shared = _osv_vuln("GHSA-shared-1")
+    transport, calls = _stub_transport({"pkg-a": {"vulns": [shared]}, "pkg-b": {"vulns": [shared]}})
+    deps = [_dep(name="pkg-a"), _dep(name="pkg-b")]
+    vulns, summary = query_vulnerabilities(deps, cache_dir=tmp_path, transport=transport)
+    assert summary.queried == 2
+    assert {v.package_name for v in vulns} == {"pkg-a", "pkg-b"}
+    detail_calls = [c for c in calls if c[0].startswith(_OSV_VULNS_URL)]
+    assert len(detail_calls) == 1
+
+
+def test_query_failed_detail_fetch_is_not_cached(tmp_path: Path) -> None:
+    """Codex P1: if the batch names an advisory but its /v1/vulns/{id} fetch
+    fails, the package must NOT be cached — a cached partial/empty payload
+    would suppress a known vulnerability for the whole TTL. The next run
+    (connectivity restored) must query again and surface the vuln."""
+    from attackmap.cve import _OSV_VULNS_URL
+
+    good_transport, _ = _stub_transport({"sample-pkg": {"vulns": [_osv_vuln()]}})
+
+    def flaky_transport(url: str, body: bytes) -> bytes:
+        if url.startswith(_OSV_VULNS_URL):
+            raise OSError("transient network error")
+        return good_transport(url, body)
+
+    vulns1, s1 = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=flaky_transport)
+    assert vulns1 == []
+    assert s1.queried == 0
+    assert s1.skipped_offline == 1
+
+    # Connectivity restored: no stale cache entry may mask the advisory.
+    vulns2, s2 = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=good_transport)
+    assert [v.id for v in vulns2] == ["GHSA-test-1234"]
+    assert s2.queried == 1
+    assert s2.cached == 0
+
+
+def test_query_fallback_follows_single_query_pagination(tmp_path: Path) -> None:
+    """Codex P2: the single-query fallback must follow /v1/query's OWN
+    next_page_token — the high-advisory packages that enter this branch
+    paginate there too. All pages' vulns are merged; nothing is dropped."""
+    from attackmap.cve import _OSV_BATCH_URL, _OSV_QUERY_URL
+
+    page1 = {"vulns": [_osv_vuln("GHSA-page1-1")], "next_page_token": "page2"}
+    page2 = {"vulns": [_osv_vuln("GHSA-page2-1")]}
+
+    def transport(url: str, body: bytes) -> bytes:
+        if url == _OSV_BATCH_URL:
+            return json.dumps(
+                {"results": [{"vulns": [{"id": "GHSA-page1-1", "modified": ""}], "next_page_token": "tok"}]}
+            ).encode("utf-8")
+        if url == _OSV_QUERY_URL:
+            request = json.loads(body.decode("utf-8"))
+            return json.dumps(page2 if request.get("page_token") == "page2" else page1).encode("utf-8")
+        raise AssertionError(f"unexpected URL {url}")
+
+    vulns, summary = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=transport)
+    assert sorted(v.id for v in vulns) == ["GHSA-page1-1", "GHSA-page2-1"]
+    assert summary.queried == 1
+
+    # And the complete (both-pages) payload is what got cached.
+    vulns_cached, s2 = query_vulnerabilities(
+        [_dep()], cache_dir=tmp_path, transport=transport
+    )
+    assert sorted(v.id for v in vulns_cached) == ["GHSA-page1-1", "GHSA-page2-1"]
+    assert s2.cached == 1
+
+
+def test_query_paginated_batch_result_falls_back_to_single_query(tmp_path: Path) -> None:
+    """A batch result carrying next_page_token (rare: >1 page of advisories
+    for one package) falls back to the classic full /v1/query for it."""
+    from attackmap.cve import _OSV_BATCH_URL, _OSV_QUERY_URL
+
+    calls: list[tuple[str, bytes]] = []
+    full_payload = {"vulns": [_osv_vuln("GHSA-paged-1")]}
+
+    def transport(url: str, body: bytes) -> bytes:
+        calls.append((url, body))
+        if url == _OSV_BATCH_URL:
+            return json.dumps(
+                {"results": [{"vulns": [{"id": "GHSA-paged-1", "modified": ""}], "next_page_token": "tok"}]}
+            ).encode("utf-8")
+        if url == _OSV_QUERY_URL:
+            return json.dumps(full_payload).encode("utf-8")
+        raise AssertionError(f"unexpected URL {url}")
+
+    vulns, summary = query_vulnerabilities([_dep()], cache_dir=tmp_path, transport=transport)
+    assert [v.id for v in vulns] == ["GHSA-paged-1"]
+    assert any(c[0] == _OSV_QUERY_URL for c in calls)
+
+
+def test_query_reports_determinate_progress(tmp_path: Path) -> None:
+    """The progress sink sees begin(total=unique packages) and one advance
+    per package — cache hits and network results alike."""
+
+    class _FakeProgress:
+        def __init__(self) -> None:
+            self.begun: tuple[int, str] | None = None
+            self.advanced: list[str] = []
+
+        def begin(self, total: int, label: str = "") -> None:
+            self.begun = (total, label)
+
+        def advance(self, current: str = "") -> None:
+            self.advanced.append(current)
+
+    transport, _ = _stub_transport({"pkg-a": {"vulns": [_osv_vuln()]}})
+    deps = [_dep(name="pkg-a"), _dep(name="pkg-b"), _dep(name="pkg-b")]  # 2 unique
+    sink = _FakeProgress()
+    query_vulnerabilities(deps, cache_dir=tmp_path, transport=transport, progress=sink)
+    assert sink.begun is not None and sink.begun[0] == 2
+    assert len(sink.advanced) == 2
+
+    # A warm-cache rerun advances through every package instantly.
+    sink2 = _FakeProgress()
+    query_vulnerabilities(deps, cache_dir=tmp_path, transport=transport, progress=sink2)
+    assert sink2.begun is not None and sink2.begun[0] == 2
+    assert len(sink2.advanced) == 2
 
 
 # ---------------------------------------------------------------------------
