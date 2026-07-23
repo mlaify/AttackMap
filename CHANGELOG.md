@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.25] - 2026-07-22
+
+### Added
+
+- **Trust-assumption gaps + cross-repo anomaly (#146d / #149b).** Final phase of
+  cross-repo analysis (epic #150) — the second cross-repo acceptance criterion,
+  and the last epic lever. Two fleet detectors in `crossrepo.py`, both riding the
+  per-repo auth-signal detection now exposed as `anomalies.route_auth_signals`:
+  - **Trust-assumption gap** — a state-changing call crosses a link (#146b) to a
+    route the callee serves with **no authentication control**. If the caller
+    assumes the callee enforces and the callee assumes only trusted callers
+    reach it, nobody does. Restricted to write methods (a public read is
+    commonly intentional); cites both sides.
+  - **Cross-repo anomaly (#149b)** — the fleet-level odd-one-out: among ≥3
+    services serving the same resource route, the one that omits an auth control
+    a strong majority of its siblings enforce. Reuses the strong-majority split
+    from the within-repo anomaly pass.
+
+  Both are **speculative** (a route may be protected by a gateway/mTLS the marker
+  heuristics miss) — verifier-gated leads, surfaced in dedicated fleet-summary
+  sections and `fleet-summary.json`. Single-repo behavior unchanged. **This
+  completes epic #150** (detect unknown bugs).
+
 ## [0.4.24] - 2026-07-22
 
 ### Added

@@ -86,8 +86,11 @@ Over those links it then flags **cross-boundary trust** (confused-deputy) risks:
 a value one repo forwards across a link that the callee trusts into a dangerous
 sink or an unguarded object access — each repo looks locally fine; the bug is in
 the seam. These are marked **speculative** (leads to adjudicate, citing both the
-caller and callee sites) and listed in the fleet summary. Single-repo behavior is
-unchanged; trust-assumption-gap detection builds on the fleet view next (epic #150).
+caller and callee sites) and listed in the fleet summary. It also flags
+**trust-assumption gaps** (a state-changing call crossing a link to a route the
+callee serves with no auth — if each side assumes the other enforces, nobody
+does) and **cross-repo anomalies** (the one service that omits an auth control
+its siblings enforce on the same route). Single-repo behavior is unchanged.
 
 ---
 

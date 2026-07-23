@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from attackmap.contracts import ContractLink
-from attackmap.crossrepo import CrossBoundaryFlow, find_cross_boundary_flows
-from attackmap.models import BolaCandidate, ScanResult, TaintChain
+from attackmap.crossrepo import (
+    CrossBoundaryFlow,
+    find_cross_boundary_flows,
+    find_cross_repo_anomalies,
+    find_trust_gaps,
+)
+from attackmap.models import BolaCandidate, Route, ScanResult, TaintChain
 
 
 def _link(route: str = "/api/orders/<id>", method: str = "GET") -> ContractLink:
@@ -193,3 +198,96 @@ def test_read_only_bola_is_medium_state_changing_is_high() -> None:
         [("server", ScanResult(root="server", authz_candidates=[_bola("/api/orders/<id>", route_method="DELETE")]))],
     )
     assert del_flows[0].severity == "high"
+
+
+# ---------------------------------------------------------------------------
+# trust-assumption gap (#146d)
+# ---------------------------------------------------------------------------
+
+
+def _route(path: str, method: str, file: str = "s.py", line: int = 5) -> Route:
+    return Route(path=path, method=method, file=file, line=line)
+
+
+def test_trust_gap_unauthed_write_across_boundary() -> None:
+    link = _link(route="/api/orders/<id>", method="POST")
+    server = ScanResult(root="server", routes=[_route("/api/orders/<id>", "POST")])
+    auth = {"server": {("s.py", "POST", "/api/orders/<id>"): False}}
+    gaps = find_trust_gaps([link], [("client", ScanResult(root="client")), ("server", server)], auth)
+    assert len(gaps) == 1
+    g = gaps[0]
+    assert g.client_repo == "client" and g.server_repo == "server"
+    assert g.method == "POST" and g.route == "/api/orders/<id>"
+    assert g.client_file == "c.py" and g.server_file == "s.py"
+    assert g.severity == "high"
+
+
+def test_trust_gap_not_fired_when_route_authed() -> None:
+    link = _link(route="/api/orders/<id>", method="POST")
+    server = ScanResult(root="server", routes=[_route("/api/orders/<id>", "POST")])
+    auth = {"server": {("s.py", "POST", "/api/orders/<id>"): True}}
+    assert find_trust_gaps([link], [("server", server)], auth) == []
+
+
+def test_trust_gap_read_only_route_excluded() -> None:
+    # A public GET is commonly intentional — only state-changing writes count.
+    link = _link(route="/api/orders/<id>", method="GET")
+    server = ScanResult(root="server", routes=[_route("/api/orders/<id>", "GET")])
+    auth = {"server": {("s.py", "GET", "/api/orders/<id>"): False}}
+    assert find_trust_gaps([link], [("server", server)], auth) == []
+
+
+def test_trust_gap_unknown_auth_defaults_safe() -> None:
+    link = _link(route="/api/orders/<id>", method="POST")
+    server = ScanResult(root="server", routes=[_route("/api/orders/<id>", "POST")])
+    assert find_trust_gaps([link], [("server", server)], {"server": {}}) == []
+
+
+# ---------------------------------------------------------------------------
+# cross-repo anomaly / #149b
+# ---------------------------------------------------------------------------
+
+
+def _repo_serving(repo: str, path: str, authed: bool):
+    scan = ScanResult(root=repo, routes=[_route(path, "GET", file="app.py", line=1)])
+    auth = {(("app.py", "GET", path)): authed}
+    return (repo, scan), auth
+
+
+def test_cross_repo_anomaly_flags_the_odd_service() -> None:
+    r1, a1 = _repo_serving("svc-a", "/users/{id}", True)
+    r2, a2 = _repo_serving("svc-b", "/users/{id}", True)
+    r3, a3 = _repo_serving("svc-c", "/users/{id}", False)
+    auth = {"svc-a": a1, "svc-b": a2, "svc-c": a3}
+    anomalies = find_cross_repo_anomalies([r1, r2, r3], auth)
+    assert len(anomalies) == 1
+    a = anomalies[0]
+    assert a.repo == "svc-c"
+    assert a.template == "users/*"
+    assert set(a.peers) == {"svc-a", "svc-b"}
+
+
+def test_cross_repo_anomaly_needs_three_services() -> None:
+    r1, a1 = _repo_serving("svc-a", "/users/{id}", True)
+    r2, a2 = _repo_serving("svc-b", "/users/{id}", False)
+    auth = {"svc-a": a1, "svc-b": a2}
+    assert find_cross_repo_anomalies([r1, r2], auth) == []
+
+
+def test_cross_repo_anomaly_split_cohort_not_flagged() -> None:
+    # 2 enforce / 2 omit is not a strong-majority norm.
+    repos, auth = [], {}
+    for name, authed in [("a", True), ("b", True), ("c", False), ("d", False)]:
+        r, am = _repo_serving(name, "/users/{id}", authed)
+        repos.append(r)
+        auth[name] = am
+    assert find_cross_repo_anomalies(repos, auth) == []
+
+
+def test_cross_repo_anomaly_all_consistent_no_flag() -> None:
+    repos, auth = [], {}
+    for name in ("a", "b", "c"):
+        r, am = _repo_serving(name, "/users/{id}", True)
+        repos.append(r)
+        auth[name] = am
+    assert find_cross_repo_anomalies(repos, auth) == []

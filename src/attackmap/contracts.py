@@ -184,4 +184,13 @@ def link_contracts(repo_scans: list[tuple[str, ScanResult]]) -> list[ContractLin
     return links
 
 
-__all__ = ["ContractLink", "link_contracts"]
+def route_template(path: str) -> str | None:
+    """Public helper: the normalized template for a route path (instance ids
+    collapsed to ``*``), or ``None`` if too generic to key on. Used by the
+    cross-repo anomaly cohorting (#146d) to group the *same* resource route
+    across repos."""
+    norm = _normalize_path(path)
+    return "/".join(norm) if norm is not None else None
+
+
+__all__ = ["ContractLink", "link_contracts", "route_template"]

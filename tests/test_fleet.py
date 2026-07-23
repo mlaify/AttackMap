@@ -288,3 +288,32 @@ def test_multi_repo_validates_progress_format(tmp_path: Path) -> None:
     )
     assert result.exit_code != 0
     assert "progress-format must be one of" in _norm(result.output)
+
+
+def test_multi_repo_trust_gap_end_to_end(tmp_path: Path) -> None:
+    # client POSTs to a server write route that has no auth control (#146d AC2).
+    client = tmp_path / "client"
+    client.mkdir()
+    (client / "app.py").write_text(
+        'import requests\n\n\ndef submit(oid):\n'
+        '    return requests.post("http://order-svc/api/orders/" + oid)\n',
+        encoding="utf-8",
+    )
+    server = tmp_path / "server"
+    server.mkdir()
+    (server / "api.py").write_text(
+        "from flask import Flask\napp = Flask(__name__)\n\n\n"
+        '@app.route("/api/orders/<id>", methods=["POST"])\ndef upd(id):\n'
+        "    return save(id)\n",  # no auth marker anywhere
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["analyze", str(client), str(server), "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    data = json.loads((out / "fleet-summary.json").read_text())
+    gaps = data["trust_gaps"]
+    assert len(gaps) == 1
+    assert gaps[0]["client_repo"] == "client" and gaps[0]["server_repo"] == "server"
+    assert gaps[0]["method"] == "POST"
+    assert gaps[0]["speculative"] is True
+    assert "Trust-assumption gaps" in (out / "fleet-summary.md").read_text()
