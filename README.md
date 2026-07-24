@@ -125,13 +125,10 @@ documented in the [CLI reference](https://docs.matthewd.xyz/cli/).
 
 ## Special thanks
 
-AttackMap is built by its contributors — hover for the username, click for the profile:
+AttackMap is built by its contributors — this wall updates itself as new people
+land changes. Click through to the [contributors graph](https://github.com/mlaify/AttackMap/graphs/contributors).
 
-<p>
-<a href="https://github.com/mdavistffhrtporg" title="mdavistffhrtporg"><img src="https://avatars.githubusercontent.com/u/159745113?v=4&s=80" width="72" height="72" alt="mdavistffhrtporg" /></a>
-<a href="https://github.com/Guciolek" title="Guciolek"><img src="https://avatars.githubusercontent.com/u/124672898?v=4&s=80" width="72" height="72" alt="Guciolek" /></a>
-<a href="https://github.com/Harriis10" title="Harriis10"><img src="https://avatars.githubusercontent.com/u/66226505?v=4&s=80" width="72" height="72" alt="Harriis10" /></a>
-</p>
+<a href="https://github.com/mlaify/AttackMap/graphs/contributors"><img src="https://contrib.rocks/image?repo=mlaify/AttackMap" alt="AttackMap contributors" /></a>
 
 ## Contributing
 
