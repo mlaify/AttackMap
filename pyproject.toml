@@ -69,6 +69,7 @@ all = [
   "attackmap-analyzer-terraform>=0.1.0",
   "attackmap-analyzer-c>=0.1.0",
   "attackmap-analyzer-cpp>=0.1.0",
+  "attackmap-analyzer-swift>=0.1.0",
   "attackmap-analyzer-node-service>=0.2.0",
   "attackmap-analyzer-atproto>=0.1.0",
   "attackmap-analyzer-php-web>=0.1.0",
