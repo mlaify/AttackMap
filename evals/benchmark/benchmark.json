@@ -1,0 +1,132 @@
+{
+  "schema_version": "1.0.0",
+  "description": "Hand-labeled detection benchmark (#197). Ground-truth vulnerabilities are labeled from reading each app, independently of what AttackMap emits, so precision/recall are not circular. Only the scored_categories (precise detector classes) are held to precision/recall; advisory/architectural findings are out of scope.",
+  "scored_categories": [
+    "injection",
+    "bola",
+    "unauth_state_change",
+    "webhook_exposure",
+    "crypto",
+    "cve"
+  ],
+  "line_window": 4,
+  "cases": [
+    {
+      "id": "webhook-billing-demo",
+      "path": "examples/webhook-billing-demo",
+      "expected": [
+        {
+          "category": "webhook_exposure",
+          "route": "/webhook/stripe",
+          "method": "POST",
+          "file": "app.py",
+          "line": 14,
+          "severity": "high",
+          "note": "Public webhook accepts events with no signature verification."
+        },
+        {
+          "category": "unauth_state_change",
+          "route": "/admin/refund",
+          "method": "POST",
+          "file": "app.py",
+          "line": 29,
+          "severity": "high",
+          "note": "Privileged, state-changing refund route with no authentication."
+        },
+        {
+          "category": "bola",
+          "route": "/admin/customers/{customer_id}",
+          "method": "GET",
+          "file": "app.py",
+          "line": 45,
+          "severity": "medium",
+          "note": "Customer record addressed by client-supplied id with no ownership check."
+        }
+      ]
+    },
+    {
+      "id": "flask-admin-demo",
+      "path": "examples/flask-admin-demo",
+      "expected": [
+        {
+          "category": "unauth_state_change",
+          "route": "/orders/<order_id>/cancel",
+          "method": "POST",
+          "file": "app.py",
+          "line": 23,
+          "severity": "high",
+          "note": "State-changing cancel route with no authentication."
+        },
+        {
+          "category": "unauth_state_change",
+          "route": "/admin/users/<user_id>/role",
+          "method": "POST",
+          "file": "app.py",
+          "line": 38,
+          "severity": "high",
+          "note": "Privileged role-change route with no authentication."
+        },
+        {
+          "category": "bola",
+          "route": "/orders/<order_id>",
+          "method": "GET",
+          "file": "app.py",
+          "line": 15,
+          "severity": "medium",
+          "note": "Order addressed by client-supplied id with no ownership check."
+        }
+      ]
+    },
+    {
+      "id": "orders-api-demo",
+      "path": "examples/orders-api-demo",
+      "expected": [
+        {
+          "category": "injection",
+          "route": "/orders",
+          "method": "POST",
+          "file": "app.py",
+          "line": 24,
+          "severity": "high",
+          "note": "Request body interpolated into an f-string SQL INSERT (no parameterization)."
+        },
+        {
+          "category": "injection",
+          "route": "/orders/search",
+          "method": "GET",
+          "file": "app.py",
+          "line": 40,
+          "severity": "high",
+          "note": "Query string concatenated directly into a SQL LIKE clause."
+        },
+        {
+          "category": "injection",
+          "route": "/internal/reindex",
+          "method": "POST",
+          "file": "app.py",
+          "line": 50,
+          "severity": "high",
+          "note": "Request-controlled table name interpolated into a REINDEX DDL statement."
+        },
+        {
+          "category": "unauth_state_change",
+          "route": "/orders",
+          "method": "POST",
+          "file": "app.py",
+          "line": 14,
+          "severity": "high",
+          "note": "State-changing order-creation route with no authentication."
+        },
+        {
+          "category": "unauth_state_change",
+          "route": "/internal/reindex",
+          "method": "POST",
+          "file": "app.py",
+          "line": 45,
+          "severity": "high",
+          "note": "Internal state-changing route with no authentication."
+        }
+      ]
+    }
+  ]
+}
