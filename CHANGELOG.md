@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.28] - 2026-07-23
+
+### Added
+
+- **Detection benchmark harness — `attackmap bench` (#197).** The 1.0 precision
+  gate. Scores AttackMap's *findings* against a hand-labeled corpus of
+  ground-truth vulnerabilities (`evals/benchmark/benchmark.json`) and reports
+  **precision / recall / F1 per detector class**. Ground truth is labeled
+  independently of the tool (not circular); only precise detector classes
+  (`injection`, `bola`, `unauth_state_change`, `webhook_exposure`, `crypto`,
+  `cve`) are scored — advisory/architectural findings are out of scope and never
+  count as false positives. `--output` writes `benchmark-results.{md,json}`;
+  `--fail-under P` is a CI regression gate. New `bench.py`; docs in
+  [`docs/benchmark.md`](docs/benchmark.md). Baseline on the example-app corpus:
+  **100% precision across all scored classes**, with recall gaps (injection,
+  unauthenticated admin/internal routes, cross-framework BOLA) that the road-to-1.0
+  epics now target. Every future detector reports its delta here.
+
 ## [0.4.27] - 2026-07-23
 
 ### Fixed

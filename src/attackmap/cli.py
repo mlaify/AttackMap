@@ -981,5 +981,69 @@ def suggest(
     typer.echo("Done.")
 
 
+@app.command("bench")
+def bench(
+    benchmark: str = typer.Option(
+        "evals/benchmark/benchmark.json",
+        "--benchmark",
+        help="Path to the benchmark manifest (labeled ground-truth corpus).",
+    ),
+    root: str = typer.Option(
+        ".",
+        "--root",
+        help="Repository root the manifest's case paths are relative to.",
+    ),
+    output: str | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Directory to write benchmark-results.md + .json (also printed to stdout).",
+    ),
+    fail_under: float | None = typer.Option(
+        None,
+        "--fail-under",
+        help="Exit non-zero if any scored detector class falls below this precision/recall (0-1). For CI regression gating.",
+    ),
+) -> None:
+    """Score AttackMap findings against the labeled benchmark corpus (#197).
+
+    The 1.0 precision gate: reports precision/recall/F1 per detector class.
+    Contributor/CI tool — run from the repo root (the manifest ships in `evals/`,
+    not the installed wheel).
+    """
+    from .bench import bench_json, load_benchmark, min_scored_metric, render_markdown, run_benchmark
+
+    manifest = Path(benchmark)
+    if not manifest.exists():
+        typer.echo(f"Benchmark manifest not found: {manifest}")
+        typer.echo("Pass --benchmark <path>, or run from a checkout that has evals/benchmark/.")
+        raise typer.Exit(code=2)
+
+    results = run_benchmark(load_benchmark(manifest), root)
+    markdown = render_markdown(results)
+    typer.echo(markdown)
+
+    if output:
+        out = Path(output)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "benchmark-results.md").write_text(markdown + "\n", encoding="utf-8")
+        (out / "benchmark-results.json").write_text(
+            json.dumps(bench_json(results), indent=2) + "\n", encoding="utf-8"
+        )
+        typer.echo(f"Written to: {out.resolve()}")
+
+    errored = [r.id for r in results if r.error]
+    if errored:
+        typer.echo(f"Cases that failed to scan: {', '.join(errored)}")
+        raise typer.Exit(code=1)
+
+    if fail_under is not None:
+        worst = min_scored_metric(results)
+        if worst < fail_under:
+            typer.echo(f"FAIL: lowest scored precision/recall {worst:.2f} < --fail-under {fail_under:.2f}")
+            raise typer.Exit(code=1)
+        typer.echo(f"OK: lowest scored precision/recall {worst:.2f} ≥ --fail-under {fail_under:.2f}")
+
+
 if __name__ == "__main__":
     app()
