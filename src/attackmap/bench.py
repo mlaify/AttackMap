@@ -38,13 +38,17 @@ from typing import Any, Callable, Iterable
 # Precise detector classes we hold to precision/recall. Everything else a
 # finding might carry (admin-exposure grouping, secret-env references, generic
 # "public route near data" insight) is advisory and deliberately unscored.
+#
+# `cve` is intentionally NOT here: the default runner is offline+deterministic
+# and never calls query_vulnerabilities, so scoring `cve` through it would only
+# ever record false negatives. CVE benchmarking needs a recorded-OSV fixture
+# path (future work) before the class can be declared scorable.
 SCORED_CATEGORIES: tuple[str, ...] = (
     "injection",
     "bola",
     "unauth_state_change",
     "webhook_exposure",
     "crypto",
-    "cve",
 )
 
 _INJECTION_MARKERS = (
@@ -137,44 +141,80 @@ def load_benchmark(path: str | Path) -> Benchmark:
 
 # --- matching ----------------------------------------------------------------
 
-_LOC_RE = re.compile(r"([\w./-]+\.[A-Za-z0-9_]+):(\d+)")
+_LOC_RE = re.compile(r"([\w./\\-]+\.[A-Za-z0-9_]+):(\d+)")
+_ROUTE_RE = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ANY)\s+(/[^\s,;]*)", re.IGNORECASE)
+
+
+def _norm_path(p: str) -> str:
+    """Normalize a path for repo-relative comparison (forward slashes, no `./`)."""
+    p = p.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p.strip("/") if p.strip("/") else p
+
+
+def _norm_route(r: str) -> str:
+    r = r.strip().rstrip("/")
+    return r or "/"
 
 
 def _finding_locations(finding: dict[str, Any]) -> list[tuple[str, int]]:
-    """Every ``file:line`` cited in a finding's title + evidence."""
+    """Every ``file:line`` cited in a finding's title + evidence (path normalized)."""
     text = (finding.get("title") or "") + "\n" + "\n".join(finding.get("evidence", []))
-    return [(m.group(1), int(m.group(2))) for m in _LOC_RE.finditer(text)]
+    return [(_norm_path(m.group(1)), int(m.group(2))) for m in _LOC_RE.finditer(text)]
 
 
-def _finding_text(finding: dict[str, Any]) -> str:
-    return ((finding.get("title") or "") + " " + " ".join(finding.get("evidence", []))).lower()
+def _finding_routes(finding: dict[str, Any]) -> list[tuple[str, str]]:
+    """Every ``METHOD /route`` pair cited (method upper-cased, route normalized)."""
+    text = (finding.get("title") or "") + "\n" + "\n".join(finding.get("evidence", []))
+    return [(m.group(1).upper(), _norm_route(m.group(2))) for m in _ROUTE_RE.finditer(text)]
+
+
+def _file_cited(finding: dict[str, Any], exp_file: str) -> bool:
+    """True if the finding cites ``exp_file`` by its full repo-relative path.
+
+    Matches ``app.py`` in "… in app.py" and "app.py:14", and full paths like
+    ``services/b/app.py`` — but never a *different* service's file, because the
+    whole relative path must appear on a path boundary (so ``services/b/app.py``
+    is not found inside "services/a/app.py")."""
+    text = (finding.get("title") or "") + "\n" + "\n".join(finding.get("evidence", []))
+    text = text.replace("\\", "/")
+    pat = re.compile(r"(?:^|[\s(/'\"])" + re.escape(exp_file) + r"(?![\w.])")
+    return pat.search(text) is not None
 
 
 def _matches(finding: dict[str, Any], exp: Expected, window: int) -> bool:
     """True if ``finding`` corroborates the expected label.
 
-    Requires the finding to cite ``exp.file`` (basename match), then refines by
-    route substring or a cited line within ``window`` of ``exp.line``. When the
-    finding carries neither a matching line nor route but does cite the file, a
-    file-level match is accepted (single-signal cases).
+    The finding must cite ``exp.file`` by its **repository-relative path** (not
+    just basename — so `services/a/app.py` never matches a label in
+    `services/b/app.py`). It is then confirmed by an **exact route + method**
+    match (`/orders` never matches `/orders/search`), falling back to a cited
+    line within ``window`` of ``exp.line`` when the finding carries no parseable
+    route. A file-only match is accepted when the label pins neither route nor line.
     """
-    locs = _finding_locations(finding)
-    exp_base = Path(exp.file).name
-    file_locs = [ln for (f, ln) in locs if Path(f).name == exp_base]
-    text = _finding_text(finding)
-    file_hit = bool(file_locs) or exp_base.lower() in text
-    if not file_hit:
-        return False
-    if exp.route and exp.route.lower() in text:
-        return True
+    exp_file = _norm_path(exp.file)
+    if not _file_cited(finding, exp_file):
+        return False  # the finding doesn't cite this file at all
+    file_locs = [ln for (f, ln) in _finding_locations(finding) if f == exp_file]
+
+    routes = _finding_routes(finding)
+    # Exact route + method wins.
+    if exp.route is not None:
+        want_route = _norm_route(exp.route)
+        for method, route in routes:
+            if route == want_route and (exp.method is None or method == exp.method.upper()):
+                return True
+        # The finding names other route(s) but not this one → a different
+        # endpoint. Do NOT fall back to line proximity (that would credit
+        # `/orders` from `/orders/search`).
+        if routes:
+            return False
+    # Line-window fallback: only when the finding cites no route to disambiguate on.
     if exp.line is not None and any(abs(ln - exp.line) <= window for ln in file_locs):
         return True
-    # File cited but no finer signal to disambiguate on either side → accept.
-    if exp.route is None and exp.line is None:
-        return True
-    # File matched but the finding offered a line and none was near, or a route
-    # that didn't appear: only accept if the finding gave no line at all.
-    return not file_locs and exp.route is None
+    # Label pins neither route nor line — a file-level citation is enough.
+    return exp.route is None and exp.line is None
 
 
 @dataclass
@@ -204,8 +244,10 @@ class CategoryScore:
     @property
     def f1(self) -> float | None:
         p, r = self.precision, self.recall
-        if not p or not r:
-            return None
+        if p is None or r is None:
+            return None  # undefined only when a component is undefined
+        if p + r == 0:
+            return 0.0   # a defined zero (e.g. 1 FP + 1 miss) is a real F1 of 0
         return 2 * p * r / (p + r)
 
 
@@ -284,6 +326,14 @@ def run_benchmark(
     results: list[CaseResult] = []
     for case in benchmark.cases:
         case_path = root / case.path
+        if not case_path.is_dir():
+            # A misspelled/absent case path would otherwise scan as an empty
+            # "clean" repo and look like perfect false-positive behavior — record
+            # it as an error instead (esp. important for known-clean cases).
+            results.append(CaseResult(
+                id=case.id, scores={}, finding_count=0,
+                error=f"case path not found: {case_path}"))
+            continue
         try:
             findings = analyze(case_path)
         except Exception as exc:  # a scan failure is a benchmark result, not a crash

@@ -121,11 +121,70 @@ def test_grouped_finding_matches_multiple_expected():
 # --- harness plumbing --------------------------------------------------------
 
 
+def test_route_substring_does_not_credit_a_different_endpoint():
+    # Codex P1: a finding about /orders/search must NOT match a /orders label.
+    finding = _finding("Potential SQL injection", ["injection"],
+                       ["GET /orders/search in app.py:40 — concatenated query"])
+    exp = Expected(category="injection", route="/orders", method="POST", file="app.py", line=24)
+    scores = score_case([finding], [exp], ["injection"], window=8)
+    cs = scores["injection"]
+    assert cs.recall == 0.0        # /orders label unmatched
+    assert cs.fp == 1              # the /orders/search finding is a genuine non-match here
+
+
+def test_method_mismatch_is_not_a_match():
+    finding = _finding("State-changing routes reachable without auth",
+                       ["auth-missing", "state-changing"], ["GET /orders in app.py:14"])
+    exp = Expected(category="unauth_state_change", route="/orders", method="POST", file="app.py", line=14)
+    scores = score_case([finding], [exp], ["unauth_state_change"], window=8)
+    assert scores["unauth_state_change"].recall == 0.0
+
+
+def test_repo_relative_path_prevents_cross_file_collision():
+    # Codex P1: services/a/app.py finding must not match a services/b/app.py label.
+    finding = _finding("SQL injection", ["injection"],
+                       ["POST /x in services/a/app.py:10"])
+    exp = Expected(category="injection", route="/x", method="POST", file="services/b/app.py", line=10)
+    scores = score_case([finding], [exp], ["injection"], window=8)
+    assert scores["injection"].recall == 0.0
+    assert scores["injection"].fp == 1  # finding cites a file no label owns
+
+
+def test_line_fallback_only_when_finding_has_no_route():
+    # A routeless injection finding (sink cite only) matches by line window.
+    finding = _finding("SQL injection sink", ["injection"], ["unsanitized SQL at app.py:41"])
+    exp = Expected(category="injection", route="/orders/search", method="GET", file="app.py", line=40)
+    scores = score_case([finding], [exp], ["injection"], window=8)
+    assert scores["injection"].recall == 1.0
+
+
+def test_f1_is_zero_not_none_when_precision_or_recall_zero():
+    # Codex P2: 1 FP + 1 miss → precision 0, recall 0, F1 defined as 0.0.
+    from attackmap.bench import CategoryScore
+    cs = CategoryScore(category="injection", tp=0, fp=1,
+                       matched_expected=[], missed_expected=["x"])
+    assert cs.precision == 0.0 and cs.recall == 0.0
+    assert cs.f1 == 0.0
+    # Truly undefined (no findings, no labels) stays None.
+    empty = CategoryScore(category="c")
+    assert empty.f1 is None
+
+
+def test_missing_case_directory_is_an_error_not_a_clean_pass():
+    # Codex P2: an absent case path must not scan as a perfect clean repo.
+    bm = Benchmark(scored_categories=("injection",), line_window=8,
+                   cases=[Case(id="ghost", path="does/not/exist", expected=[])])
+    calls = []
+    results = run_benchmark(bm, ".", analyze=lambda p: calls.append(p) or [])
+    assert results[0].error and "not found" in results[0].error
+    assert not calls, "analyzer must not run on a missing case path"
+
+
 def test_run_benchmark_with_injected_analyzer_and_aggregate():
     bm = Benchmark(
         scored_categories=("unauth_state_change",),
         line_window=8,
-        cases=[Case(id="c1", path="c1", expected=[
+        cases=[Case(id="c1", path=".", expected=[
             Expected(category="unauth_state_change", route="/x", method="POST", file="app.py", line=3)])],
     )
 
@@ -144,7 +203,7 @@ def test_run_benchmark_with_injected_analyzer_and_aggregate():
 
 def test_scan_failure_is_recorded_not_raised():
     bm = Benchmark(scored_categories=("injection",), line_window=8,
-                   cases=[Case(id="boom", path="boom", expected=[])])
+                   cases=[Case(id="boom", path=".", expected=[])])
 
     def boom(path):
         raise RuntimeError("scan exploded")
@@ -156,7 +215,7 @@ def test_scan_failure_is_recorded_not_raised():
 
 def test_min_scored_metric():
     bm = Benchmark(scored_categories=("unauth_state_change",), line_window=4,
-                   cases=[Case(id="c", path="c", expected=[
+                   cases=[Case(id="c", path=".", expected=[
                        Expected(category="unauth_state_change", route="/a", method="POST", file="app.py", line=1),
                        Expected(category="unauth_state_change", route="/b", method="POST", file="app.py", line=40)])])
 

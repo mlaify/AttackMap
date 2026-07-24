@@ -6,8 +6,7 @@
     "bola",
     "unauth_state_change",
     "webhook_exposure",
-    "crypto",
-    "cve"
+    "crypto"
   ],
   "line_window": 4,
   "cases": [

@@ -24,13 +24,18 @@ wheel. Point `--benchmark` at a different manifest to score your own corpus.
   genuine, exploitable weaknesses in a repo — read from the source, not derived
   from what AttackMap emits — so the score is not circular.
 - **Only precise detector classes are scored.** `injection`, `bola`,
-  `unauth_state_change`, `webhook_exposure`, `crypto`, `cve`. Architectural /
-  advisory findings (e.g. "public routes sit near sensitive data", secret-env
+  `unauth_state_change`, `webhook_exposure`, `crypto`. Architectural / advisory
+  findings (e.g. "public routes sit near sensitive data", secret-env
   *references*, admin-route groupings) make no precise claim and are **out of
-  scope** — they never count as false positives.
+  scope** — they never count as false positives. (`cve` is not scored by the
+  default runner: it is offline+deterministic and does not query OSV, so a CVE
+  label would only ever record a false negative — CVE benchmarking needs a
+  recorded-OSV fixture, tracked as future work.)
 - **Matching.** A finding is mapped to a canonical class from its tags/title, and
-  matched to a label when the class agrees and its evidence cites the same file,
-  refined by route substring or a cited line within a small window.
+  matched to a label when the class agrees and its evidence cites the same
+  **repository-relative** file, confirmed by an **exact route + method** match
+  (`/orders` never matches `/orders/search`) or — when the finding cites no
+  route — a line within a small window.
 - **Metrics.** *Recall* = labels matched by ≥1 finding ÷ total labels; *precision*
   = scored findings that matched ≥1 label ÷ all scored findings. A grouped finding
   that legitimately cites several true routes helps recall without a precision
