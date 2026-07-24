@@ -56,6 +56,12 @@ def test_go_repo_suggests_go(tmp_path: Path) -> None:
     assert "attackmap-analyzer-go" in _plugin_names(detect_ecosystems(tmp_path))
 
 
+def test_swift_repo_suggests_swift(tmp_path: Path) -> None:
+    (tmp_path / "Package.swift").write_text("// swift-tools-version:5.9\n", encoding="utf-8")
+    (tmp_path / "main.swift").write_text('print("hi")\n', encoding="utf-8")
+    assert "attackmap-analyzer-swift" in _plugin_names(detect_ecosystems(tmp_path))
+
+
 def test_rust_repo_suggests_rust(tmp_path: Path) -> None:
     (tmp_path / "Cargo.toml").write_text("[package]\nname='x'\n", encoding="utf-8")
     (tmp_path / "src").mkdir()

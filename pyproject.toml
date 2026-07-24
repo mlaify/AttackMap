@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "attackmap"
-version = "0.4.28"
+version = "0.4.29"
 description = "AI-assisted defensive security analyzer for codebases — scans a repository, models assets and controls, finds cross-cutting weaknesses, and generates an evidence-grounded review with MITRE ATT&CK mappings and detection-engineering hints."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -69,6 +69,7 @@ all = [
   "attackmap-analyzer-terraform>=0.1.0",
   "attackmap-analyzer-c>=0.1.0",
   "attackmap-analyzer-cpp>=0.1.0",
+  "attackmap-analyzer-swift>=0.1.0",
   "attackmap-analyzer-node-service>=0.2.0",
   "attackmap-analyzer-atproto>=0.1.0",
   "attackmap-analyzer-php-web>=0.1.0",

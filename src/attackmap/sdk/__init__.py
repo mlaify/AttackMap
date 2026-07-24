@@ -74,6 +74,7 @@ from .contracts import (
 from .models import (
     AuthHint,
     DatabaseHint,
+    DependencyHint,
     EdgeHint,
     EntrypointHint,
     ExternalCall,
@@ -102,4 +103,5 @@ __all__ = [
     "FrameworkHint",
     "SecretHint",
     "ScanResult",
+    "DependencyHint",
 ]

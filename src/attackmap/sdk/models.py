@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..models import DependencyHint
 from ..recon_models import (
     AuthHint,
     DatabaseHint,
@@ -26,4 +27,5 @@ __all__ = [
     "FrameworkHint",
     "SecretHint",
     "ScanResult",
+    "DependencyHint",
 ]

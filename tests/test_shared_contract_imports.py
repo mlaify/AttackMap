@@ -25,6 +25,18 @@ def test_shared_contract_import_paths_alias_core_contracts() -> None:
     assert SdkAnalyzerMetadata is AnalyzerMetadata
 
 
+def test_dependency_hint_is_exported_through_the_sdk() -> None:
+    # External analyzers (e.g. attackmap-analyzer-swift) must be able to emit
+    # SBOM entries via the stable contract, not an internal module (#186).
+    from attackmap.models import DependencyHint as CoreDependencyHint
+    from attackmap.sdk import DependencyHint as SdkTop
+    from attackmap.sdk.models import DependencyHint as SdkModels
+
+    assert SdkTop is CoreDependencyHint
+    assert SdkModels is CoreDependencyHint
+    assert SdkTop(name="vapor", version="4.89.0", ecosystem="swiftpm", file="Package.resolved")
+
+
 def test_legacy_analyzers_imports_remain_compatible() -> None:
     result = AnalyzerResult(root=".")
     metadata = AnalyzerMetadata(

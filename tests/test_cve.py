@@ -273,6 +273,17 @@ def test_query_uses_warm_cache_when_transport_offline(tmp_path: Path) -> None:
     assert summary.skipped_offline == 0
 
 
+def test_swiftpm_ecosystem_is_inventoried_but_skipped_by_cve(tmp_path: Path) -> None:
+    # swiftpm is a valid SBOM ecosystem (Swift analyzer emits it) but OSV has no
+    # SwiftPM ecosystem, so a --cve run inventories it without querying/erroring.
+    transport, calls = _stub_transport({"alamofire": {"vulns": [_osv_vuln()]}})
+    dep = DependencyHint.model_construct(
+        name="alamofire", version="5.8.1", ecosystem="swiftpm", file="Package.resolved")
+    vulns, summary = query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
+    assert vulns == []
+    assert not calls  # never queried — no OSV ecosystem mapping
+
+
 def test_query_ignores_unknown_ecosystem(tmp_path: Path) -> None:
     transport, calls = _stub_transport({"sample": {"vulns": [_osv_vuln()]}})
     # Pretend a rogue plugin emitted an ecosystem we don't map.

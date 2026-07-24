@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.29] - 2026-07-23
+
+### Added
+
+- **`swiftpm` dependency ecosystem (#186).** `DependencyHint` / `Vulnerability`
+  now accept `ecosystem="swiftpm"`, so the new
+  [`attackmap-analyzer-swift`](https://github.com/mlaify/attackmap-analyzer-swift)
+  plugin can inventory `Package.resolved` dependencies into the SBOM. OSV.dev has
+  no SwiftPM ecosystem, so Swift deps are inventoried but not CVE-matched (a `--cve`
+  run skips them without error) — documented in `cve.py`.
+
 ## [0.4.28] - 2026-07-23
 
 ### Added

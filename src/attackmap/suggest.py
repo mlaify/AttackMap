@@ -239,6 +239,12 @@ DETECTORS: tuple[_Detector, ...] = (
         extensions=(".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"),
     ),
     _Detector(
+        plugin="attackmap-analyzer-swift",
+        analyzer_name="swift",
+        manifest_files=("Package.swift", "Package.resolved"),
+        extensions=(".swift",),
+    ),
+    _Detector(
         plugin="attackmap-analyzer-php-laminas",
         analyzer_name="php-laminas",
         extra=_laminas_extras,
