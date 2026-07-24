@@ -123,7 +123,7 @@ class DependencyHint(BaseModel):
 
     name: str
     version: str
-    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer"]
+    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer", "swiftpm"]
     file: str
     line: int | None = None
     # dev / build-only dependency (``devDependencies``, ``require-dev``,
@@ -372,7 +372,7 @@ class Vulnerability(BaseModel):
     affected_range: str = ""  # human-readable "affected [lower, upper)" text
     package_name: str
     package_version: str
-    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer"]
+    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer", "swiftpm"]
     # Lockfile provenance (#143): False when the vulnerable package is a
     # transitive dependency; ``resolution_path`` is its chain from a direct
     # dependency (``"express > body-parser > qs"``) so the finding can say how

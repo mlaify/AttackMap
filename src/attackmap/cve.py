@@ -65,6 +65,9 @@ _OSV_ECOSYSTEM: dict[str, str] = {
     "go": "Go",
     "cargo": "crates.io",
     "composer": "Packagist",
+    # "swiftpm" is a valid SBOM ecosystem (the Swift analyzer inventories
+    # Package.resolved) but OSV.dev has no SwiftPM ecosystem, so it is
+    # intentionally omitted here — Swift deps are inventoried, not CVE-matched.
 }
 
 _DEFAULT_TTL_HOURS = 24
