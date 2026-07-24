@@ -125,8 +125,7 @@ documented in the [CLI reference](https://docs.matthewd.xyz/cli/).
 
 ## Special thanks
 
-AttackMap is built by its contributors — this wall updates itself as new people
-land changes. Click through to the [contributors graph](https://github.com/mlaify/AttackMap/graphs/contributors).
+AttackMap is built by its contributors.
 
 <a href="https://github.com/mlaify/AttackMap/graphs/contributors"><img src="https://contrib.rocks/image?repo=mlaify/AttackMap" alt="AttackMap contributors" /></a>
 
