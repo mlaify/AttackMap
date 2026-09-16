@@ -26,7 +26,7 @@ architecture & internals: **[wiki](https://github.com/mlaify/AttackMap/wiki)**.
 ### The macOS app
 
 Prefer a GUI? A native macOS front-end drives this CLI and renders every result
-view — `brew install --cask mlaify/tap/attackmap-app` (pulls the CLI too).
+view — build it from source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac).
 
 | Overview | Exploitability |
 |---|---|
