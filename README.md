@@ -13,7 +13,6 @@ review. It finds the cross-cutting weaknesses single-file scanners miss, and nev
 sends your code anywhere.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/attackmap.svg)](https://pypi.org/project/attackmap/)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 
 > **Status: beta (v0.4.27).** Core engine + 14 analyzer plugins published to PyPI,
@@ -21,7 +20,7 @@ sends your code anywhere.
 > design — findings are confidence-tiered evidence, not proof. Roadmap to 1.0:
 > [issue #209](https://github.com/mlaify/AttackMap/issues/209).
 
-Full documentation: **[docs.matthewd.xyz](https://docs.matthewd.xyz)** ·
+Full documentation: **[attackmap-docs](https://github.com/mlaify/attackmap-docs)** ·
 architecture & internals: **[wiki](https://github.com/mlaify/AttackMap/wiki)**.
 
 ### The macOS app
@@ -31,14 +30,14 @@ view — `brew install --cask mlaify/tap/attackmap-app` (pulls the CLI too).
 
 | Overview | Exploitability |
 |---|---|
-| [![AttackMap macOS app — overview](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/04-overview.png)](https://docs.matthewd.xyz/gui/) | [![AttackMap macOS app — exploitability](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/06-exploitability-ranked.png)](https://docs.matthewd.xyz/gui/) |
+| [![AttackMap macOS app — overview](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/04-overview.png)](https://github.com/mlaify/attackmap-docs/blob/main/docs/gui.md) | [![AttackMap macOS app — exploitability](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/06-exploitability-ranked.png)](https://github.com/mlaify/attackmap-docs/blob/main/docs/gui.md) |
 
-*Scanning OWASP Juice Shop. Walkthrough in the [macOS app docs](https://docs.matthewd.xyz/gui/); source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac).*
+*Scanning OWASP Juice Shop. Walkthrough in the [macOS app docs](https://github.com/mlaify/attackmap-docs/blob/main/docs/gui.md); source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac).*
 
 ## Quickstart
 
 ```bash
-pip install "attackmap[all]"              # or: brew install mlaify/tap/attackmap
+pip install "git+https://github.com/mlaify/AttackMap.git#egg=attackmap[all]"
 attackmap analyze /path/to/repo           # heuristic review → reports/
 attackmap analyze /path/to/repo --llm     # + AI-narrated review (Claude or OpenAI)
 attackmap analyze ./svc-a ./svc-b ./gw    # cross-repo / fleet scan
@@ -49,10 +48,10 @@ Read `reports/defensive-review.md` for the heuristic review, and (with `--llm`)
 automatically (`ANTHROPIC_API_KEY`, or your Claude/`codex` CLI subscription); add
 `--llm-provider openai` for OpenAI/Codex.
 
-Other install paths: `pip install attackmap` (core only) or `"attackmap[llm]"`;
-`docker run --rm -v "$PWD:/src" ghcr.io/mlaify/attackmap analyze /src`. Not sure
+Other install paths: `pip install git+https://github.com/mlaify/AttackMap.git` (core
+only), or the `[llm]` extra for AI narration. Not sure
 which analyzer plugins a repo needs? `attackmap suggest ./repo`. Full install and
-CI setup: **[docs.matthewd.xyz/install](https://docs.matthewd.xyz/install/)**.
+CI setup: **[install guide](https://github.com/mlaify/attackmap-docs/blob/main/docs/install.md)**.
 
 ## What it finds
 
@@ -76,7 +75,7 @@ CI setup: **[docs.matthewd.xyz/install](https://docs.matthewd.xyz/install/)**.
 
 Each run writes Markdown, JSON (`attackmap-report.json`), **SARIF 2.1.0**, and
 diagram artifacts; fleet runs add `fleet-summary.{md,json}` + `fleet-graph.md`.
-See the [outputs reference](https://docs.matthewd.xyz/scanning/) for the full list.
+See the [outputs reference](https://github.com/mlaify/attackmap-docs/blob/main/docs/scanning.md) for the full list.
 
 ## Supported ecosystems
 
@@ -84,7 +83,7 @@ Fourteen analyzer plugins (each installable on its own; `[all]` installs every o
 **Python**, **JavaScript/TypeScript** (Node services), **Go**, **Java/Kotlin**
 (Spring), **C#** (ASP.NET Core), **Rust**, **PHP** (web / Laminas / Omeka-S),
 **C**, **C++**, **Terraform**, **IaC** (Docker / compose / GitHub Actions),
-**AT Protocol**. Details: [analyzers reference](https://docs.matthewd.xyz/analyzers/).
+**AT Protocol**. Details: [analyzers reference](https://github.com/mlaify/attackmap-docs/blob/main/docs/analyzers.md).
 Write your own against the documented [analyzer SDK](docs/external-analyzers.md).
 
 ## CLI cheat-sheet
@@ -104,7 +103,7 @@ attackmap suggest ./repo                  # recommend analyzer plugins    · att
 
 Verify-jury knobs (`--verify-votes` / `--hunt-lenses` / `--hunt-rounds` /
 `--hunt-budget`) and suppression (`--no-suppress` / `--suppress-file`) are
-documented in the [CLI reference](https://docs.matthewd.xyz/cli/).
+documented in the [CLI reference](https://github.com/mlaify/attackmap-docs/blob/main/docs/cli.md).
 
 ## What AttackMap is *not*
 
@@ -119,7 +118,7 @@ documented in the [CLI reference](https://docs.matthewd.xyz/cli/).
 
 ## Documentation & links
 
-- **[docs.matthewd.xyz](https://docs.matthewd.xyz)** — user guide, install, CLI,
+- **[attackmap-docs](https://github.com/mlaify/attackmap-docs)** — user guide, install, CLI,
   analyzers, SDK
 - **[Wiki](https://github.com/mlaify/AttackMap/wiki)** — architecture, roadmap,
   contributor references
