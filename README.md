@@ -1,5 +1,10 @@
 # AttackMap
 
+> [!NOTE]
+> **Development is paused.** This project is not under active development.
+> The code remains available for reference, and security reports are still
+> welcome at [security@mlaify.io](mailto:security@mlaify.io).
+
 **Local-first, AI-assisted defensive security analysis for codebases.** AttackMap
 reads a repository (or a whole fleet of them), reconstructs the attack surface —
 routes, data stores, external calls, auth signals, trust boundaries — traces

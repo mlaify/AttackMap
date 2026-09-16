@@ -10,11 +10,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-  {name = "Matthew Davis", email = "matthewd@matthewd.xyz"},
+  {name = "Matthew Davis", email = "mlaify@mlaify.io"},
   {name = "AttackMap Contributors"},
 ]
 maintainers = [
-  {name = "Matthew Davis", email = "matthewd@matthewd.xyz"},
+  {name = "Matthew Davis", email = "mlaify@mlaify.io"},
 ]
 keywords = [
   "security",
