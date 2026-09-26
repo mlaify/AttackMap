@@ -17,8 +17,8 @@ sends your code anywhere.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 
-> **Status: beta (v0.4.27).** Core engine + 14 analyzer plugins published to PyPI,
-> Homebrew, and GHCR, validated on real codebases. AttackMap is heuristic by
+> **Status: beta (v0.4.27).** Core engine + 14 analyzer plugins, installed straight
+> from GitHub and validated on real codebases. AttackMap is heuristic by
 > design — findings are confidence-tiered evidence, not proof. Roadmap to 1.0:
 > [issue #209](https://github.com/mlaify/AttackMap/issues/209).
 
@@ -39,7 +39,7 @@ view — build it from source at [mlaify/AttackMap-mac](https://github.com/mlaif
 ## Quickstart
 
 ```bash
-pip install "git+https://github.com/mlaify/AttackMap.git#egg=attackmap[all]"
+pip install "attackmap[all] @ git+https://github.com/mlaify/AttackMap.git"
 attackmap analyze /path/to/repo           # heuristic review → reports/
 attackmap analyze /path/to/repo --llm     # + AI-narrated review (Claude or OpenAI)
 attackmap analyze ./svc-a ./svc-b ./gw    # cross-repo / fleet scan

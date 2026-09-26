@@ -425,7 +425,7 @@ def test_auto_backend_falls_back_to_cli_when_no_creds(monkeypatch) -> None:
 
 
 def test_auto_backend_falls_back_to_cli_when_key_set_but_sdk_missing(monkeypatch) -> None:
-    # Homebrew installs attackmap without the anthropic SDK. A key set in that
+    # A core-only install has no anthropic SDK. A key set in that
     # environment must fall back to the `claude` CLI, not error.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setattr("attackmap.llm_review._anthropic_sdk_available", lambda: False)

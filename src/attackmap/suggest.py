@@ -24,7 +24,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .analyzers import get_available_modules
+from .analyzers import analyzer_install_url, get_available_modules
 
 # Depth cap for the recursive walk. Enough for a monorepo's top-level
 # packages/services/apps folders; not enough to explore node_modules.
@@ -51,14 +51,14 @@ _SKIP_DIRS = {
 class Suggestion:
     """One plugin recommendation for the repo."""
 
-    plugin: str  # PyPI package name, e.g. "attackmap-analyzer-python"
+    plugin: str  # Package name, e.g. "attackmap-analyzer-python"
     analyzer_name: str  # Analyzer entry-point name, e.g. "python"
     matched_signals: tuple[str, ...]
     installed: bool = False
 
     @property
     def pip_install(self) -> str:
-        return f"pip install {self.plugin}"
+        return f"pip install {analyzer_install_url(self.plugin)}"
 
 
 @dataclass(frozen=True)

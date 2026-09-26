@@ -16,7 +16,7 @@ The user can force a backend via the `backend` argument or the CLI's
 `--llm-backend` flag; "auto" walks the order above and picks the first one
 that resolves.
 
-Optional dependency: `pip install attackmap[llm]` installs the anthropic SDK.
+Optional dependency: `pip install "attackmap[llm] @ git+https://github.com/mlaify/AttackMap.git"` installs the anthropic SDK.
 The CLI backend only requires the `claude` binary on PATH (no SDK install).
 """
 
@@ -40,6 +40,8 @@ from .review_prompts import (
     render_skeptic_prompts,
     render_triage_prompts,
 )
+
+_LLM_INSTALL = 'pip install "attackmap[llm] @ git+https://github.com/mlaify/AttackMap.git"'
 
 DEFAULT_MODEL = "claude-opus-4-8"
 DEFAULT_EFFORT: Literal["low", "medium", "high", "xhigh", "max"] = "high"
@@ -96,7 +98,8 @@ def _resolve_sdk_client(api_key: str | None, client: Any | None) -> tuple[Any, s
         import anthropic
     except ImportError as exc:
         raise LlmReviewError(
-            "The anthropic SDK is not installed. Install with `pip install attackmap[llm]` "
+            "The anthropic SDK is not installed. Install with "
+            f"`{_LLM_INSTALL}` "
             "to use the API backend, or ensure the `claude` CLI is on PATH for the CLI backend."
         ) from exc
 
@@ -340,7 +343,8 @@ def _resolve_openai_client(api_key: str | None, client: Any | None) -> Any:
         import openai
     except ImportError as exc:
         raise LlmReviewError(
-            "The openai SDK is not installed. Install with `pip install attackmap[llm]` "
+            "The openai SDK is not installed. Install with "
+            f"`{_LLM_INSTALL}` "
             "to use the OpenAI API backend, or install the `codex` CLI for the CLI backend."
         ) from exc
 
@@ -576,7 +580,7 @@ def _resolve_backend(
     )
     # Prefer the API backend only when the SDK is actually importable. Otherwise
     # fall back to the `claude` CLI (needs no SDK), so a key set against an
-    # SDK-less install (e.g. Homebrew, which doesn't vendor `attackmap[llm]`)
+    # SDK-less install (one without the `llm` extra)
     # still works via subscription auth instead of erroring.
     if has_key and _anthropic_sdk_available():
         return "api"

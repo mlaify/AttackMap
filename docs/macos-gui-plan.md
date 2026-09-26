@@ -8,7 +8,7 @@ already-installed `attackmap` CLI. No Python bundling, no notarization in scope.
 ## 1. Goal & scope
 
 A native macOS app for users who already have `attackmap` on their `PATH`
-(brew / pipx / venv). The app is a **launcher + viewer**: it runs a scan,
+(pipx / pip / venv). The app is a **launcher + viewer**: it runs a scan,
 streams progress, and renders the JSON artifacts the engine already produces.
 
 **Repo:** separate — `mlaify/AttackMap-mac` (versions independently of the engine).
@@ -160,7 +160,7 @@ break the app.
 
 - **CLI discovery** (`CLILocator`): search `PATH`, then `/opt/homebrew/bin`,
   `/usr/local/bin`, `~/.local/bin` (pipx); Settings lets the user pin an explicit
-  path. Show a clear "attackmap not found — brew install mlaify/tap/attackmap"
+  path. Show a clear "attackmap not found — pipx install git+https://github.com/mlaify/AttackMap.git"
   state if missing.
 - **Spawn**: `Process` with `env` inheriting the user shell env; add
   `ANTHROPIC_API_KEY` from Keychain only when an LLM mode is selected (respects

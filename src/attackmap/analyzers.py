@@ -523,9 +523,21 @@ def select_requested_analyzers(
     return selected
 
 
-def install_analyzer_module(repo_name: str) -> None:
+# Analyzer packages whose GitHub repo name differs from the package name.
+_REPO_NAME_OVERRIDES = {
+    "attackmap-analyzer-omeka-s": "attack-map-analyzer-omeka-s",
+}
+
+
+def analyzer_install_url(repo_name: str) -> str:
+    """Return the pip-installable git URL for an official analyzer."""
     normalized_repo = _normalize_repo_name(repo_name)
-    module_url = f"git+{ANALYZER_ORG_BASE_URL}/{normalized_repo}.git"
+    normalized_repo = _REPO_NAME_OVERRIDES.get(normalized_repo, normalized_repo)
+    return f"git+{ANALYZER_ORG_BASE_URL}/{normalized_repo}.git"
+
+
+def install_analyzer_module(repo_name: str) -> None:
+    module_url = analyzer_install_url(repo_name)
     logger.info("Installing analyzer module from %s", module_url)
     subprocess.run(
         [sys.executable, "-m", "pip", "install", module_url],

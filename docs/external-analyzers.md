@@ -1,8 +1,8 @@
 # Writing an external AttackMap analyzer
 
 This is the developer-facing guide for building an analyzer plugin that ships as
-its own PyPI package. If you only want to *use* analyzers, run
-`pip install "attackmap[all]"` and stop reading.
+its own Python package in its own repo. If you only want to *use* analyzers, run
+`pip install "attackmap[all] @ git+https://github.com/mlaify/AttackMap.git"` and stop reading.
 
 The contract itself is documented in code at
 [`attackmap.sdk`](../src/attackmap/sdk/__init__.py); this guide is the
@@ -173,9 +173,9 @@ Reference: the official analyzers ([`mlaify/attackmap-analyzer-python`](https://
 [`mlaify/attackmap-analyzer-rust`](https://github.com/mlaify/attackmap-analyzer-rust), and the
 others listed below) all follow this pattern.
 
-### CI tip: install attackmap from git during pre-PyPI development
+### CI tip: install attackmap from git
 
-If your analyzer depends on an unreleased version of `attackmap`, install it
+`attackmap` is distributed from GitHub, not a package index, so install it
 from git in CI so `pip install -e ".[dev]"` doesn't fail resolving the
 constraint:
 
@@ -220,24 +220,23 @@ the route file).
 
 ## Publishing
 
-1. Tag `v0.1.0`. The release workflow in any of the
+Analyzers are installed straight from their git repos, so publishing is just
+pushing to GitHub:
+
+1. Copy `.github/workflows/ci.yml` from any of the
    [`mlaify/attackmap-analyzer-*`](https://github.com/orgs/mlaify/repositories?q=attackmap-analyzer)
-   repos shows the standard CI + GHCR + PyPI Trusted-Publishing setup; copy
-   `.github/workflows/release.yml` and `ci.yml` from one of them.
+   repos so every push runs the test suite.
 
-2. Configure a **Pending Publisher** on PyPI for the new project name before
-   pushing the tag (PyPI → Account → Publishing → Add a new pending
-   publisher). Required fields: project name, GitHub owner, repo name,
-   workflow filename `release.yml`, environment name `pypi`.
+2. Tag releases (`v0.1.0`, …) so users can pin a version:
+   `pip install "git+https://github.com/<you>/<repo>.git@v0.1.0"`.
 
-3. Wait for the release workflow to complete. After the first successful
-   publish, the Pending Publisher converts to a Configured one and the
-   3-pending-publisher slot is freed.
+3. Document the install line in your README:
+   `pip install git+https://github.com/<you>/<repo>.git`.
 
 ## Reference: the 14 official analyzers
 
 Each of these lives in its own repo under [`mlaify/`](https://github.com/orgs/mlaify/repositories?q=attackmap-analyzer)
-and ships to PyPI. Source-read any of them for a real, working analyzer.
+and installs from git. Source-read any of them for a real, working analyzer.
 
 | Plugin | Ecosystem |
 |---|---|

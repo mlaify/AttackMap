@@ -48,7 +48,7 @@ runs:
 
     - name: Install AttackMap
       shell: bash
-      run: pip install "attackmap[${{ inputs.extras }}]"
+      run: pip install "attackmap[${{ inputs.extras }}] @ git+https://github.com/mlaify/AttackMap.git@${{ github.action_ref || 'main' }}"
 
     - name: Run AttackMap
       shell: bash

@@ -95,8 +95,8 @@ align on direction.
 
 ### Adding a new analyzer plugin
 
-The full developer cookbook — scaffolding, the contract, testing, publishing
-to PyPI — is in [`docs/external-analyzers.md`](docs/external-analyzers.md).
+The full developer cookbook — scaffolding, the contract, testing, and
+releasing — is in [`docs/external-analyzers.md`](docs/external-analyzers.md).
 Use one of the existing plugin repos (Python or Go are the most thorough) as
 a working template.
 
