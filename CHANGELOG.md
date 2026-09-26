@@ -317,7 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lockfile version resolution (#143).** A new `lockfiles.py` parses the common
   lockfiles for *exact* resolved versions and the full **transitive** dependency
   tree — `package-lock.json` (v1/v2/v3) and `pnpm-lock.yaml` (npm), `poetry.lock`
-  and `uv.lock` (PyPI), and `Cargo.lock` (Cargo). Resolved `DependencyHint`s set
+  and `uv.lock` (Python), and `Cargo.lock` (Cargo). Resolved `DependencyHint`s set
   `resolved=True`, flag `direct` vs transitive, and carry a `via` resolution path
   (`express > body-parser > qs`) reconstructed by a BFS over the dependency
   graph. Multiple installed versions of one package are all preserved, and the
@@ -475,11 +475,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`--llm-backend auto` now falls back to the subscription CLI when the API SDK
   isn't installed.** Previously, if an API key was set but the `anthropic` /
-  `openai` SDK wasn't importable (e.g. a Homebrew install, which doesn't vendor
-  `attackmap[llm]`), `auto` chose the API backend and errored instead of using
+  `openai` SDK wasn't importable (e.g. a core-only install without the
+  `[llm]` extra), `auto` chose the API backend and errored instead of using
   the `claude` / `codex` CLI. It now prefers the API backend only when the SDK is
   importable, otherwise uses the CLI (subscription auth) — so `--llm` / `--hunt`
-  / `--remediate` work out of the box on brew installs.
+  / `--remediate` work out of the box on core-only installs.
 
 ## [0.4.5] - 2026-07-11
 
@@ -521,7 +521,7 @@ alongside Claude. Motivated by the macOS GUI's provider + model pickers.
   `gpt-5-codex`; `--llm-model` passes any model ID through verbatim (e.g.
   `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`). `--llm-effort` maps onto the Responses
   API's reasoning effort (xhigh/max clamp to high); `--llm-speed fast` is
-  Claude-only and ignored for OpenAI. Install with `pip install attackmap[llm]`
+  Claude-only and ignored for OpenAI. Install the `[llm]` extra
   (now pulls in `openai`) or just have the `codex` CLI on PATH.
 - **`--llm-speed {standard,fast}`.** Fast mode (~2.5× output speed, premium
   price) for the LLM phases, applied only on Opus 4.8/4.7 via the API backend
@@ -850,13 +850,6 @@ dependency risk — while adding CI-grade output formats.
   · Please run /login") plus a hint, instead of the misleading `subtype`
   ("success") field.
 
-### Fixed
-
-- Container image and Homebrew publishing pipelines: the GHCR build now waits for
-  PyPI before building and tags images from the resolved version; the Homebrew
-  formula drops the `anthropic`/`jiter` tree (unbuildable in Homebrew's sandbox),
-  depends on `rust` for `pydantic-core`, and passes `brew audit`/`brew style`.
-
 ## [0.1.1] - 2026-06-25
 
 ### Changed
@@ -868,7 +861,7 @@ dependency risk — while adding CI-grade output formats.
   NextJS routes, tRPC, XRPC handlers, workspaces, BullMQ/Kafka workers,
   `EXPO_PUBLIC_*` client-bundled secret rule).
 
-No core code changes. Users who `pip install --upgrade attackmap[all]`
+No core code changes. Users who upgrade `attackmap[all]`
 are now guaranteed the newer analyzer bundle.
 
 ## [0.1.0] - 2026-06-04
