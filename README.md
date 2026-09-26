@@ -22,7 +22,7 @@ sends your code anywhere.
 > design — findings are confidence-tiered evidence, not proof. Roadmap to 1.0:
 > [issue #209](https://github.com/mlaify/AttackMap/issues/209).
 
-Full documentation: **[attackmap-docs](https://github.com/mlaify/attackmap-docs)** ·
+Full documentation: **[docs.mlaify.io](https://docs.mlaify.io)** ·
 architecture & internals: **[wiki](https://github.com/mlaify/AttackMap/wiki)**.
 
 ### The macOS app
@@ -32,9 +32,9 @@ view — build it from source at [mlaify/AttackMap-mac](https://github.com/mlaif
 
 | Overview | Exploitability |
 |---|---|
-| [![AttackMap macOS app — overview](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/04-overview.png)](https://github.com/mlaify/attackmap-docs/blob/main/docs/gui.md) | [![AttackMap macOS app — exploitability](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/06-exploitability-ranked.png)](https://github.com/mlaify/attackmap-docs/blob/main/docs/gui.md) |
+| [![AttackMap macOS app — overview](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/04-overview.png)](https://docs.mlaify.io/gui/) | [![AttackMap macOS app — exploitability](https://raw.githubusercontent.com/mlaify/AttackMap/main/docs/screenshots/06-exploitability-ranked.png)](https://docs.mlaify.io/gui/) |
 
-*Scanning OWASP Juice Shop. Walkthrough in the [macOS app docs](https://github.com/mlaify/attackmap-docs/blob/main/docs/gui.md); source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac).*
+*Scanning OWASP Juice Shop. Walkthrough in the [macOS app docs](https://docs.mlaify.io/gui/); source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac).*
 
 ## Quickstart
 
@@ -53,7 +53,7 @@ automatically (`ANTHROPIC_API_KEY`, or your Claude/`codex` CLI subscription); ad
 Other install paths: `pip install git+https://github.com/mlaify/AttackMap.git` (core
 only), or the `[llm]` extra for AI narration. Not sure
 which analyzer plugins a repo needs? `attackmap suggest ./repo`. Full install and
-CI setup: **[install guide](https://github.com/mlaify/attackmap-docs/blob/main/docs/install.md)**.
+CI setup: **[install guide](https://docs.mlaify.io/install/)**.
 
 ## What it finds
 
@@ -77,7 +77,7 @@ CI setup: **[install guide](https://github.com/mlaify/attackmap-docs/blob/main/d
 
 Each run writes Markdown, JSON (`attackmap-report.json`), **SARIF 2.1.0**, and
 diagram artifacts; fleet runs add `fleet-summary.{md,json}` + `fleet-graph.md`.
-See the [outputs reference](https://github.com/mlaify/attackmap-docs/blob/main/docs/scanning.md) for the full list.
+See the [outputs reference](https://docs.mlaify.io/scanning/) for the full list.
 
 ## Supported ecosystems
 
@@ -85,7 +85,7 @@ Fourteen analyzer plugins (each installable on its own; `[all]` installs every o
 **Python**, **JavaScript/TypeScript** (Node services), **Go**, **Java/Kotlin**
 (Spring), **C#** (ASP.NET Core), **Rust**, **PHP** (web / Laminas / Omeka-S),
 **C**, **C++**, **Terraform**, **IaC** (Docker / compose / GitHub Actions),
-**AT Protocol**. Details: [analyzers reference](https://github.com/mlaify/attackmap-docs/blob/main/docs/analyzers.md).
+**AT Protocol**. Details: [analyzers reference](https://docs.mlaify.io/analyzers/).
 Write your own against the documented [analyzer SDK](docs/external-analyzers.md).
 
 ## CLI cheat-sheet
@@ -105,7 +105,7 @@ attackmap suggest ./repo                  # recommend analyzer plugins    · att
 
 Verify-jury knobs (`--verify-votes` / `--hunt-lenses` / `--hunt-rounds` /
 `--hunt-budget`) and suppression (`--no-suppress` / `--suppress-file`) are
-documented in the [CLI reference](https://github.com/mlaify/attackmap-docs/blob/main/docs/cli.md).
+documented in the [CLI reference](https://docs.mlaify.io/cli/).
 
 ## What AttackMap is *not*
 
@@ -120,7 +120,7 @@ documented in the [CLI reference](https://github.com/mlaify/attackmap-docs/blob/
 
 ## Documentation & links
 
-- **[attackmap-docs](https://github.com/mlaify/attackmap-docs)** — user guide, install, CLI,
+- **[docs.mlaify.io](https://docs.mlaify.io)** — user guide, install, CLI,
   analyzers, SDK
 - **[Wiki](https://github.com/mlaify/AttackMap/wiki)** — architecture, roadmap,
   contributor references
