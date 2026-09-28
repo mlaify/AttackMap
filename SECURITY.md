@@ -33,6 +33,8 @@ In participating in our vulnerability disclosure program in good faith, we ask t
 ## Official Channels
 Please report security issues via [security@mlaify.io](mailto:security@mlaify.io), providing all relevant information. The more details you provide, the easier it will be for us to triage and fix the issue.
 
+To encrypt your report, use the [security@mlaify.io PGP key](https://mlaify.io/publickey.security@mlaify.io-38642d275f820a026f3bfc5e7e44d7d05bafd4df.asc) (fingerprint `3864 2D27 5F82 0A02 6F3B FC5E 7E44 D7D0 5BAF D4DF`).
+
 ## Safe Harbor
 When conducting vulnerability research, according to this policy, we consider this research conducted under this policy to be:
 - Authorized concerning any applicable anti-hacking laws, and we will not initiate or support legal action against you for accidental, good-faith violations of this policy;
