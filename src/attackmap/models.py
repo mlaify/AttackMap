@@ -189,6 +189,7 @@ class CodeWeakness(_RedactedEvidence):
         "redos",
         "insecure_upload",
         "graphql_exposure",
+        "prompt_injection_attempt",
     ]
     file: str
     line: int | None = None

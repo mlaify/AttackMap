@@ -465,10 +465,11 @@ def test_cli_hunt_verify_votes_writes_consensus(tmp_path: Path, monkeypatch) -> 
         if kwargs.get("mode") == "hunt_generate":
             return _result(gen_md)
         # 3 skeptics: 2 confirm, 1 refute → consensus confirmed
+        # Verdicts must cite an excerpt key or evidence id (#233).
         outs = [
-            "VERDICT H1: CONFIRMED — eval on request arg",
-            "VERDICT H1: CONFIRMED — untrusted into eval",
-            "VERDICT H1: REFUTED — arg is constant",
+            "=== VERDICTS ===\nVERDICT H1: CONFIRMED — eval on request arg (taint:1)",
+            "=== VERDICTS ===\nVERDICT H1: CONFIRMED — untrusted into eval, taint:1",
+            "=== VERDICTS ===\nVERDICT H1: REFUTED — arg is constant per taint:1",
         ]
         out = outs[min(seq["n"], len(outs) - 1)]
         seq["n"] += 1

@@ -810,6 +810,14 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
     },
+    "prompt_injection_attempt": {
+        "severity": "low",
+        "title": "Text aimed at automated reviewers (possible prompt injection)",
+        "mitigation": "Review who added these lines. Text addressed to automated (LLM-based) reviewers, instructions to disregard earlier rules, chat-template role tags or invisible/bidirectional Unicode in source are attempts to steer automated review (or hide code from humans, as in Trojan Source). AttackMap fences such content as untrusted and strips flagged lines from LLM excerpts; remove them from the code.",
+        "technique_id": "T1027",
+        "technique_name": "Obfuscated Files or Information",
+        "tactic": "Defense Evasion",
+    },
 }
 
 
