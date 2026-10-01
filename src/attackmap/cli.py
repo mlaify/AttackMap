@@ -45,11 +45,31 @@ from .review_prompts import HUNT_LENSES
 from .triage import render_triage_fallback
 from .progress import create_progress
 from .recon_to_analysis import translate_recon
-from .report import render_console_summary, render_pr_comment, write_reports
+from . import __version__
+from .report import OUTPUT_FORMATS, render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
 from .suppress import apply_suppressions, collect_suppressions
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"attackmap {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the AttackMap version and exit.",
+    ),
+) -> None:
+    """AttackMap: understand your system and map your attack surface."""
 
 # Prepended to vulnerability-hypotheses.md (#80) so the framing is unmissable
 # even if a reader skips straight to the file: these are leads, not detections.
@@ -93,6 +113,7 @@ def _run_fleet(
     progress_format: str,
     no_progress: bool,
     fleet_incompatible: dict[str, bool],
+    output_format: str = "all",
 ) -> None:
     """Multi-repo fleet scan (#146a). Scans each repo independently — reusing the
     same building blocks a single-repo run uses — writes per-repo reports into
@@ -174,6 +195,7 @@ def _run_fleet(
                 for metadata in (get_analyzer_metadata(a) for a in active_analyzers)
             ],
             suppressed=suppressed_findings,
+            output_format=output_format,
         )
         typer.echo(render_console_summary(scan, findings, attack_paths))
         fleet.results.append(
@@ -201,22 +223,26 @@ def _run_fleet(
     fleet.cross_repo_anomalies = find_cross_repo_anomalies(repo_scans, auth_by_repo)
 
     output_root.mkdir(parents=True, exist_ok=True)
-    (output_root / "fleet-summary.md").write_text(
-        render_fleet_summary(fleet) + "\n", encoding="utf-8"
-    )
-    (output_root / "fleet-summary.json").write_text(
-        json.dumps(fleet_summary_json(fleet), indent=2) + "\n", encoding="utf-8"
-    )
-    (output_root / "fleet-graph.md").write_text(
-        render_fleet_graph_mermaid(fleet) + "\n", encoding="utf-8"
-    )
+    emit_markdown = output_format in {"all", "markdown"}
+    if emit_markdown:
+        (output_root / "fleet-summary.md").write_text(
+            render_fleet_summary(fleet) + "\n", encoding="utf-8"
+        )
+        (output_root / "fleet-graph.md").write_text(
+            render_fleet_graph_mermaid(fleet) + "\n", encoding="utf-8"
+        )
+    if output_format in {"all", "json"}:
+        (output_root / "fleet-summary.json").write_text(
+            json.dumps(fleet_summary_json(fleet), indent=2) + "\n", encoding="utf-8"
+        )
+    summary_name = "fleet-summary.md" if emit_markdown else "fleet-summary.json"
     typer.echo("")
     typer.echo(
         f"Fleet: {fleet.repo_count} repositories, {fleet.total_findings()} finding(s), "
         f"{len(fleet.links)} cross-repo link(s), "
         f"{len(fleet.cross_boundary)} cross-boundary + {len(fleet.trust_gaps)} trust-gap + "
         f"{len(fleet.cross_repo_anomalies)} anomaly (all speculative). "
-        f"Summary written to: {(output_root / 'fleet-summary.md').resolve()}"
+        f"Summary written to: {(output_root / summary_name).resolve()}"
     )
 
 
@@ -229,7 +255,13 @@ def analyze(
         "subdirectory and a fleet summary is written alongside. Defaults to '.'.",
     ),
     output: str = typer.Option("reports", "--output", "-o", help="Directory for generated reports."),
-    format: str = typer.Option("all", "--format", help="Output format: all, markdown, or json."),
+    format: str = typer.Option(
+        "all",
+        "--format",
+        help="Which report artifacts to write: 'all' (default), 'json' (machine-readable "
+        "*.json + SARIF), or 'markdown' (human-readable *.md + Graphviz *.dot). Opt-in "
+        "outputs (--baseline diff, --pr-comment, LLM passes) are always written.",
+    ),
     module: list[str] | None = typer.Option(
         None,
         "--module",
@@ -366,6 +398,8 @@ def analyze(
     # the same option semantics as a single-repo run (#146a).
     if progress_format not in {"auto", "tty", "json", "none"}:
         raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
+    if format not in OUTPUT_FORMATS:
+        raise typer.BadParameter(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}.")
 
     # Multi-repo fleet mode (#146a): scan each repo independently and assemble a
     # fleet view. Dispatched here so the single-repo path below is untouched.
@@ -380,6 +414,7 @@ def analyze(
             suppress_file=suppress_file,
             progress_format=progress_format,
             no_progress=no_progress,
+            output_format=format,
             # Single-repo-only features aren't fleet-aware yet — reject rather
             # than silently ignore, so the user isn't surprised (#146b+ wire them).
             fleet_incompatible={
@@ -506,6 +541,7 @@ def analyze(
             for metadata in (get_analyzer_metadata(analyzer) for analyzer in active_analyzers)
         ],
         suppressed=suppressed_findings,
+        output_format=format,
     )
     typer.echo(render_console_summary(scan, findings, attack_paths))
     typer.echo("")
