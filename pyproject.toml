@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "attackmap"
-version = "0.4.29"
+# Single-sourced from src/attackmap/__init__.py (see [tool.setuptools.dynamic]).
+dynamic = ["version"]
 description = "AI-assisted defensive security analyzer for codebases — scans a repository, models assets and controls, finds cross-cutting weaknesses, and generates an evidence-grounded review with MITRE ATT&CK mappings and detection-engineering hints."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -97,6 +98,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "attackmap.__version__"}
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

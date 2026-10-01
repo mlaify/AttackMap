@@ -23,6 +23,10 @@ def _severity_rank(value: str) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(value, 3)
 
 
+# Values accepted by ``--format`` / ``write_reports(output_format=...)``.
+OUTPUT_FORMATS = ("all", "markdown", "json")
+
+
 def write_reports(
     output_dir: str | Path,
     scan: ScanResult,
@@ -34,27 +38,45 @@ def write_reports(
     attack_paths: list[AttackPath],
     analyzer_metadata: list[dict[str, object]] | None = None,
     suppressed: list[SuppressedFinding] | None = None,
+    output_format: str = "all",
 ) -> None:
+    """Write the report set for one scan.
+
+    ``output_format`` selects which artifacts are emitted (``--format``):
+    ``"json"`` writes the machine-readable files (``*.json`` + SARIF),
+    ``"markdown"`` writes the human-readable files (``*.md`` + Graphviz
+    ``*.dot``), and ``"all"`` (default) writes both.
+    """
+    if output_format not in OUTPUT_FORMATS:
+        raise ValueError(
+            f"Unknown output format {output_format!r}; expected one of: {', '.join(OUTPUT_FORMATS)}."
+        )
+    emit_json = output_format in {"all", "json"}
+    emit_markdown = output_format in {"all", "markdown"}
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     suppressed = suppressed or []
 
-    (out / "architecture.md").write_text(architecture_md + "\n", encoding="utf-8")
-    (out / "attack-surface.md").write_text(attack_surface_md + "\n", encoding="utf-8")
-    (out / "defensive-review.md").write_text(defensive_review_md + "\n", encoding="utf-8")
+    if emit_markdown:
+        (out / "architecture.md").write_text(architecture_md + "\n", encoding="utf-8")
+        (out / "attack-surface.md").write_text(attack_surface_md + "\n", encoding="utf-8")
+        (out / "defensive-review.md").write_text(defensive_review_md + "\n", encoding="utf-8")
     defensive_review_json = build_defensive_review_json(scan, attack_surfaces, findings, attack_paths)
-    (out / "defensive-review.json").write_text(json.dumps(defensive_review_json, indent=2) + "\n", encoding="utf-8")
     review_context_pack = build_review_context_pack(
         defensive_review_json,
         scan,
         analyzer_metadata if analyzer_metadata is not None else [],
     )
-    (out / "review-context-pack.json").write_text(json.dumps(review_context_pack, indent=2) + "\n", encoding="utf-8")
+    if emit_json:
+        (out / "defensive-review.json").write_text(json.dumps(defensive_review_json, indent=2) + "\n", encoding="utf-8")
+        (out / "review-context-pack.json").write_text(json.dumps(review_context_pack, indent=2) + "\n", encoding="utf-8")
 
     exploitability = score_exploitability(scan, attack_surfaces)
-    (out / "attackmap-exploitability.md").write_text(
-        render_exploitability_ranking(exploitability) + "\n", encoding="utf-8"
-    )
+    if emit_markdown:
+        (out / "attackmap-exploitability.md").write_text(
+            render_exploitability_ranking(exploitability) + "\n", encoding="utf-8"
+        )
 
     json_report = {
         "scan": scan.model_dump(),
@@ -82,18 +104,22 @@ def write_reports(
         "attack_paths": [path.model_dump() for path in attack_paths],
         "exploitability": [score.model_dump() for score in exploitability],
     }
-    (out / "attackmap-report.json").write_text(json.dumps(json_report, indent=2) + "\n", encoding="utf-8")
+    if emit_json:
+        (out / "attackmap-report.json").write_text(json.dumps(json_report, indent=2) + "\n", encoding="utf-8")
 
-    # SARIF 2.1.0 for GitHub Code Scanning / VS Code / other SARIF
-    # consumers. Emitted alongside JSON, not in place of it.
-    sarif_report = build_sarif(
-        findings,
-        attack_paths,
-        suppressed=[(s.finding, s.reason) for s in suppressed],
-    )
-    (out / "attackmap-report.sarif").write_text(
-        json.dumps(sarif_report, indent=2) + "\n", encoding="utf-8"
-    )
+        # SARIF 2.1.0 for GitHub Code Scanning / VS Code / other SARIF
+        # consumers. Emitted alongside JSON, not in place of it.
+        sarif_report = build_sarif(
+            findings,
+            attack_paths,
+            suppressed=[(s.finding, s.reason) for s in suppressed],
+        )
+        (out / "attackmap-report.sarif").write_text(
+            json.dumps(sarif_report, indent=2) + "\n", encoding="utf-8"
+        )
+
+    if not emit_markdown:
+        return
 
     # Mermaid + Graphviz DOT export of attack paths and service topology
     # (#49). Nothing new is computed — pure output transform of shapes

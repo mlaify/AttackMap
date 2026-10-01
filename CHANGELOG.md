@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.30] - 2026-10-01
+
+### Fixed
+
+- **`--format` now does what it says.** The option was accepted but ignored —
+  every run wrote every artifact. It now selects the report set: `all`
+  (default, unchanged behavior), `json` (`attackmap-report.json`,
+  `attackmap-report.sarif`, `defensive-review.json`, `review-context-pack.json`;
+  in fleet mode `fleet-summary.json`), or `markdown` (`*.md` reports plus the
+  Graphviz `*.dot` diagrams; in fleet mode `fleet-summary.md` + `fleet-graph.md`).
+  Unknown values are rejected. Opt-in outputs (`--baseline` diff, `--pr-comment`,
+  LLM passes) are written regardless. **Compatibility:** callers that passed
+  `--format json` but read Markdown/diagram files (AttackMap-mac ≤ 0.2.1) must
+  switch to `--format all`.
+- **Version drift.** `attackmap.__version__` reported `0.4.25` while the package
+  was `0.4.29`. The version is now single-sourced from
+  `src/attackmap/__init__.py` (pyproject reads it via setuptools `dynamic`), and a
+  test guards against a second copy reappearing.
+
+### Added
+
+- **`attackmap --version`.**
+
 ## [0.4.29] - 2026-07-23
 
 ### Added
@@ -916,7 +939,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.4.30...HEAD
+[0.4.30]: https://github.com/mlaify/AttackMap/compare/v0.4.29...v0.4.30
 [0.2.0]: https://github.com/mlaify/AttackMap/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/mlaify/AttackMap/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mlaify/AttackMap/releases/tag/v0.1.0
