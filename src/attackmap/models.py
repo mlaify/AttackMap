@@ -512,10 +512,21 @@ class ExploitabilityScore(BaseModel):
     factors: list[ExploitabilityFactor] = Field(default_factory=list)
 
 
+class FindingLocation(BaseModel):
+    """A file (and line, when known) a finding applies to (#214). Carried
+    structurally so SARIF, suppression and diffing don't have to parse
+    evidence prose."""
+
+    file: str
+    line: int | None = None
+
+
 class Finding(_RedactedEvidence):
     title: str
     severity: Literal["low", "medium", "high"]
     evidence: list[str] = Field(default_factory=list)
+    # Every location the finding covers — not capped like `evidence` (#214).
+    locations: list[FindingLocation] = Field(default_factory=list)
     mitigation: str
     confidence: Literal["low", "medium", "high"] = "medium"
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)

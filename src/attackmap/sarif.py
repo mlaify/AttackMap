@@ -14,6 +14,7 @@ import re
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from .srcpaths import evidence_locations
 from .md import md_text
 from .models import AttackPath, Finding
 
@@ -55,38 +56,28 @@ def _slugify(text: str) -> str:
     return slug or "finding"
 
 
-# Regex to lift `file` and `line` from evidence strings like
-# `"POST /webhook/x in app.py; auth signals: ..."` (surface_evidence
-# format) or `"API_KEY in config.py"` (secret_hint format). Best-effort:
-# a location is optional per SARIF spec.
-_LOCATION_FROM_EVIDENCE = re.compile(
-    r"(?:in|at)\s+`?([\w./_\\-]+\.(?:py|js|jsx|ts|tsx|mjs|cjs|go|rs|php|java|kt|cs|cpp|c|h|hpp|yml|yaml|json|toml|env|sh|dockerfile))`?(?::(\d+))?",
-    re.IGNORECASE,
-)
+def _sarif_location(file_path: str, line_num: int | None) -> dict[str, Any]:
+    region = {"startLine": line_num} if line_num is not None else {"startLine": 1}
+    return {"physicalLocation": {"artifactLocation": {"uri": file_path}, "region": region}}
+
+
+def _finding_locations(finding: Finding) -> list[dict[str, Any]]:
+    """Structured `Finding.locations` first (#214); evidence parsing only as a
+    fallback for findings that don't carry them."""
+    if finding.locations:
+        seen: set[tuple[str, int | None]] = set()
+        out: list[dict[str, Any]] = []
+        for loc in finding.locations:
+            key = (loc.file.replace("\\", "/"), loc.line)
+            if key not in seen:
+                seen.add(key)
+                out.append(_sarif_location(*key))
+        return out
+    return _locations_from_evidence(finding.evidence)
 
 
 def _locations_from_evidence(evidence: list[str]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, int | None]] = set()
-    locations: list[dict[str, Any]] = []
-    for line in evidence:
-        for match in _LOCATION_FROM_EVIDENCE.finditer(line):
-            file_path = match.group(1)
-            raw_line = match.group(2)
-            line_num = int(raw_line) if raw_line else None
-            key = (file_path, line_num)
-            if key in seen:
-                continue
-            seen.add(key)
-            region = {"startLine": line_num} if line_num is not None else {"startLine": 1}
-            locations.append(
-                {
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": file_path},
-                        "region": region,
-                    }
-                }
-            )
-    return locations
+    return [_sarif_location(path, line) for path, line in evidence_locations(evidence)]
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +118,7 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
 
 def _build_result(finding: Finding, *, suppression_reason: str | None = None) -> dict[str, Any]:
     rule_id = _slugify(finding.title)
-    locations = _locations_from_evidence(finding.evidence)
+    locations = _finding_locations(finding)
     properties: dict[str, Any] = {
         "tags": list(finding.tags),
         "security-severity": _security_severity(finding.severity, finding.confidence),

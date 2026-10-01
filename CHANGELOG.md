@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Findings carry structured locations (#214, #213).**
+  - Every core finding now has `locations: [{file, line}]`, taken from the signals behind it. Unlike `evidence`, the list is not capped at 10.
+  - SARIF and suppression read `locations` first. Crypto, web-hardening, code-weakness and workflow findings used to appear in Code Scanning as file-less, repo-level alerts that couldn't be suppressed inline or by `path:`. They now point at the right file and line.
+  - Findings without structured locations, such as plugin findings, fall back to one shared evidence parser in `srcpaths.evidence_locations`. Before, two drifting regexes truncated `.tsx`/`.jsx`/`.json`/`.hpp` to `.ts`/`.js`/`.h`, which broke inline `attackmap:ignore` in React files and sent SARIF to nonexistent paths. They also dropped `:line` and missed scoped `@pkg`, `(group)` and `[param]` paths and `Dockerfile`.
+  - `defensive-review.json` adds `weaknesses[].locations`, bumping the schema to 1.3.0.
+
 ## [0.4.31] - 2026-10-01
 
 Security release: AttackMap is now safe to run on untrusted repositories (v0.5.0 Phase 1, #260).
