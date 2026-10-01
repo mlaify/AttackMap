@@ -16,7 +16,7 @@ from typing import Any
 
 from .srcpaths import evidence_locations
 from .md import md_text
-from .models import AttackPath, Finding
+from .models import AttackPath, Finding, finding_rule_id
 
 
 SARIF_VERSION = "2.1.0"
@@ -98,7 +98,7 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
     identical-title findings keeps the taxonomy stable."""
     rules_by_id: dict[str, dict[str, Any]] = {}
     for finding in findings:
-        rule_id = _slugify(finding.title)
+        rule_id = finding_rule_id(finding)
         if rule_id in rules_by_id:
             continue
         rules_by_id[rule_id] = {
@@ -117,7 +117,7 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
 
 
 def _build_result(finding: Finding, *, suppression_reason: str | None = None) -> dict[str, Any]:
-    rule_id = _slugify(finding.title)
+    rule_id = finding_rule_id(finding)
     locations = _finding_locations(finding)
     properties: dict[str, Any] = {
         "tags": list(finding.tags),

@@ -17,8 +17,9 @@ suppress:
   - id: 1a2b3c4d5e6f7a8b
     reason: accepted risk, tracked in JIRA-1234
 
-  # by rule (a slug of the finding title — matches the SARIF ruleId)
-  - rule: hardcoded-secret-literals
+  # by rule id (the stable detector id — `attackmap rules` lists them; it is
+  # also the SARIF ruleId)
+  - rule: hardcoded-secret
     reason: test fixtures only, never shipped
     paths: ["tests/fixtures/**"]     # optional: scope the rule to paths
 
@@ -36,7 +37,7 @@ synonym for ``*``.
 ## 2. Inline directives
 
 ```python
-API_KEY = "…"  # attackmap:ignore[hardcoded-secret-literals] rotated, staging only
+API_KEY = "…"  # attackmap:ignore[hardcoded-secret] rotated, staging only
 ```
 
 A directive in file ``X`` contributes a path selector for ``X`` (optionally
@@ -66,7 +67,7 @@ from pathlib import Path
 from .srcpaths import evidence_locations
 from .safe_fs import contained_file
 from .diff import finding_id
-from .models import Finding
+from .models import Finding, finding_rule_id, title_slug
 
 __all__ = [
     "Suppression",
@@ -176,6 +177,8 @@ class SuppressionOutcome:
     active: list[Finding]
     suppressed: list[SuppressedFinding]
     warnings: list[str] = field(default_factory=list)
+    # Post-match notices (#223): legacy selectors and entries matching nothing.
+    notices: list[str] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -194,6 +197,11 @@ class SuppressionSet:
     """Resolves whether a finding is suppressed and by which selector(s)."""
 
     def __init__(self, suppressions: list[Suppression]) -> None:
+        self._all = list(suppressions)
+        self._used: set[int] = set()
+        # Legacy title-slug selectors that matched, keyed by selector →
+        # the stable rule id to use instead (#223).
+        self.legacy_selectors: dict[str, str] = {}
         self._by_id: dict[str, list[Suppression]] = {}
         self._rule_only: list[Suppression] = []  # rule set, no path → whole-rule
         self._path: list[Suppression] = []  # path set (optional rule scope)
@@ -207,21 +215,44 @@ class SuppressionSet:
 
     def match(self, finding: Finding) -> list[Suppression]:
         """Return the suppressions that cover ``finding`` (empty = active)."""
+        hits = self._match(finding)
+        self._used.update(id(s) for s in hits)
+        return hits
+
+    def unused(self) -> list[Suppression]:
+        """Entries that matched no finding in this run (#223)."""
+        return [s for s in self._all if id(s) not in self._used]
+
+    def _rule_ok(self, selector_rule: str | None, finding: Finding) -> bool:
+        """A ``None`` selector is a wildcard. Otherwise it must equal the stable
+        rule id, or — deprecated — the finding's title slug."""
+        if selector_rule is None:
+            return True
+        selector = rule_slug(selector_rule)
+        stable = finding_rule_id(finding)
+        if selector == stable:
+            return True
+        legacy = title_slug(finding.title)
+        if finding.rule_id and selector == legacy:
+            self.legacy_selectors[selector] = stable
+            return True
+        return False
+
+    def _match(self, finding: Finding) -> list[Suppression]:
         fid = finding_id(finding.title)
-        rule = rule_slug(finding.title)
 
         exact = self._by_id.get(fid, [])
         if exact:
             return list(exact)
 
-        rule_hits = [s for s in self._rule_only if _rule_matches(s.rule, rule)]
+        rule_hits = [s for s in self._rule_only if self._rule_ok(s.rule, finding)]
         if rule_hits:
             return rule_hits
 
         # Path coverage: the finding is suppressed only if EVERY file it cites
         # is covered by a rule-compatible path selector. A finding with no
         # citable path can never be path-suppressed (only by id/rule).
-        candidates = [s for s in self._path if _rule_matches(s.rule, rule)]
+        candidates = [s for s in self._path if self._rule_ok(s.rule, finding)]
         if not candidates:
             return []
         paths = _evidence_paths(finding)
@@ -237,11 +268,6 @@ class SuppressionSet:
         return contributing
 
 
-def _rule_matches(selector_rule: str | None, finding_rule: str) -> bool:
-    """A ``None`` selector rule is a wildcard; otherwise slug-equal."""
-    return selector_rule is None or rule_slug(selector_rule) == finding_rule
-
-
 def apply_suppressions(
     findings: list[Finding], suppset: SuppressionSet, *, warnings: list[str] | None = None
 ) -> SuppressionOutcome:
@@ -254,14 +280,25 @@ def apply_suppressions(
                 SuppressedFinding(
                     finding=finding,
                     id=finding_id(finding.title),
-                    rule=rule_slug(finding.title),
+                    rule=finding_rule_id(finding),
                     reason="; ".join(dict.fromkeys(m.reason for m in matched if m.reason)),
                     matched=matched,
                 )
             )
         else:
             active.append(finding)
-    return SuppressionOutcome(active=active, suppressed=suppressed, warnings=warnings or [])
+    notices: list[str] = []
+    for selector, stable in sorted(suppset.legacy_selectors.items()):
+        notices.append(
+            f"rule '{selector}' is a legacy title-based selector; use the stable rule id "
+            f"'{stable}' (title selectors will stop working in a future release)"
+        )
+    for sup in suppset.unused():
+        where = f" at {sup.source}" if sup.source else ""
+        notices.append(f"suppression {sup.label()}{where} matched no findings")
+    return SuppressionOutcome(
+        active=active, suppressed=suppressed, warnings=warnings or [], notices=notices
+    )
 
 
 # ---------------------------------------------------------------------------

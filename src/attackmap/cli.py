@@ -224,6 +224,8 @@ def _run_fleet(
             for warning in sup_warnings:
                 typer.echo(f"Suppression warning: {warning}", err=True)
             outcome = apply_suppressions(findings, suppset)
+            for notice in outcome.notices:
+                typer.echo(f"Suppression warning: {notice}", err=True)
             findings = outcome.active
             suppressed_findings = outcome.suppressed
 
@@ -586,6 +588,8 @@ def analyze(
         for warning in sup_warnings:
             typer.echo(f"Suppression warning: {warning}", err=True)
         outcome = apply_suppressions(findings, suppset)
+        for notice in outcome.notices:
+            typer.echo(f"Suppression warning: {notice}", err=True)
         findings = outcome.active
         suppressed_findings = outcome.suppressed
         if suppressed_findings:
@@ -1091,6 +1095,23 @@ def suggest(
             typer.echo(f"  Failed: {exc}")
             raise typer.Exit(code=1) from exc
     typer.echo("Done.")
+
+
+@app.command("rules")
+def rules(
+    as_json: bool = typer.Option(False, "--json", help="Emit the rule catalog as JSON."),
+) -> None:
+    """List every core detector's stable rule id (#223) — the SARIF ruleId and
+    the value for `rule:` suppressions and `attackmap:ignore[...]`."""
+    from .threat_model import rule_catalog
+
+    catalog = rule_catalog()
+    if as_json:
+        typer.echo(json.dumps([{"rule_id": r, "title": t, "severity": sev} for r, t, sev in catalog], indent=2))
+        return
+    width = max(len(r) for r, _, _ in catalog)
+    for rule_id, title, severity in catalog:
+        typer.echo(f"{rule_id.ljust(width)}  {severity:<7}  {title}")
 
 
 @app.command("bench")
