@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`--fail-on-new-high` catches new instances of existing findings (#222).** A finding aggregates every site of one issue type, and its id hashes the title, so a PR that added a second command-injection route, or a second hard-coded secret in a new file, used to diff as "0 new" and pass the gate.
+  - Every finding location now carries a `fingerprint`: rule id, file and the normalized source line, with whitespace removed and literals masked, and no line number.
+  - The baseline diff reports the new instances of persisted findings, and a new instance of a HIGH finding fails the gate.
+  - Line drift and reformatting don't produce new instances.
+  - The diff Markdown, PR comment and CLI summary list the new instances.
+  - Baselines from before 0.4.32 have no fingerprints. They still diff at finding level, with a note asking you to regenerate them.
 - **Every finding has a stable rule id (#223).** `Finding.rule_id` is a short, explicit id such as `hardcoded-secret`, `insecure-tls`, `bola-modify` or `script-injection`. Spec-driven families use their kind. The id doesn't change when a title is reworded.
   - It is now the SARIF `ruleId` and the value matched by suppress `rule:` and `attackmap:ignore[...]`. **Code Scanning re-keys alerts once** on upgrade: the old ruleId was the slugified title.
   - The old title-slug selectors keep working, with a deprecation warning that names the new id.
