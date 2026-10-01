@@ -159,7 +159,9 @@ def render_exploitability_ranking(scores: list[ExploitabilityScore]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def render_pr_comment(findings: list[Finding], diff: object | None = None) -> str:
+def render_pr_comment(
+    findings: list[Finding], diff: object | None = None, *, suppressions: dict | None = None
+) -> str:
     """Render a compact Markdown PR summary comment (#105).
 
     With a `DiffReport` (duck-typed: `.new`/`.resolved`/`.has_new_high`), leads
@@ -220,6 +222,21 @@ def render_pr_comment(findings: list[Finding], diff: object | None = None) -> st
                 f"- `{f.exploitability}/100` **{(f.exploitability_tier or '').upper()}** — {md_text(f.title)}"
             )
         lines.append("")
+
+    if suppressions:
+        pending = suppressions.get("pending") or []
+        by_rule = suppressions.get("by_rule") or {}
+        if pending or by_rule:
+            lines.append("### Suppressions")
+            if pending:
+                ref = suppressions.get("trusted_ref") or "the base"
+                state = "applied anyway" if suppressions.get("pending_applied") else "**not applied** until merged"
+                lines.append(f"{len(pending)} suppression(s) added by this change since {md_code(ref)} — {state}:")
+                lines.extend(f"- {md_text(entry)}" for entry in pending[:20])
+            if by_rule:
+                counts = ", ".join(f"{md_code(rule)} ×{n}" for rule, n in sorted(by_rule.items()))
+                lines.append(f"Suppressed by rule: {counts}")
+            lines.append("")
 
     lines.append(
         "<sub>Heuristic static analysis — findings are confidence-tiered evidence, "

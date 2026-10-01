@@ -36,6 +36,10 @@ inputs:
     description: "Cross-reference dependencies against OSV.dev (network I/O)."
     required: false
     default: "false"
+  allow-pr-suppressions:
+    description: "On pull_request runs only suppressions already on the base branch apply; ones the PR adds are reported as pending. Set to 'true' to apply them anyway."
+    required: false
+    default: "false"
 
 outputs:
   pr-comment-file:
@@ -82,6 +86,7 @@ runs:
         ATTACKMAP_BASELINE: ${{ inputs.baseline }}
         ATTACKMAP_FAIL_ON_NEW_HIGH: ${{ inputs.fail-on-new-high }}
         ATTACKMAP_CVE: ${{ inputs.cve }}
+        ATTACKMAP_ALLOW_PR_SUPPRESSIONS: ${{ inputs.allow-pr-suppressions }}
       run: |
         out="${ATTACKMAP_OUTPUT:-$RUNNER_TEMP/attackmap-reports}"
         echo "dir=$out" >> "$GITHUB_OUTPUT"
@@ -92,6 +97,16 @@ runs:
         [ -n "$ATTACKMAP_BASELINE" ] && args+=(--baseline "$ATTACKMAP_BASELINE")
         [ "$ATTACKMAP_FAIL_ON_NEW_HIGH" = "true" ] && args+=(--fail-on-new-high)
         [ "$ATTACKMAP_CVE" = "true" ] && args+=(--cve)
+        # On pull requests, trust only suppressions that already exist on the
+        # base branch: a PR must not be able to silence its own findings.
+        if [ -n "${GITHUB_BASE_REF:-}" ]; then
+          if ! git -C "$ATTACKMAP_PATH" fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF" >/dev/null 2>&1; then
+            echo "::error::could not fetch base branch $GITHUB_BASE_REF to verify suppressions"
+            exit 2
+          fi
+          args+=(--suppress-from-ref FETCH_HEAD)
+          [ "$ATTACKMAP_ALLOW_PR_SUPPRESSIONS" = "true" ] && args+=(--allow-pr-suppressions)
+        fi
         attackmap "${args[@]}"
 
     - name: Upload SARIF (inline PR annotations)

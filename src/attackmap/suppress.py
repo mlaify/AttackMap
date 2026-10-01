@@ -22,17 +22,26 @@ suppress:
   - rule: hardcoded-secret
     reason: test fixtures only, never shipped
     paths: ["tests/fixtures/**"]     # optional: scope the rule to paths
+    expires: 2026-12-31              # optional (#238): not applied after this
+    owner: platform-team             # optional: who accepted the risk
+    ticket: https://tracker.example/SEC-123
 
   # by path only (any finding whose evidence is *entirely* within paths)
   - path: "vendor/**"
     reason: third-party code, out of scope
 ```
 
-``paths``/``path`` are globs. A path selector matches a finding only when
-**every** file its evidence cites falls under the glob — so a finding that
-also touches live code is never silently hidden. ``*`` matches across path
-separators (``vendor/*`` covers the whole subtree); ``**`` is accepted as a
-synonym for ``*``.
+``paths``/``path`` are globs: ``*`` matches within one directory and ``**``
+across directories (``vendor/**`` covers the subtree, ``vendor/*`` only its
+direct files). A glob that matches everything (``*``, ``**``, ``**/*``) is
+rejected. A path selector suppresses only the finding instances it covers —
+other instances of the same finding stay active.
+
+Entries past ``expires`` are not applied and are warned about
+(``--strict-suppressions`` makes that exit 2). With
+``--suppress-from-ref <ref>`` (the GitHub Action passes the PR's base branch),
+only entries that already exist at ``<ref>`` apply; ones added since are
+reported as *pending* (``--allow-pr-suppressions`` applies them anyway).
 
 ## 2. Inline directives
 
@@ -47,6 +56,9 @@ active. A finding with several instances is suppressed when every instance is
 covered; partly covered findings stay active with the covered instances
 removed. Name the rule (``attackmap rules`` lists ids); a bare
 ``attackmap:ignore`` matches any rule on that line and is warned about.
+
+Inline directives accept an expiry in their reason:
+``# attackmap:ignore[weak-password-hash] legacy hash until=2026-12-31``.
 
 For file-wide scope use the explicit form:
 
@@ -65,12 +77,14 @@ reason. Suppression counts are printed in the run summary.
 
 from __future__ import annotations
 
-import fnmatch
+from datetime import date, datetime
+
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .srcpaths import evidence_locations
+from .gitref import added_lines, show_file, validate_ref
 from .safe_fs import contained_file, read_repo_text
 from .diff import finding_id
 from .models import Finding, finding_rule_id, title_slug
@@ -140,11 +154,37 @@ def _evidence_paths(finding: Finding) -> list[str]:
     return paths
 
 
+def _glob_regex(glob: str) -> re.Pattern[str]:
+    """``*`` matches within one path segment, ``**`` across segments (#238),
+    ``?`` one non-separator character."""
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
 def _glob_match(path: str, glob: str) -> bool:
-    """Glob match where ``*`` spans path separators. ``**`` is treated as a
-    synonym for ``*`` so both ``vendor/*`` and ``vendor/**`` cover a subtree."""
-    normalized = glob.replace("**", "*")
-    return fnmatch.fnmatch(path, normalized)
+    return _glob_regex(glob.strip().lstrip("./")).fullmatch(path.lstrip("./")) is not None
+
+
+def is_match_everything_glob(glob: str) -> bool:
+    """`*`, `**`, `**/*`, `/` … — a glob that would silence the whole repo."""
+    return not glob.strip().strip("/").replace("*", "").replace("/", "").replace(".", "")
 
 
 @dataclass(frozen=True)
@@ -164,6 +204,10 @@ class Suppression:
     # the line below; `attackmap:ignore-file` (and suppress-file `path:`
     # entries) leave this None and cover the whole file.
     line: int | None = None
+    # Governance metadata (#238). An entry past `expires` is not applied.
+    expires: date | None = None
+    owner: str | None = None
+    ticket: str | None = None
     origin: str = "file"  # "file" | "inline"
     source: str = ""  # human-readable declaration site
 
@@ -217,6 +261,10 @@ class SuppressionSet:
 
     def __init__(self, suppressions: list[Suppression]) -> None:
         self._all = list(suppressions)
+        # Governance (#238), filled by collect_suppressions.
+        self.pending: list[Suppression] = []
+        self.pending_applied = False
+        self.expired: list[Suppression] = []
         self._used: set[int] = set()
         # Legacy title-slug selectors that matched, keyed by selector →
         # the stable rule id to use instead (#223).
@@ -378,11 +426,23 @@ def _load_yaml_entries(path: Path, warnings: list[str], *, root: Path | None = N
         # A repo-provided suppress file is read like any repo file: never
         # through a symlink out of the repo (#234).
         text = read_repo_text(root, path) if root is not None else path.read_text(encoding="utf-8")
-        data = yaml.safe_load(text)
     except UnicodeDecodeError:
         warnings.append(f"{path.name} is not valid UTF-8; suppressions ignored")
         return []
-    except (OSError, yaml.YAMLError) as exc:  # type: ignore[attr-defined]
+    except OSError as exc:
+        warnings.append(f"Failed to parse {path.name}: {exc}")
+        return []
+    return parse_suppress_text(text, path.name, warnings)
+
+
+def parse_suppress_text(text: str, name: str, warnings: list[str]) -> list[Suppression]:
+    """Parse suppress-file content (from disk or from a git ref)."""
+    import yaml  # type: ignore[import-untyped]
+
+    path = Path(name)
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:  # type: ignore[attr-defined]
         warnings.append(f"Failed to parse {path.name}: {exc}")
         return []
 
@@ -442,22 +502,72 @@ def _load_yaml_entries(path: Path, warnings: list[str], *, root: Path | None = N
                 warnings.append(f"{where}: 'paths' must be a string or a list of strings, got {globs!r}; skipping")
                 continue
             glob_list = [g for g in parsed if g.strip()]
+            broad = [g for g in glob_list if is_match_everything_glob(g)]
+            if broad:
+                warnings.append(
+                    f"{where}: path {broad[0]!r} would suppress every file in the repo; rejected — "
+                    "scope it (e.g. 'tests/fixtures/**') or use a 'rule:' entry"
+                )
+                continue
+
+        expires = _parse_date(raw.get("expires"))
+        if raw.get("expires") is not None and expires is None:
+            warnings.append(f"{where}: 'expires' must be a YYYY-MM-DD date; skipping")
+            continue
+        owner = raw.get("owner") if isinstance(raw.get("owner"), str) else None
+        ticket = raw.get("ticket") if isinstance(raw.get("ticket"), str) else None
 
         if not (sup_id or rule or glob_list):
             warnings.append(f"{where}: skipping entry with no selector (id/rule/path)")
             continue
 
         source = where
+        meta = {"expires": expires, "owner": owner, "ticket": ticket, "origin": "file", "source": source}
         if sup_id:
-            suppressions.append(Suppression(reason=reason, id=sup_id, origin="file", source=source))
+            suppressions.append(Suppression(reason=reason, id=sup_id, **meta))
         if glob_list:
             for glob in glob_list:
-                suppressions.append(
-                    Suppression(reason=reason, rule=rule, path=glob, origin="file", source=source)
-                )
+                suppressions.append(Suppression(reason=reason, rule=rule, path=glob, **meta))
         elif rule:
-            suppressions.append(Suppression(reason=reason, rule=rule, origin="file", source=source))
+            suppressions.append(Suppression(reason=reason, rule=rule, **meta))
     return suppressions
+
+
+def _parse_date(value: object) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+_UNTIL = re.compile(r"\buntil=(\d{4}-\d{2}-\d{2})\b")
+
+
+def drop_expired(
+    suppressions: list[Suppression], warnings: list[str], *, today: date | None = None
+) -> tuple[list[Suppression], list[Suppression]]:
+    """Split into (live, expired). Expired entries are not applied — the
+    finding comes back — and each is reported (#238)."""
+    today = today or date.today()
+    live: list[Suppression] = []
+    expired: list[Suppression] = []
+    for sup in suppressions:
+        if sup.expires is not None and sup.expires < today:
+            expired.append(sup)
+            owner = f" (owner: {sup.owner})" if sup.owner else ""
+            warnings.append(
+                f"suppression {sup.label()} at {sup.source} expired on {sup.expires.isoformat()}{owner}; "
+                "no longer applied"
+            )
+        else:
+            live.append(sup)
+    return live, expired
 
 
 def load_suppress_file(
@@ -514,6 +624,7 @@ def scan_inline_suppressions(
                     f"bare attackmap:ignore{'-file' if file_wide else ''} at {source} matches every rule; "
                     "name the rule (attackmap:ignore[rule-id]) — see `attackmap rules`"
                 )
+            until = _UNTIL.search(reason)
             for token in rule_tokens or [None]:
                 suppressions.append(
                     Suppression(
@@ -521,11 +632,16 @@ def scan_inline_suppressions(
                         rule=token,
                         path=rel,
                         line=scope_line,
+                        expires=_parse_date(until.group(1)) if until else None,
                         origin="inline",
                         source=source,
                     )
                 )
     return suppressions
+
+
+def _selector_key(sup: Suppression) -> tuple:
+    return (sup.id, sup.rule and rule_slug(sup.rule), sup.path, sup.line)
 
 
 def collect_suppressions(
@@ -534,10 +650,50 @@ def collect_suppressions(
     *,
     enable_inline: bool = True,
     explicit_file: Path | None = None,
+    trusted_ref: str | None = None,
+    allow_pr_suppressions: bool = False,
 ) -> tuple[SuppressionSet, list[str]]:
-    """Gather baseline-file + inline suppressions into a ready-to-apply set."""
+    """Gather suppress-file + inline suppressions into a ready-to-apply set.
+
+    With ``trusted_ref`` (#238) only suppressions that already exist at that
+    git ref (the PR's base) take effect. Entries added or changed since, and
+    inline directives on lines added since, are *pending*: reported on the
+    returned set's ``pending`` list and not applied, unless
+    ``allow_pr_suppressions``. Expired entries are never applied.
+    """
     warnings: list[str] = []
     suppressions = load_suppress_file(root, warnings, explicit=explicit_file)
-    if enable_inline:
-        suppressions.extend(scan_inline_suppressions(root, findings, warnings))
-    return SuppressionSet(suppressions), warnings
+    inline = scan_inline_suppressions(root, findings, warnings) if enable_inline else []
+    pending: list[Suppression] = []
+
+    if trusted_ref is not None:
+        validate_ref(root, trusted_ref)
+        trusted_keys: set[tuple] = set()
+        source_file = explicit_file if explicit_file is not None else next(
+            (root / n for n in SUPPRESS_FILENAMES if (root / n).exists()), None
+        )
+        names = [source_file.name] if source_file is not None and explicit_file is None else list(SUPPRESS_FILENAMES)
+        for name in names:
+            text = show_file(root, trusted_ref, name)
+            if text is not None:
+                trusted_keys = {_selector_key(s) for s in parse_suppress_text(text, name, [])}
+                break
+        pending.extend(s for s in suppressions if _selector_key(s) not in trusted_keys)
+        added_by_file: dict[str, set[int]] = {}
+        for sup in inline:
+            if sup.path not in added_by_file:
+                added_by_file[sup.path or ""] = added_lines(root, trusted_ref, sup.path or "")
+            directive_line = int(sup.source.rsplit(":", 1)[1]) if ":" in sup.source else None
+            if directive_line in added_by_file[sup.path or ""]:
+                pending.append(sup)
+        if not allow_pr_suppressions:
+            pending_ids = {id(s) for s in pending}
+            suppressions = [s for s in suppressions if id(s) not in pending_ids]
+            inline = [s for s in inline if id(s) not in pending_ids]
+
+    live, expired = drop_expired(suppressions + inline, warnings)
+    suppset = SuppressionSet(live)
+    suppset.pending = pending
+    suppset.pending_applied = allow_pr_suppressions
+    suppset.expired = expired
+    return suppset, warnings

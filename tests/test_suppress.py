@@ -119,10 +119,14 @@ def test_rule_scoped_path_only_matches_that_rule() -> None:
     assert ss.match(same)
 
 
-def test_glob_star_spans_path_separators() -> None:
-    f = _finding("X", evidence=["a in vendor/deep/nested/mod.py"])
-    assert SuppressionSet([Suppression(reason="x", path="vendor/*")]).match(f)
-    assert SuppressionSet([Suppression(reason="x", path="vendor/**")]).match(f)
+def test_star_stays_in_one_segment_and_double_star_crosses() -> None:
+    """#238: `*` no longer spans directories; `**` does."""
+    deep = _finding("X", evidence=["a in vendor/deep/nested/mod.py"])
+    shallow = _finding("X", evidence=["a in vendor/mod.py"])
+    assert not SuppressionSet([Suppression(reason="x", path="vendor/*")]).match(deep)
+    assert SuppressionSet([Suppression(reason="x", path="vendor/*")]).match(shallow)
+    assert SuppressionSet([Suppression(reason="x", path="vendor/**")]).match(deep)
+    assert SuppressionSet([Suppression(reason="x", path="**/mod.py")]).match(deep)
 
 
 # ---------------------------------------------------------------------------
