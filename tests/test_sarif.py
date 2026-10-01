@@ -151,8 +151,10 @@ def test_locations_extracted_from_evidence_strings() -> None:
         ],
     )
     sarif = build_sarif([finding])
-    locations = sarif["runs"][0]["results"][0].get("locations", [])
-    uris = {loc["physicalLocation"]["artifactLocation"]["uri"] for loc in locations}
+    # One result per instance (#230), each with a single primary location.
+    results = sarif["runs"][0]["results"]
+    assert all(len(r.get("locations", [])) == 1 for r in results)
+    uris = {r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in results}
     assert "app.py" in uris
     assert "api/routes.py" in uris
 

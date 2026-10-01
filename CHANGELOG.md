@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **SARIF identity and locations (#230).**
+  - **One result per finding instance.** Each result has a single primary location, and the sink comes first for taint findings.
+  - **Stable alert identity.** `partialFingerprints` is now `attackmapInstance/v1`, a hash of the rule id and the #222 instance fingerprint. It used to be raw evidence text, so Code Scanning closed and reopened alerts, losing dismissals, whenever a sibling appeared or a snippet changed. Evidence moved to `properties.evidence`.
+  - **No fabricated line 1.** Locations without a known line have no `region`, and attack-path steps no longer carry an empty URI.
+  - **URIs** are forward-slashed, percent-encoded and relative to `%SRCROOT%`, declared in `originalUriBaseIds` without the local path.
+  - **Validated:** output is checked against the official OASIS SARIF 2.1.0 schema in tests (`jsonschema` was added to the `dev` extra).
 - **`--fail-on-new-high` catches new instances of existing findings (#222).** A finding aggregates every site of one issue type, and its id hashes the title, so a PR that added a second command-injection route, or a second hard-coded secret in a new file, used to diff as "0 new" and pass the gate.
   - Every finding location now carries a `fingerprint`: rule id, file and the normalized source line, with whitespace removed and literals masked, and no line number.
   - The baseline diff reports the new instances of persisted findings, and a new instance of a HIGH finding fails the gate.
