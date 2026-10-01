@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+import importlib
 import inspect
 import json
 import logging
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,6 +20,7 @@ from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
+from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
 from .merge import MERGE_SCHEMA, initial_seen, merge_into
 
@@ -396,6 +399,35 @@ def get_builtin_repository_analyzers() -> list[Analyzer]:
     ]
 
 
+# Official plugins by package name, pinned to immutable commits (#237).
+_OFFICIAL_BY_PACKAGE = {entry["package"]: entry for entry in OFFICIAL_PLUGINS}
+TRUSTED_ONLY_ENV = "ATTACKMAP_TRUSTED_ANALYZERS_ONLY"
+ALLOW_SYSTEM_INSTALL_ENV = "ATTACKMAP_ALLOW_SYSTEM_INSTALL"
+
+
+class MissingAnalyzersError(ValueError):
+    """Requested official analyzers aren't installed (and weren't auto-installed)."""
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        super().__init__(f"Requested analyzer module(s) not available: {', '.join(missing)}")
+
+
+def official_plugin(name: str) -> dict | None:
+    """The lock entry for an official analyzer (by analyzer, package or repo name)."""
+    return _OFFICIAL_BY_PACKAGE.get(_normalize_repo_name(name))
+
+
+def trusted_analyzers_only() -> bool:
+    return os.environ.get(TRUSTED_ONLY_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _entry_point_distribution(analyzer_entry_point: object) -> str | None:
+    dist = getattr(analyzer_entry_point, "dist", None)
+    name = getattr(dist, "name", None) if dist is not None else None
+    return name.lower().replace("_", "-") if isinstance(name, str) else None
+
+
 def discover_installed_analyzers(group: str = ANALYZER_ENTRYPOINT_GROUP) -> list[Analyzer]:
     discovered: list[Analyzer] = []
     all_entry_points = entry_points()
@@ -404,7 +436,24 @@ def discover_installed_analyzers(group: str = ANALYZER_ENTRYPOINT_GROUP) -> list
     else:
         candidates = list(all_entry_points.get(group, ()))
 
+    trusted_only = trusted_analyzers_only()
     for analyzer_entry_point in sorted(candidates, key=lambda candidate: candidate.name):
+        # Any installed distribution can register an analyzer and run inside
+        # every scan (#237): flag ones that aren't official plugins, and skip
+        # them entirely in trusted-only mode (the GitHub Action's default).
+        distribution = _entry_point_distribution(analyzer_entry_point)
+        if distribution not in _OFFICIAL_BY_PACKAGE:
+            entry_name = getattr(analyzer_entry_point, "name", "<unknown>")
+            if trusted_only:
+                logger.warning(
+                    "Skipping analyzer '%s' from '%s': not an official AttackMap plugin "
+                    "(trusted-analyzers-only).", entry_name, distribution or "unknown distribution"
+                )
+                continue
+            logger.warning(
+                "Loading third-party analyzer '%s' from '%s' (not an official AttackMap plugin).",
+                entry_name, distribution or "unknown distribution",
+            )
         analyzer = _load_discovered_analyzer(analyzer_entry_point)
         if analyzer is None:
             continue
@@ -496,6 +545,15 @@ def select_requested_analyzers(
     resolved = _match_requested_analyzers(requested_names)
     missing_names = [name for name in requested_names if name not in resolved]
 
+    # Only official, lock-pinned plugins can ever be installed by name (#237):
+    # an unknown or mistyped name is an error, never a network install.
+    unofficial = [name for name in missing_names if official_plugin(name) is None]
+    if unofficial:
+        raise ValueError(
+            f"{', '.join(unofficial)}: not an official AttackMap analyzer and not installed. "
+            "If you trust a third-party analyzer, install it yourself (pip install <package>)."
+        )
+
     if missing_names and auto_install:
         install_fn = installer if installer is not None else install_analyzer_module
         for missing_name in missing_names:
@@ -507,8 +565,7 @@ def select_requested_analyzers(
         missing_names = [name for name in requested_names if name not in resolved]
 
     if missing_names:
-        missing_text = ", ".join(missing_names)
-        raise ValueError(f"Requested analyzer module(s) not available: {missing_text}")
+        raise MissingAnalyzersError(missing_names)
 
     selected: list[Analyzer] = []
     seen: set[str] = set()
@@ -520,28 +577,39 @@ def select_requested_analyzers(
     return selected
 
 
-# Analyzer packages whose GitHub repo name differs from the package name.
-_REPO_NAME_OVERRIDES = {
-    "attackmap-analyzer-omeka-s": "attack-map-analyzer-omeka-s",
-}
-
-
 def analyzer_install_url(repo_name: str) -> str:
-    """Return the pip-installable git URL for an official analyzer."""
-    normalized_repo = _normalize_repo_name(repo_name)
-    normalized_repo = _REPO_NAME_OVERRIDES.get(normalized_repo, normalized_repo)
-    return f"git+{ANALYZER_ORG_BASE_URL}/{normalized_repo}.git"
+    """The pip-installable URL of an official analyzer, pinned to the locked
+    commit (#237) — never a moving branch. Unknown names raise ValueError."""
+    entry = official_plugin(repo_name)
+    if entry is None:
+        raise ValueError(f"'{repo_name}' is not an official AttackMap analyzer")
+    return f"{entry['package']} @ git+{ANALYZER_ORG_BASE_URL}/{entry['repo']}.git@{entry['git_sha']}"
+
+
+def analyzer_install_command(repo_name: str) -> list[str]:
+    return [sys.executable, "-m", "pip", "install", analyzer_install_url(repo_name)]
 
 
 def install_analyzer_module(repo_name: str) -> None:
-    module_url = analyzer_install_url(repo_name)
-    logger.info("Installing analyzer module from %s", module_url)
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", module_url],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    """pip-install one official analyzer at its pinned commit.
+
+    Refuses to install into a system (non-virtualenv) interpreter unless
+    ATTACKMAP_ALLOW_SYSTEM_INSTALL=1, and surfaces pip's own error output.
+    """
+    command = analyzer_install_command(repo_name)
+    in_venv = sys.prefix != sys.base_prefix
+    if not in_venv and os.environ.get(ALLOW_SYSTEM_INSTALL_ENV) != "1":
+        raise RuntimeError(
+            "refusing to pip-install into the system Python interpreter; use a virtualenv/pipx "
+            f"install of attackmap, or set {ALLOW_SYSTEM_INSTALL_ENV}=1"
+        )
+    logger.info("Installing analyzer module: %s", " ".join(command))
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        tail = "\n".join(((exc.stderr or "") + (exc.stdout or "")).strip().splitlines()[-15:])
+        raise RuntimeError(f"pip install failed ({' '.join(command[3:])}):\n{tail}") from exc
+    importlib.invalidate_caches()
 
 
 def _match_requested_analyzers(requested_names: Iterable[str]) -> dict[str, Analyzer]:

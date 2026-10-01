@@ -37,7 +37,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .safe_fs import is_contained, is_oversized, is_unsafe_link
+from .safe_fs import is_contained, is_oversized, is_unsafe_link, walk_repo
 from .models import WorkflowIssue
 
 # A pinned action ref is a full 40-hex commit SHA. Anything else is "unpinned".
@@ -81,19 +81,66 @@ _PR_HEAD_REFS = (
 )
 
 
+_ACTION_FILENAMES = {"action.yml", "action.yaml"}
+_ACTION_SKIP_DIRS = {"node_modules", ".git", ".venv", "venv", "vendor", "dist", "build"}
+
+
+def _scan_action(data: dict, rel: str, lines: list[str]) -> list[WorkflowIssue]:
+    """Composite action metadata (`action.yml`, #237). Its `inputs.*` come from
+    the calling workflow and often carry PR titles/branch names, so `inputs.*`
+    interpolated into a `run:` script is script injection, just like
+    `github.event.*` in a workflow."""
+    runs = data.get("runs")
+    if not isinstance(runs, dict) or str(runs.get("using", "")).lower() != "composite":
+        return []
+    steps = runs.get("steps")
+    if not isinstance(steps, list):
+        return []
+    issues: list[WorkflowIssue] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_name = str(step.get("name") or step.get("id") or step.get("uses") or "step")
+        ctx = f"composite action step '{step_name}'"
+        uses = step.get("uses")
+        if isinstance(uses, str):
+            issues.extend(_check_uses(uses, step, ctx, rel, lines, pr_target=False))
+        run = step.get("run")
+        if isinstance(run, str):
+            issues.extend(_check_run(run, ctx, rel, lines, extra_contexts=("inputs.",)))
+    return issues
+
+
+def _load_yaml(path: Path, yaml):  # type: ignore[no-untyped-def]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        data = yaml.safe_load(text)
+    except (OSError, yaml.YAMLError):  # type: ignore[attr-defined]
+        return None, None
+    return (data, text) if isinstance(data, dict) else (None, None)
+
+
 def scan_workflows(root: str | Path) -> list[WorkflowIssue]:
-    """Scan `.github/workflows/*.yml` under `root` for CI security issues."""
+    """Scan `.github/workflows/*.yml` and composite-action `action.yml` files
+    under `root` for CI security issues."""
     try:
         import yaml  # type: ignore[import-untyped]
     except ImportError:
         return []
 
     root_path = Path(root)
+    issues: list[WorkflowIssue] = []
+    for path in walk_repo(root_path, prune=lambda name: name in _ACTION_SKIP_DIRS):
+        if path.name not in _ACTION_FILENAMES or is_oversized(path):
+            continue
+        data, text = _load_yaml(path, yaml)
+        if data is not None:
+            issues.extend(_scan_action(data, path.relative_to(root_path).as_posix(), text.splitlines()))
+
     workflows_dir = root_path / ".github" / "workflows"
     if not workflows_dir.is_dir() or not is_contained(root_path, workflows_dir):
-        return []
+        return issues
 
-    issues: list[WorkflowIssue] = []
     for path in sorted(workflows_dir.iterdir()):
         if path.suffix.lower() not in {".yml", ".yaml"} or not path.is_file():
             continue
@@ -294,15 +341,18 @@ def _check_uses(
     return issues
 
 
-def _check_run(run: str, ctx: str, rel: str, lines: list[str]) -> list[WorkflowIssue]:
+def _check_run(
+    run: str, ctx: str, rel: str, lines: list[str], *, extra_contexts: tuple[str, ...] = ()
+) -> list[WorkflowIssue]:
     issues: list[WorkflowIssue] = []
     seen_injection = False
     seen_secret = False
+    contexts = _INJECTABLE_CONTEXTS + extra_contexts
     for match in _EXPR_RE.finditer(run):
         expr = match.group(1)
         expr_flat = re.sub(r"\s+", "", expr)
         matched_ctx = next(
-            (c for c in _INJECTABLE_CONTEXTS if re.sub(r"\s+", "", c) in expr_flat), None
+            (c for c in contexts if re.sub(r"\s+", "", c) in expr_flat), None
         )
         if not seen_injection and matched_ctx is not None:
             seen_injection = True
@@ -310,7 +360,7 @@ def _check_run(run: str, ctx: str, rel: str, lines: list[str]) -> list[WorkflowI
                 WorkflowIssue(
                     kind="script_injection",
                     file=rel,
-                    line=_line_for(lines, matched_ctx) or _line_for(lines, "run:"),
+                    line=_line_for(lines, expr) or _line_for(lines, matched_ctx) or _line_for(lines, "run:"),
                     context=ctx,
                     evidence_text=f"attacker-controlled ${{{{ {expr} }}}} interpolated into run: script",
                     severity="high",

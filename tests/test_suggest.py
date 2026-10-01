@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 from pathlib import Path
 
@@ -201,7 +203,11 @@ def test_cli_suggest_prints_pip_lines_for_python_repo(tmp_path: Path) -> None:
     result = runner.invoke(app, ["suggest", str(tmp_path)])
     assert result.exit_code == 0
     assert "attackmap-analyzer-python" in result.stdout
-    assert "pip install git+https://github.com/mlaify/attackmap-analyzer-python.git" in result.stdout
+    # Pinned to the plugin lock's immutable commit (#237), shell-quoted.
+    assert re.search(
+        r"pip install 'attackmap-analyzer-python @ git\+https://github\.com/mlaify/attackmap-analyzer-python\.git@[0-9a-f]{40}'",
+        result.stdout,
+    )
 
 
 def test_cli_suggest_empty_repo_exits_0(tmp_path: Path) -> None:
@@ -269,4 +275,7 @@ def test_suggestion_install_url_uses_repo_name_override() -> None:
     from attackmap.suggest import Suggestion
 
     s = Suggestion(plugin="attackmap-analyzer-omeka-s", analyzer_name="omeka-s", matched_signals=())
-    assert s.pip_install == "pip install git+https://github.com/mlaify/attack-map-analyzer-omeka-s.git"
+    assert re.fullmatch(
+        r"pip install 'attackmap-analyzer-omeka-s @ git\+https://github\.com/mlaify/attack-map-analyzer-omeka-s\.git@[0-9a-f]{40}'",
+        s.pip_install,
+    )
