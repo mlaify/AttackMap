@@ -37,7 +37,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .safe_fs import is_contained, is_unsafe_link
+from .safe_fs import is_contained, is_oversized, is_unsafe_link
 from .models import WorkflowIssue
 
 # A pinned action ref is a full 40-hex commit SHA. Anything else is "unpinned".
@@ -97,7 +97,7 @@ def scan_workflows(root: str | Path) -> list[WorkflowIssue]:
     for path in sorted(workflows_dir.iterdir()):
         if path.suffix.lower() not in {".yml", ".yaml"} or not path.is_file():
             continue
-        if is_unsafe_link(root_path, path):
+        if is_unsafe_link(root_path, path) or is_oversized(path):
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")

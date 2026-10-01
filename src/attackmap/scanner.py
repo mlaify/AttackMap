@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from .progress import ScanProgress
 
 from .redact import mask_secret
-from .safe_fs import walk_repo
+from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .crypto import find_crypto_weaknesses
@@ -70,12 +70,14 @@ GO_ROUTE_PATTERN = re.compile(
 )
 _GO_ANY_METHODS = {"any", "all", "handle", "handlefunc"}
 
+# (?<!\w) + possessive \w++: never restart mid-word, so a long word can't
+# trigger quadratic backtracking (#236).
 FASTAPI_ROUTER_PATTERN = re.compile(
-    r"(\w+)\s*=\s*APIRouter\(\s*(?:[^)]*?\bprefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    r"(?<!\w)(\w++)\s*+=\s*+APIRouter\(\s*(?:[^)]*?\bprefix\s*=\s*['\"]([^'\"]*)['\"])?",
     re.IGNORECASE | re.DOTALL,
 )
 FASTAPI_INCLUDE_ROUTER_PATTERN = re.compile(
-    r"(\w+)\.include_router\(\s*(\w+)(?:\s*,\s*prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    r"(?<!\w)(\w++)\.include_router\(\s*(\w+)(?:\s*,\s*prefix\s*=\s*['\"]([^'\"]*)['\"])?",
     re.IGNORECASE,
 )
 FASTAPI_DECORATOR_PATTERN = re.compile(
@@ -87,11 +89,11 @@ FASTAPI_API_ROUTE_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 FLASK_BLUEPRINT_PATTERN = re.compile(
-    r"(\w+)\s*=\s*Blueprint\(\s*['\"][^'\"]+['\"]\s*,\s*[^,]+(?:,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    r"(?<!\w)(\w++)\s*+=\s*+Blueprint\(\s*['\"][^'\"]+['\"]\s*,\s*[^,]+(?:,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
     re.IGNORECASE | re.DOTALL,
 )
 FLASK_REGISTER_BLUEPRINT_PATTERN = re.compile(
-    r"(\w+)\.register_blueprint\(\s*(\w+)(?:\s*,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
+    r"(?<!\w)(\w++)\.register_blueprint\(\s*(\w+)(?:\s*,\s*url_prefix\s*=\s*['\"]([^'\"]*)['\"])?",
     re.IGNORECASE,
 )
 FLASK_ROUTE_PATTERN = re.compile(
@@ -715,11 +717,19 @@ def scan_repo(
         if not any(part in _NOISY_SYMLINK_PARTS for part in rel.parts):
             result.limitations.append(f"symlink not followed: {rel.as_posix()}")
 
-    scan_files = [
-        p
-        for p in walk_repo(root_path, on_symlink=_record_symlink)
-        if should_scan_with_suffixes(p, suffixes)
-    ]
+    scan_files = []
+    for p in walk_repo(root_path, on_symlink=_record_symlink):
+        if not should_scan_with_suffixes(p, suffixes):
+            continue
+        if is_oversized(p):
+            # #236: a multi-MB file is generated or hostile; reading and
+            # regex-scanning it can stall the whole scan.
+            result.limitations.append(
+                f"oversized file skipped (> {max_file_bytes()} bytes): "
+                f"{p.relative_to(root_path).as_posix()}"
+            )
+            continue
+        scan_files.append(p)
     if progress is not None:
         progress.begin(len(scan_files))
 

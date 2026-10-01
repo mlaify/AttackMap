@@ -258,7 +258,9 @@ def _parse_package_lock_v1(deps: dict, graph: _Graph, *, is_root: bool = True) -
 
 # --- npm: pnpm-lock.yaml ---------------------------------------------------
 
-_PNPM_PKG_KEY_RE = re.compile(r"^/?(?P<name>@?[^@/][^@]*(?:/[^@]+)?)@(?P<version>[^(]+)")
+# `[^@]*` already spans the scoped `/name` part; the old extra `(?:/[^@]+)?`
+# made a long slash-heavy key backtrack quadratically (#236).
+_PNPM_PKG_KEY_RE = re.compile(r"^/?(?P<name>@?[^@/][^@]*)@(?P<version>[^(]+)")
 
 
 def _parse_pnpm_lock(path: Path) -> _Graph | None:

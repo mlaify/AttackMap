@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 
 from .redact import mask_secret
-from .safe_fs import walk_repo
+from .safe_fs import max_file_bytes, walk_repo
 from .models import DatabaseHint, ExternalCall, ScanResult, SecretHint
 from .scanner import _line_snippet
 
@@ -137,8 +137,11 @@ _URL_HOST_SKIP = re.compile(
 # Keys that mark a secret-bearing config field. Match on the KEY side of
 # a `key: value` / `key = value` pair.
 _SECRET_KEY_RE = re.compile(
-    r"(?:^|[\s\-,{\[])"                               # start-of-line or dict/list intro
-    r"['\"]?(?P<key>[a-zA-Z0-9_.-]*"                  # optional key prefix
+    # start-of-line or dict/list intro. (`-` is not a start char: YAML's
+    # `- key:` already starts at the space, and allowing it made every `-` in
+    # a long dashed token a new start — #236.)
+    r"(?:^|[\s,{\[])"
+    r"['\"]?(?P<key>[a-zA-Z0-9_.-]{0,64}"             # optional key prefix (bounded, #236)
     r"(?:password|passwd|secret|token|api[_-]?key|priv[_-]?key|apikey))"
     r"['\"]?"
     r"\s*[:=]\s*"
@@ -217,7 +220,7 @@ def scan_config_repo(root: str | Path) -> ScanResult:
         if not should_scan_config_file(path):
             continue
         try:
-            if path.stat().st_size > _MAX_CONFIG_BYTES:
+            if path.stat().st_size > min(_MAX_CONFIG_BYTES, max_file_bytes()):
                 continue
             content = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
