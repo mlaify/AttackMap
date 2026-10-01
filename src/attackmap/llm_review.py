@@ -24,9 +24,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal
 
 from .models import AttackPath, AttackSurface, Finding, ScanResult
@@ -197,6 +202,106 @@ def _run_via_sdk(
     )
 
 
+# ---------- CLI backend isolation (#232) ----------
+#
+# The CLI backends hand an *agent* the evidence pack, which is derived from an
+# untrusted repository and may carry prompt injection. They are spawned so that
+# nothing from that repository can configure the agent and the agent has as
+# little reach as its CLI allows:
+#   * cwd is a fresh empty temp dir, never the scan root or the caller's cwd,
+#     so project-scoped `.claude/settings.json` (hooks, permissions),
+#     `.mcp.json`, `CLAUDE.md` and `AGENTS.md` are never discovered;
+#   * claude: no built-in tools, user-level settings only, no MCP servers, no
+#     session persistence;
+#   * codex: read-only sandbox rooted at the temp dir, no execpolicy rules,
+#     ephemeral session. Codex has no tool-less mode, so its model can still
+#     run read-only commands as the user; `--llm-backend api` is the only fully
+#     tool-less path for OpenAI (documented in the README);
+#   * the environment is scrubbed of credentials unrelated to the provider.
+# If the installed CLI lacks the hardening flags we refuse to run it rather
+# than fall back to an unhardened invocation.
+
+CLAUDE_CLI_HARDENING_ARGS = (
+    "--tools",
+    "",
+    "--setting-sources",
+    "user",
+    "--strict-mcp-config",
+    "--mcp-config",
+    '{"mcpServers":{}}',
+    "--no-session-persistence",
+)
+_CLAUDE_REQUIRED_FLAGS = ("--tools", "--setting-sources", "--strict-mcp-config", "--no-session-persistence")
+_CODEX_REQUIRED_FLAGS = ("--cd", "--ephemeral", "--ignore-rules", "--sandbox")
+
+# Environment variables whose names look like credentials are not forwarded to
+# the agent, except the ones the selected provider needs to authenticate.
+_SENSITIVE_ENV_RE = re.compile(
+    r"(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|API_KEY|ACCESS_KEY|SESSION_KEY|AUTH)",
+    re.IGNORECASE,
+)
+_CLOUD_ENV_PREFIXES = ("AWS_", "AZURE_", "GOOGLE_", "GCP_", "GCLOUD_", "CLOUDSDK_", "ANTHROPIC_VERTEX_")
+_PROVIDER_ENV_ALLOW = {
+    "claude": frozenset(
+        {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"}
+    ),
+    "openai": frozenset({"OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY"}),
+}
+# Claude Code on Bedrock / Vertex / Foundry authenticates with cloud
+# credentials, so those are kept when the user has opted into a 3P provider.
+_CLAUDE_3P_SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+
+
+def scrub_cli_env(env: dict[str, str], provider: LlmProvider) -> dict[str, str]:
+    """Return a copy of ``env`` without credentials the agent doesn't need."""
+    allow = _PROVIDER_ENV_ALLOW[provider]
+    keep_cloud = provider == "claude" and any(env.get(k) for k in _CLAUDE_3P_SWITCHES)
+    scrubbed: dict[str, str] = {}
+    for name, value in env.items():
+        upper = name.upper()
+        if upper in allow:
+            scrubbed[name] = value
+            continue
+        if upper.startswith(_CLOUD_ENV_PREFIXES):
+            if keep_cloud:
+                scrubbed[name] = value
+            continue
+        if _SENSITIVE_ENV_RE.search(upper):
+            continue
+        scrubbed[name] = value
+    return scrubbed
+
+
+@contextmanager
+def isolated_cli_workdir() -> Iterator[str]:
+    """A throwaway empty working directory for an agent CLI subprocess."""
+    with tempfile.TemporaryDirectory(prefix="attackmap-llm-") as tmp:
+        yield tmp
+
+
+@lru_cache(maxsize=None)
+def _cli_help_text(argv: tuple[str, ...]) -> str:
+    try:
+        with isolated_cli_workdir() as cwd:
+            completed = subprocess.run(
+                list(argv), capture_output=True, text=True, check=False, timeout=30, cwd=cwd
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (completed.stdout or "") + (completed.stderr or "")
+
+
+def _require_hardening_flags(name: str, help_argv: tuple[str, ...], flags: tuple[str, ...]) -> None:
+    help_text = _cli_help_text(help_argv)
+    missing = [flag for flag in flags if flag not in help_text]
+    if missing:
+        raise LlmReviewError(
+            f"The installed `{name}` CLI does not support {', '.join(missing)}, which AttackMap "
+            f"needs to run it isolated from the scanned repository. Upgrade `{name}`, or use "
+            "`--llm-backend api`."
+        )
+
+
 # ---------- Claude CLI backend ----------
 
 
@@ -234,6 +339,7 @@ def _run_via_claude_cli(
         "claude",
         "-p",
         "--output-format=json",
+        *CLAUDE_CLI_HARDENING_ARGS,
         "--model",
         model,
         "--system-prompt",
@@ -242,14 +348,18 @@ def _run_via_claude_cli(
 
     try:
         if runner is None:
-            completed = subprocess.run(
-                cmd,
-                input=rendered_user,
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=CLAUDE_CLI_TIMEOUT_SECONDS,
-            )
+            _require_hardening_flags("claude", ("claude", "--help"), _CLAUDE_REQUIRED_FLAGS)
+            with isolated_cli_workdir() as cwd:
+                completed = subprocess.run(
+                    cmd,
+                    input=rendered_user,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=CLAUDE_CLI_TIMEOUT_SECONDS,
+                    cwd=cwd,
+                    env=scrub_cli_env(dict(os.environ), "claude"),
+                )
         else:
             completed = runner(cmd, rendered_user)
     except FileNotFoundError as exc:
@@ -462,31 +572,42 @@ def _run_via_codex_cli(
         )
 
     reasoning_effort = OPENAI_EFFORT_MAP.get(effort, "high")
-    cmd = [
-        "codex",
-        "exec",
-        "--model",
-        model,
-        "-c",
-        f'model_reasoning_effort="{reasoning_effort}"',
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        rendered_system,
-    ]
+
+    def build_cmd(cwd: str) -> list[str]:
+        return [
+            "codex",
+            "exec",
+            "--model",
+            model,
+            "-c",
+            f'model_reasoning_effort="{reasoning_effort}"',
+            "--sandbox",
+            "read-only",
+            "--cd",
+            cwd,
+            "--ephemeral",
+            "--ignore-rules",
+            "--skip-git-repo-check",
+            rendered_system,
+        ]
 
     try:
-        if runner is None:
-            completed = subprocess.run(
-                cmd,
-                input=rendered_user,
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=CODEX_CLI_TIMEOUT_SECONDS,
-            )
-        else:
-            completed = runner(cmd, rendered_user)
+        with isolated_cli_workdir() as cwd:
+            cmd = build_cmd(cwd)
+            if runner is None:
+                _require_hardening_flags("codex", ("codex", "exec", "--help"), _CODEX_REQUIRED_FLAGS)
+                completed = subprocess.run(
+                    cmd,
+                    input=rendered_user,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=CODEX_CLI_TIMEOUT_SECONDS,
+                    cwd=cwd,
+                    env=scrub_cli_env(dict(os.environ), "openai"),
+                )
+            else:
+                completed = runner(cmd, rendered_user)
     except FileNotFoundError as exc:
         raise LlmReviewError("`codex` CLI was not found on PATH.") from exc
     except subprocess.TimeoutExpired as exc:
