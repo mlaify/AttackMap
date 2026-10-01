@@ -81,6 +81,7 @@ all = [
 dev = [
   "pytest>=8.0.0",
   "build>=1.2.0",
+  "jsonschema>=4.0",
 ]
 
 [project.urls]

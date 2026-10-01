@@ -10,7 +10,9 @@ Reference: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
 
 from __future__ import annotations
 
+import hashlib
 import re
+from urllib.parse import quote
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
@@ -56,24 +58,42 @@ def _slugify(text: str) -> str:
     return slug or "finding"
 
 
+SRCROOT = "%SRCROOT%"
+
+
+def _sarif_uri(file_path: str) -> str:
+    """Repo-relative, forward-slashed, percent-encoded artifact URI (#230)."""
+    return quote(file_path.replace("\\", "/").lstrip("/"), safe="/@()[]+~-._")
+
+
 def _sarif_location(file_path: str, line_num: int | None) -> dict[str, Any]:
-    region = {"startLine": line_num} if line_num is not None else {"startLine": 1}
-    return {"physicalLocation": {"artifactLocation": {"uri": file_path}, "region": region}}
+    physical: dict[str, Any] = {"artifactLocation": {"uri": _sarif_uri(file_path), "uriBaseId": SRCROOT}}
+    # No fabricated `startLine: 1` (#230): a location without a known line is
+    # a file-level location with no region.
+    if line_num is not None and line_num >= 1:
+        physical["region"] = {"startLine": line_num}
+    return {"physicalLocation": physical}
+
+
+def _instances(finding: Finding) -> list[tuple[str, int | None, str | None]]:
+    """``(file, line, fingerprint)`` per instance: structured locations first
+    (with their #222 fingerprints), else the files cited in evidence."""
+    if finding.locations:
+        pairs = [(loc.file, loc.line, loc.fingerprint) for loc in finding.locations]
+    else:
+        pairs = [(f, l, None) for f, l in evidence_locations(finding.evidence)]
+    seen: set[tuple[str, int | None]] = set()
+    out: list[tuple[str, int | None, str | None]] = []
+    for file, line, fp in pairs:
+        key = (file.replace("\\", "/"), line)
+        if key not in seen:
+            seen.add(key)
+            out.append((key[0], line, fp))
+    return out
 
 
 def _finding_locations(finding: Finding) -> list[dict[str, Any]]:
-    """Structured `Finding.locations` first (#214); evidence parsing only as a
-    fallback for findings that don't carry them."""
-    if finding.locations:
-        seen: set[tuple[str, int | None]] = set()
-        out: list[dict[str, Any]] = []
-        for loc in finding.locations:
-            key = (loc.file.replace("\\", "/"), loc.line)
-            if key not in seen:
-                seen.add(key)
-                out.append(_sarif_location(*key))
-        return out
-    return _locations_from_evidence(finding.evidence)
+    return [_sarif_location(file, line) for file, line, _ in _instances(finding)]
 
 
 def _locations_from_evidence(evidence: list[str]) -> list[dict[str, Any]]:
@@ -116,9 +136,19 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
     return list(rules_by_id.values())
 
 
-def _build_result(finding: Finding, *, suppression_reason: str | None = None) -> dict[str, Any]:
+def _stable_hash(*parts: object) -> str:
+    return hashlib.sha256("\x1f".join(str(p) for p in parts).encode("utf-8")).hexdigest()[:32]
+
+
+def _build_result(finding: Finding, *, suppression_reason: str | None = None) -> list[dict[str, Any]]:
+    """One SARIF result per finding instance (#230).
+
+    Each result carries a single primary location and a partial fingerprint
+    derived from (rule id, instance fingerprint) — never evidence text — so
+    Code Scanning keeps alert identity (and dismissals) stable when another
+    instance appears or a snippet changes. Evidence lives in properties.
+    """
     rule_id = finding_rule_id(finding)
-    locations = _finding_locations(finding)
     properties: dict[str, Any] = {
         "tags": list(finding.tags),
         "security-severity": _security_severity(finding.severity, finding.confidence),
@@ -128,37 +158,43 @@ def _build_result(finding: Finding, *, suppression_reason: str | None = None) ->
         # SARIF `rank` is 0-100, higher = more important — same
         # direction as `score` from #4.
         properties["rank"] = float(finding.score)
-    result: dict[str, Any] = {
-        "ruleId": rule_id,
-        "level": _sarif_level(finding.severity),
-        "message": {
-            "text": finding.title,
-            "markdown": f"**{md_text(finding.title)}**\n\n{finding.mitigation}",
-        },
-        "properties": properties,
-    }
-    # If we found citable file locations, attach them; otherwise SARIF
-    # allows results without locations (they surface repo-wide).
-    if locations:
-        result["locations"] = locations
-    # Evidence goes to a partial-fingerprints-style secondary spot
-    # so the raw citation text isn't lost.
     if finding.evidence:
-        result["partialFingerprints"] = {
-            "attackmap/evidence": "|".join(finding.evidence[:8]),
+        properties["evidence"] = list(finding.evidence[:8])
+
+    def result(location: dict[str, Any] | None, fingerprint: str) -> dict[str, Any]:
+        r: dict[str, Any] = {
+            "ruleId": rule_id,
+            "level": _sarif_level(finding.severity),
+            "message": {
+                "text": finding.title,
+                "markdown": f"**{md_text(finding.title)}**\n\n{finding.mitigation}",
+            },
+            "partialFingerprints": {"attackmapInstance/v1": fingerprint},
+            "properties": properties,
         }
-    # Suppressed findings stay in the log (not dropped) but carry a SARIF
-    # `suppressions` array so viewers / GitHub Code Scanning show them as
-    # suppressed rather than active (#144).
-    if suppression_reason is not None:
-        result["suppressions"] = [
-            {"kind": "external", "justification": suppression_reason or "suppressed by AttackMap"}
-        ]
-    return result
+        if location is not None:
+            r["locations"] = [location]
+        # Suppressed findings stay in the log (not dropped) but carry a SARIF
+        # `suppressions` array so viewers / GitHub Code Scanning show them as
+        # suppressed rather than active (#144).
+        if suppression_reason is not None:
+            r["suppressions"] = [
+                {"kind": "external", "justification": suppression_reason or "suppressed by AttackMap"}
+            ]
+        return r
+
+    instances = _instances(finding)
+    if not instances:
+        # Repo-level finding (no citable file): identity is the rule + title.
+        return [result(None, _stable_hash(rule_id, finding.title))]
+    return [
+        result(_sarif_location(file, line), _stable_hash(rule_id, fp or f"{file}:{line}"))
+        for file, line, fp in instances
+    ]
 
 
 def _build_results(findings: list[Finding]) -> list[dict[str, Any]]:
-    return [_build_result(finding) for finding in findings]
+    return [r for finding in findings for r in _build_result(finding)]
 
 
 def _build_code_flows_from_attack_paths(
@@ -174,18 +210,9 @@ def _build_code_flows_from_attack_paths(
     """
     flows: list[dict[str, Any]] = []
     for path in attack_paths:
-        thread_flow_locations = [
-            {
-                "location": {
-                    "message": {"text": step},
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": ""},
-                        "region": {"startLine": 1},
-                    },
-                }
-            }
-            for step in path.steps
-        ]
+        # Steps are narrative, not code positions: a message-only location
+        # (no fabricated empty URI / line 1, #230).
+        thread_flow_locations = [{"location": {"message": {"text": step}}} for step in path.steps]
         flows.append(
             {
                 "message": {"text": f"{path.name}: {path.impact}"},
@@ -213,7 +240,8 @@ def build_sarif(
     # resolves in viewers.
     rules = _build_rules(findings + [f for f, _ in suppressed])
     results = _build_results(findings)
-    results.extend(_build_result(f, suppression_reason=reason) for f, reason in suppressed)
+    for f, reason in suppressed:
+        results.extend(_build_result(f, suppression_reason=reason))
 
     driver: dict[str, Any] = {
         "name": "AttackMap",
@@ -223,6 +251,9 @@ def build_sarif(
     }
     run: dict[str, Any] = {
         "tool": {"driver": driver},
+        # Artifact URIs are relative to the scanned repo root; the absolute
+        # local path is deliberately not embedded.
+        "originalUriBaseIds": {SRCROOT: {"description": {"text": "Root of the scanned repository."}}},
         "results": results,
     }
     if attack_paths:
