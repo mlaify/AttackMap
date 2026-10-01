@@ -37,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Malformed suppress files no longer crash the CLI (#225).** `paths: 5`, a non-UTF-8 file or an int-typed id used to raise. Every problem is now a `Suppression warning:` naming the entry, and only that entry is skipped. The cases covered:
+  - non-string `paths`
+  - a mapping-shaped `suppress:`
+  - ids YAML read as numbers (with a hint to quote them)
+  - non-hex ids, non-string rules or reasons
+  - unknown `version:` values
+  - YAML syntax errors and invalid UTF-8
+
+  A symlinked `.attackmap-suppress.yaml` is not followed out of the repo.
 - **Findings carry structured locations (#214, #213).**
   - Every core finding now has `locations: [{file, line}]`, taken from the signals behind it. Unlike `evidence`, the list is not capped at 10.
   - SARIF and suppression read `locations` first. Crypto, web-hardening, code-weakness and workflow findings used to appear in Code Scanning as file-less, repo-level alerts that couldn't be suppressed inline or by `path:`. They now point at the right file and line.

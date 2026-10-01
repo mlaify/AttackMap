@@ -71,7 +71,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .srcpaths import evidence_locations
-from .safe_fs import contained_file
+from .safe_fs import contained_file, read_repo_text
 from .diff import finding_id
 from .models import Finding, finding_rule_id, title_slug
 
@@ -350,7 +350,22 @@ def apply_suppressions(
 # ---------------------------------------------------------------------------
 
 
-def _load_yaml_entries(path: Path, warnings: list[str]) -> list[Suppression]:
+_FINDING_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+_SUPPORTED_VERSIONS = {1}
+
+
+def _str_list(value: object) -> list[str] | None:
+    """A ``paths`` value as a list of strings, or None when malformed."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return list(value)
+    return None
+
+
+def _load_yaml_entries(path: Path, warnings: list[str], *, root: Path | None = None) -> list[Suppression]:
+    """Parse a suppress file. Never raises (#225): every problem becomes a
+    ``Suppression warning`` and the offending entry (or file) is skipped."""
     try:
         import yaml  # type: ignore[import-untyped]
     except ImportError:
@@ -360,13 +375,24 @@ def _load_yaml_entries(path: Path, warnings: list[str]) -> list[Suppression]:
         )
         return []
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        # A repo-provided suppress file is read like any repo file: never
+        # through a symlink out of the repo (#234).
+        text = read_repo_text(root, path) if root is not None else path.read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+    except UnicodeDecodeError:
+        warnings.append(f"{path.name} is not valid UTF-8; suppressions ignored")
+        return []
     except (OSError, yaml.YAMLError) as exc:  # type: ignore[attr-defined]
         warnings.append(f"Failed to parse {path.name}: {exc}")
         return []
 
     if isinstance(data, dict):
-        entries = data.get("suppress") or data.get("suppressions") or []
+        version = data.get("version", 1)
+        if version not in _SUPPORTED_VERSIONS:
+            warnings.append(f"{path.name}: unknown version {version!r} (supported: 1); reading it as version 1")
+        entries = data.get("suppress", data.get("suppressions", []))
+        if entries is None:
+            entries = []
     elif isinstance(data, list):
         entries = data
     elif data is None:
@@ -374,47 +400,63 @@ def _load_yaml_entries(path: Path, warnings: list[str]) -> list[Suppression]:
     else:
         warnings.append(f"{path.name}: expected a list or a mapping with 'suppress:'")
         return []
+    if not isinstance(entries, list):
+        warnings.append(f"{path.name}: 'suppress' must be a list of entries, got {type(entries).__name__}")
+        return []
 
     suppressions: list[Suppression] = []
-    for raw in entries:
+    for index, raw in enumerate(entries, start=1):
+        where = f"{path.name} entry {index}"
         if not isinstance(raw, dict):
-            warnings.append(f"{path.name}: skipping non-mapping entry {raw!r}")
+            warnings.append(f"{where}: skipping non-mapping entry {raw!r}")
             continue
-        reason = str(raw.get("reason", "")).strip()
+        reason = raw.get("reason", "")
+        if not isinstance(reason, str) or not reason.strip():
+            warnings.append(f"{where}: skipping entry without a text 'reason'")
+            continue
+        reason = reason.strip()
+
         sup_id = raw.get("id")
+        if sup_id is not None:
+            if not isinstance(sup_id, str):
+                warnings.append(
+                    f"{where}: id {sup_id!r} was read as {type(sup_id).__name__}, not text — quote it "
+                    "(e.g. id: \"0123456789abcdef\"); YAML turns digit-only or 0-prefixed ids into numbers"
+                )
+                continue
+            if not _FINDING_ID_RE.match(sup_id.strip()):
+                warnings.append(f"{where}: id {sup_id!r} is not a 16-hex finding id; skipping")
+                continue
+            sup_id = sup_id.strip()
+
         rule = raw.get("rule")
-        globs = raw.get("paths")
-        if globs is None and raw.get("path") is not None:
-            globs = raw.get("path")
-        glob_list = [globs] if isinstance(globs, str) else list(globs or [])
-
-        if not reason:
-            warnings.append(f"{path.name}: skipping entry without a 'reason' ({raw!r})")
+        if rule is not None and (not isinstance(rule, str) or not rule.strip()):
+            warnings.append(f"{where}: 'rule' must be a rule id string (see `attackmap rules`); skipping")
             continue
+
+        globs = raw.get("paths", raw.get("path"))
+        glob_list: list[str] = []
+        if globs is not None:
+            parsed = _str_list(globs)
+            if parsed is None:
+                warnings.append(f"{where}: 'paths' must be a string or a list of strings, got {globs!r}; skipping")
+                continue
+            glob_list = [g for g in parsed if g.strip()]
+
         if not (sup_id or rule or glob_list):
-            warnings.append(f"{path.name}: skipping entry with no selector (id/rule/path)")
+            warnings.append(f"{where}: skipping entry with no selector (id/rule/path)")
             continue
 
-        source = f"{path.name}"
+        source = where
         if sup_id:
-            suppressions.append(
-                Suppression(reason=reason, id=str(sup_id), origin="file", source=source)
-            )
+            suppressions.append(Suppression(reason=reason, id=sup_id, origin="file", source=source))
         if glob_list:
             for glob in glob_list:
                 suppressions.append(
-                    Suppression(
-                        reason=reason,
-                        rule=str(rule) if rule else None,
-                        path=str(glob),
-                        origin="file",
-                        source=source,
-                    )
+                    Suppression(reason=reason, rule=rule, path=glob, origin="file", source=source)
                 )
         elif rule:
-            suppressions.append(
-                Suppression(reason=reason, rule=str(rule), origin="file", source=source)
-            )
+            suppressions.append(Suppression(reason=reason, rule=rule, origin="file", source=source))
     return suppressions
 
 
@@ -429,8 +471,8 @@ def load_suppress_file(
         return _load_yaml_entries(explicit, warnings)
     for name in SUPPRESS_FILENAMES:
         candidate = root / name
-        if candidate.exists():
-            return _load_yaml_entries(candidate, warnings)
+        if candidate.exists() or candidate.is_symlink():
+            return _load_yaml_entries(candidate, warnings, root=root)
     return []
 
 
