@@ -28,6 +28,14 @@ from attackmap.workflow_scanner import scan_workflows
 
 ROOT = Path(__file__).resolve().parents[1]
 runner = CliRunner()
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _norm(output: str) -> str:
+    """CI renders Typer errors in a wrapped, coloured Rich panel: strip ANSI and
+    box-drawing and collapse whitespace (as in test_fleet.py)."""
+    text = re.sub(r"[│╭╮╰╯─]", " ", _ANSI.sub("", output))
+    return " ".join(text.split())
 SHA = re.compile(r"@[0-9a-f]{40}$")
 
 
@@ -101,7 +109,7 @@ def test_unknown_module_errors_without_any_install(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(analyzers.subprocess, "run", lambda *a, **k: calls.append(a))
     result = runner.invoke(app, ["analyze", str(_repo(tmp_path)), "-m", "pyhton", "--install-missing"])
     assert result.exit_code != 0
-    assert "not an official AttackMap analyzer" in " ".join(result.output.split())
+    assert "not an official AttackMap analyzer" in _norm(result.output)
     assert calls == []
 
 
@@ -110,8 +118,9 @@ def test_missing_official_module_without_flag_prints_pinned_command(tmp_path: Pa
     monkeypatch.setattr(analyzers.subprocess, "run", lambda *a, **k: calls.append(a))
     result = runner.invoke(app, ["analyze", str(_repo(tmp_path)), "-m", "go"])
     assert result.exit_code != 0
-    assert "--install-missing" in result.output
-    assert re.search(r"attackmap-analyzer-go\.git@[0-9a-f]{40}", result.output.replace("\n", "").replace(" ", "").replace("│", ""))
+    flat = _norm(result.output)
+    assert "--install-missing" in flat
+    assert re.search(r"attackmap-analyzer-go\.git@[0-9a-f]{40}", flat.replace(" ", ""))
     assert calls == []
 
 
