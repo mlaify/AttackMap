@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .progress import ScanProgress
 
+from .safe_fs import walk_repo
 from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .crypto import find_crypto_weaknesses
@@ -377,6 +378,11 @@ def _redacted_snippet(
     return snippet
 
 
+# Package-manager trees (pnpm, venvs) are full of symlinks; don't list those
+# as scan limitations.
+_NOISY_SYMLINK_PARTS = {"node_modules", ".git", ".venv", "venv", "dist", "build", "__pycache__"}
+
+
 def should_scan(path: Path) -> bool:
     if path.name.startswith("."):
         return False
@@ -700,8 +706,17 @@ def scan_repo(
     # Materialize the scannable file list first so progress has a total to
     # compute a percentage and ETA against. The extra directory walk is cheap
     # next to reading + regex-scanning each file.
+    # Symlinks are never followed out of the repo (#234); the ones skipped
+    # are recorded so the report says what wasn't analyzed.
+    def _record_symlink(path: Path) -> None:
+        rel = path.relative_to(root_path)
+        if not any(part in _NOISY_SYMLINK_PARTS for part in rel.parts):
+            result.limitations.append(f"symlink not followed: {rel.as_posix()}")
+
     scan_files = [
-        p for p in root_path.rglob("*") if p.is_file() and should_scan_with_suffixes(p, suffixes)
+        p
+        for p in walk_repo(root_path, on_symlink=_record_symlink)
+        if should_scan_with_suffixes(p, suffixes)
     ]
     if progress is not None:
         progress.begin(len(scan_files))

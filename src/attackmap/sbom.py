@@ -25,6 +25,7 @@ import re
 import tomllib
 from pathlib import Path
 
+from .safe_fs import is_unsafe_link
 from .lockfiles import parse_lockfiles
 from .models import DependencyHint
 
@@ -100,7 +101,7 @@ def _iter_manifests(root: Path):
         except (OSError, PermissionError):
             return
         for entry in entries:
-            if entry.name in _SKIP_DIRS:
+            if entry.name in _SKIP_DIRS or is_unsafe_link(root, entry):
                 continue
             if entry.is_dir():
                 if depth < _MAX_DEPTH:

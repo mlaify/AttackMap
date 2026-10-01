@@ -15,6 +15,7 @@ from .exploitability import score_exploitability
 from .models import AttackPath, AttackSurface, ExploitabilityScore, Finding, ScanResult
 from .review_json import build_defensive_review_json
 from .sarif import build_sarif
+from .safe_fs import ensure_output_dir, safe_write_text
 from .suppress import SuppressedFinding
 from .topology import build_service_graph
 
@@ -54,14 +55,16 @@ def write_reports(
     emit_json = output_format in {"all", "json"}
     emit_markdown = output_format in {"all", "markdown"}
 
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    out = ensure_output_dir(output_dir)
     suppressed = suppressed or []
 
+    def write(name: str, text: str) -> None:
+        safe_write_text(out, out / name, text)
+
     if emit_markdown:
-        (out / "architecture.md").write_text(architecture_md + "\n", encoding="utf-8")
-        (out / "attack-surface.md").write_text(attack_surface_md + "\n", encoding="utf-8")
-        (out / "defensive-review.md").write_text(defensive_review_md + "\n", encoding="utf-8")
+        write("architecture.md", architecture_md + "\n")
+        write("attack-surface.md", attack_surface_md + "\n")
+        write("defensive-review.md", defensive_review_md + "\n")
     defensive_review_json = build_defensive_review_json(scan, attack_surfaces, findings, attack_paths)
     review_context_pack = build_review_context_pack(
         defensive_review_json,
@@ -69,14 +72,12 @@ def write_reports(
         analyzer_metadata if analyzer_metadata is not None else [],
     )
     if emit_json:
-        (out / "defensive-review.json").write_text(json.dumps(defensive_review_json, indent=2) + "\n", encoding="utf-8")
-        (out / "review-context-pack.json").write_text(json.dumps(review_context_pack, indent=2) + "\n", encoding="utf-8")
+        write("defensive-review.json", json.dumps(defensive_review_json, indent=2) + "\n")
+        write("review-context-pack.json", json.dumps(review_context_pack, indent=2) + "\n")
 
     exploitability = score_exploitability(scan, attack_surfaces)
     if emit_markdown:
-        (out / "attackmap-exploitability.md").write_text(
-            render_exploitability_ranking(exploitability) + "\n", encoding="utf-8"
-        )
+        write("attackmap-exploitability.md", render_exploitability_ranking(exploitability) + "\n")
 
     json_report = {
         "scan": scan.model_dump(),
@@ -105,7 +106,7 @@ def write_reports(
         "exploitability": [score.model_dump() for score in exploitability],
     }
     if emit_json:
-        (out / "attackmap-report.json").write_text(json.dumps(json_report, indent=2) + "\n", encoding="utf-8")
+        write("attackmap-report.json", json.dumps(json_report, indent=2) + "\n")
 
         # SARIF 2.1.0 for GitHub Code Scanning / VS Code / other SARIF
         # consumers. Emitted alongside JSON, not in place of it.
@@ -114,9 +115,7 @@ def write_reports(
             attack_paths,
             suppressed=[(s.finding, s.reason) for s in suppressed],
         )
-        (out / "attackmap-report.sarif").write_text(
-            json.dumps(sarif_report, indent=2) + "\n", encoding="utf-8"
-        )
+        write("attackmap-report.sarif", json.dumps(sarif_report, indent=2) + "\n")
 
     if not emit_markdown:
         return
@@ -125,18 +124,10 @@ def write_reports(
     # (#49). Nothing new is computed — pure output transform of shapes
     # that already exist in the JSON report.
     service_graph = build_service_graph(scan)
-    (out / "attackmap-paths.md").write_text(
-        render_attack_paths_mermaid(attack_paths), encoding="utf-8"
-    )
-    (out / "attackmap-topology.md").write_text(
-        render_topology_mermaid(service_graph), encoding="utf-8"
-    )
-    (out / "attackmap-paths.dot").write_text(
-        render_attack_paths_dot(attack_paths), encoding="utf-8"
-    )
-    (out / "attackmap-topology.dot").write_text(
-        render_topology_dot(service_graph), encoding="utf-8"
-    )
+    write("attackmap-paths.md", render_attack_paths_mermaid(attack_paths))
+    write("attackmap-topology.md", render_topology_mermaid(service_graph))
+    write("attackmap-paths.dot", render_attack_paths_dot(attack_paths))
+    write("attackmap-topology.dot", render_topology_dot(service_graph))
 
 
 def render_exploitability_ranking(scores: list[ExploitabilityScore]) -> str:

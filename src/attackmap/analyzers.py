@@ -18,6 +18,7 @@ from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
+from .safe_fs import walk_repo
 from .merge import MERGE_SCHEMA, initial_seen, merge_into
 
 from .sdk.contracts import (
@@ -321,9 +322,7 @@ class BuiltinJavaScriptWebAnalyzer:
         if not repo.exists() or not repo.is_dir():
             return False
         try:
-            for candidate in repo.rglob("*"):
-                if not candidate.is_file():
-                    continue
+            for candidate in walk_repo(repo):
                 if any(part in _SKIP_DIRS for part in candidate.parts):
                     continue
                 if candidate.name == "package.json":
@@ -374,9 +373,7 @@ class BuiltinConfigAnalyzer:
         if not repo.exists() or not repo.is_dir():
             return False
         try:
-            for candidate in repo.rglob("*"):
-                if not candidate.is_file():
-                    continue
+            for candidate in walk_repo(repo):
                 if any(part in _SKIP_DIRS for part in candidate.parts):
                     continue
                 if should_scan_config_file(candidate):
@@ -722,6 +719,9 @@ def merge_analyzer_results(
         for language in result.languages:
             if language not in merged.languages:
                 merged.languages.append(language)
+        for limitation in result.limitations:
+            if limitation not in merged.limitations:
+                merged.limitations.append(limitation)
         for rule in MERGE_SCHEMA:
             merge_into(merged, getattr(result, rule.attr), rule, seen_by_attr[rule.attr])
 

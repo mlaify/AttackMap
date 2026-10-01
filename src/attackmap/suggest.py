@@ -24,6 +24,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .safe_fs import is_unsafe_link
 from .analyzers import analyzer_install_url, get_available_modules
 
 # Depth cap for the recursive walk. Enough for a monorepo's top-level
@@ -373,7 +374,7 @@ def _iter_paths(root: Path):
             return
         for entry in entries:
             name = entry.name
-            if name in _SKIP_DIRS:
+            if name in _SKIP_DIRS or is_unsafe_link(root, entry):
                 continue
             if entry.is_dir():
                 yield entry

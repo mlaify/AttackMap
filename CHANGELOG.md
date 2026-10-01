@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A CLI too old to support these flags is refused rather than run unhardened.
   - Codex still has no tool-less mode, so `--llm-backend api` remains the only
     fully tool-less OpenAI path.
+- **Scans never read outside the repository (#234).**
+  - Core file walks used `rglob`/`read_text`, which follow symlinks, so a committed `linked.py -> ../../secrets.py` was scanned and its content reported under the in-repo name.
+  - Evidence-derived paths such as `/etc/hosts:1` or `../x.py:1` used to be read and sent to the LLM. They are now rejected.
+  - File walks go through the new `attackmap.safe_fs`, which skips symlinked files and doesn't descend symlinked directories. Opt in with `ATTACKMAP_FOLLOW_SYMLINKS=1` to follow links that stay inside the repo.
+  - Reads of paths taken from evidence or plugin output are confined to the repo.
+  - Skipped symlinks are listed in the new `scan.limitations` field of `attackmap-report.json`.
+  - Plugins can use the same helpers from `attackmap.sdk`: `walk_repo`, `is_contained`, `contained_file` and `read_repo_text`.
+- **Report writes never follow symlinks (#228).** A symlink committed at an output path (for example `attackmap-reports/pr-comment.md -> ~/.bashrc`) used to be overwritten through. Now every artifact is written with `O_NOFOLLOW`. Writes through a symlinked file, into a symlinked output directory inside the checkout, or outside the output directory are refused with exit code 2.
 
 ## [0.4.30] - 2026-10-01
 

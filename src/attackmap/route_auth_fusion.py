@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .safe_fs import read_repo_text, walk_repo
 from .models import AttackSurface, AttackTechnique, Finding, Route, ScanResult
 
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -146,7 +147,7 @@ def synthesize_unauthenticated_routes(
 def _read(root: Path, rel: str, cache: dict[str, str | None]) -> str | None:
     if rel not in cache:
         try:
-            cache[rel] = (root / rel).read_text(encoding="utf-8", errors="replace")
+            cache[rel] = read_repo_text(root, rel, errors="replace")
         except OSError:
             cache[rel] = None
     return cache[rel]
@@ -264,7 +265,7 @@ def _repo_has_java_global_auth(
     java_files = {r.file for r in scan.routes if Path(r.file).suffix.lower() in _JAVA_SUFFIXES}
     # Config usually lives elsewhere; check route files plus any *Security*.java.
     candidates = set(java_files)
-    for path in root.rglob("*Security*.java"):
+    for path in (p for p in walk_repo(root) if p.suffix == ".java" and "Security" in p.name):
         try:
             candidates.add(str(path.relative_to(root)))
         except ValueError:

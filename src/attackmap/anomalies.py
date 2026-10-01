@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .safe_fs import contained_file
 from .models import Anomaly, Route, ScanResult
 from .srcpaths import is_test_file
 
@@ -623,10 +624,10 @@ def _span_bounds(line: int, lines: list[str], route_lines: list[int]) -> tuple[i
 def _file_lines(rel_file: str, ctx: _SignalCtx) -> list[str]:
     if rel_file in ctx.line_cache:
         return ctx.line_cache[rel_file]
-    path = ctx.root / rel_file
+    path = contained_file(ctx.root, rel_file)
     lines: list[str] = []
     try:
-        if path.is_file() and path.stat().st_size <= _MAX_FILE_BYTES:
+        if path is not None and path.stat().st_size <= _MAX_FILE_BYTES:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except (OSError, ValueError):
         lines = []

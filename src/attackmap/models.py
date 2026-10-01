@@ -629,6 +629,9 @@ class ScanResult(BaseModel):
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
+    # What the scan deliberately did not analyze (e.g. symlinks that point out
+    # of the repo, #234) — so a clean report isn't mistaken for full coverage.
+    limitations: list[str] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property

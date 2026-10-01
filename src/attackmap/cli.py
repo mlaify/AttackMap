@@ -46,11 +46,30 @@ from .triage import render_triage_fallback
 from .progress import create_progress
 from .recon_to_analysis import translate_recon
 from . import __version__
+from .safe_fs import UnsafePathError, ensure_output_dir, safe_write_text
 from .report import OUTPUT_FORMATS, render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
 from .suppress import apply_suppressions, collect_suppressions
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
+
+
+def _ensure_output_dir(path: Path) -> Path:
+    try:
+        return ensure_output_dir(path)
+    except UnsafePathError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+
+def _write_text(path: Path, text: str) -> None:
+    """Write a CLI artifact without following symlinks (#228)."""
+    path = Path(path)
+    try:
+        safe_write_text(ensure_output_dir(path.parent), path, text)
+    except UnsafePathError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(2) from exc
 
 
 def _version_callback(value: bool) -> None:
@@ -176,27 +195,31 @@ def _run_fleet(
 
         defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
         repo_out = output_root / repo_id
-        write_reports(
-            repo_out,
-            scan,
-            architecture_md,
-            attack_surface_md,
-            defensive_review_md,
-            attack_surfaces,
-            findings,
-            attack_paths,
-            analyzer_metadata=[
-                {
-                    "name": metadata.name,
-                    "description": metadata.description,
-                    "scope": metadata.scope,
-                    "ecosystems": list(metadata.ecosystems),
-                }
-                for metadata in (get_analyzer_metadata(a) for a in active_analyzers)
-            ],
-            suppressed=suppressed_findings,
-            output_format=output_format,
-        )
+        try:
+            write_reports(
+                repo_out,
+                scan,
+                architecture_md,
+                attack_surface_md,
+                defensive_review_md,
+                attack_surfaces,
+                findings,
+                attack_paths,
+                analyzer_metadata=[
+                    {
+                        "name": metadata.name,
+                        "description": metadata.description,
+                        "scope": metadata.scope,
+                        "ecosystems": list(metadata.ecosystems),
+                    }
+                    for metadata in (get_analyzer_metadata(a) for a in active_analyzers)
+                ],
+                suppressed=suppressed_findings,
+                output_format=output_format,
+            )
+        except UnsafePathError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(2) from exc
         typer.echo(render_console_summary(scan, findings, attack_paths))
         fleet.results.append(
             FleetRepoResult(
@@ -222,18 +245,15 @@ def _run_fleet(
     fleet.trust_gaps = find_trust_gaps(fleet.links, repo_scans, auth_by_repo)
     fleet.cross_repo_anomalies = find_cross_repo_anomalies(repo_scans, auth_by_repo)
 
-    output_root.mkdir(parents=True, exist_ok=True)
+    _ensure_output_dir(output_root)
     emit_markdown = output_format in {"all", "markdown"}
     if emit_markdown:
-        (output_root / "fleet-summary.md").write_text(
-            render_fleet_summary(fleet) + "\n", encoding="utf-8"
-        )
-        (output_root / "fleet-graph.md").write_text(
-            render_fleet_graph_mermaid(fleet) + "\n", encoding="utf-8"
-        )
+        _write_text(output_root / "fleet-summary.md", render_fleet_summary(fleet) + "\n")
+        _write_text(output_root / "fleet-graph.md", render_fleet_graph_mermaid(fleet) + "\n")
     if output_format in {"all", "json"}:
-        (output_root / "fleet-summary.json").write_text(
-            json.dumps(fleet_summary_json(fleet), indent=2) + "\n", encoding="utf-8"
+        _write_text(
+            output_root / "fleet-summary.json",
+            json.dumps(fleet_summary_json(fleet), indent=2) + "\n",
         )
     summary_name = "fleet-summary.md" if emit_markdown else "fleet-summary.json"
     typer.echo("")
@@ -522,27 +542,31 @@ def analyze(
 
     defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
 
-    write_reports(
-        output,
-        scan,
-        architecture_md,
-        attack_surface_md,
-        defensive_review_md,
-        attack_surfaces,
-        findings,
-        attack_paths,
-        analyzer_metadata=[
-            {
-                "name": metadata.name,
-                "description": metadata.description,
-                "scope": metadata.scope,
-                "ecosystems": list(metadata.ecosystems),
-            }
-            for metadata in (get_analyzer_metadata(analyzer) for analyzer in active_analyzers)
-        ],
-        suppressed=suppressed_findings,
-        output_format=format,
-    )
+    try:
+        write_reports(
+            output,
+            scan,
+            architecture_md,
+            attack_surface_md,
+            defensive_review_md,
+            attack_surfaces,
+            findings,
+            attack_paths,
+            analyzer_metadata=[
+                {
+                    "name": metadata.name,
+                    "description": metadata.description,
+                    "scope": metadata.scope,
+                    "ecosystems": list(metadata.ecosystems),
+                }
+                for metadata in (get_analyzer_metadata(analyzer) for analyzer in active_analyzers)
+            ],
+            suppressed=suppressed_findings,
+            output_format=format,
+        )
+    except UnsafePathError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(2) from exc
     typer.echo(render_console_summary(scan, findings, attack_paths))
     typer.echo("")
     typer.echo(f"Reports written to: {Path(output).resolve()}")
@@ -564,8 +588,7 @@ def analyze(
             f"{counts['persisted']} persisted, {counts['resolved']} resolved."
         )
         diff_path = Path(diff_output) if diff_output else Path(output) / "attackmap-diff.md"
-        diff_path.parent.mkdir(parents=True, exist_ok=True)
-        diff_path.write_text(render_diff_markdown(diff), encoding="utf-8")
+        _write_text(diff_path, render_diff_markdown(diff))
         typer.echo(f"Diff written to: {diff_path.resolve()}")
         if fail_on_new_high and diff.has_new_high:
             new_high_titles = [s.title for s in diff.new if s.severity == "high"]
@@ -580,8 +603,7 @@ def analyze(
 
     if pr_comment is not None:
         pr_path = Path(pr_comment)
-        pr_path.parent.mkdir(parents=True, exist_ok=True)
-        pr_path.write_text(render_pr_comment(findings, diff), encoding="utf-8")
+        _write_text(pr_path, render_pr_comment(findings, diff))
         typer.echo(f"PR comment written to: {pr_path.resolve()}")
 
     if llm:
@@ -625,9 +647,10 @@ def analyze(
         else:
             output_path = Path(output)
             llm_md_path = output_path / "defensive-review-llm.md"
-            llm_md_path.write_text(result.markdown + "\n", encoding="utf-8")
+            _write_text(llm_md_path, result.markdown + "\n")
             llm_meta_path = output_path / "defensive-review-llm.meta.json"
-            llm_meta_path.write_text(
+            _write_text(
+                llm_meta_path,
                 json.dumps(
                     {
                         "backend": result.backend,
@@ -638,7 +661,6 @@ def analyze(
                     indent=2,
                 )
                 + "\n",
-                encoding="utf-8",
             )
             typer.echo(f"LLM review written to: {llm_md_path.resolve()} (backend={result.backend})")
 
@@ -739,9 +761,10 @@ def analyze(
         else:
             output_path = Path(output)
             hunt_md_path = output_path / "vulnerability-hypotheses.md"
-            hunt_md_path.write_text(HUNT_BANNER + hunt_markdown + "\n", encoding="utf-8")
+            _write_text(hunt_md_path, HUNT_BANNER + hunt_markdown + "\n")
             hunt_meta_path = output_path / "vulnerability-hypotheses.meta.json"
-            hunt_meta_path.write_text(
+            _write_text(
+                hunt_meta_path,
                 json.dumps(
                     {
                         "backend": hunt_backend,
@@ -753,7 +776,6 @@ def analyze(
                     indent=2,
                 )
                 + "\n",
-                encoding="utf-8",
             )
             typer.echo(
                 f"Vulnerability hypotheses written to: {hunt_md_path.resolve()} "
@@ -800,9 +822,10 @@ def analyze(
         else:
             output_path = Path(output)
             rem_md_path = output_path / "remediation.md"
-            rem_md_path.write_text(REMEDIATION_BANNER + rem_result.markdown + "\n", encoding="utf-8")
+            _write_text(rem_md_path, REMEDIATION_BANNER + rem_result.markdown + "\n")
             rem_meta_path = output_path / "remediation.meta.json"
-            rem_meta_path.write_text(
+            _write_text(
+                rem_meta_path,
                 json.dumps(
                     {
                         "backend": rem_result.backend,
@@ -813,7 +836,6 @@ def analyze(
                     indent=2,
                 )
                 + "\n",
-                encoding="utf-8",
             )
             typer.echo(
                 f"Remediation suggestions written to: {rem_md_path.resolve()} "
@@ -870,8 +892,9 @@ def analyze(
             # reproducible score-ordered shortlist rather than erroring (#145).
             typer.echo(f"Triage LLM unavailable ({exc}); using deterministic ordering.", err=True)
             markdown = TRIAGE_BANNER + render_triage_fallback(scan, findings) + "\n"
-        tri_md_path.write_text(markdown, encoding="utf-8")
-        tri_meta_path.write_text(
+        _write_text(tri_md_path, markdown)
+        _write_text(
+            tri_meta_path,
             json.dumps(
                 {
                     "backend": tri_backend,
@@ -882,7 +905,6 @@ def analyze(
                 indent=2,
             )
             + "\n",
-            encoding="utf-8",
         )
         typer.echo(f"Triage shortlist written to: {tri_md_path.resolve()} (backend={tri_backend})")
 
@@ -1061,11 +1083,9 @@ def bench(
 
     if output:
         out = Path(output)
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "benchmark-results.md").write_text(markdown + "\n", encoding="utf-8")
-        (out / "benchmark-results.json").write_text(
-            json.dumps(bench_json(results), indent=2) + "\n", encoding="utf-8"
-        )
+        _ensure_output_dir(out)
+        _write_text(out / "benchmark-results.md", markdown + "\n")
+        _write_text(out / "benchmark-results.json", json.dumps(bench_json(results), indent=2) + "\n")
         typer.echo(f"Written to: {out.resolve()}")
 
     errored = [r.id for r in results if r.error]

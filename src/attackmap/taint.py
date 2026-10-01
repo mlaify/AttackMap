@@ -34,6 +34,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from .safe_fs import is_contained, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain
 from .srcpaths import is_infra_route, is_test_file, is_vendored_file
 
@@ -542,8 +543,8 @@ def _index_repo(root: Path) -> dict[str, Path]:
         "bower_components", "vendor", "third_party", "third-party",
         "external", "externals", "jspm_packages", "site-packages",
     }
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in _SUPPORTED_SUFFIXES:
+    for path in walk_repo(root):
+        if path.suffix not in _SUPPORTED_SUFFIXES:
             continue
         try:
             if any(part in skip_dirs for part in path.relative_to(root).parts):
@@ -568,7 +569,7 @@ def _go_module_path(root: Path) -> str | None:
     """The module path declared in go.mod, if present (e.g. github.com/x/y)."""
     gomod = root / "go.mod"
     try:
-        if gomod.is_file():
+        if gomod.is_file() and is_contained(root, gomod):
             m = _GO_MODULE_RE.search(gomod.read_text(encoding="utf-8", errors="ignore"))
             if m:
                 return m.group("mod")
@@ -618,7 +619,7 @@ def _php_psr4_map(root: Path) -> dict[str, str]:
     composer = root / "composer.json"
     out: dict[str, str] = {}
     try:
-        data = json.loads(composer.read_text(encoding="utf-8", errors="ignore"))
+        data = json.loads(read_repo_text(root, composer, errors="ignore"))
     except (OSError, ValueError):
         return out
     for section in ("autoload", "autoload-dev"):
