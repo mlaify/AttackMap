@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .safe_fs import contained_file, is_unsafe_link
 from .models import BolaCandidate, Route, ScanResult
 from .srcpaths import is_test_file, is_vendored_file
 
@@ -257,8 +258,8 @@ def _read_file_content(rel_file: str, root: Path, cache: dict[str, str | None]) 
         return cache[rel_file]
     content: str | None = None
     try:
-        path = root / rel_file
-        if path.is_file() and path.stat().st_size <= _MAX_FILE_BYTES:
+        path = contained_file(root, rel_file)
+        if path is not None and path.stat().st_size <= _MAX_FILE_BYTES:
             content = path.read_text(encoding="utf-8", errors="ignore")
     except (OSError, ValueError):
         content = None
@@ -410,7 +411,7 @@ def _iter_graphql_files(root: Path):
         for entry in entries:
             if count >= _GRAPHQL_MAX_FILES:
                 return
-            if entry.name in _GRAPHQL_SKIP_DIRS:
+            if entry.name in _GRAPHQL_SKIP_DIRS or is_unsafe_link(root, entry):
                 continue
             if entry.is_dir():
                 if depth < _GRAPHQL_MAX_DEPTH:

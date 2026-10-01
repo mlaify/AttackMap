@@ -63,6 +63,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .safe_fs import contained_file
 from .diff import finding_id
 from .models import Finding
 
@@ -369,9 +370,9 @@ def scan_inline_suppressions(root: Path, findings: list[Finding]) -> list[Suppre
     for rel in sorted(cited):
         if any(part in _SKIP_INLINE_PARTS for part in Path(rel).parts):
             continue
-        file_path = (root / rel)
+        file_path = contained_file(root, rel)
         try:
-            if not file_path.is_file():
+            if file_path is None:
                 continue
             text = file_path.read_text(encoding="utf-8", errors="replace")
         except OSError:

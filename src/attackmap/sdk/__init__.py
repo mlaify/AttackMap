@@ -71,6 +71,7 @@ from .contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
+from ..safe_fs import contained_file, is_contained, read_repo_text, walk_repo
 from .models import (
     AuthHint,
     DatabaseHint,
@@ -104,4 +105,11 @@ __all__ = [
     "SecretHint",
     "ScanResult",
     "DependencyHint",
+    # Repo-confined filesystem helpers (#234): walk and read the scanned repo
+    # without following symlinks out of it. Plugins should use these instead
+    # of Path.rglob / read_text.
+    "walk_repo",
+    "is_contained",
+    "contained_file",
+    "read_repo_text",
 ]

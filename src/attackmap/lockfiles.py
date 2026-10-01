@@ -35,6 +35,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .safe_fs import is_unsafe_link
 from .models import DependencyHint
 
 # Ecosystems whose manifests carry only ranges — a lockfile here supersedes
@@ -110,6 +111,8 @@ def _iter_lockfiles(root: Path):
             return
         for entry in entries:
             if entry.name in {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv", "target", "vendor"}:
+                continue
+            if is_unsafe_link(root, entry):
                 continue
             if entry.is_dir():
                 if depth < _MAX_DEPTH:

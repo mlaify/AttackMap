@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .safe_fs import contained_file
 from .diff import finding_id
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .security_overlay import build_security_overlay
@@ -462,10 +463,12 @@ def _code_excerpts(scan: ScanResult, findings: list[Finding], max_locations: int
         seen.add(key)
         if rel not in file_cache:
             try:
-                p = root / rel
+                # `rel` comes from evidence text, so it is untrusted: only
+                # repo-contained, non-symlinked files are excerpted (#234).
+                p = contained_file(root, rel)
                 file_cache[rel] = (
                     p.read_text(encoding="utf-8", errors="ignore").splitlines()
-                    if p.is_file() and p.stat().st_size <= 1_000_000
+                    if p is not None and p.stat().st_size <= 1_000_000
                     else []
                 )
             except (OSError, ValueError):

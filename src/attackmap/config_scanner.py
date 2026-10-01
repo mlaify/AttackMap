@@ -19,6 +19,7 @@ import bisect
 import re
 from pathlib import Path
 
+from .safe_fs import walk_repo
 from .models import DatabaseHint, ExternalCall, ScanResult, SecretHint
 from .scanner import _line_snippet
 
@@ -211,9 +212,7 @@ def scan_config_repo(root: str | Path) -> ScanResult:
     if not repo.exists() or not repo.is_dir():
         return result
 
-    for path in repo.rglob("*"):
-        if not path.is_file():
-            continue
+    for path in walk_repo(repo):
         if any(part in _SKIP_DIRS for part in path.parts):
             continue
         if not should_scan_config_file(path):
