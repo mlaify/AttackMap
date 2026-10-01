@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .md import md_code, md_text
 from .models import Finding
 
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -142,10 +143,11 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
             return "_none_"
         lines = []
         for s in _sorted(items):
-            lines.append(f"- **[{s.severity.upper()}]** {s.title}")
+            # Titles and evidence embed repo-derived text: escape it (#233).
+            lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
             if s.evidence:
                 # First evidence line only — keeps the comment scannable.
-                lines.append(f"  - _e.g._ {s.evidence[0]}")
+                lines.append(f"  - _e.g._ {md_code(s.evidence[0])}")
         return "\n".join(lines)
 
     parts = [

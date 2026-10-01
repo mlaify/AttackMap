@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .md import md_text
 from .context_pack import build_review_context_pack
 from .diagrams import (
     render_attack_paths_dot,
@@ -178,7 +179,7 @@ def render_pr_comment(findings: list[Finding], diff: object | None = None) -> st
         if new:
             lines.append("### New findings")
             for s in sorted(new, key=lambda s: sev_rank.get(s.severity, 3)):
-                lines.append(f"- **[{s.severity.upper()}]** {s.title}")
+                lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
             lines.append("")
     else:
         by_sev = {"high": 0, "medium": 0, "low": 0}
@@ -197,7 +198,7 @@ def render_pr_comment(findings: list[Finding], diff: object | None = None) -> st
         lines.append("### Most exploitable now")
         for f in exploitable[:3]:
             lines.append(
-                f"- `{f.exploitability}/100` **{(f.exploitability_tier or '').upper()}** — {f.title}"
+                f"- `{f.exploitability}/100` **{(f.exploitability_tier or '').upper()}** — {md_text(f.title)}"
             )
         lines.append("")
 

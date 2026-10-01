@@ -14,6 +14,7 @@ import re
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from .md import md_text
 from .models import AttackPath, Finding
 
 
@@ -141,7 +142,7 @@ def _build_result(finding: Finding, *, suppression_reason: str | None = None) ->
         "level": _sarif_level(finding.severity),
         "message": {
             "text": finding.title,
-            "markdown": f"**{finding.title}**\n\n{finding.mitigation}",
+            "markdown": f"**{md_text(finding.title)}**\n\n{finding.mitigation}",
         },
         "properties": properties,
     }

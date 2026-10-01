@@ -46,6 +46,7 @@ from .triage import render_triage_fallback
 from .progress import create_progress
 from .recon_to_analysis import translate_recon
 from . import __version__
+from .md import sanitize_llm_markdown
 from .safe_fs import UnsafePathError, ensure_output_dir, safe_write_text
 from .report import OUTPUT_FORMATS, render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
@@ -647,7 +648,7 @@ def analyze(
         else:
             output_path = Path(output)
             llm_md_path = output_path / "defensive-review-llm.md"
-            _write_text(llm_md_path, result.markdown + "\n")
+            _write_text(llm_md_path, sanitize_llm_markdown(result.markdown) + "\n")
             llm_meta_path = output_path / "defensive-review-llm.meta.json"
             _write_text(
                 llm_meta_path,
@@ -761,7 +762,7 @@ def analyze(
         else:
             output_path = Path(output)
             hunt_md_path = output_path / "vulnerability-hypotheses.md"
-            _write_text(hunt_md_path, HUNT_BANNER + hunt_markdown + "\n")
+            _write_text(hunt_md_path, HUNT_BANNER + sanitize_llm_markdown(hunt_markdown) + "\n")
             hunt_meta_path = output_path / "vulnerability-hypotheses.meta.json"
             _write_text(
                 hunt_meta_path,
@@ -822,7 +823,7 @@ def analyze(
         else:
             output_path = Path(output)
             rem_md_path = output_path / "remediation.md"
-            _write_text(rem_md_path, REMEDIATION_BANNER + rem_result.markdown + "\n")
+            _write_text(rem_md_path, REMEDIATION_BANNER + sanitize_llm_markdown(rem_result.markdown) + "\n")
             rem_meta_path = output_path / "remediation.meta.json"
             _write_text(
                 rem_meta_path,
@@ -892,7 +893,7 @@ def analyze(
             # reproducible score-ordered shortlist rather than erroring (#145).
             typer.echo(f"Triage LLM unavailable ({exc}); using deterministic ordering.", err=True)
             markdown = TRIAGE_BANNER + render_triage_fallback(scan, findings) + "\n"
-        _write_text(tri_md_path, markdown)
+        _write_text(tri_md_path, sanitize_llm_markdown(markdown))
         _write_text(
             tri_meta_path,
             json.dumps(

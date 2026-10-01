@@ -308,8 +308,9 @@ def test_hotspots_prefer_observed_runtime_over_protocol_only_surfaces() -> None:
 
     review = render_defensive_review(scan, surfaces, findings, attack_paths)
 
-    observed_idx = review.index("POST /admin/reindex (services/api/src/admin.ts)")
-    inferred_idx = review.index("ANY /xrpc/com.atproto.repo.putRecord (lexicons/com/atproto/repo/putRecord.json)")
+    # Route and location are code spans so repo-derived text can't inject Markdown (#233).
+    observed_idx = review.index("POST `/admin/reindex` (`services/api/src/admin.ts")
+    inferred_idx = review.index("ANY `/xrpc/com.atproto.repo.putRecord` (`lexicons/com/atproto/repo/putRecord.json")
     assert observed_idx < inferred_idx
 
 

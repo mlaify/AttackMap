@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from .md import defang_markdown, md_code, md_text
 from .models import (
     Asset,
     AttackPath,
@@ -343,7 +344,7 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
     )
     for (score, factors), finding in finding_scores[:3]:
         related_surfaces = _related_surfaces_for_finding(finding, attack_surfaces)
-        items.append(f"- [{finding.severity.upper()} | score {score:.1f}] {finding.title}")
+        items.append(f"- [{finding.severity.upper()} | score {score:.1f}] {md_text(finding.title)}")
         items.append(f"- Reason: {_top_score_reasons(factors, top_n=3)}")
         items.append(f"- Provenance: {_provenance_breakdown(related_surfaces)}")
 
@@ -374,7 +375,7 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
 
     for (score, factors), surface in deduped_hotspots:
         items.append(
-            f"- Hotspot [score {score:.1f}]: {surface.method} {surface.route} ({surface.location()}) -> {surface.category} / {surface.risk}"
+            f"- Hotspot [score {score:.1f}]: {surface.method} {md_code(surface.route)} ({md_code(surface.location())}) -> {surface.category} / {surface.risk}"
         )
         items.append(f"- Reason: {_top_score_reasons(factors, top_n=2)}")
         items.append(f"- Provenance: {_provenance_breakdown([surface])}")
@@ -391,10 +392,10 @@ def _evidence_chains(attack_paths: list[AttackPath]) -> list[str]:
         reverse=True,
     )
     for (score, factors), path in scored_paths[:3]:
-        lines.append(f"- [score {score:.1f}] {path.name}: {path.impact}")
+        lines.append(f"- [score {score:.1f}] {md_text(path.name)}: {md_text(path.impact)}")
         lines.append(f"- Reason: {_top_score_reasons(factors, top_n=3)}")
         if path.steps:
-            lines.append(f"- Key step: {path.steps[0]}")
+            lines.append(f"- Key step: {md_text(path.steps[0])}")
     return lines
 
 
@@ -448,8 +449,8 @@ def _render_assets_section(assets: list[Asset]) -> list[str]:
         return ["- No high-value assets identified from code signals."]
     lines: list[str] = []
     for asset in assets[:8]:
-        head = f"- **{asset.name}** ({asset.kind}, criticality={asset.criticality})"
-        evidence_inline = "; ".join(asset.evidence[:3]) if asset.evidence else ""
+        head = f"- **{md_text(asset.name)}** ({asset.kind}, criticality={asset.criticality})"
+        evidence_inline = "; ".join(md_code(e) for e in asset.evidence[:3]) if asset.evidence else ""
         if evidence_inline:
             head = f"{head} — {evidence_inline}"
         lines.append(head)
@@ -485,7 +486,7 @@ def _render_notable_observations(insights: list[Insight]) -> list[str]:
         return ["- No notable cross-cutting observations were generated for this scan."]
     lines: list[str] = []
     for insight in insights[:6]:
-        head = f"- **[{insight.severity.upper()}]** {insight.title} _(confidence={insight.confidence}, kind={insight.kind})_"
+        head = f"- **[{insight.severity.upper()}]** {md_text(insight.title)} _(confidence={insight.confidence}, kind={insight.kind})_"
         lines.append(head)
         lines.append(f"  - {insight.narrative}")
         if insight.suggested_action:
@@ -496,7 +497,7 @@ def _render_notable_observations(insights: list[Insight]) -> list[str]:
             )
             lines.append(f"  - _ATT&CK:_ {techniques_text}")
         if insight.evidence:
-            lines.append(f"  - _Evidence:_ {'; '.join(insight.evidence[:3])}")
+            lines.append(f"  - _Evidence:_ {'; '.join(md_code(e) for e in insight.evidence[:3])}")
     if len(insights) > 6:
         lines.append(f"- …and {len(insights) - 6} more notable observations in JSON output.")
     return lines
@@ -594,4 +595,7 @@ def render_defensive_review(
         "- Validate top risks with repository-specific architecture context and runtime controls.",
         "- Notable observations are cross-cutting hypotheses; treat them as triage prompts, not verdicts.",
     ]
-    return "\n".join(lines)
+    # Every section interpolates repo-derived text (routes, files, evidence);
+    # this document has no intentional links/HTML, so defang the whole thing
+    # as a backstop to the per-field escaping above (#233).
+    return defang_markdown("\n".join(lines))
