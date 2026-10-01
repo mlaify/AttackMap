@@ -3,7 +3,7 @@ from __future__ import annotations
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .security_overlay import build_security_overlay
 
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"  # 1.3.0: weaknesses[].locations (#214)
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
 
@@ -130,6 +130,7 @@ def _weaknesses_and_hotspots(
                 "confidence": finding.confidence,
                 "evidence_basis": _basis_label_for_surfaces(related),
                 "evidence": finding.evidence[:10],
+                "locations": [loc.model_dump() for loc in finding.locations],
                 "mitigation": finding.mitigation,
                 "attack_techniques": [t.model_dump() for t in finding.attack_techniques],
             }

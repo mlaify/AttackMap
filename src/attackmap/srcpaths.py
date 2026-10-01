@@ -121,3 +121,77 @@ def is_vendored_file(rel_path: str) -> bool:
 
 
 __all__ = ["is_test_file", "is_infra_route", "is_vendored_file"]
+
+
+# --- Locations cited in evidence text (#213, #214) ---------------------------
+#
+# Fallback for findings that don't carry structured `Finding.locations` (e.g.
+# from third-party plugins): lift `file[:line]` out of evidence prose. One
+# shared implementation for SARIF and suppression so the two can't drift.
+
+_EXTENSIONLESS_FILES = frozenset(
+    {"Dockerfile", "Containerfile", "Makefile", "Jenkinsfile", "Procfile", "Gemfile", "Rakefile", "Vagrantfile"}
+)
+_PATH_CHARS = r"[\w@()\[\]./\\+~-]"
+# `src/app.py:12 — …` or `[src/app.py:12]`. The path starts at a token
+# boundary and is matched possessively (`:` isn't a path char), so long
+# bracket/paren runs stay linear (#236 regex budget).
+_LEADING_LOC = re.compile(rf"(?<!{_PATH_CHARS})(?P<path>{_PATH_CHARS}++):(?P<line>\d+)\b")
+# `… in src/app.py`, `… at lib/x.hpp:7`, `… in `Dockerfile``.
+_PROSE_LOC = re.compile(rf"\b(?:in|at)\s+`?(?P<path>{_PATH_CHARS}++)`?(?::(?P<line>\d+))?")
+_HAS_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,10}$")
+
+
+def _clean_candidate(path: str) -> str | None:
+    path = path.replace("\\", "/")
+    # A leading bracket/paren that opens a `[file:line]` wrapper, not a
+    # route-group segment like `(auth)/page.tsx`.
+    while path[:1] in "[(" and path.count(path[0]) > path.count("]" if path[0] == "[" else ")"):
+        path = path[1:]
+    # Trailing sentence punctuation, and a closing paren/bracket that isn't
+    # part of a balanced route-group segment like `(auth)`.
+    while path and path[-1] in ".,;:":
+        path = path[:-1]
+    while path.endswith(")") and path.count("(") < path.count(")"):
+        path = path[:-1]
+    while path.endswith("]") and path.count("[") < path.count("]"):
+        path = path[:-1]
+    if not path or "://" in path or path.startswith(("/", "~")):
+        return None
+    name = path.rsplit("/", 1)[-1]
+    if name in _EXTENSIONLESS_FILES or name.split(".", 1)[0] in _EXTENSIONLESS_FILES:
+        return path
+    if not _HAS_EXTENSION.search(name) or name.startswith("."):
+        return path if name.startswith(".env") else None
+    # Route paths (`/users/x`) start with `/` and were rejected above; a bare
+    # dotted word like `v1.2` has no slash and a digit-only extension.
+    if "/" not in path and re.search(r"\.\d+$", name):
+        return None
+    return path
+
+
+def evidence_locations(evidence: list[str]) -> list[tuple[str, int | None]]:
+    """Ordered, de-duplicated ``(file, line)`` pairs cited in evidence lines."""
+    out: list[tuple[str, int | None]] = []
+    seen: set[tuple[str, int | None]] = set()
+    for text in evidence:
+        positioned: list[tuple[int, str, int | None]] = []
+        for match in _LEADING_LOC.finditer(text):
+            path = _clean_candidate(match.group("path"))
+            if path:
+                positioned.append((match.start("path"), path, int(match.group("line"))))
+        for match in _PROSE_LOC.finditer(text):
+            path = _clean_candidate(match.group("path"))
+            if path:
+                line = match.group("line")
+                positioned.append((match.start("path"), path, int(line) if line else None))
+        # Text order, so the first cited location is the primary one.
+        found = [(path, line) for _, path, line in sorted(positioned, key=lambda t: t[0])]
+        for item in found:
+            # Prefer the line-bearing form when the same file is cited both ways.
+            if item[1] is None and any(f == item[0] and l is not None for f, l in found):
+                continue
+            if item not in seen:
+                seen.add(item)
+                out.append(item)
+    return out

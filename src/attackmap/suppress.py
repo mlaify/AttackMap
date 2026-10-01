@@ -63,6 +63,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .srcpaths import evidence_locations
 from .safe_fs import contained_file
 from .diff import finding_id
 from .models import Finding
@@ -91,14 +92,6 @@ INLINE_DIRECTIVE = re.compile(
     re.IGNORECASE,
 )
 
-# Lift file paths out of evidence strings — mirrors sarif._LOCATION_FROM_EVIDENCE
-# but captures the path only (line numbers are irrelevant to suppression).
-_EVIDENCE_PATH = re.compile(
-    r"(?:in|at)\s+`?([\w./_\\-]+\.(?:py|js|jsx|ts|tsx|mjs|cjs|go|rs|php|java|kt|"
-    r"cs|cpp|c|h|hpp|yml|yaml|json|toml|env|sh|dockerfile))`?(?::\d+)?",
-    re.IGNORECASE,
-)
-
 # Directories we never read when scanning for inline directives — matches the
 # scanner's own output dirs so we never chase our own reports (see #85 / the
 # 0.4.5 feedback-loop fix).
@@ -117,15 +110,18 @@ def rule_slug(title: str) -> str:
 
 
 def _evidence_paths(finding: Finding) -> list[str]:
-    """Best-effort set of source files a finding's evidence cites."""
+    """Source files a finding covers: structured `Finding.locations` (#214),
+    else the files cited in its evidence (shared parser, #213)."""
+    pairs = (
+        [(loc.file, loc.line) for loc in finding.locations]
+        if finding.locations
+        else evidence_locations(finding.evidence)
+    )
     paths: list[str] = []
-    seen: set[str] = set()
-    for line in finding.evidence:
-        for match in _EVIDENCE_PATH.finditer(line):
-            path = match.group(1).replace("\\", "/")
-            if path not in seen:
-                seen.add(path)
-                paths.append(path)
+    for file, _line in pairs:
+        path = file.replace("\\", "/")
+        if path not in paths:
+            paths.append(path)
     return paths
 
 

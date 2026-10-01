@@ -31,33 +31,76 @@
     "assets": {
       "type": "array",
       "description": "Inferred high-value assets and their locations.",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object"
+      }
     },
     "controls": {
       "type": "array",
       "description": "Defensive controls observed in code and expected-but-absent controls.",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object"
+      }
     },
     "notable_observations": {
       "type": "array",
       "description": "Cross-cutting insights connecting assets, controls, surfaces, and chains.",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object"
+      }
     },
     "detection_opportunities": {
       "type": "array",
       "description": "Defender-facing detection-engineering hints derived from insights and findings.",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object"
+      }
     },
     "attack_techniques_observed": {
       "type": "array",
       "description": "Deduplicated MITRE ATT&CK techniques observed across findings and insights.",
-      "items": { "type": "object" }
+      "items": {
+        "type": "object"
+      }
     },
     "strengths": {
       "type": "array"
     },
     "weaknesses_risk_hotspots": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "weaknesses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "locations": {
+                "type": "array",
+                "description": "Every file (and line, when known) the finding covers \u2014 structured, not parsed from evidence text and not capped like `evidence` (added in 1.3.0, #214).",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "file"
+                  ],
+                  "properties": {
+                    "file": {
+                      "type": "string"
+                    },
+                    "line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "evidence_chains": {
       "type": "array"

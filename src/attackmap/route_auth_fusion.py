@@ -33,7 +33,7 @@ import re
 from pathlib import Path
 
 from .safe_fs import read_repo_text, walk_repo
-from .models import AttackSurface, AttackTechnique, Finding, Route, ScanResult
+from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
 
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 _JS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
@@ -123,6 +123,7 @@ def synthesize_unauthenticated_routes(
             title="State-changing routes are reachable without an authentication control",
             severity="high",
             evidence=evidence,
+            locations=[FindingLocation(file=route.file, line=route.line) for route, _ in flagged],
             mitigation=(
                 "Require authentication (and server-side authorization) on every "
                 "state-changing endpoint — attach an auth middleware/guard to the "

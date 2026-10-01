@@ -4,7 +4,17 @@ from dataclasses import dataclass
 
 from .analyzer import identify_attack_surfaces
 from .exploitability import best_by_sink_kind, score_exploitability
-from .models import AttackPath, AttackSurface, AttackTechnique, Finding, Route, ScanResult, TaintChain
+from .models import (
+    AttackPath,
+    AttackSurface,
+    AttackTechnique,
+    Finding,
+    FindingLocation,
+    Route,
+    ScanResult,
+    TaintChain,
+)
+from .srcpaths import evidence_locations
 from .route_auth_fusion import synthesize_unauthenticated_routes
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
@@ -48,6 +58,29 @@ def compute_finding_score(severity: str, confidence: str) -> int:
 
 def _action_step(label: str, action: str) -> str:
     return f"{label}: {action}"
+
+
+def _locs(items, file_attr: str = "file", line_attr: str = "line") -> list[FindingLocation]:
+    """Structured locations for every item behind a finding (#214)."""
+    out: list[FindingLocation] = []
+    seen: set[tuple[str, int | None]] = set()
+    for item in items:
+        file = getattr(item, file_attr, None)
+        if not file:
+            continue
+        line = getattr(item, line_attr, None)
+        key = (file, line)
+        if key not in seen:
+            seen.add(key)
+            out.append(FindingLocation(file=file, line=line))
+    return out
+
+
+def _fill_missing_locations(findings: list[Finding]) -> None:
+    """Findings without structured locations fall back to evidence parsing."""
+    for finding in findings:
+        if not finding.locations:
+            finding.locations = [FindingLocation(file=f, line=l) for f, l in evidence_locations(finding.evidence)]
 
 
 def _finding_evidence(surface: AttackSurface) -> str:
@@ -1134,6 +1167,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Public webhook endpoint may trust attacker-controlled events",
                 severity="high",
                 evidence=[_finding_evidence(surface) for surface in webhook_surfaces[:10]],
+                locations=_locs(webhook_surfaces),
                 mitigation="Require signature verification before processing webhook payloads, reject replays, and keep any downstream state change behind strict validation.",
                 confidence="high",
                 tags=["exposed-endpoint", "auth-missing"],
@@ -1146,6 +1180,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Administrative routes appear reachable from the main application surface",
                 severity="high",
                 evidence=[_finding_evidence(surface) for surface in admin_surfaces[:10]],
+                locations=_locs(admin_surfaces),
                 mitigation="Require strong authentication and explicit server-side authorization on every admin action, and move admin routes behind a narrower exposure boundary where possible.",
                 confidence="high",
                 tags=["exposed-endpoint", "auth-missing", "privileged"],
@@ -1158,6 +1193,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Upload or import routes expand attacker-controlled input handling",
                 severity="high",
                 evidence=[_finding_evidence(surface) for surface in upload_surfaces[:10]],
+                locations=_locs(upload_surfaces),
                 mitigation="Constrain accepted formats, isolate parsers, scan uploaded content, and treat imported files as untrusted all the way through storage and processing.",
                 confidence="medium",
                 tags=["exposed-endpoint", "input-handling"],
@@ -1170,6 +1206,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Authentication routes were detected without strong nearby auth controls",
                 severity="medium",
                 evidence=[_finding_evidence(surface) for surface in auth_surfaces[:10]],
+                locations=_locs(auth_surfaces),
                 mitigation="Review these routes for rate limiting, credential validation, token or session handling, and the exact point where trust is established server-side.",
                 confidence="medium",
                 tags=["exposed-endpoint", "auth-missing"],
@@ -1188,6 +1225,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Public routes appear to influence outbound integrations without clear auth signals",
                 severity="medium",
                 evidence=[_finding_evidence(surface) for surface in public_integration_surfaces[:10]],
+                locations=_locs(public_integration_surfaces),
                 mitigation="Check how outbound requests are authenticated, signed, and authorized, and confirm that untrusted route input cannot directly steer third-party actions.",
                 confidence="medium",
                 tags=["integration-risk", "auth-missing"],
@@ -1212,6 +1250,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Hard-coded secret literals were found in source or config",
                 severity="high",
                 evidence=evidence_lines,
+                locations=_locs(hardcoded_secrets),
                 mitigation=(
                     "Rotate every detected credential immediately, purge it from git history, "
                     "and move to environment-injected or vault-managed values. Anyone with read "
@@ -1228,6 +1267,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Secret-bearing environment variables are referenced in executable paths",
                 severity="medium",
                 evidence=[f"{hint.name} in {hint.file}" for hint in env_reference_secrets[:10]],
+                locations=_locs(env_reference_secrets),
                 mitigation="Confirm these secrets are injected securely, never logged or returned, rotated regularly, and scoped only to the privileges each route actually needs.",
                 confidence="high",
                 tags=["secret-exposure"],
@@ -1240,6 +1280,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Public routes likely sit close to sensitive data operations",
                 severity="medium",
                 evidence=[_finding_evidence(surface) for surface in public_data_surfaces[:10]],
+                locations=_locs(public_data_surfaces),
                 mitigation="Validate untrusted input before it reaches business logic, enforce authorization at the route boundary, and verify that downstream queries or writes stay parameterized.",
                 confidence="medium",
                 tags=["exposed-endpoint", "data-risk"],
@@ -1385,6 +1426,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                     title=f"Possible broken object-level authorization (BOLA/IDOR) on {verb} routes",
                     severity=severity,  # type: ignore[arg-type]
                     evidence=evidence,
+                    locations=_locs(group, "route_file", "route_line"),
                     mitigation=(
                         "Enforce an object-level authorization check on every access: confirm the "
                         "authenticated principal owns or may access the requested resource id "
@@ -1425,6 +1467,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title=spec["title"],
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
+                locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["insecure-crypto"],
@@ -1458,6 +1501,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title=spec["title"],
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
+                locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["web-hardening"],
@@ -1491,6 +1535,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title=spec["title"],
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
+                locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="medium",
                 tags=["novel-vuln"],
@@ -1529,6 +1574,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title=spec["title"],
                 severity=severity,  # type: ignore[arg-type]
                 evidence=evidence,
+                locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="high",
                 tags=["ci-security", "supply-chain"],
@@ -1571,6 +1617,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title=spec["title"],
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
+                locations=_locs(items, "route_file", "route_line"),
                 mitigation=spec["mitigation"],
                 confidence=_numeric_to_confidence(items[0].confidence),
                 tags=["anomaly"],
@@ -1624,6 +1671,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             title=spec["title"],
             severity=spec["severity"],  # type: ignore[arg-type]
             evidence=evidence,
+            locations=_locs(kind_chains, "sink_file", "sink_line") + _locs(kind_chains, "route_file", "route_line"),
             mitigation=spec["mitigation"],
             confidence="medium",
             tags=["taint-chain", "input-handling", "data-risk"],
@@ -1674,6 +1722,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title=f"Speculative reach to a {label} sink (recall mode)",
                 severity="low",
                 evidence=evidence,
+                locations=_locs(kind_chains, "sink_file", "sink_line") + _locs(kind_chains, "route_file", "route_line"),
                 mitigation=(
                     "Recall mode widened taint discovery to surface this reach; provenance "
                     "is unconfirmed. Verify whether untrusted input actually reaches the sink "
@@ -1703,6 +1752,8 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 tags=["weak-signal"],
             )
         )
+
+    _fill_missing_locations(findings)
 
     # #4: attach numeric score for triage ordering, then sort by
     # (severity, -score, title). Same-severity findings surface in
