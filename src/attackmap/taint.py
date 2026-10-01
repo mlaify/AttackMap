@@ -34,7 +34,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from .safe_fs import is_contained, read_repo_text, walk_repo
+from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain
 from .srcpaths import is_infra_route, is_test_file, is_vendored_file
 
@@ -544,7 +544,7 @@ def _index_repo(root: Path) -> dict[str, Path]:
         "external", "externals", "jspm_packages", "site-packages",
     }
     for path in walk_repo(root):
-        if path.suffix not in _SUPPORTED_SUFFIXES:
+        if path.suffix not in _SUPPORTED_SUFFIXES or is_oversized(path):
             continue
         try:
             if any(part in skip_dirs for part in path.relative_to(root).parts):

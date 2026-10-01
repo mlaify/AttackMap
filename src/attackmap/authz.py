@@ -292,8 +292,10 @@ _GRAPHQL_MAX_DEPTH = 6
 _GRAPHQL_MAX_FILES = 2000
 
 # One field definition: `name(args): ReturnType [@directives]`.
+# (?<!\w) + possessive \w++: never restart mid-word, so a long word can't
+# trigger quadratic backtracking (#236).
 _GRAPHQL_FIELD_RE = re.compile(
-    r"(?P<name>\w+)\s*(?:\((?P<args>[^)]*)\))?\s*:\s*(?P<rest>[^\n]*)"
+    r"(?<!\w)(?P<name>\w++)\s*+(?:\((?P<args>[^)]*+)\))?\s*+:\s*(?P<rest>[^\n]*)"
 )
 # `schema { query: RootQuery  mutation: RootMutation }` custom root types.
 _GRAPHQL_SCHEMA_BLOCK_RE = re.compile(r"schema\s*\{(?P<body>[^}]*)\}", re.DOTALL)

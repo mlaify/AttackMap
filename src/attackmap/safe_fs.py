@@ -26,10 +26,31 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 FOLLOW_SYMLINKS_ENV = "ATTACKMAP_FOLLOW_SYMLINKS"
+MAX_FILE_BYTES_ENV = "ATTACKMAP_MAX_FILE_BYTES"
+# Files larger than this are not read (#236): a hostile or generated multi-MB
+# file must not stall a CI scan. Real source files are far smaller.
+DEFAULT_MAX_FILE_BYTES = 2_000_000
 
 
 class UnsafePathError(OSError):
     """A read or write would escape the repository / output directory."""
+
+
+def max_file_bytes() -> int:
+    raw = os.environ.get(MAX_FILE_BYTES_ENV, "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_MAX_FILE_BYTES
+    except ValueError:
+        value = DEFAULT_MAX_FILE_BYTES
+    return value if value > 0 else DEFAULT_MAX_FILE_BYTES
+
+
+def is_oversized(path: Path) -> bool:
+    """True when ``path`` is larger than the per-file read cap."""
+    try:
+        return path.stat().st_size > max_file_bytes()
+    except OSError:
+        return False
 
 
 def follow_symlinks_enabled() -> bool:
