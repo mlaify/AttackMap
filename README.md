@@ -18,7 +18,7 @@ sends your code anywhere.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 
-> **Status: beta (v0.4.30).** Core engine + 15 analyzer plugins, installed straight
+> **Status: beta (v0.4.31).** Core engine + 15 analyzer plugins, installed straight
 > from GitHub and validated on real codebases. AttackMap is heuristic by
 > design — findings are confidence-tiered evidence, not proof. Roadmap to 1.0:
 > [issue #209](https://github.com/mlaify/AttackMap/issues/209).
