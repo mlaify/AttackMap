@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.31] - 2026-10-01
+
+Security release: AttackMap is now safe to run on untrusted repositories (v0.5.0 Phase 1, #260).
+
 ### Security
 
 - **AttackMap's own supply chain is pinned (#237).**
@@ -1006,7 +1010,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.4.30...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.4.31...HEAD
+[0.4.31]: https://github.com/mlaify/AttackMap/compare/v0.4.30...v0.4.31
 [0.4.30]: https://github.com/mlaify/AttackMap/compare/v0.4.29...v0.4.30
 [0.2.0]: https://github.com/mlaify/AttackMap/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/mlaify/AttackMap/releases/tag/v0.1.1
