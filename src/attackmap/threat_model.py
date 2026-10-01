@@ -60,6 +60,11 @@ def _action_step(label: str, action: str) -> str:
     return f"{label}: {action}"
 
 
+def _rule_slug_kind(kind: str) -> str:
+    """Rule id for a spec-driven detector family (#223): its kind, dashed."""
+    return kind.replace("_", "-")
+
+
 def _locs(items, file_attr: str = "file", line_attr: str = "line") -> list[FindingLocation]:
     """Structured locations for every item behind a finding (#214)."""
     out: list[FindingLocation] = []
@@ -1165,6 +1170,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Public webhook endpoint may trust attacker-controlled events",
+                rule_id="public-webhook",
                 severity="high",
                 evidence=[_finding_evidence(surface) for surface in webhook_surfaces[:10]],
                 locations=_locs(webhook_surfaces),
@@ -1178,6 +1184,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Administrative routes appear reachable from the main application surface",
+                rule_id="exposed-admin-route",
                 severity="high",
                 evidence=[_finding_evidence(surface) for surface in admin_surfaces[:10]],
                 locations=_locs(admin_surfaces),
@@ -1191,6 +1198,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Upload or import routes expand attacker-controlled input handling",
+                rule_id="upload-route",
                 severity="high",
                 evidence=[_finding_evidence(surface) for surface in upload_surfaces[:10]],
                 locations=_locs(upload_surfaces),
@@ -1204,6 +1212,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Authentication routes were detected without strong nearby auth controls",
+                rule_id="weak-auth-route",
                 severity="medium",
                 evidence=[_finding_evidence(surface) for surface in auth_surfaces[:10]],
                 locations=_locs(auth_surfaces),
@@ -1223,6 +1232,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Public routes appear to influence outbound integrations without clear auth signals",
+                rule_id="unauth-outbound-integration",
                 severity="medium",
                 evidence=[_finding_evidence(surface) for surface in public_integration_surfaces[:10]],
                 locations=_locs(public_integration_surfaces),
@@ -1248,6 +1258,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Hard-coded secret literals were found in source or config",
+                rule_id="hardcoded-secret",
                 severity="high",
                 evidence=evidence_lines,
                 locations=_locs(hardcoded_secrets),
@@ -1265,6 +1276,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Secret-bearing environment variables are referenced in executable paths",
+                rule_id="secret-env-reference",
                 severity="medium",
                 evidence=[f"{hint.name} in {hint.file}" for hint in env_reference_secrets[:10]],
                 locations=_locs(env_reference_secrets),
@@ -1278,6 +1290,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Public routes likely sit close to sensitive data operations",
+                rule_id="public-data-route",
                 severity="medium",
                 evidence=[_finding_evidence(surface) for surface in public_data_surfaces[:10]],
                 locations=_locs(public_data_surfaces),
@@ -1292,6 +1305,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="AT Protocol XRPC surface chains into a downstream trust boundary",
+                rule_id="atproto-trust-chain",
                 severity="high" if top_atproto_chain.sink in {"database", "privileged downstream action"} else "medium",
                 evidence=[f"confidence={top_atproto_chain.confidence:.2f}", *top_atproto_chain.evidence[:6]],
                 mitigation=(
@@ -1308,6 +1322,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Inter-service trust chain reaches a sensitive downstream sink",
+                rule_id="service-trust-chain",
                 severity="high" if top_service_chain.sink in {"database", "privileged downstream action"} else "medium",
                 evidence=[f"confidence={top_service_chain.confidence:.2f}", *top_service_chain.evidence[:6]],
                 mitigation=(
@@ -1324,6 +1339,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Framework route-to-service chain reaches a sensitive sink",
+                rule_id="framework-sink-chain",
                 severity="high" if top_chain.sink in {"database", "privileged action"} else "medium",
                 evidence=[f"confidence={top_chain.confidence:.2f}", *top_chain.evidence[:6]],
                 mitigation=(
@@ -1372,6 +1388,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title=f"Vulnerable dependency: {name}@{version} ({eco})",
+                rule_id="vulnerable-dependency",
                 severity=finding_severity,  # type: ignore[arg-type]
                 evidence=[
                     f"{len(pkg_vulns)} known advisor{'y' if len(pkg_vulns) == 1 else 'ies'} for "
@@ -1424,6 +1441,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             findings.append(
                 Finding(
                     title=f"Possible broken object-level authorization (BOLA/IDOR) on {verb} routes",
+                    rule_id=f"bola-{verb}",
                     severity=severity,  # type: ignore[arg-type]
                     evidence=evidence,
                     locations=_locs(group, "route_file", "route_line"),
@@ -1465,6 +1483,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title=spec["title"],
+                rule_id=_rule_slug_kind(kind),
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
                 locations=_locs(items),
@@ -1499,6 +1518,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title=spec["title"],
+                rule_id=_rule_slug_kind(kind),
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
                 locations=_locs(items),
@@ -1533,6 +1553,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title=spec["title"],
+                rule_id=_rule_slug_kind(kind),
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
                 locations=_locs(items),
@@ -1572,6 +1593,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title=spec["title"],
+                rule_id=_rule_slug_kind(kind),
                 severity=severity,  # type: ignore[arg-type]
                 evidence=evidence,
                 locations=_locs(items),
@@ -1615,6 +1637,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title=spec["title"],
+                rule_id=_rule_slug_kind(kind),
                 severity=spec["severity"],  # type: ignore[arg-type]
                 evidence=evidence,
                 locations=_locs(items, "route_file", "route_line"),
@@ -1669,6 +1692,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         taint_finding = Finding(
             title=spec["title"],
+            rule_id=_rule_slug_kind(kind),
             severity=spec["severity"],  # type: ignore[arg-type]
             evidence=evidence,
             locations=_locs(kind_chains, "sink_file", "sink_line") + _locs(kind_chains, "route_file", "route_line"),
@@ -1720,6 +1744,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title=f"Speculative reach to a {label} sink (recall mode)",
+                rule_id=f"speculative-{_rule_slug_kind(kind)}",
                 severity="low",
                 evidence=evidence,
                 locations=_locs(kind_chains, "sink_file", "sink_line") + _locs(kind_chains, "route_file", "route_line"),
@@ -1745,6 +1770,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.append(
             Finding(
                 title="Heuristic scan found only a limited attack surface",
+                rule_id="limited-surface",
                 severity="low",
                 evidence=["No major route, secret, or integration patterns triggered a stronger finding."],
                 mitigation="Treat this as a weak signal, expand parser coverage, and manually validate the real entry points and trust boundaries.",
@@ -2129,3 +2155,36 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
     # extras are usually redundant noise that downstream review surfaces
     # via findings anyway.
     return paths[:MAX_ATTACK_PATHS]
+
+
+def rule_catalog() -> list[tuple[str, str, str]]:
+    """Every core rule id with its finding title and severity (#223), for
+    `attackmap rules` and the docs. Family specs are expanded per kind."""
+    rules: list[tuple[str, str, str]] = [
+        ("public-webhook", "Public webhook endpoint may trust attacker-controlled events", "high"),
+        ("exposed-admin-route", "Administrative routes appear reachable from the main application surface", "high"),
+        ("upload-route", "Upload or import routes expand attacker-controlled input handling", "medium"),
+        ("weak-auth-route", "Authentication routes were detected without strong nearby auth controls", "medium"),
+        ("unauth-outbound-integration", "Public routes appear to influence outbound integrations without clear auth signals", "medium"),
+        ("hardcoded-secret", "Hard-coded secret literals were found in source or config", "high"),
+        ("secret-env-reference", "Secret-bearing environment variables are referenced in executable paths", "medium"),
+        ("public-data-route", "Public routes likely sit close to sensitive data operations", "medium"),
+        ("atproto-trust-chain", "AT Protocol XRPC surface chains into a downstream trust boundary", "medium"),
+        ("service-trust-chain", "Inter-service trust chain reaches a sensitive downstream sink", "medium"),
+        ("framework-sink-chain", "Framework route-to-service chain reaches a sensitive sink", "medium"),
+        ("vulnerable-dependency", "Vulnerable dependency: <package>@<version> (<ecosystem>)", "varies"),
+        ("limited-surface", "Heuristic scan found only a limited attack surface", "low"),
+        ("bola-modify", "Possible broken object-level authorization (BOLA/IDOR) on modify routes", "high"),
+        ("bola-read", "Possible broken object-level authorization (BOLA/IDOR) on read routes", "medium"),
+        ("unauth-state-change", "State-changing routes are reachable without an authentication control", "high"),
+    ]
+    for spec_table in (
+        _TAINT_FINDING_SPEC, _CRYPTO_FINDING_SPEC, _WEB_HARDENING_FINDING_SPEC,
+        _CODE_WEAKNESS_FINDING_SPEC, _WORKFLOW_FINDING_SPEC, _ANOMALY_FINDING_SPEC,
+    ):
+        for kind, spec in spec_table.items():
+            rules.append((_rule_slug_kind(kind), spec["title"], spec.get("severity", "varies")))
+    for kind in _TAINT_FINDING_SPEC:
+        label = _TAINT_SINK_LABEL.get(kind, kind)
+        rules.append((f"speculative-{_rule_slug_kind(kind)}", f"Speculative reach to a {label} sink (recall mode)", "low"))
+    return sorted(rules)

@@ -512,6 +512,19 @@ class ExploitabilityScore(BaseModel):
     factors: list[ExploitabilityFactor] = Field(default_factory=list)
 
 
+def title_slug(title: str) -> str:
+    """Legacy rule id: the slugified finding title (pre-#223)."""
+    import re as _re
+
+    slug = _re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return slug or "finding"
+
+
+def finding_rule_id(finding: "Finding") -> str:
+    """The finding's stable rule id, or its title slug when it has none."""
+    return finding.rule_id or title_slug(finding.title)
+
+
 class FindingLocation(BaseModel):
     """A file (and line, when known) a finding applies to (#214). Carried
     structurally so SARIF, suppression and diffing don't have to parse
@@ -524,6 +537,10 @@ class FindingLocation(BaseModel):
 class Finding(_RedactedEvidence):
     title: str
     severity: Literal["low", "medium", "high"]
+    # Stable, short detector id (#223) — SARIF ruleId and suppress `rule:`.
+    # Titles are prose and may be reworded; this never changes. `None` for
+    # findings from callers that don't set one (falls back to the title slug).
+    rule_id: str | None = None
     evidence: list[str] = Field(default_factory=list)
     # Every location the finding covers — not capped like `evidence` (#214).
     locations: list[FindingLocation] = Field(default_factory=list)

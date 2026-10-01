@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Every finding has a stable rule id (#223).** `Finding.rule_id` is a short, explicit id such as `hardcoded-secret`, `insecure-tls`, `bola-modify` or `script-injection`. Spec-driven families use their kind. The id doesn't change when a title is reworded.
+  - It is now the SARIF `ruleId` and the value matched by suppress `rule:` and `attackmap:ignore[...]`. **Code Scanning re-keys alerts once** on upgrade: the old ruleId was the slugified title.
+  - The old title-slug selectors keep working, with a deprecation warning that names the new id.
+  - Suppress-file entries and inline directives that match no finding are now reported as `Suppression warning: … matched no findings`.
+  - The new `attackmap rules [--json]` lists all 61 core rule ids.
+  - The documented examples used `hardcoded-secret-literals`, which never matched anything; they now use the real id, and a test checks them.
+  - Finding ids, and therefore baselines, are unchanged.
+
 ### Fixed
 
 - **Findings carry structured locations (#214, #213).**

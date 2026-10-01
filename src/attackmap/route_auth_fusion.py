@@ -121,6 +121,7 @@ def synthesize_unauthenticated_routes(
     return [
         Finding(
             title="State-changing routes are reachable without an authentication control",
+            rule_id="unauth-state-change",
             severity="high",
             evidence=evidence,
             locations=[FindingLocation(file=route.file, line=route.line) for route, _ in flagged],
