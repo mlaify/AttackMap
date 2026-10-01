@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Suppression governance (#238).**
+  - **Trusted suppressions only.** With `--suppress-from-ref <ref>`, only suppressions that already exist at that git ref apply. Suppress-file entries, and inline directives on lines added since the ref, are reported as **pending** in the CLI output and in a new PR-comment "Suppressions" section, and are not applied. `--allow-pr-suppressions` applies them anyway, still listed. On `pull_request` runs the GitHub Action fetches the base branch and passes it, so a PR can no longer silence its own findings.
+  - **Expiry and ownership.** Suppress entries gain `expires:`, `owner:` and `ticket:`, and inline directives accept `until=YYYY-MM-DD`. An expired suppression is no longer applied and prints a warning; `--strict-suppressions` makes it exit 2.
+  - **Globs:** `*` now stays within one directory and `**` crosses directories. **Behavior change:** `vendor/*` no longer covers nested files; use `vendor/**`. Globs that match everything (`*`, `**`, `**/*`, `/`) are rejected.
+  - Path suppressions apply per instance, so a `tests/fixtures/**` entry can't hide a secret in `app/`.
 - **Inline `attackmap:ignore` is line-scoped (#224).** A directive used to suppress every finding in its file, so a comment about an MD5 checksum hid a HIGH unauthenticated-route finding in the same file, along with any routes added there later.
   - A directive now covers only the instance on its own line or the line below. Partly covered findings stay active, with just that instance removed.
   - The new `attackmap:ignore-file[rule]` is the explicit file-wide form.

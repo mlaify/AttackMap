@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 import shlex
 import sys
 from pathlib import Path
@@ -56,6 +57,7 @@ from .md import sanitize_llm_markdown
 from .safe_fs import UnsafePathError, ensure_output_dir, safe_write_text
 from .report import OUTPUT_FORMATS, render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
+from .gitref import GitRefError
 from .suppress import apply_suppressions, collect_suppressions
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
@@ -170,6 +172,7 @@ def _run_fleet(
     fleet_incompatible: dict[str, bool],
     output_format: str = "all",
     install_missing: bool = False,
+    suppress_from_ref: str | None = None,
 ) -> None:
     """Multi-repo fleet scan (#146a). Scans each repo independently — reusing the
     same building blocks a single-repo run uses — writes per-repo reports into
@@ -220,7 +223,12 @@ def _run_fleet(
             explicit = Path(suppress_file) if suppress_file else None
             if explicit is not None and not explicit.exists():
                 raise typer.BadParameter(f"Suppress file not found: {explicit}")
-            suppset, sup_warnings = collect_suppressions(repo_path, findings, explicit_file=explicit)
+            try:
+                suppset, sup_warnings = collect_suppressions(
+                    repo_path, findings, explicit_file=explicit, trusted_ref=suppress_from_ref
+                )
+            except GitRefError as exc:
+                raise typer.BadParameter(str(exc)) from exc
             for warning in sup_warnings:
                 typer.echo(f"Suppression warning: {warning}", err=True)
             outcome = apply_suppressions(findings, suppset)
@@ -425,6 +433,21 @@ def analyze(
         "--fail-on-new-high",
         help="Exit non-zero if the diff introduces any new HIGH-severity findings. Requires --baseline.",
     ),
+    suppress_from_ref: str | None = typer.Option(
+        None,
+        "--suppress-from-ref",
+        help="Trust only suppressions that exist at this git ref (e.g. the PR's base branch). Suppress-file entries and inline directives added since are reported as pending and not applied.",
+    ),
+    allow_pr_suppressions: bool = typer.Option(
+        False,
+        "--allow-pr-suppressions",
+        help="With --suppress-from-ref, apply suppressions added since the ref anyway (they are still listed).",
+    ),
+    strict_suppressions: bool = typer.Option(
+        False,
+        "--strict-suppressions",
+        help="Exit 2 if any suppression has expired (past its `expires:` / `until=` date).",
+    ),
     fail_on_new_suppression: bool = typer.Option(
         False,
         "--fail-on-new-suppression",
@@ -499,6 +522,7 @@ def analyze(
             no_progress=no_progress,
             output_format=format,
             install_missing=install_missing,
+            suppress_from_ref=suppress_from_ref,
             # Single-repo-only features aren't fleet-aware yet — reject rather
             # than silently ignore, so the user isn't surprised (#146b+ wire them).
             fleet_incompatible={
@@ -585,6 +609,7 @@ def analyze(
     # out of the active set used for the review, console, and the diff gate —
     # but retained (with reasons) in report.json and marked suppressed in SARIF.
     suppressed_findings: list = []
+    suppression_governance: dict | None = None
     if no_suppress:
         if suppress_file is not None:
             typer.echo("Note: --suppress-file is ignored because --no-suppress is set.", err=True)
@@ -592,7 +617,16 @@ def analyze(
         explicit = Path(suppress_file) if suppress_file else None
         if explicit is not None and not explicit.exists():
             raise typer.BadParameter(f"Suppress file not found: {explicit}")
-        suppset, sup_warnings = collect_suppressions(repo_path, findings, explicit_file=explicit)
+        try:
+            suppset, sup_warnings = collect_suppressions(
+                repo_path,
+                findings,
+                explicit_file=explicit,
+                trusted_ref=suppress_from_ref,
+                allow_pr_suppressions=allow_pr_suppressions,
+            )
+        except GitRefError as exc:
+            raise typer.BadParameter(str(exc)) from exc
         for warning in sup_warnings:
             typer.echo(f"Suppression warning: {warning}", err=True)
         outcome = apply_suppressions(findings, suppset)
@@ -600,6 +634,24 @@ def analyze(
             typer.echo(f"Suppression warning: {notice}", err=True)
         findings = outcome.active
         suppressed_findings = outcome.suppressed
+        suppression_governance = {
+            "pending": [f"{sup.label()} — {sup.reason} ({sup.source})" for sup in suppset.pending],
+            "pending_applied": suppset.pending_applied,
+            "trusted_ref": suppress_from_ref,
+            "by_rule": dict(Counter(s.rule for s in suppressed_findings)),
+        }
+        if suppset.pending:
+            verb = "applied anyway (--allow-pr-suppressions)" if suppset.pending_applied else "NOT applied"
+            typer.echo(
+                f"{len(suppset.pending)} suppression(s) added since {suppress_from_ref} — {verb}:", err=True
+            )
+            for line in suppression_governance["pending"]:
+                typer.echo(f"  - {line}", err=True)
+        if strict_suppressions and suppset.expired:
+            typer.echo(
+                f"Error: {len(suppset.expired)} expired suppression(s) (--strict-suppressions).", err=True
+            )
+            raise typer.Exit(2)
         if suppressed_findings:
             typer.echo("")
             typer.echo(f"Suppressed {len(suppressed_findings)} finding(s) (#144):")
@@ -694,7 +746,7 @@ def analyze(
 
     if pr_comment is not None:
         pr_path = Path(pr_comment)
-        _write_text(pr_path, render_pr_comment(findings, diff))
+        _write_text(pr_path, render_pr_comment(findings, diff, suppressions=suppression_governance))
         typer.echo(f"PR comment written to: {pr_path.resolve()}")
 
     if llm:
