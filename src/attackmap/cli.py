@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import sys
 from pathlib import Path
 
 import typer
@@ -8,7 +11,10 @@ import typer
 from .analyzer import summarize_architecture, summarize_attack_surface
 from .defensive_review import render_defensive_review
 from .analyzers import (
+    TRUSTED_ONLY_ENV,
+    MissingAnalyzersError,
     analyze_repository,
+    analyzer_install_command,
     get_available_modules,
     get_available_repository_modules,
     get_analyzer_metadata,
@@ -53,6 +59,35 @@ from .suggest import detect_ecosystems
 from .suppress import apply_suppressions, collect_suppressions
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
+
+
+def _select_modules(module: list[str], install_missing: bool) -> list:
+    """Resolve `-m` names (#237). Only official, lock-pinned plugins can be
+    installed by name, and only with --install-missing or an interactive
+    confirmation; otherwise the exact pinned pip command is printed."""
+    try:
+        return select_requested_analyzers(module, auto_install=False)
+    except MissingAnalyzersError as exc:
+        commands = [shlex.join(analyzer_install_command(name)) for name in exc.missing]
+        interactive = sys.stdin.isatty() and sys.stderr.isatty()
+        if install_missing or (
+            interactive
+            and typer.confirm(
+                "Install missing official analyzer(s) at their pinned commits?\n  "
+                + "\n  ".join(commands),
+                default=False,
+                err=True,
+            )
+        ):
+            try:
+                return select_requested_analyzers(module, auto_install=True)
+            except ValueError as install_exc:
+                raise typer.BadParameter(str(install_exc)) from install_exc
+        raise typer.BadParameter(
+            f"{exc} Install with:\n  " + "\n  ".join(commands) + "\nor re-run with --install-missing."
+        ) from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _ensure_output_dir(path: Path) -> Path:
@@ -134,6 +169,7 @@ def _run_fleet(
     no_progress: bool,
     fleet_incompatible: dict[str, bool],
     output_format: str = "all",
+    install_missing: bool = False,
 ) -> None:
     """Multi-repo fleet scan (#146a). Scans each repo independently — reusing the
     same building blocks a single-repo run uses — writes per-repo reports into
@@ -148,10 +184,7 @@ def _run_fleet(
 
     selected_analyzers = None
     if module:
-        try:
-            selected_analyzers = select_requested_analyzers(module, auto_install=True)
-        except ValueError as exc:
-            raise typer.BadParameter(str(exc)) from exc
+        selected_analyzers = _select_modules(module, install_missing)
 
     output_root = Path(output)
     repo_ids = fleet_repo_ids(repo_paths)
@@ -269,6 +302,7 @@ def _run_fleet(
 
 @app.command()
 def analyze(
+    ctx: typer.Context,
     paths: list[str] | None = typer.Argument(
         None,
         help="Path(s) to the repository(ies) to analyze. Pass two or more for a "
@@ -287,7 +321,17 @@ def analyze(
         None,
         "--module",
         "-m",
-        help="Analyzer module(s) to run. Repeat to select multiple. Missing external analyzers are auto-installed from the mlaify GitHub organization.",
+        help="Analyzer module(s) to run. Repeat to select multiple. A missing official analyzer is installed (at its pinned commit) only with --install-missing or after an interactive confirmation.",
+    ),
+    install_missing: bool = typer.Option(
+        False,
+        "--install-missing",
+        help="Install missing official analyzers named by --module, pinned to the commits in attackmap's plugin lock.",
+    ),
+    trusted_analyzers_only: bool = typer.Option(
+        False,
+        "--trusted-analyzers-only",
+        help=f"Load only official AttackMap analyzer plugins; skip any other installed package that registers one (also via {TRUSTED_ONLY_ENV}=1).",
     ),
     llm: bool = typer.Option(
         False,
@@ -417,6 +461,17 @@ def analyze(
 
     # Validate progress format before either branch, so the fleet path enforces
     # the same option semantics as a single-repo run (#146a).
+    if trusted_analyzers_only and os.environ.get(TRUSTED_ONLY_ENV) != "1":
+        previous = os.environ.get(TRUSTED_ONLY_ENV)
+        os.environ[TRUSTED_ONLY_ENV] = "1"
+
+        def _restore_trust_env() -> None:
+            if previous is None:
+                os.environ.pop(TRUSTED_ONLY_ENV, None)
+            else:
+                os.environ[TRUSTED_ONLY_ENV] = previous
+
+        ctx.call_on_close(_restore_trust_env)
     if progress_format not in {"auto", "tty", "json", "none"}:
         raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
     if format not in OUTPUT_FORMATS:
@@ -436,6 +491,7 @@ def analyze(
             progress_format=progress_format,
             no_progress=no_progress,
             output_format=format,
+            install_missing=install_missing,
             # Single-repo-only features aren't fleet-aware yet — reject rather
             # than silently ignore, so the user isn't surprised (#146b+ wire them).
             fleet_incompatible={
@@ -462,10 +518,7 @@ def analyze(
 
     selected_analyzers = None
     if module:
-        try:
-            selected_analyzers = select_requested_analyzers(module, auto_install=True)
-        except ValueError as exc:
-            raise typer.BadParameter(str(exc)) from exc
+        selected_analyzers = _select_modules(module, install_missing)
 
     # (--progress-format is validated up-front, before the fleet dispatch.)
     if llm_speed not in {"standard", "fast"}:

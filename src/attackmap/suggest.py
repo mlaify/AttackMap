@@ -21,6 +21,7 @@ Detector philosophy:
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,7 +60,7 @@ class Suggestion:
 
     @property
     def pip_install(self) -> str:
-        return f"pip install {analyzer_install_url(self.plugin)}"
+        return shlex.join(["pip", "install", analyzer_install_url(self.plugin)])
 
 
 @dataclass(frozen=True)

@@ -4,13 +4,20 @@ branding:
   icon: "shield"
   color: "purple"
 
+# Recommended caller setup (see docs.mlaify.io/ci):
+#   on: pull_request            # never pull_request_target: it runs fork code with secrets
+#   permissions:
+#     contents: read
+#     security-events: write    # SARIF upload
+#     pull-requests: write      # only if you post the PR comment
+
 inputs:
   path:
     description: "Path to scan."
     required: false
     default: "."
   extras:
-    description: "pip extras to install (e.g. 'all' for every analyzer plugin, or 'llm')."
+    description: "pip extras to install (e.g. 'all' for every analyzer plugin, or 'llm'). Letters, digits, ',', '_' and '-' only."
     required: false
     default: "all"
   baseline:
@@ -22,9 +29,9 @@ inputs:
     required: false
     default: "false"
   output:
-    description: "Directory for generated reports."
+    description: "Directory for generated reports. Defaults to $RUNNER_TEMP/attackmap-reports, outside the checkout, so a PR can't plant files or symlinks there."
     required: false
-    default: "attackmap-reports"
+    default: ""
   cve:
     description: "Cross-reference dependencies against OSV.dev (network I/O)."
     required: false
@@ -33,35 +40,62 @@ inputs:
 outputs:
   pr-comment-file:
     description: "Path to the rendered Markdown PR summary comment."
-    value: "${{ inputs.output }}/pr-comment.md"
+    value: "${{ steps.run.outputs.dir }}/pr-comment.md"
   sarif-file:
     description: "Path to the SARIF report (for code-scanning upload)."
-    value: "${{ inputs.output }}/attackmap-report.sarif"
+    value: "${{ steps.run.outputs.dir }}/attackmap-report.sarif"
 
 runs:
   using: "composite"
   steps:
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
       with:
         python-version: "3.12"
 
+    # Inputs are passed through the environment, never interpolated into the
+    # script (#237): `${{ inputs.* }}` inside `run:` is shell injection.
     - name: Install AttackMap
       shell: bash
-      run: pip install "attackmap[${{ inputs.extras }}] @ git+https://github.com/mlaify/AttackMap.git@${{ github.action_ref || 'main' }}"
+      env:
+        ATTACKMAP_EXTRAS: ${{ inputs.extras }}
+      run: |
+        if [[ ! "$ATTACKMAP_EXTRAS" =~ ^[a-z0-9,_-]*$ ]]; then
+          echo "::error::extras must match ^[a-z0-9,_-]*\$"
+          exit 2
+        fi
+        # Install exactly the action code this workflow checked out (pinned by
+        # the caller's `uses:` ref); plugin versions come from the pinned
+        # `[all]` extra in pyproject.toml.
+        if [ -n "$ATTACKMAP_EXTRAS" ]; then
+          pip install "${GITHUB_ACTION_PATH}[${ATTACKMAP_EXTRAS}]"
+        else
+          pip install "${GITHUB_ACTION_PATH}"
+        fi
 
     - name: Run AttackMap
+      id: run
       shell: bash
+      env:
+        ATTACKMAP_PATH: ${{ inputs.path }}
+        ATTACKMAP_OUTPUT: ${{ inputs.output }}
+        ATTACKMAP_BASELINE: ${{ inputs.baseline }}
+        ATTACKMAP_FAIL_ON_NEW_HIGH: ${{ inputs.fail-on-new-high }}
+        ATTACKMAP_CVE: ${{ inputs.cve }}
       run: |
-        args=(analyze "${{ inputs.path }}" --output "${{ inputs.output }}" --no-progress \
-              --pr-comment "${{ inputs.output }}/pr-comment.md")
-        [ -n "${{ inputs.baseline }}" ] && args+=(--baseline "${{ inputs.baseline }}")
-        [ "${{ inputs.fail-on-new-high }}" = "true" ] && args+=(--fail-on-new-high)
-        [ "${{ inputs.cve }}" = "true" ] && args+=(--cve)
+        out="${ATTACKMAP_OUTPUT:-$RUNNER_TEMP/attackmap-reports}"
+        echo "dir=$out" >> "$GITHUB_OUTPUT"
+        # Only official plugins load in CI: a dependency that registers an
+        # `attackmap.analyzers` entry point can't run inside the scan.
+        args=(analyze "$ATTACKMAP_PATH" --output "$out" --no-progress --trusted-analyzers-only \
+              --pr-comment "$out/pr-comment.md")
+        [ -n "$ATTACKMAP_BASELINE" ] && args+=(--baseline "$ATTACKMAP_BASELINE")
+        [ "$ATTACKMAP_FAIL_ON_NEW_HIGH" = "true" ] && args+=(--fail-on-new-high)
+        [ "$ATTACKMAP_CVE" = "true" ] && args+=(--cve)
         attackmap "${args[@]}"
 
     - name: Upload SARIF (inline PR annotations)
       if: always()
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3.38.2
       with:
-        sarif_file: "${{ inputs.output }}/attackmap-report.sarif"
+        sarif_file: "${{ steps.run.outputs.dir }}/attackmap-report.sarif"
