@@ -19,6 +19,7 @@ import bisect
 import re
 from pathlib import Path
 
+from .redact import mask_secret
 from .safe_fs import walk_repo
 from .models import DatabaseHint, ExternalCall, ScanResult, SecretHint
 from .scanner import _line_snippet
@@ -184,9 +185,7 @@ def _is_placeholder(value: str) -> bool:
 
 
 def _redact(value: str) -> str:
-    if len(value) <= 8:
-        return "…"
-    return f"{value[:4]}…{value[-4:]}"
+    return mask_secret(value)
 
 
 # --- Public entry points ------------------------------------------------------
@@ -303,7 +302,10 @@ def _extract_secret_kvs(content: str, relative: str, result: ScanResult) -> None
         value = match.group("value") or match.group("bare") or ""
         if not value or _is_placeholder(value):
             continue
-        line = index.line_of(match.start())
+        # Line from the key itself: the pattern's leading `\s` alternative can
+        # consume the previous line's newline, so match.start() may sit one
+        # line early (#235).
+        line = index.line_of(match.start("key"))
         # Store `key` as the SecretHint.name so consumers see WHICH secret
         # was leaked (auth vs stripe vs db). Value itself is redacted into
         # evidence_text via the same helper hardcoded-secret detection uses.
@@ -316,7 +318,7 @@ def _extract_secret_kvs(content: str, relative: str, result: ScanResult) -> None
                 name=key,
                 file=relative,
                 line=line,
-                evidence_text=_line_snippet(content, match.start()),
+                evidence_text=_line_snippet(content, match.start("key")),
                 confidence=0.9,
                 kind="config_literal",
             )

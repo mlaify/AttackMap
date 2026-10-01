@@ -692,10 +692,11 @@ def test_hardcoded_github_pat_detected_and_redacted(tmp_path: Path) -> None:
         f'TOKEN = "{_GH_PAT}"\n',
     )
     hint = _hint_of_kind(scan, "github_pat")
-    # Redaction — full literal must NOT appear in name; head/tail preserved.
+    # Redaction — full literal must NOT appear in name; only the 4-char
+    # prefix survives (#235: the tail used to leak too).
     assert _GH_PAT not in hint.name
-    assert hint.name.startswith("gh" + "p_")
-    assert hint.name.endswith("6789")
+    assert hint.name == "gh" + "p_…"
+    assert "6789" not in (hint.evidence_text or "")
     assert "…" in hint.name
 
 

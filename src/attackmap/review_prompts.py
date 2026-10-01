@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .redact import redact_text
 from .safe_fs import contained_file
 from .diff import finding_id
 from .models import AttackPath, AttackSurface, Finding, ScanResult
@@ -478,7 +479,9 @@ def _code_excerpts(scan: ScanResult, findings: list[Finding], max_locations: int
             continue
         lo = max(0, line - 1 - ctx)
         hi = min(len(lines), line + ctx)
-        excerpt = "\n".join(f"{i + 1}: {lines[i]}" for i in range(lo, hi))
+        # Raw source is about to leave the machine in an LLM prompt: mask any
+        # credential on these lines first (#235).
+        excerpt = "\n".join(f"{i + 1}: {redact_text(lines[i])}" for i in range(lo, hi))
         out[f"{rel}:{line}"] = excerpt
     return out
 

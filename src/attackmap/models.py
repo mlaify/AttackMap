@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from .redact import redact_list, redact_text
 
 
 # Provenance field. Present on every analyzer-emitted signal so downstream
@@ -22,7 +24,36 @@ class Route(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class ExternalCall(BaseModel):
+# Fields that carry text copied out of the scanned repository. Every model
+# with one of these redacts it at construction time (#235), so no detector —
+# core or plugin — can put a raw credential into a report, SARIF, PR comment
+# or LLM pack.
+_EVIDENCE_TEXT_FIELDS = ("evidence_text", "db_evidence", "sanitizer_evidence", "target")
+_EVIDENCE_LIST_FIELDS = ("evidence",)
+
+
+class _RedactedEvidence(BaseModel):
+    @model_validator(mode="after")
+    def _redact_evidence(self):  # type: ignore[no-untyped-def]
+        fields = type(self).model_fields
+        for name in _EVIDENCE_TEXT_FIELDS:
+            if name in fields:
+                value = getattr(self, name)
+                if isinstance(value, str):
+                    redacted = redact_text(value)
+                    if redacted != value:
+                        object.__setattr__(self, name, redacted)
+        for name in _EVIDENCE_LIST_FIELDS:
+            if name in fields:
+                value = getattr(self, name)
+                if isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+                    redacted_list = redact_list(value)
+                    if redacted_list != value:
+                        object.__setattr__(self, name, redacted_list)
+        return self
+
+
+class ExternalCall(_RedactedEvidence):
     target: str
     file: str
     line: int | None = None
@@ -35,7 +66,7 @@ class ExternalCall(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class DatabaseHint(BaseModel):
+class DatabaseHint(_RedactedEvidence):
     kind: str
     file: str
     line: int | None = None
@@ -43,7 +74,7 @@ class DatabaseHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class AuthHint(BaseModel):
+class AuthHint(_RedactedEvidence):
     hint: str
     file: str
     line: int | None = None
@@ -52,7 +83,7 @@ class AuthHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class ServiceHint(BaseModel):
+class ServiceHint(_RedactedEvidence):
     hint: str
     file: str
     line: int | None = None
@@ -61,7 +92,7 @@ class ServiceHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class EdgeHint(BaseModel):
+class EdgeHint(_RedactedEvidence):
     hint: str
     file: str
     line: int | None = None
@@ -70,7 +101,7 @@ class EdgeHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class EntrypointHint(BaseModel):
+class EntrypointHint(_RedactedEvidence):
     hint: str
     file: str
     line: int | None = None
@@ -79,7 +110,7 @@ class EntrypointHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class ProtocolHint(BaseModel):
+class ProtocolHint(_RedactedEvidence):
     hint: str
     file: str
     line: int | None = None
@@ -88,7 +119,7 @@ class ProtocolHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class FrameworkHint(BaseModel):
+class FrameworkHint(_RedactedEvidence):
     hint: str
     file: str
     line: int | None = None
@@ -97,7 +128,7 @@ class FrameworkHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class SecretHint(BaseModel):
+class SecretHint(_RedactedEvidence):
     name: str
     file: str
     line: int | None = None
@@ -112,7 +143,7 @@ class SecretHint(BaseModel):
     kind: str = "env_reference"
 
 
-class DependencyHint(BaseModel):
+class DependencyHint(_RedactedEvidence):
     """A single third-party dependency declared in a manifest or lockfile.
 
     Manifests (#48) carry version *ranges* verbatim (``^4.16.0``, ``>=2,<3``,
@@ -142,7 +173,7 @@ class DependencyHint(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class CodeWeakness(BaseModel):
+class CodeWeakness(_RedactedEvidence):
     """A novel vulnerability-class weakness in source (#77).
 
     Emitted by the built-in `weaknesses` finder — bug classes beyond the
@@ -207,7 +238,7 @@ class Anomaly(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class WebHardeningIssue(BaseModel):
+class WebHardeningIssue(_RedactedEvidence):
     """A web-hardening misconfiguration (#71).
 
     Emitted by the built-in web-hardening finder. Detects
@@ -230,7 +261,7 @@ class WebHardeningIssue(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class WorkflowIssue(BaseModel):
+class WorkflowIssue(_RedactedEvidence):
     """A CI-workflow security issue in a GitHub Actions file (#142).
 
     Emitted by the built-in workflow scanner over ``.github/workflows/*.yml``.
@@ -259,7 +290,7 @@ class WorkflowIssue(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class CryptoWeakness(BaseModel):
+class CryptoWeakness(_RedactedEvidence):
     """An insecure-cryptography or weak-randomness usage (#70).
 
     Emitted by the built-in crypto finder. Heuristic and regex-based;
@@ -282,7 +313,7 @@ class CryptoWeakness(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class BolaCandidate(BaseModel):
+class BolaCandidate(_RedactedEvidence):
     """A route that may be missing object-level authorization (#69).
 
     Emitted by the authz analyzer when a route takes a resource
@@ -305,7 +336,7 @@ class BolaCandidate(BaseModel):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
-class TaintChain(BaseModel):
+class TaintChain(_RedactedEvidence):
     """Cross-file data-flow evidence: a route reaches a sink via imports.
 
     Emitted by the lite taint analyzer (see #45). Each entry names the
@@ -398,7 +429,7 @@ SignalKind = Literal[
 ]
 
 
-class Signal(BaseModel):
+class Signal(_RedactedEvidence):
     """Unified view of a single static-analysis signal.
 
     Synthesized from the typed hint lists on `ScanResult` via `all_signals()`.
@@ -480,7 +511,7 @@ class ExploitabilityScore(BaseModel):
     factors: list[ExploitabilityFactor] = Field(default_factory=list)
 
 
-class Finding(BaseModel):
+class Finding(_RedactedEvidence):
     title: str
     severity: Literal["low", "medium", "high"]
     evidence: list[str] = Field(default_factory=list)
@@ -520,7 +551,7 @@ AssetKind = Literal[
 ]
 
 
-class Asset(BaseModel):
+class Asset(_RedactedEvidence):
     id: str
     kind: AssetKind
     name: str
@@ -549,7 +580,7 @@ ControlKind = Literal[
 ControlStrength = Literal["strong", "moderate", "weak", "absent"]
 
 
-class Control(BaseModel):
+class Control(_RedactedEvidence):
     id: str
     kind: ControlKind
     name: str
@@ -575,7 +606,7 @@ InsightKind = Literal[
 ]
 
 
-class Insight(BaseModel):
+class Insight(_RedactedEvidence):
     id: str
     kind: InsightKind
     title: str
