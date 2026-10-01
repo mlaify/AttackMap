@@ -425,6 +425,11 @@ def analyze(
         "--fail-on-new-high",
         help="Exit non-zero if the diff introduces any new HIGH-severity findings. Requires --baseline.",
     ),
+    fail_on_new_suppression: bool = typer.Option(
+        False,
+        "--fail-on-new-suppression",
+        help="Exit non-zero if a finding active in the baseline is suppressed in this run (e.g. a suppression added by the PR). Requires --baseline.",
+    ),
     cve: bool = typer.Option(
         False,
         "--cve",
@@ -500,6 +505,7 @@ def analyze(
                 "--baseline": baseline is not None,
                 "--diff-output": diff_output is not None,
                 "--fail-on-new-high": fail_on_new_high,
+                "--fail-on-new-suppression": fail_on_new_suppression,
                 "--pr-comment": pr_comment is not None,
                 "--llm": llm,
                 "--hunt": hunt,
@@ -513,6 +519,8 @@ def analyze(
     # Validate diff-mode flag combinations before doing any real work.
     if fail_on_new_high and baseline is None:
         raise typer.BadParameter("--fail-on-new-high requires --baseline to be set.")
+    if fail_on_new_suppression and baseline is None:
+        raise typer.BadParameter("--fail-on-new-suppression requires --baseline to be set.")
     if baseline is not None:
         baseline_path = Path(baseline)
         if not baseline_path.exists():
@@ -638,13 +646,18 @@ def analyze(
         except (OSError, ValueError) as exc:
             raise typer.BadParameter(f"Failed to read baseline: {exc}") from exc
         current_snapshots = [FindingSnapshot.from_finding(f) for f in findings]
-        diff = diff_findings(baseline_snapshots, current_snapshots)
+        diff = diff_findings(
+            baseline_snapshots,
+            current_snapshots,
+            suppressed=[FindingSnapshot.from_finding(s.finding) for s in suppressed_findings],
+        )
         counts = diff.counts()
         typer.echo("")
         typer.echo(
             f"Diff vs baseline: {counts['new']} new, "
             f"{counts['new_instances']} new instance(s) of existing findings, "
-            f"{counts['persisted']} persisted, {counts['resolved']} resolved."
+            f"{counts['persisted']} persisted, {counts['resolved']} resolved, "
+            f"{counts['newly_suppressed']} newly suppressed."
         )
         if diff.baseline_without_instances:
             typer.echo(
@@ -668,6 +681,15 @@ def analyze(
             )
             for t in new_high_titles:
                 typer.echo(f"  - {t}", err=True)
+            diff_exit_code = 1
+        if fail_on_new_suppression and diff.newly_suppressed:
+            typer.echo("", err=True)
+            typer.echo(
+                "Findings newly suppressed by this change (failing per --fail-on-new-suppression):",
+                err=True,
+            )
+            for s_ in diff.newly_suppressed:
+                typer.echo(f"  - [{s_.severity.upper()}] {s_.title}", err=True)
             diff_exit_code = 1
 
     if pr_comment is not None:

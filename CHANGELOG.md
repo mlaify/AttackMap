@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Inline `attackmap:ignore` is line-scoped (#224).** A directive used to suppress every finding in its file, so a comment about an MD5 checksum hid a HIGH unauthenticated-route finding in the same file, along with any routes added there later.
+  - A directive now covers only the instance on its own line or the line below. Partly covered findings stay active, with just that instance removed.
+  - The new `attackmap:ignore-file[rule]` is the explicit file-wide form.
+  - A bare `attackmap:ignore` with no rule list is warned about.
+  - **Behavior change:** existing directives placed away from the flagged line, or on line-less plugin findings, need to move to the flagged line or switch to `ignore-file`.
+- **Newly suppressed findings are not "resolved" (#224).** In a baseline diff, a finding that was active in the baseline and is suppressed now is reported as *newly suppressed*, in the CLI summary, diff Markdown and PR comment. Before, a PR adding its own suppression made a HIGH finding look fixed. The new `--fail-on-new-suppression` flag gates on it.
 - **SARIF identity and locations (#230).**
   - **One result per finding instance.** Each result has a single primary location, and the sink comes first for taint findings.
   - **Stable alert identity.** `partialFingerprints` is now `attackmapInstance/v1`, a hash of the rule id and the #222 instance fingerprint. It used to be raw evidence text, so Code Scanning closed and reopened alerts, losing dismissals, whenever a sibling appeared or a snippet changed. Evidence moved to `properties.evidence`.

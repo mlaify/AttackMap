@@ -40,13 +40,19 @@ synonym for ``*``.
 API_KEY = "…"  # attackmap:ignore[hardcoded-secret] rotated, staging only
 ```
 
-A directive in file ``X`` contributes a path selector for ``X`` (optionally
-scoped to the bracketed rule; a bare ``attackmap:ignore`` matches any rule).
-Because findings aggregate every site of an issue-type, an inline directive
-suppresses a finding only when *all* of the finding's cited files carry a
-matching directive (or are covered by a baseline path glob). For a
-single-file finding one directive is enough; a multi-file finding needs the
-directive in each cited file, or a baseline ``path`` entry.
+A directive covers only the finding **instance on its own line or the line
+below it** (#224) — put it at the end of the flagged line, or on its own line
+just above. Other findings in the same file, and instances added later, stay
+active. A finding with several instances is suppressed when every instance is
+covered; partly covered findings stay active with the covered instances
+removed. Name the rule (``attackmap rules`` lists ids); a bare
+``attackmap:ignore`` matches any rule on that line and is warned about.
+
+For file-wide scope use the explicit form:
+
+```python
+# attackmap:ignore-file[hardcoded-secret] fixture keys, never deployed
+```
 
 ## Semantics
 
@@ -89,7 +95,7 @@ SUPPRESS_FILENAMES = (".attackmap-suppress.yaml", ".attackmap-suppress.yml")
 # directive token, so it works across languages. Rule list is optional; a
 # bare `attackmap:ignore` matches any rule.
 INLINE_DIRECTIVE = re.compile(
-    r"attackmap:ignore(?:\[\s*([a-z0-9_.,\s-]*?)\s*\])?[ \t:-]*(.*?)\s*(?:\*/)?$",
+    r"attackmap:ignore(?:-file)?(?:\[\s*([a-z0-9_.,\s-]*?)\s*\])?[ \t:-]*(.*?)\s*(?:\*/)?$",
     re.IGNORECASE,
 )
 
@@ -108,6 +114,14 @@ def rule_slug(title: str) -> str:
     """
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return slug or "finding"
+
+
+def _instances(finding: Finding) -> list[tuple[str, int | None]]:
+    """``(file, line)`` per instance: structured locations (#214), else the
+    locations cited in evidence."""
+    if finding.locations:
+        return [(loc.file.replace("\\", "/"), loc.line) for loc in finding.locations]
+    return [(f.replace("\\", "/"), l) for f, l in evidence_locations(finding.evidence)]
 
 
 def _evidence_paths(finding: Finding) -> list[str]:
@@ -146,16 +160,21 @@ class Suppression:
     id: str | None = None
     rule: str | None = None
     path: str | None = None
+    # Inline directives (#224) cover only the instance on their own line or
+    # the line below; `attackmap:ignore-file` (and suppress-file `path:`
+    # entries) leave this None and cover the whole file.
+    line: int | None = None
     origin: str = "file"  # "file" | "inline"
     source: str = ""  # human-readable declaration site
 
     def label(self) -> str:
+        where = f"{self.path}:{self.line}" if self.line is not None else self.path
         if self.id:
             sel = f"id={self.id}"
         elif self.path and self.rule:
-            sel = f"rule={self.rule} path={self.path}"
+            sel = f"rule={self.rule} path={where}"
         elif self.path:
-            sel = f"path={self.path}"
+            sel = f"path={where}"
         else:
             sel = f"rule={self.rule}"
         return f"{sel} ({self.origin})"
@@ -219,6 +238,9 @@ class SuppressionSet:
         self._used.update(id(s) for s in hits)
         return hits
 
+    def mark_used(self, sups) -> None:  # type: ignore[no-untyped-def]
+        self._used.update(id(s) for s in sups)
+
     def unused(self) -> list[Suppression]:
         """Entries that matched no finding in this run (#223)."""
         return [s for s in self._all if id(s) not in self._used]
@@ -249,23 +271,36 @@ class SuppressionSet:
         if rule_hits:
             return rule_hits
 
-        # Path coverage: the finding is suppressed only if EVERY file it cites
-        # is covered by a rule-compatible path selector. A finding with no
-        # citable path can never be path-suppressed (only by id/rule).
+        # Path coverage: the finding is suppressed only if EVERY instance it
+        # covers is covered — by a path glob / `ignore-file` directive for its
+        # file, or by a line-scoped inline directive on its line (or the line
+        # above it, #224). A finding with no citable location can never be
+        # path-suppressed (only by id/rule).
+        coverage = self.instance_coverage(finding)
+        if not coverage or any(c is None for c in coverage):
+            return []
+        return list(dict.fromkeys(coverage))  # type: ignore[arg-type]
+
+    def instance_coverage(self, finding: Finding) -> list[Suppression | None]:
+        """Per instance of ``finding``, the path/inline suppression covering
+        it (or None). Empty when the finding has no citable location."""
         candidates = [s for s in self._path if self._rule_ok(s.rule, finding)]
-        if not candidates:
-            return []
-        paths = _evidence_paths(finding)
-        if not paths:
-            return []
-        contributing: list[Suppression] = []
-        for path in paths:
-            covering = next((s for s in candidates if _glob_match(path, s.path or "")), None)
-            if covering is None:
-                return []  # a cited file is outside every glob → keep finding
-            if covering not in contributing:
-                contributing.append(covering)
-        return contributing
+        instances = _instances(finding)
+        if not candidates or not instances:
+            return [None] * len(instances)
+        out: list[Suppression | None] = []
+        for file, line in instances:
+            covering = None
+            for sup in candidates:
+                if sup.line is not None:
+                    if file == sup.path and line is not None and line in (sup.line, sup.line + 1):
+                        covering = sup
+                        break
+                elif _glob_match(file, sup.path or ""):
+                    covering = sup
+                    break
+            out.append(covering)
+        return out
 
 
 def apply_suppressions(
@@ -275,6 +310,15 @@ def apply_suppressions(
     suppressed: list[SuppressedFinding] = []
     for finding in findings:
         matched = suppset.match(finding)
+        if not matched:
+            # Instance-level inline directives (#224): drop just the covered
+            # locations and keep the finding active for the rest.
+            coverage = suppset.instance_coverage(finding)
+            if finding.locations and len(coverage) == len(finding.locations) and any(coverage):
+                suppset.mark_used(c for c in coverage if c is not None)
+                finding = finding.model_copy(
+                    update={"locations": [loc for loc, c in zip(finding.locations, coverage) if c is None]}
+                )
         if matched:
             suppressed.append(
                 SuppressedFinding(
@@ -390,7 +434,9 @@ def load_suppress_file(
     return []
 
 
-def scan_inline_suppressions(root: Path, findings: list[Finding]) -> list[Suppression]:
+def scan_inline_suppressions(
+    root: Path, findings: list[Finding], warnings: list[str] | None = None
+) -> list[Suppression]:
     """Scan the files cited by ``findings`` for inline ``attackmap:ignore``
     directives. Only cited files are read — this is both efficient and
     inherently scoped to what could actually be suppressed.
@@ -418,21 +464,24 @@ def scan_inline_suppressions(root: Path, findings: list[Finding]) -> list[Suppre
                 continue
             rules_raw, reason = match.group(1), (match.group(2) or "").strip()
             source = f"{rel}:{lineno}"
+            file_wide = "attackmap:ignore-file" in line.lower()
+            scope_line = None if file_wide else lineno
             rule_tokens = [r.strip() for r in (rules_raw or "").split(",") if r.strip()]
-            if rule_tokens:
-                for token in rule_tokens:
-                    suppressions.append(
-                        Suppression(
-                            reason=reason,
-                            rule=token,
-                            path=rel,
-                            origin="inline",
-                            source=source,
-                        )
-                    )
-            else:
+            if not rule_tokens and warnings is not None:
+                warnings.append(
+                    f"bare attackmap:ignore{'-file' if file_wide else ''} at {source} matches every rule; "
+                    "name the rule (attackmap:ignore[rule-id]) — see `attackmap rules`"
+                )
+            for token in rule_tokens or [None]:
                 suppressions.append(
-                    Suppression(reason=reason, path=rel, origin="inline", source=source)
+                    Suppression(
+                        reason=reason,
+                        rule=token,
+                        path=rel,
+                        line=scope_line,
+                        origin="inline",
+                        source=source,
+                    )
                 )
     return suppressions
 
@@ -448,5 +497,5 @@ def collect_suppressions(
     warnings: list[str] = []
     suppressions = load_suppress_file(root, warnings, explicit=explicit_file)
     if enable_inline:
-        suppressions.extend(scan_inline_suppressions(root, findings))
+        suppressions.extend(scan_inline_suppressions(root, findings, warnings))
     return SuppressionSet(suppressions), warnings
