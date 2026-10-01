@@ -17,6 +17,16 @@ from attackmap.report import write_reports
 
 runner = CliRunner()
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _norm(output: str) -> str:
+    """Strip ANSI + Rich panel borders and collapse whitespace so error text
+    matches regardless of terminal width/colour (as in test_fleet.py)."""
+    text = _ANSI.sub("", output)
+    text = re.sub(r"[│╭╮╰╯─]", " ", text)
+    return " ".join(text.split())
+
 _APP = (
     "from flask import Flask, request\n"
     "app = Flask(__name__)\n\n"
@@ -103,7 +113,7 @@ def test_cli_format_markdown_writes_only_human_readable(tmp_path: Path) -> None:
 def test_cli_rejects_unknown_format(tmp_path: Path) -> None:
     result = runner.invoke(app, ["analyze", str(_repo(tmp_path, "solo")), "--format", "html"])
     assert result.exit_code != 0
-    assert "--format" in result.output
+    assert "--format must be one of: all, markdown, json" in _norm(result.output)
 
 
 def test_fleet_format_json_skips_markdown_summaries(tmp_path: Path) -> None:
