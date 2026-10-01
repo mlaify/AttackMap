@@ -1,3 +1,4 @@
+import re
 import json
 
 from attackmap.models import AttackPath, AttackSurface, Finding, Route, ScanResult
@@ -76,7 +77,15 @@ def test_rendered_user_prompt_includes_evidence_pack() -> None:
 
     assert "Evidence pack (JSON):" in user_prompt
     assert rendered.system
-    assert rendered.user == user_prompt
+    # The rendered prompt fences the evidence pack in nonce markers (#233);
+    # with the fence removed it is the plain user prompt.
+    fence = re.search(r"<<UNTRUSTED-([0-9a-f]{16})>>\n", rendered.user)
+    assert fence is not None
+    nonce = fence.group(1)
+    assert f"<<END-UNTRUSTED-{nonce}>>" in rendered.user
+    assert f"<<UNTRUSTED-{nonce}>>" in rendered.system
+    unfenced = rendered.user.replace(fence.group(0), "").replace(f"\n<<END-UNTRUSTED-{nonce}>>", "")
+    assert unfenced == user_prompt
 
     payload = json.loads(rendered.evidence_json)
     assert payload["evidence_counts"]["observed_runtime_public"] == 1

@@ -162,6 +162,55 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
 )
 
 
+# Text aimed at an automated reviewer (#233). Unlike the patterns above these
+# live in comments and strings by design, so they skip the comment filter.
+PROMPT_INJECTION_RE = re.compile(
+    r"\bignore\s+(?:all\s+|any\s+)?(?:the\s+)?(?:previous|prior|above|earlier)\s+(?:instructions|prompts?|rules|context)"
+    r"|\b(?:note|message|instructions?)\s+(?:to|for)\s+(?:the\s+|any\s+|all\s+)?(?:ai|llm|gpt|chatgpt|claude|copilot|codex|assistant|language\s+model)s?\b"
+    # Addressing form only — the reviewer noun followed by a colon or comma,
+    # as in a salutation. Merely mentioning AI review in a comment is common.
+    r"|\b(?:ai|llm)\s+(?:code\s+|security\s+)?(?:reviewers?|auditors?|scanners?|agents?)\s*[:,]"
+    r"|\bmark\s+(?:this|these|it|every|all|each)\b[^\n]{0,60}?\b(?:refuted|false[\s-]positive|not\s+vulnerable)\b"
+    r"|\bdo\s+not\s+(?:report|flag|mention)\b[^\n]{0,40}?\b(?:this|vulnerabilit\w*|issues?|findings?|backdoor)\b"
+    r"|<\|im_(?:start|end)\|>|\[/?INST\]|<</?SYS>>"
+    r"|[\u202a-\u202e\u2066-\u2069\u200b\u200c\u2060]",
+    re.IGNORECASE,
+)
+
+
+_INVISIBLE_RE = re.compile(r"[\u202a-\u202e\u2066-\u2069\u200b\u200c\u2060]")
+
+
+def _injection_evidence(matched: str) -> str:
+    if _INVISIBLE_RE.search(matched):
+        return "invisible/bidirectional Unicode control character " + matched.encode("unicode_escape").decode("ascii")
+    return "text addressed to automated reviewers (content withheld; open the line to review it)"
+
+
+def find_prompt_injection(content: str, rel_file: str) -> list[CodeWeakness]:
+    """Lines carrying text aimed at an automated reviewer, one weakness per line."""
+    out: list[CodeWeakness] = []
+    seen: set[int] = set()
+    for match in PROMPT_INJECTION_RE.finditer(content):
+        line = content.count("\n", 0, match.start()) + 1
+        if line in seen:
+            continue
+        seen.add(line)
+        out.append(
+            CodeWeakness(
+                kind="prompt_injection_attempt",
+                file=rel_file,
+                line=line,
+                # Never echo the injected text itself: evidence flows into LLM
+                # passes. Invisible/bidi characters are shown escaped.
+                evidence_text=_injection_evidence(match.group(0)),
+                severity="low",
+                source_analyzer="weaknesses",
+            )
+        )
+    return out
+
+
 def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
     """Return novel-class weaknesses in one file's ``content`` (deduped by
     (kind, line))."""
@@ -186,6 +235,7 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
                     source_analyzer="weaknesses",
                 )
             )
+    out.extend(find_prompt_injection(content, rel_file))
     return out
 
 
@@ -206,4 +256,4 @@ def _snippet(content: str, offset: int, radius: int = 120) -> str:
     return line[:radius] + ("…" if len(line) > radius else "")
 
 
-__all__ = ["find_code_weaknesses"]
+__all__ = ["PROMPT_INJECTION_RE", "find_code_weaknesses", "find_prompt_injection"]

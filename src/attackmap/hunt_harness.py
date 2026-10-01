@@ -25,7 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from .review_prompts import HYPOTHESIS_MARKER
+from .review_prompts import HYPOTHESIS_MARKER, VERDICT_MARKER, _code_excerpts
 
 Verdict = Literal["confirmed", "refuted", "needs_review"]
 
@@ -55,11 +55,13 @@ class Consensus:
 _HYP_LINE_RE = re.compile(r"^\s*(H\d+)\s*[:.\-]\s*(.+?)\s*$", re.MULTILINE)
 # `VERDICT H1: CONFIRMED — reason` lines from each skeptic pass. Tolerant of
 # spacing, the id in brackets, and NEEDS REVIEW / NEEDS-REVIEW spelling.
+# Anchored to the start of a line (#233): a VERDICT phrase quoted mid-line —
+# e.g. from a repo comment echoed by the model — is not a vote.
 _VERDICT_RE = re.compile(
-    r"VERDICT\s*\[?\s*(H\d+)\s*\]?\s*[:\-]\s*"
+    r"^[ \t>*-]*VERDICT\s*\[?\s*(H\d+)\s*\]?\s*[:\-]\s*"
     r"(CONFIRMED|REFUTED|NEEDS[ _\-]?REVIEW)\b"
-    r"\s*(?:[—:\-]\s*(.*))?",
-    re.IGNORECASE,
+    r"[ \t]*(?:[—:\-][ \t]*(.*))?",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 _VERDICT_NORMALIZE = {
@@ -165,17 +167,64 @@ def dedupe_hypotheses(passes: list[list[Hypothesis]]) -> list[Hypothesis]:
     return [replace(h, id=f"H{i + 1}") for i, h in enumerate(kept)]
 
 
-def parse_verdicts(markdown: str) -> dict[str, tuple[Verdict, str]]:
-    """Parse ``VERDICT H<n>: <verdict> — <reason>`` lines from one skeptic pass."""
+def parse_verdicts(
+    markdown: str, allowed_ids: set[str] | None = None
+) -> dict[str, tuple[Verdict, str]]:
+    """Parse ``VERDICT H<n>: <verdict> — <reason>`` lines from one skeptic pass.
+
+    Hardened against prompt injection (#233): when the output contains the
+    ``=== VERDICTS ===`` marker only the block after its last occurrence is
+    read; verdicts must start a line; and with ``allowed_ids`` any id that
+    isn't in the hypothesis list is ignored.
+    """
+    idx = markdown.rfind(VERDICT_MARKER)
+    region = markdown[idx + len(VERDICT_MARKER):] if idx != -1 else markdown
     out: dict[str, tuple[Verdict, str]] = {}
-    for match in _VERDICT_RE.finditer(markdown):
+    for match in _VERDICT_RE.finditer(region):
         hid = match.group(1).upper()
+        if allowed_ids is not None and hid not in allowed_ids:
+            continue
         raw = re.sub(r"[ \-]", "_", match.group(2).upper())
         verdict = _VERDICT_NORMALIZE.get(raw)
         if verdict is None:
             continue
         reason = (match.group(3) or "").strip()
         out[hid] = (verdict, reason)  # last line for an id wins
+    return out
+
+
+def _citation_tokens(hypothesis: Hypothesis, excerpt_keys: list[str]) -> set[str]:
+    tokens = {key.lower() for key in excerpt_keys}
+    tokens |= {key.rsplit(":", 1)[0].lower() for key in excerpt_keys}  # bare file path
+    tokens |= {key.rsplit(":", 1)[0].rsplit("/", 1)[-1].lower() for key in excerpt_keys}  # basename
+    tokens |= {t.strip().lower() for t in re.split(r"[,\s]+", hypothesis.evidence or "") if t.strip()}
+    return {t for t in tokens if t}
+
+
+def enforce_citations(
+    verdicts: dict[str, tuple[Verdict, str]],
+    hypotheses: list[Hypothesis],
+    excerpt_keys: list[str],
+) -> dict[str, tuple[Verdict, str]]:
+    """Downgrade CONFIRMED/REFUTED votes that cite nothing to NEEDS_REVIEW (#233).
+
+    A skeptic that was steered by injected text (a planted note asking for a
+    refutation) typically can't point at code that supports its verdict. Only
+    enforced when excerpts were provided — without them there is nothing to
+    cite.
+    """
+    if not excerpt_keys:
+        return verdicts
+    by_id = {h.id: h for h in hypotheses}
+    out: dict[str, tuple[Verdict, str]] = {}
+    for hid, (verdict, reason) in verdicts.items():
+        hyp = by_id.get(hid)
+        if verdict != "needs_review" and hyp is not None:
+            lowered = reason.lower()
+            if not any(token in lowered for token in _citation_tokens(hyp, excerpt_keys)):
+                out[hid] = ("needs_review", f"uncited {verdict} verdict: {reason}".strip())
+                continue
+        out[hid] = (verdict, reason)
     return out
 
 
@@ -431,11 +480,16 @@ def run_majority_verify(
         )
 
     hyp_dicts = [{"id": h.id, "title": h.title, "evidence": h.evidence} for h in hypotheses]
+    allowed_ids = {h.id for h in hypotheses}
+    # The same excerpts the skeptic prompt carries; verdicts must cite one.
+    excerpt_keys = list(_code_excerpts(scan, findings)) if scan is not None else []
     per_pass: list[dict[str, tuple[Verdict, str]]] = []
     for _ in range(votes):
         sk = llm_call("hunt_skeptic", hypotheses=hyp_dicts)
         _account(usage_total, sk)
-        per_pass.append(parse_verdicts(sk.markdown))
+        per_pass.append(
+            enforce_citations(parse_verdicts(sk.markdown, allowed_ids), hypotheses, excerpt_keys)
+        )
 
     consensus = combine_verdicts(hypotheses, per_pass)
     report = render_consensus_report(consensus, votes)
