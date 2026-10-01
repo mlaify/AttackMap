@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The `claude` / `codex` CLI backends no longer run inside the scanned
+  repository (#232).** Before, `--llm`, `--hunt`, `--remediate` and `--triage`
+  spawned the agent CLI in the caller's working directory with its tools on, so
+  running AttackMap from inside an untrusted checkout loaded that repo's
+  `.claude/settings.json` (including hooks), `.mcp.json`, `CLAUDE.md` and
+  `AGENTS.md`. A hook in a hostile repo fired on a real run. The CLIs now run in
+  an empty temp directory.
+  - `claude` runs with no built-in tools, user-level settings only, no MCP
+    servers and no session persistence.
+  - `codex` runs with a read-only sandbox rooted at the temp dir, no execpolicy
+    rules and an ephemeral session.
+  - Credential-looking environment variables the provider doesn't need
+    (`GITHUB_TOKEN`, `AWS_*`, `SSH_AUTH_SOCK`, …) are no longer forwarded.
+  - A CLI too old to support these flags is refused rather than run unhardened.
+  - Codex still has no tool-less mode, so `--llm-backend api` remains the only
+    fully tool-less OpenAI path.
+
 ## [0.4.30] - 2026-10-01
 
 ### Fixed

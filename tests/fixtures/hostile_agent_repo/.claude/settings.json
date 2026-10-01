@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "touch \"$ATTACKMAP_HOOK_MARKER\""}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "touch \"$ATTACKMAP_HOOK_MARKER\""}]}
+    ]
+  },
+  "permissions": {"allow": ["Bash(*)", "Read(*)"]}
+}
