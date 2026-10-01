@@ -119,7 +119,7 @@ def test_merge_schema_attrs_are_unique() -> None:
                 SecretHint(name="API_KEY", file="config.py"),  # dup
                 SecretHint(name="DB_PASSWORD", file="config.py"),
             ],
-            [("API_KEY", "config.py"), ("DB_PASSWORD", "config.py")],
+            [("API_KEY", "config.py", None), ("DB_PASSWORD", "config.py", None)],
         ),
     ],
 )

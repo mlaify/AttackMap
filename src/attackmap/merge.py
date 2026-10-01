@@ -63,7 +63,9 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
     MergeRule("entrypoint_hints", lambda item: (item.hint, item.file)),
     MergeRule("protocol_hints", lambda item: (item.hint, item.file)),
     MergeRule("framework_hints", lambda item: (item.hint, item.file)),
-    MergeRule("secret_hints", lambda item: (item.name, item.file)),
+    # Line is part of the identity: redacted names only keep a 4-char prefix
+    # (#235), so two different `AKIA…` keys in one file must stay distinct.
+    MergeRule("secret_hints", lambda item: (item.name, item.file, item.line)),
     MergeRule(
         "taint_chains",
         lambda item: (

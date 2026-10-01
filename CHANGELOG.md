@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Credentials are redacted from every evidence string (#235).** Before this, only the one literal a secret detector matched was masked, and only in `SecretHint`. Other evidence copied the raw line into `attackmap-report.json`, SARIF, PR comments and the LLM pack. That included:
+  - DB connection-string passwords
+  - `?api_key=` URLs
+  - `Bearer` tokens
+  - a second secret on the same line
+  - config-file `password:` values
+
+  The new `attackmap.redact.redact_text` now runs on every evidence field when the model is built, so plugin output is covered too. It also runs on source excerpts before they go into an LLM prompt. It masks provider-shaped tokens, URI userinfo passwords, credential-named query params and keys, and high-entropy literals, while leaving references like `os.environ[...]` and `settings.SECRET_KEY` alone. Masked secrets now show at most their first 4 characters (`AKIA…`); before, the last 4 characters were shown as well. Config secrets on line 2 or later used to be reported one line early; that is fixed.
 - **The `claude` / `codex` CLI backends no longer run inside the scanned
   repository (#232).** Before, `--llm`, `--hunt`, `--remediate` and `--triage`
   spawned the agent CLI in the caller's working directory with its tools on, so

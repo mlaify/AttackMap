@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .progress import ScanProgress
 
+from .redact import mask_secret
 from .safe_fs import walk_repo
 from .anomalies import find_anomalies
 from .authz import analyze_authz
@@ -371,7 +372,8 @@ def _redacted_snippet(
 ) -> str:
     """Line snippet with the matched secret masked in place. Evidence text
     is serialized into report.json, so the raw credential must never survive
-    into it — only the redacted head/tail form does."""
+    into it. (Every other credential on the line is masked too, by the
+    evidence redaction in ``models`` — #235.)"""
     snippet = _line_snippet(content, offset)
     if redact and literal in snippet:
         snippet = snippet.replace(literal, _redact_secret(literal))
@@ -823,11 +825,8 @@ def scan_repo(
 
 
 def _redact_secret(value: str) -> str:
-    """Show first 4 and last 4 characters of a secret literal, mask the
-    middle. Never emit the raw value to reports."""
-    if len(value) <= 8:
-        return "…"
-    return f"{value[:4]}…{value[-4:]}"
+    """Display form of a secret: at most its first 4 characters (#235)."""
+    return mask_secret(value)
 
 
 def _shannon_entropy(value: str) -> float:
