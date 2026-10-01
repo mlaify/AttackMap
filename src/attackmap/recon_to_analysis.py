@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from .fingerprint import assign_fingerprints
 from .analyzer import identify_attack_surfaces
 from .models import AttackPath, AttackSurface, AuthHint, Finding, ScanResult
 from .threat_model import generate_attack_paths, generate_findings
@@ -90,8 +91,12 @@ def to_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = 
     """Translate recon signals (and optional surfaces) into conservative findings."""
     auth_filtered_scan = _auth_filtered_scan(scan)
     if attack_surfaces is not None:
-        return generate_findings(auth_filtered_scan, attack_surfaces)
-    return generate_findings(auth_filtered_scan)
+        findings = generate_findings(auth_filtered_scan, attack_surfaces)
+    else:
+        findings = generate_findings(auth_filtered_scan)
+    # Per-instance identity for baseline diffs (#222).
+    assign_fingerprints(findings, scan.root)
+    return findings
 
 
 def to_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> list[AttackPath]:

@@ -532,6 +532,9 @@ class FindingLocation(BaseModel):
 
     file: str
     line: int | None = None
+    # Instance identity across runs (#222): rule + file + normalized source
+    # line, without the line number. Set by `fingerprint.assign_fingerprints`.
+    fingerprint: str | None = None
 
 
 class Finding(_RedactedEvidence):

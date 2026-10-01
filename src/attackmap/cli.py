@@ -643,13 +643,24 @@ def analyze(
         typer.echo("")
         typer.echo(
             f"Diff vs baseline: {counts['new']} new, "
+            f"{counts['new_instances']} new instance(s) of existing findings, "
             f"{counts['persisted']} persisted, {counts['resolved']} resolved."
         )
+        if diff.baseline_without_instances:
+            typer.echo(
+                "Note: the baseline predates per-instance fingerprints (attackmap < 0.4.32); "
+                "new instances of existing findings can't be detected until it is regenerated.",
+                err=True,
+            )
         diff_path = Path(diff_output) if diff_output else Path(output) / "attackmap-diff.md"
         _write_text(diff_path, render_diff_markdown(diff))
         typer.echo(f"Diff written to: {diff_path.resolve()}")
         if fail_on_new_high and diff.has_new_high:
-            new_high_titles = [s.title for s in diff.new if s.severity == "high"]
+            new_high_titles = [s.title for s in diff.new if s.severity == "high"] + [
+                f"{s.title} (new instance(s): {', '.join(labels[:5])})"
+                for s, labels in diff.new_instances
+                if s.severity == "high"
+            ]
             typer.echo("", err=True)
             typer.echo(
                 "New HIGH findings introduced (failing per --fail-on-new-high):",

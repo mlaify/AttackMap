@@ -60,6 +60,9 @@ class FindingSnapshot:
     confidence: str
     tags: tuple[str, ...] = ()
     evidence: tuple[str, ...] = ()
+    # Per-instance identity (#222): fingerprint -> "file:line" label. Empty for
+    # findings without fingerprinted locations (e.g. pre-0.4.32 baselines).
+    instances: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_finding(cls, f: Finding) -> "FindingSnapshot":
@@ -70,11 +73,21 @@ class FindingSnapshot:
             confidence=f.confidence,
             tags=tuple(f.tags),
             evidence=tuple(f.evidence),
+            instances=tuple(
+                (loc.fingerprint, f"{loc.file}:{loc.line}" if loc.line else loc.file)
+                for loc in f.locations
+                if loc.fingerprint
+            ),
         )
 
     @classmethod
     def from_dump(cls, d: dict[str, Any]) -> "FindingSnapshot":
         title = str(d.get("title", ""))
+        instances = []
+        for loc in d.get("locations") or ():
+            if isinstance(loc, dict) and loc.get("fingerprint"):
+                label = f"{loc.get('file')}:{loc['line']}" if loc.get("line") else str(loc.get("file"))
+                instances.append((str(loc["fingerprint"]), label))
         return cls(
             id=finding_id(title),
             title=title,
@@ -82,6 +95,7 @@ class FindingSnapshot:
             confidence=str(d.get("confidence", "medium")),
             tags=tuple(d.get("tags") or ()),
             evidence=tuple(d.get("evidence") or ()),
+            instances=tuple(instances),
         )
 
 
@@ -90,29 +104,48 @@ class DiffReport:
     new: list[FindingSnapshot] = field(default_factory=list)
     persisted: list[FindingSnapshot] = field(default_factory=list)
     resolved: list[FindingSnapshot] = field(default_factory=list)
+    # Persisted findings that gained instances the baseline didn't have (#222):
+    # (finding, labels of the new instances).
+    new_instances: list[tuple[FindingSnapshot, list[str]]] = field(default_factory=list)
+    # True when the baseline predates fingerprints, so only whole new
+    # findings (not new instances) could be detected.
+    baseline_without_instances: bool = False
 
     @property
     def has_new_high(self) -> bool:
-        return any(s.severity == "high" for s in self.new)
+        return any(s.severity == "high" for s in self.new) or any(
+            s.severity == "high" for s, _ in self.new_instances
+        )
 
     def counts(self) -> dict[str, int]:
         return {
             "new": len(self.new),
             "persisted": len(self.persisted),
             "resolved": len(self.resolved),
+            "new_instances": sum(len(labels) for _, labels in self.new_instances),
         }
 
 
 def diff_findings(
     baseline: list[FindingSnapshot], current: list[FindingSnapshot]
 ) -> DiffReport:
-    base_ids = {s.id for s in baseline}
+    base_by_id = {s.id: s for s in baseline}
     cur_ids = {s.id for s in current}
-    return DiffReport(
-        new=[s for s in current if s.id not in base_ids],
-        persisted=[s for s in current if s.id in base_ids],
+    report = DiffReport(
+        new=[s for s in current if s.id not in base_by_id],
+        persisted=[s for s in current if s.id in base_by_id],
         resolved=[s for s in baseline if s.id not in cur_ids],
     )
+    report.baseline_without_instances = bool(baseline) and not any(s.instances for s in baseline)
+    for snap in report.persisted:
+        base = base_by_id[snap.id]
+        if not base.instances or not snap.instances:
+            continue  # nothing to compare at instance level
+        known = {fp for fp, _ in base.instances}
+        added = [label for fp, label in snap.instances if fp not in known]
+        if added:
+            report.new_instances.append((snap, added))
+    return report
 
 
 def load_baseline(path: str | Path) -> list[FindingSnapshot]:
@@ -150,11 +183,23 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
                 lines.append(f"  - _e.g._ {md_code(s.evidence[0])}")
         return "\n".join(lines)
 
+    def _instance_bullets() -> str:
+        if not diff.new_instances:
+            return "_none_"
+        lines = []
+        for snap, labels in sorted(diff.new_instances, key=lambda t: (_SEVERITY_RANK.get(t[0].severity, 3), t[0].title)):
+            lines.append(f"- **[{snap.severity.upper()}]** {md_text(snap.title)} — {len(labels)} new instance(s)")
+            lines.extend(f"  - {md_code(label)}" for label in labels[:10])
+            if len(labels) > 10:
+                lines.append(f"  - +{len(labels) - 10} more")
+        return "\n".join(lines)
+
     parts = [
         f"# {title}",
         "",
         (
             f"**{counts['new']} new** · "
+            f"**{counts['new_instances']} new instance(s) of existing findings** · "
             f"**{counts['persisted']} persisted** · "
             f"**{counts['resolved']} resolved**"
         ),
@@ -162,12 +207,21 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
         "## New findings",
         _bullets(diff.new),
         "",
+        "## New instances of existing findings",
+        _instance_bullets(),
+        "",
         "## Resolved findings",
         _bullets(diff.resolved),
         "",
         "## Persisted findings",
         _bullets(diff.persisted),
     ]
+    if diff.baseline_without_instances:
+        parts += [
+            "",
+            "_The baseline predates per-instance fingerprints, so new instances of "
+            "existing findings can't be detected until it is regenerated._",
+        ]
     return "\n".join(parts) + "\n"
 
 

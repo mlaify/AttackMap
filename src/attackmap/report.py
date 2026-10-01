@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .md import md_text
+from .md import md_code, md_text
 from .context_pack import build_review_context_pack
 from .diagrams import (
     render_attack_paths_dot,
@@ -174,12 +174,24 @@ def render_pr_comment(findings: list[Finding], diff: object | None = None) -> st
 
     if diff is not None:
         gate = "⚠️ introduces new HIGH-severity findings" if getattr(diff, "has_new_high", False) else "no new HIGH findings"
-        lines.append(f"**{len(new)} new**, **{len(resolved)} resolved** vs. baseline — {gate}.")
+        new_instances = list(getattr(diff, "new_instances", []) or [])
+        instance_total = sum(len(labels) for _, labels in new_instances)
+        lines.append(
+            f"**{len(new)} new**, **{instance_total} new instance(s) of existing findings**, "
+            f"**{len(resolved)} resolved** vs. baseline — {gate}."
+        )
         lines.append("")
         if new:
             lines.append("### New findings")
             for s in sorted(new, key=lambda s: sev_rank.get(s.severity, 3)):
                 lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
+            lines.append("")
+        if new_instances:
+            lines.append("### New instances of existing findings")
+            for s, labels in sorted(new_instances, key=lambda t: sev_rank.get(t[0].severity, 3)):
+                where = ", ".join(md_code(label) for label in labels[:5])
+                more = f" (+{len(labels) - 5} more)" if len(labels) > 5 else ""
+                lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}: {where}{more}")
             lines.append("")
     else:
         by_sev = {"high": 0, "medium": 0, "low": 0}
