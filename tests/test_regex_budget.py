@@ -17,23 +17,27 @@ import pytest
 
 import attackmap
 
-BUDGET_SECONDS = 0.1
-SIZE = 50_000
-PAYLOADS = {
-    "long_word": "a" * SIZE,
-    "long_word_mixed": ("Ab1_" * (SIZE // 4)),
-    "long_quote": '"' + "A" * SIZE,
-    "long_space": "x" + " " * SIZE + "=",
-    "nested_brackets": "(" * (SIZE // 2) + ")" * (SIZE // 2),
-    "dotted": "a." * (SIZE // 2),
-    "dashes": "a-" * (SIZE // 2),
-    "colons": "a:" * (SIZE // 2),
-    "slashes": "a/" * (SIZE // 2),
-    "equals_word": ("a" * 1000 + "=") * (SIZE // 1001),
-    "url_like": "https://" + "a" * SIZE,
-    "eyJ": "eyJ" + "a" * SIZE,
+# Quadratic backtracking is detected by *scaling*, not wall-clock alone, so
+# slow CI runners don't make this flaky: a pattern fails when 4x the input
+# costs >10x the time (linear ~4x, quadratic ~16x) and the large run is
+# non-trivial in absolute terms.
+SMALL, LARGE = 12_500, 50_000
+MIN_SECONDS = 0.05
+MAX_RATIO = 10.0
+SHAPES = {
+    "long_word": lambda n: "a" * n,
+    "long_word_mixed": lambda n: "Ab1_" * (n // 4),
+    "long_quote": lambda n: '"' + "A" * n,
+    "long_space": lambda n: "x" + " " * n + "=",
+    "nested_brackets": lambda n: "(" * (n // 2) + ")" * (n // 2),
+    "dotted": lambda n: "a." * (n // 2),
+    "dashes": lambda n: "a-" * (n // 2),
+    "colons": lambda n: "a:" * (n // 2),
+    "slashes": lambda n: "a/" * (n // 2),
+    "equals_word": lambda n: ("a" * 1000 + "=") * (n // 1001),
+    "url_like": lambda n: "https://" + "a" * n,
+    "eyJ": lambda n: "eyJ" + "a" * n,
 }
-
 
 def _collect(value, found, seen):
     if isinstance(value, re.Pattern):
@@ -66,15 +70,21 @@ def test_enumerates_a_meaningful_number_of_patterns() -> None:
     assert len(PATTERNS) > 150
 
 
+def _time(pattern: re.Pattern[str], payload: str) -> float:
+    start = time.perf_counter()
+    for _ in pattern.finditer(payload):
+        pass
+    return time.perf_counter() - start
+
+
 @pytest.mark.parametrize("name,pattern", PATTERNS, ids=[n for n, _ in PATTERNS])
-def test_pattern_within_budget(name: str, pattern: re.Pattern[str]) -> None:
+def test_pattern_scales_linearly(name: str, pattern: re.Pattern[str]) -> None:
     slow = []
-    for label, payload in PAYLOADS.items():
-        start = time.perf_counter()
-        for _ in pattern.finditer(payload):
-            if time.perf_counter() - start > BUDGET_SECONDS * 5:
-                break
-        elapsed = time.perf_counter() - start
-        if elapsed > BUDGET_SECONDS:
-            slow.append(f"{label}={elapsed:.2f}s")
-    assert not slow, f"{name} backtracks on hostile input: {', '.join(slow)}"
+    for label, make in SHAPES.items():
+        large = _time(pattern, make(LARGE))
+        if large < MIN_SECONDS:
+            continue
+        small = max(_time(pattern, make(SMALL)), 1e-4)
+        if large / small > MAX_RATIO:
+            slow.append(f"{label}: {small:.3f}s -> {large:.3f}s")
+    assert not slow, f"{name} scales super-linearly on hostile input: {'; '.join(slow)}"

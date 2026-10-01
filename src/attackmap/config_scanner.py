@@ -137,7 +137,10 @@ _URL_HOST_SKIP = re.compile(
 # Keys that mark a secret-bearing config field. Match on the KEY side of
 # a `key: value` / `key = value` pair.
 _SECRET_KEY_RE = re.compile(
-    r"(?:^|[\s\-,{\[])"                               # start-of-line or dict/list intro
+    # start-of-line or dict/list intro. (`-` is not a start char: YAML's
+    # `- key:` already starts at the space, and allowing it made every `-` in
+    # a long dashed token a new start — #236.)
+    r"(?:^|[\s,{\[])"
     r"['\"]?(?P<key>[a-zA-Z0-9_.-]{0,64}"             # optional key prefix (bounded, #236)
     r"(?:password|passwd|secret|token|api[_-]?key|priv[_-]?key|apikey))"
     r"['\"]?"

@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Files over 2 MB (`ATTACKMAP_MAX_FILE_BYTES` overrides this) are no longer read by the core scanner, taint index, config or workflow scanners. Each skipped file is listed in `scan.limitations`.
   - Ten core regexes backtracked quadratically on long tokens, and a single 200 KB line could hang a CI scan for over a minute. They are fixed: leading `\w+` captures now start only at a word or token boundary and use possessive quantifiers, and open-ended key prefixes are bounded. Affected patterns:
     - `FASTAPI_ROUTER_PATTERN`, `FASTAPI_INCLUDE_ROUTER_PATTERN`, `FLASK_BLUEPRINT_PATTERN`, `FLASK_REGISTER_BLUEPRINT_PATTERN`
-    - `authz._GRAPHQL_FIELD_RE`, `config_scanner._SECRET_KEY_RE`, `lockfiles._PNPM_PKG_KEY_RE`, `bench._LOC_RE`
+    - `authz._GRAPHQL_FIELD_RE`, `config_scanner._SECRET_KEY_RE` (no longer restarts at every `-`), `lockfiles._PNPM_PKG_KEY_RE`, `bench._LOC_RE`
     - two of the new redaction patterns
-  - A new test checks every module-level pattern in the package against 12 adversarial 50k-character payloads, with a 100 ms budget per pattern.
+  - A new test checks that every module-level pattern in the package scales linearly on 12 adversarial payload shapes, comparing 12.5k against 50k characters.
 - **Credentials are redacted from every evidence string (#235).** Before this, only the one literal a secret detector matched was masked, and only in `SecretHint`. Other evidence copied the raw line into `attackmap-report.json`, SARIF, PR comments and the LLM pack. That included:
   - DB connection-string passwords
   - `?api_key=` URLs
