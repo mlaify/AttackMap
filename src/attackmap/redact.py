@@ -67,18 +67,20 @@ _QUERY_WORDS = _CRED_WORDS + r"|sig|signature"
 
 # scheme://user:password@host  /  scheme://token@host
 _URI_USERINFO = re.compile(
-    r"(?P<prefix>\b[a-zA-Z][a-zA-Z0-9+.-]*://)(?P<user>[^\s:/@'\"]*)(?::(?P<password>[^\s/@'\"]+))?@"
+    r"(?P<prefix>\b[a-zA-Z][a-zA-Z0-9+.-]{0,31}://)(?P<user>[^\s:/@'\"]{0,256})(?::(?P<password>[^\s/@'\"]{1,256}))?@"
 )
 # ?api_key=… &token=… (query strings and form bodies)
 _QUERY_PARAM = re.compile(
-    rf"(?P<prefix>[?&;](?:[\w.-]*?(?:{_QUERY_WORDS})[\w.-]*)=)(?P<value>[^&#\s'\"]+)",
+    rf"(?P<prefix>[?&;](?:[\w.-]{{0,64}}?(?:{_QUERY_WORDS})[\w.-]{{0,64}})=)(?P<value>[^&#\s'\"]+)",
     re.IGNORECASE,
 )
 # Authorization: Bearer … / Basic … (a plain word after it is prose, not a token)
 _AUTH_SCHEME = re.compile(r"(?P<prefix>\b(?:Bearer|Basic)\s+)(?P<value>[A-Za-z0-9._~+/=-]{8,})")
 # key = "value" / key: 'value' / KEY=value — the value of a credential-named key.
 _KEY_ASSIGN = re.compile(
-    rf"(?P<prefix>['\"]?\b[\w.-]*?(?:{_CRED_WORDS})[\w.-]*['\"]?\s*(?::=|=>|[:=])\s*)"
+    # Starts only at a token boundary (not every `\b` inside `a.b-c`), and the
+    # key prefix/suffix are bounded, so hostile long tokens stay linear (#236).
+    rf"(?P<prefix>['\"]?(?<![\w.-])[\w.-]{{0,64}}?(?:{_CRED_WORDS})[\w.-]{{0,64}}['\"]?\s*(?::=|=>|[:=])\s*)"
     # A bare value directly followed by `(`, `[` or more identifier text is
     # code (`request.headers.get(...)`, `os.environ[...]`), not a literal.
     r"(?:(?P<q>['\"])(?P<qvalue>[^'\"\n]{4,}?)(?P=q)|(?P<bare>[^\s'\",;#()\[\]{}]{4,})(?![(\[.\w]))",
