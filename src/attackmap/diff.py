@@ -107,6 +107,9 @@ class DiffReport:
     # Persisted findings that gained instances the baseline didn't have (#222):
     # (finding, labels of the new instances).
     new_instances: list[tuple[FindingSnapshot, list[str]]] = field(default_factory=list)
+    # Active in the baseline, suppressed now (#224): not a fix, so not
+    # "resolved" — surfaced separately and optionally gated.
+    newly_suppressed: list[FindingSnapshot] = field(default_factory=list)
     # True when the baseline predates fingerprints, so only whole new
     # findings (not new instances) could be detected.
     baseline_without_instances: bool = False
@@ -123,18 +126,26 @@ class DiffReport:
             "persisted": len(self.persisted),
             "resolved": len(self.resolved),
             "new_instances": sum(len(labels) for _, labels in self.new_instances),
+            "newly_suppressed": len(self.newly_suppressed),
         }
 
 
 def diff_findings(
-    baseline: list[FindingSnapshot], current: list[FindingSnapshot]
+    baseline: list[FindingSnapshot],
+    current: list[FindingSnapshot],
+    suppressed: list[FindingSnapshot] | None = None,
 ) -> DiffReport:
+    """``suppressed``: findings suppressed in the current run. One that was
+    active in the baseline is *newly suppressed*, not resolved (#224)."""
     base_by_id = {s.id: s for s in baseline}
     cur_ids = {s.id for s in current}
+    suppressed_ids = {s.id for s in suppressed or []}
+    gone = [s for s in baseline if s.id not in cur_ids]
     report = DiffReport(
         new=[s for s in current if s.id not in base_by_id],
         persisted=[s for s in current if s.id in base_by_id],
-        resolved=[s for s in baseline if s.id not in cur_ids],
+        resolved=[s for s in gone if s.id not in suppressed_ids],
+        newly_suppressed=[s for s in gone if s.id in suppressed_ids],
     )
     report.baseline_without_instances = bool(baseline) and not any(s.instances for s in baseline)
     for snap in report.persisted:
@@ -201,7 +212,8 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
             f"**{counts['new']} new** · "
             f"**{counts['new_instances']} new instance(s) of existing findings** · "
             f"**{counts['persisted']} persisted** · "
-            f"**{counts['resolved']} resolved**"
+            f"**{counts['resolved']} resolved** · "
+            f"**{counts['newly_suppressed']} newly suppressed**"
         ),
         "",
         "## New findings",
@@ -212,6 +224,9 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
         "",
         "## Resolved findings",
         _bullets(diff.resolved),
+        "",
+        "## Newly suppressed findings",
+        _bullets(diff.newly_suppressed),
         "",
         "## Persisted findings",
         _bullets(diff.persisted),

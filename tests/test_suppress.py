@@ -199,13 +199,24 @@ def test_scan_inline_suppressions(tmp_path: Path) -> None:
         'API_KEY = "xxx"  # attackmap:ignore[hardcoded-secret-literals] staging key\n',
         encoding="utf-8",
     )
-    f = _finding("Hardcoded secret literals", evidence=["API_KEY in src/app.py"])
+    f = _finding("Hardcoded secret literals", evidence=["API_KEY in src/app.py:1"])
     sups = scan_inline_suppressions(tmp_path, [f])
     assert len(sups) == 1
     assert sups[0].rule == "hardcoded-secret-literals"
     assert sups[0].path == "src/app.py"
+    assert sups[0].line == 1  # line-scoped (#224)
     assert sups[0].origin == "inline"
     assert SuppressionSet(sups).match(f)
+    # A line-scoped directive can't cover an instance whose line is unknown;
+    # that needs the explicit file-wide form.
+    lineless = _finding("Hardcoded secret literals", evidence=["API_KEY in src/app.py"])
+    assert not SuppressionSet(sups).match(lineless)
+    (src / "app.py").write_text(
+        'API_KEY = "xxx"  # attackmap:ignore-file[hardcoded-secret-literals] staging key\n',
+        encoding="utf-8",
+    )
+    file_wide = scan_inline_suppressions(tmp_path, [lineless])
+    assert file_wide[0].line is None and SuppressionSet(file_wide).match(lineless)
 
 
 def test_inline_only_reads_cited_files(tmp_path: Path) -> None:

@@ -186,6 +186,13 @@ def render_pr_comment(findings: list[Finding], diff: object | None = None) -> st
             for s in sorted(new, key=lambda s: sev_rank.get(s.severity, 3)):
                 lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
             lines.append("")
+        newly_suppressed = list(getattr(diff, "newly_suppressed", []) or [])
+        if newly_suppressed:
+            lines.append("### Newly suppressed in this change")
+            lines.append("_Active in the baseline, silenced by a suppression added here — review the reason._")
+            for s in sorted(newly_suppressed, key=lambda s: sev_rank.get(s.severity, 3)):
+                lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
+            lines.append("")
         if new_instances:
             lines.append("### New instances of existing findings")
             for s, labels in sorted(new_instances, key=lambda t: sev_rank.get(t[0].severity, 3)):
