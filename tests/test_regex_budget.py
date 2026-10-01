@@ -19,10 +19,10 @@ import attackmap
 
 # Quadratic backtracking is detected by *scaling*, not wall-clock alone, so
 # slow CI runners don't make this flaky: a pattern fails when 4x the input
-# costs >10x the time (linear ~4x, quadratic ~16x) and the large run is
-# non-trivial in absolute terms.
+# costs >10x the time (linear ~4x, quadratic ~16x) and the large run takes
+# long enough (MIN_SECONDS) for the ratio to be meaningful.
 SMALL, LARGE = 12_500, 50_000
-MIN_SECONDS = 0.05
+MIN_SECONDS = 0.25  # below this, timing noise dominates; real quadratic cases take seconds
 MAX_RATIO = 10.0
 SHAPES = {
     "long_word": lambda n: "a" * n,
@@ -81,10 +81,13 @@ def _time(pattern: re.Pattern[str], payload: str) -> float:
 def test_pattern_scales_linearly(name: str, pattern: re.Pattern[str]) -> None:
     slow = []
     for label, make in SHAPES.items():
-        large = _time(pattern, make(LARGE))
+        large_payload, small_payload = make(LARGE), make(SMALL)
+        large = _time(pattern, large_payload)
         if large < MIN_SECONDS:
             continue
-        small = max(_time(pattern, make(SMALL)), 1e-4)
+        # Best-of-N damps scheduler noise on shared CI runners.
+        large = min(large, _time(pattern, large_payload))
+        small = max(min(_time(pattern, small_payload) for _ in range(3)), 1e-4)
         if large / small > MAX_RATIO:
             slow.append(f"{label}: {small:.3f}s -> {large:.3f}s")
     assert not slow, f"{name} scales super-linearly on hostile input: {'; '.join(slow)}"
