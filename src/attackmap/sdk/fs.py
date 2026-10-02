@@ -128,8 +128,13 @@ def line_of(content: str, offset: int) -> int:
 
 
 def line_snippet(content: str, line: int, max_len: int = 200) -> str:
-    """The stripped text of 1-indexed ``line``, truncated to ``max_len``."""
-    lines = content.splitlines()
+    """The stripped text of 1-indexed ``line``, truncated to ``max_len``.
+
+    Lines are split on ``\n`` only, matching :func:`line_of`; ``str.splitlines``
+    would also break on form feeds and other separators common in legacy C and
+    put the snippet on the wrong line.
+    """
+    lines = content.split("\n")
     if line < 1 or line > len(lines):
         return ""
     text = lines[line - 1].strip()
