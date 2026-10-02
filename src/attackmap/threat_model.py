@@ -207,6 +207,10 @@ class AtprotoChain:
     env_risk: str | None = None
 
 
+# SecretHint kinds that name a secret without containing its value.
+NON_LITERAL_SECRET_KINDS = frozenset({"env_reference", "env_template"})
+
+
 def _extract_prefixed_hints(scan: ScanResult, prefix: str) -> list[tuple[str, str]]:
     grouped_hints: list[tuple[str, str]] = []
     for hint in scan.auth_hints:
@@ -1260,8 +1264,11 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     # severity — exposure is broader than env references (visible to
     # anyone with repo read access, not just runtime access) — and their
     # own tags so downstream triage and reporting can distinguish them.
-    hardcoded_secrets = [h for h in scan.secret_hints if h.kind != "env_reference"]
-    env_reference_secrets = [h for h in scan.secret_hints if h.kind == "env_reference"]
+    # `env_template` is a variable *declared* in a template such as
+    # `.env.example` (iac plugin): a name, not a value, so it belongs with the
+    # env references rather than the HIGH hard-coded-literal finding.
+    hardcoded_secrets = [h for h in scan.secret_hints if h.kind not in NON_LITERAL_SECRET_KINDS]
+    env_reference_secrets = [h for h in scan.secret_hints if h.kind in NON_LITERAL_SECRET_KINDS]
 
     if hardcoded_secrets:
         # Group by kind for evidence line density; still cap at 10 total.

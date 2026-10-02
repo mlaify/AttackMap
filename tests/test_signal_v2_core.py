@@ -61,3 +61,15 @@ def test_auth_shim_drops_and_warns_on_overloaded_hints(caplog: pytest.LogCapture
     assert filtered.auth_hints == []
     warnings = [r for r in caplog.records if "legacy-plugin" in r.getMessage()]
     assert len(warnings) == 1
+
+
+def test_env_template_secret_is_not_a_hardcoded_literal() -> None:
+    from attackmap.models import SecretHint
+
+    scan = ScanResult(
+        root="/r",
+        secret_hints=[SecretHint(name="DATABASE_PASSWORD", file=".env.example", line=3, kind="env_template")],
+    )
+    findings = {f.rule_id: f for f in to_findings(scan)}
+    assert "hardcoded-secret" not in findings
+    assert "secret-env-reference" in findings
