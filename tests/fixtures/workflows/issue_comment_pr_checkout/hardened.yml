@@ -1,0 +1,15 @@
+# Hardened: the comment workflow only labels the PR; tests run under the
+# unprivileged pull_request workflow.
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  pull-requests: write
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+        run: gh pr edit "$PR" --add-label ok-to-test

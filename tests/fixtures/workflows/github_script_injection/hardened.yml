@@ -1,0 +1,16 @@
+on:
+  issues:
+    types: [opened]
+permissions:
+  issues: write
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@8f4b7f84864484a7bf31766abe9204da3cbe65b3
+        env:
+          TITLE: ${{ github.event.issue.title }}
+        with:
+          script: |
+            const title = process.env.TITLE;
+            console.log(title, context.payload.issue.number);
