@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 
+from .srcpaths import line_number
 from .models import CodeWeakness
 
 _REQ = r"(?:req|request|body|query|params|payload)"
@@ -192,7 +193,7 @@ def find_prompt_injection(content: str, rel_file: str) -> list[CodeWeakness]:
     out: list[CodeWeakness] = []
     seen: set[int] = set()
     for match in PROMPT_INJECTION_RE.finditer(content):
-        line = content.count("\n", 0, match.start()) + 1
+        line = line_number(content, match.start())
         if line in seen:
             continue
         seen.add(line)
@@ -220,7 +221,7 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
         for match in pattern.finditer(content):
             if _in_line_comment(content, match.start()):
                 continue  # a pattern inside a `//` comment isn't real code (#94)
-            line = content.count("\n", 0, match.start()) + 1
+            line = line_number(content, match.start())
             key = (kind, line)
             if key in seen:
                 continue

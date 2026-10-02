@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 
+from .srcpaths import line_number
 from .models import CryptoWeakness
 
 # Identifiers that mark a value as security-sensitive. Gate the noisy
@@ -209,7 +210,7 @@ def find_crypto_weaknesses(content: str, rel_file: str) -> list[CryptoWeakness]:
     out: list[CryptoWeakness] = []
     for kind, severity, pattern in _CRYPTO_PATTERNS:
         for match in pattern.finditer(content):
-            line = content.count("\n", 0, match.start()) + 1
+            line = line_number(content, match.start())
             key = (kind, line)
             if key in seen:
                 continue

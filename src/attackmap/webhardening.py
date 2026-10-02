@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 
+from .srcpaths import line_number
 from .models import WebHardeningIssue
 
 
@@ -101,7 +102,7 @@ def find_web_hardening_issues(content: str, rel_file: str) -> list[WebHardeningI
     out: list[WebHardeningIssue] = []
 
     def _add(kind: str, severity: str, offset: int) -> None:
-        line = content.count("\n", 0, offset) + 1
+        line = line_number(content, offset)
         key = (kind, line)
         if key in seen:
             return

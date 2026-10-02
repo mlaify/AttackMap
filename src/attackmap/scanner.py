@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .progress import ScanProgress
 
-from .srcpaths import in_skipped_dir, is_skipped_dir
+from .srcpaths import in_skipped_dir, is_skipped_dir, line_number
 from .redact import mask_secret
 from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
@@ -353,9 +353,7 @@ _SNIPPET_MAX_CHARS = 160
 
 def _line_of(content: str, offset: int) -> int:
     """1-indexed line number for a character offset within content."""
-    if offset <= 0:
-        return 1
-    return content.count("\n", 0, offset) + 1
+    return line_number(content, offset)
 
 
 def _line_snippet(content: str, offset: int, *, max_chars: int = _SNIPPET_MAX_CHARS) -> str:

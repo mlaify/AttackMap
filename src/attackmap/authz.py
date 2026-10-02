@@ -126,8 +126,11 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         if c.sink_kind == "sql_execute" and not c.speculative
     }
 
-    # Cache per-file content (read at most once per route file).
+    # Cache per-file content (read at most once per route file), and the
+    # file-level query-param scan: it depends only on the file, and redoing it
+    # per route made a many-route file quadratic (#218).
     content_cache: dict[str, str | None] = {}
+    query_param_cache: dict[str, str | None] = {}
 
     seen: set[tuple[str, str, str, str]] = set()
     candidates: list[BolaCandidate] = []
@@ -139,7 +142,9 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         # fall back to an id-shaped query-parameter access in the handler body.
         surface = _path_based_surface(route.path)
         if surface is None and content:
-            qp = _query_param_in_handler(content)
+            if route.file not in query_param_cache:
+                query_param_cache[route.file] = _query_param_in_handler(content)
+            qp = query_param_cache[route.file]
             if qp is not None:
                 surface = ("query_param", qp)
         if surface is None:

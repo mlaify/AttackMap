@@ -12,6 +12,8 @@ test-quality reviews where test code is in scope).
 
 from __future__ import annotations
 
+import bisect
+import functools
 import os
 import re
 
@@ -232,3 +234,28 @@ def in_skipped_dir(rel: "str | os.PathLike[str]") -> bool:
     from pathlib import PurePath
 
     return any(part in SKIP_DIRS for part in PurePath(rel).parts[:-1])
+
+
+# --- Offset -> line number (#218) ---------------------------------------------
+#
+# `content.count("\n", 0, offset)` is O(offset) per call; detectors call it once
+# per match, which is O(n^2) on a large file with many matches (a 3 MB file took
+# 34 s, 90% of it here). The line-start index is built once per file content
+# and looked up by binary search.
+
+@functools.lru_cache(maxsize=8)
+def _line_starts(content: str) -> tuple[int, ...]:
+    starts = [0]
+    find = content.find
+    pos = find("\n")
+    while pos != -1:
+        starts.append(pos + 1)
+        pos = find("\n", pos + 1)
+    return tuple(starts)
+
+
+def line_number(content: str, offset: int) -> int:
+    """1-indexed line number of ``offset`` within ``content``."""
+    if offset <= 0:
+        return 1
+    return bisect.bisect_right(_line_starts(content), offset)
