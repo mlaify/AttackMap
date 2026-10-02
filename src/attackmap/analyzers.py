@@ -55,6 +55,8 @@ from .scanner import (
     _external_call_fields,
     SECRET_PATTERNS,
     extract_routes,
+    run_repo_passes,
+    scan_files,
     scan_repo,
 )
 
@@ -237,11 +239,10 @@ class DefaultAnalyzer:
     def analyze(
         self, root: str | Path, progress: "ScanProgress | None" = None, recall: bool = False
     ) -> AnalyzerResult:
-        return scan_repo(
+        return scan_files(
             root,
             suffixes=set(CODE_EXTENSIONS) - self._CLAIMED_SUFFIXES,
             progress=progress,
-            recall=recall,
         )
 
 
@@ -266,7 +267,7 @@ class BuiltinPythonWebAnalyzer:
     def analyze(
         self, root: str | Path, progress: "ScanProgress | None" = None, recall: bool = False
     ) -> AnalyzerResult:
-        return scan_repo(root, suffixes={".py"}, progress=progress, recall=recall)
+        return scan_files(root, suffixes={".py"}, progress=progress)
 
 
 class BuiltinJavaScriptWebAnalyzer:
@@ -340,7 +341,7 @@ class BuiltinJavaScriptWebAnalyzer:
     def analyze(
         self, root: str | Path, progress: "ScanProgress | None" = None, recall: bool = False
     ) -> AnalyzerResult:
-        return scan_repo(root, suffixes=self._JS_SUFFIXES, progress=progress, recall=recall)
+        return scan_files(root, suffixes=self._JS_SUFFIXES, progress=progress)
 
 
 class BuiltinConfigAnalyzer:
@@ -704,9 +705,12 @@ def analyze_repository(
         result = _call_analyze(analyzer, repo_root, progress, recall)
         _stamp_provenance(result, analyzer.name)
         results.append(result)
-    if not results:
-        return AnalyzerResult(root=str(repo_root))
-    return merge_analyzer_results(results, root=repo_root)
+    merged = merge_analyzer_results(results, root=repo_root) if results else AnalyzerResult(root=str(repo_root))
+    # Whole-repo passes run once, over every analyzer's merged signals (#219).
+    run_repo_passes(merged, repo_root, progress=progress, recall=recall)
+    if progress is not None:
+        progress.done()
+    return merged
 
 
 def _call_analyze(
