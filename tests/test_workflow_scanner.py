@@ -435,3 +435,29 @@ jobs:
     ]
     assert len(findings) == 1
     assert findings[0].severity == "medium"
+
+
+def test_identical_steps_in_different_jobs_get_their_own_lines(tmp_path):
+    """Two `uses: actions/checkout@v4` steps in different jobs used to both be
+    attributed to the first one's line."""
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text(
+        "on: [push]\n"                         # 1
+        "permissions:\n"                       # 2
+        "  contents: read\n"                   # 3
+        "jobs:\n"                              # 4
+        "  test:\n"                            # 5
+        "    runs-on: ubuntu-latest\n"         # 6
+        "    steps:\n"                         # 7
+        "      - uses: actions/checkout@v4\n"  # 8
+        "      - run: make test\n"             # 9
+        "  build:\n"                           # 10
+        "    runs-on: ubuntu-latest\n"         # 11
+        "    steps:\n"                         # 12
+        "      - name: Checkout\n"             # 13
+        "        uses: actions/checkout@v4\n"  # 14
+        "      - uses: actions/checkout@v4\n"  # 15
+    )
+    lines = sorted(i.line for i in scan_workflows(tmp_path) if i.kind == "unpinned_action")
+    assert lines == [8, 14, 15]
