@@ -670,6 +670,15 @@ class DetectionOpportunity(BaseModel):
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)
 
 
+class AnalyzerError(BaseModel):
+    """An analyzer whose ``analyze()`` raised or returned something unusable
+    (#220). The scan carries on without it; this records the gap."""
+
+    analyzer: str
+    error_type: str
+    message: str = ""
+
+
 class ScanResult(BaseModel):
     root: str
     languages: list[str] = Field(default_factory=list)
@@ -695,6 +704,8 @@ class ScanResult(BaseModel):
     # What the scan deliberately did not analyze (e.g. symlinks that point out
     # of the repo, #234) — so a clean report isn't mistaken for full coverage.
     limitations: list[str] = Field(default_factory=list)
+    # Analyzers that failed and were skipped (#220).
+    analyzer_errors: list[AnalyzerError] = Field(default_factory=list)
     files_scanned: int = 0
 
     @property

@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failing analyzer no longer aborts the scan (#220).** If a plugin's `analyze()` raised, or returned `None` or a non-result, the whole run died with a traceback, built-in coverage included. Now the analyzer is skipped and logged. The console prints `Analyzer '<name>' failed and was skipped: …`, and `attackmap-report.json` lists it under `scan.analyzer_errors` (name, exception type, redacted message). Dict results are validated as a `ScanResult`. `--strict-analyzers` restores fail-fast for plugin development and CI.
 - **Exploitability scoring fixes (#226).**
   - **Surfaces match by file.** When two services exposed the same `POST /run`, both taint chains took the first service's surface, so an unauthenticated RCE path was scored "auth present at entry" and ranked HIGH instead of CRITICAL. Chains now use the surface from their own route file, and fall back to a route- or file-only match only when it's unambiguous.
   - **Python imports are line-scoped.** The import regex spanned newlines, so `import os` swallowed the next line and every later import was lost, which broke CVE-on-path fusion for nearly every Python file. `as` aliases are handled, and common import→PyPI name mismatches (`yaml`→PyYAML, `PIL`→Pillow, `bs4`→beautifulsoup4, …) are mapped.

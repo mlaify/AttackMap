@@ -246,7 +246,22 @@ def render_pr_comment(
 
 
 def render_console_summary(scan: ScanResult, findings: list[Finding], attack_paths: list[AttackPath]) -> str:
-    return _render_console_summary(scan, findings, attack_paths) + _limitations_note(scan)
+    return (
+        _render_console_summary(scan, findings, attack_paths)
+        + _limitations_note(scan)
+        + _analyzer_errors_note(scan)
+    )
+
+
+def _analyzer_errors_note(scan: ScanResult) -> str:
+    """One line per analyzer that failed and was skipped (#220)."""
+    if not scan.analyzer_errors:
+        return ""
+    lines = [
+        f"Analyzer '{e.analyzer}' failed and was skipped: {e.error_type}: {e.message}".rstrip(": ")
+        for e in scan.analyzer_errors
+    ]
+    return "\n\n" + "\n".join(lines) + "\n(Results are partial; --strict-analyzers fails fast instead.)"
 
 
 def _limitations_note(scan: ScanResult) -> str:
