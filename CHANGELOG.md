@@ -21,6 +21,8 @@ Security release. Upgrade if you scan untrusted repositories with `--suppress-fr
 
 
 
+## [0.5.0] - 2026-10-02
+
 Completes the v0.5.0 plan (#260): scanner robustness, an enforced plugin contract, false-positive fixes across 12 analyzer plugins, and macOS app and docs fixes. Install with `brew install mlaify/tap/attackmap` or the `[all]` extra.
 
 **Upgrading from 0.4.x — behavior changes:**
