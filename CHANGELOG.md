@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`--suppress-from-ref` could run commands from a scanned repo's git config.** It found lines added since the ref with `git diff <ref> -- <file>`, which compares against the working tree and so runs any `filter.<driver>.clean` command that `.gitattributes` names. A hostile `.git/config` could point that at arbitrary commands, and `--no-textconv` / `--no-ext-diff` don't disable clean filters. Old content now comes from `git cat-file blob`, which applies no filters, and is diffed against the working file in Python, so git never reads the working tree. A test with filter, textconv, diff-command and fsmonitor drivers configured confirms none of them run.
+
 ### Added
 
 - **More dependency ecosystems (#255).** `DependencyHint.ecosystem` and `Vulnerability.ecosystem` now accept `maven`, `nuget`, `conan`, `vcpkg`, `gem`, `cocoapods`, `hex` and `pub`. The set is exported from `attackmap.sdk` as `DependencyEcosystem` / `DEPENDENCY_ECOSYSTEMS`.
