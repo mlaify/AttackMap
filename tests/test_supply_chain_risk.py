@@ -236,3 +236,12 @@ def test_supply_chain_module_has_no_network_imports() -> None:
     source = Path(supply_chain.__file__).read_text(encoding="utf-8")
     for banned in ("urllib", "http.client", "requests", "socket"):
         assert f"import {banned}" not in source and f"from {banned}" not in source
+
+
+def test_test_fixture_manifests_are_not_reported(tmp_path: Path) -> None:
+    fixture = tmp_path / "tests" / "fixtures" / "app"
+    fixture.mkdir(parents=True)
+    (fixture / "package.json").write_text('{"dependencies": {"expresss": "^4.0.0"}}')
+    (tmp_path / "package.json").write_text('{"name": "x", "dependencies": {}}')
+    issues = scan_supply_chain(tmp_path)
+    assert not any(i.file.startswith("tests/") for i in issues), [(i.kind, i.file) for i in issues]

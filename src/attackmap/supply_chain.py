@@ -42,6 +42,7 @@ from pathlib import Path
 from .models import DependencyHint, SupplyChainIssue
 from .popular_packages import BY_ECOSYSTEM
 from .safe_fs import is_oversized, is_unsafe_link, walk_repo
+from .srcpaths import is_test_file
 
 _MAX_DEPTH = 4
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv", "target", "vendor"}
@@ -105,6 +106,10 @@ def _iter_files(root: Path):
     for path in walk_repo(root, prune=lambda name: name in _SKIP_DIRS):
         rel = path.relative_to(root)
         if len(rel.parts) > _MAX_DEPTH or is_unsafe_link(root, path) or is_oversized(path):
+            continue
+        # Test fixtures declare deliberately loose or fake manifests; like the
+        # other heuristic passes, skip them (ATTACKMAP_INCLUDE_TESTS opts in).
+        if is_test_file(rel.as_posix()):
             continue
         yield path, rel.as_posix()
 
@@ -186,8 +191,9 @@ def scan_supply_chain(root: str | Path, dependencies: list[DependencyHint] | Non
             if not (path.parent / "Pipfile.lock").is_file():
                 out.add("unlocked_manifest", rel, "low", "Pipfile without Pipfile.lock — installs resolve to whatever is newest", ecosystem="pypi")
 
-    _check_confusion(dependencies, _load_internal_prefixes(root_path), ctx, out)
-    _check_typosquats(dependencies, out)
+    production = [d for d in dependencies if not is_test_file(d.file)]
+    _check_confusion(production, _load_internal_prefixes(root_path), ctx, out)
+    _check_typosquats(production, out)
     return out.issues
 
 
