@@ -16,6 +16,7 @@ from .models import (
     TaintFlowStep,
 )
 from .srcpaths import evidence_locations
+from .taint_sinks import SINK_KINDS, canonical_kind, kind_label
 from .route_auth_fusion import synthesize_unauthenticated_routes
 from .taxonomy import cwe_tag, taxonomy_for
 
@@ -626,6 +627,9 @@ _TAINT_SINK_LABEL: dict[str, str] = {
     "nosql_injection": "NoSQL query",
     "open_redirect": "redirect target",
 }
+# Kinds added through the sink registry (#240) take its labels.
+for _kind in SINK_KINDS:
+    _TAINT_SINK_LABEL.setdefault(_kind, kind_label(_kind))
 
 
 # Per-sink-kind specification for the dedicated taint findings (#68).
@@ -691,6 +695,71 @@ _TAINT_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
     },
+    # --- #240 sink catalog expansion -------------------------------------
+    "zip_slip": {
+        "severity": "high",
+        "title": "Request-reachable archive extraction without path checks (zip-slip)",
+        "mitigation": "Extract only after validating every member path resolves inside the destination (tarfile: `extractall(filter=\"data\")` on Python 3.12+; adm-zip/unzipper: check `path.resolve(dest, entry)` starts with `dest`). Reject absolute paths, `..` segments and links.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "code_injection": {
+        "severity": "high",
+        "title": "Request input selects or builds code to run (code injection)",
+        "mitigation": "Never build code (new Function, vm.run*, string setTimeout) or pick modules/methods (import_module, getattr, send, constantize) from request input. Map an allow-listed key to a fixed callable instead.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "expression_injection": {
+        "severity": "high",
+        "title": "Request input evaluated as an expression (SpEL/OGNL/MVEL/script injection)",
+        "mitigation": "Do not parse or evaluate request-derived strings with SpEL, OGNL, MVEL or a ScriptEngine. Use a SimpleEvaluationContext / sandbox if expressions are a feature, and pass user data only as variables.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "jndi_injection": {
+        "severity": "high",
+        "title": "Request input reaches a JNDI lookup (JNDI injection)",
+        "mitigation": "Never pass request-derived names to `Context.lookup`. Look up fixed, configured names only, and disable remote codebases (`com.sun.jndi.*.object.trustURLCodebase=false`).",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "ldap_injection": {
+        "severity": "medium",
+        "title": "Request input reaches an LDAP search filter (LDAP injection)",
+        "mitigation": "Escape every request-derived value with an LDAP filter encoder (ldap.filter.escape_filter_chars, ldap_escape(..., LDAP_ESCAPE_FILTER), Spring LdapEncoder.filterEncode) or build filters with a parameterized API.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "xpath_injection": {
+        "severity": "medium",
+        "title": "Request input reaches an XPath expression (XPath injection)",
+        "mitigation": "Use XPath variables (XPathVariableResolver, lxml `xpath(expr, name=value)`) instead of concatenating request data into the expression.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "header_injection": {
+        "severity": "low",
+        "title": "Request input sets an HTTP response header (header injection)",
+        "mitigation": "Most frameworks now reject CR/LF in header values, but a caller-controlled value can still steer Location, Content-Disposition or cookies. Allow-list or encode the value before setting the header.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "regex_injection": {
+        "severity": "low",
+        "title": "Request input compiled as a regular expression (ReDoS)",
+        "mitigation": "Escape request input before embedding it in a pattern (re.escape, escapeStringRegexp, Pattern.quote, regexp.QuoteMeta, preg_quote), or match it as a literal. Use a linear-time engine (RE2) where user patterns are a feature.",
+        "technique_id": "T1499.004",
+        "technique_name": "Endpoint Denial of Service: Application or System Exploitation",
+        "tactic": "Impact",
+    },
     "open_redirect": {
         "severity": "medium",
         "title": "Request-reachable open redirect",
@@ -717,7 +786,8 @@ _FLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
     },
-    "dynamic_open": {
+    # `dynamic_open` chains are folded in here as an alias (#240).
+    "path_traversal": {
         "rule_id": "path-traversal",
         "severity": "high",
         "title": "Request input flows into a filesystem path (path traversal)",
@@ -2007,10 +2077,14 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         # as evidence in scan.taint_chains but don't raise a finding for them.
         if chain.sanitized:
             continue
-        if chain.sink_kind in _FLOW_FINDING_SPEC:
-            # Reach alone isn't a finding for these kinds — only a traced flow (#239).
-            if chain.source_kind and not chain.speculative:
-                flow_by_kind.setdefault(chain.sink_kind, []).append(chain)
+        flow_kind = canonical_kind(chain.sink_kind)
+        if flow_kind in _FLOW_FINDING_SPEC:
+            # Reach alone isn't a finding for SQL / generic file opens — only a
+            # traced flow (#239). The #240 path sinks (send_file, sendFile,
+            # include…) are request-gated already, so their chains count.
+            confirmed = chain.source_kind or chain.sink_kind not in ("sql_execute", "dynamic_open")
+            if confirmed and not chain.speculative:
+                flow_by_kind.setdefault(flow_kind, []).append(chain)
             continue
         if chain.sink_kind not in _TAINT_FINDING_SPEC:
             continue

@@ -230,6 +230,36 @@ and `composer.json` manifests, and the `package-lock.json`, `pnpm-lock.yaml`,
 `poetry.lock`, `uv.lock`, `Cargo.lock`, `composer.lock`, `packages.lock.json`
 and `gradle.lockfile` lockfiles. Don't re-emit them.
 
+## Contributing taint sinks
+
+Analyzers can add sink signatures to core's taint pass through the
+`attackmap.taint_sinks` entry-point group (#240), for example a framework's
+file-serving helper or an ORM's raw-SQL escape hatch:
+
+```toml
+[project.entry-points."attackmap.taint_sinks"]
+myframework = "attackmap_analyzer_myframework.sinks:SINKS"
+```
+
+```python
+SINKS = [
+    {"id": "myframework-raw-sql", "kind": "sql_execute", "langs": ["python"],
+     "regex": r"\bRaw\.sql\s*\(", "gate": "tainted", "args": [0], "cwe": 89},
+]
+```
+
+The entry point may also resolve to a callable returning that list, or to a
+path to a YAML file with a `sinks:` list. The schema is the same one core uses
+for `src/attackmap/taint_sinks.yaml`:
+
+- `cwe` is required.
+- `kind` must be one of `attackmap.sdk.TAINT_SINK_KINDS`.
+- `regex` must scale linearly.
+
+Validate entries in your tests with `attackmap.sdk.validate_taint_sink`. At
+scan time an invalid entry is skipped with a warning. Core still decides
+reachability, the intra-procedural flow, sanitizers and severity.
+
 ## What analyzers may not do
 
 - **No subprocess calls** to other tools (linters, language servers, etc.).

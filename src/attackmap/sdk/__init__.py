@@ -62,6 +62,35 @@ declared in `attackmap.merge.MERGE_SCHEMA`; the rules are:
 Two analyzers that both emit a route for the same ``(path, method, file)``
 produce one route in the merged result — whichever was emitted first.
 
+## Contributing taint sinks (#240)
+
+An analyzer can teach core's taint pass new sink signatures (a framework's
+file-serving helper, an ORM's raw-query escape hatch) without touching core.
+Register an entry point in the ``attackmap.taint_sinks`` group
+(:data:`TAINT_SINK_PLUGIN_GROUP`) that resolves to a list of sink entries, a
+callable returning one, or a path to a YAML file with a ``sinks:`` list::
+
+    [project.entry-points."attackmap.taint_sinks"]
+    myframework = "attackmap_analyzer_myframework.sinks:SINKS"
+
+    SINKS = [
+        {
+            "id": "myframework-raw-sql",          # unique; prefix with your plugin
+            "kind": "sql_execute",                # one of TAINT_SINK_KINDS
+            "langs": ["python"],
+            "regex": r"\\bRaw\\.sql\\s*\\(",
+            "gate": "tainted",                    # or "any"
+            "args": [0],                          # or "all" / "receiver" / "rest"
+            "cwe": 89,                            # required
+        },
+    ]
+
+Entries use the same schema as core's ``taint_sinks.yaml`` and must carry a
+``cwe``. Check them in your tests with :func:`validate_taint_sink`; at scan
+time an invalid entry is skipped with a warning instead of failing the scan.
+Plugins reuse core's sink kinds (findings, CWE taxonomy and exploitability are
+keyed on them) and core still decides reachability, flow and severity.
+
 ## Versioning
 
 The names exported below are stable across minor releases of the
@@ -81,6 +110,9 @@ from .contracts import (
 from ..safe_fs import contained_file, is_contained, read_repo_text, walk_repo
 from . import fs
 from .fs import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, line_snippet, read_source, rel
+from ..taint_sinks import PLUGIN_GROUP as TAINT_SINK_PLUGIN_GROUP
+from ..taint_sinks import SINK_KINDS as TAINT_SINK_KINDS
+from ..taint_sinks import validate_sink_entry as validate_taint_sink
 from .models import (
     DEPENDENCY_ECOSYSTEMS,
     AuthHint,
@@ -135,4 +167,8 @@ __all__ = [
     "rel",
     "line_of",
     "line_snippet",
+    # Plugin-contributed taint sinks (#240).
+    "TAINT_SINK_PLUGIN_GROUP",
+    "TAINT_SINK_KINDS",
+    "validate_taint_sink",
 ]

@@ -33,13 +33,13 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
 
 from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain, TaintFlowStep
 from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number
-from .taint_flow import RECEIVER, FileFlow, SinkFlow
-from .taint_sources import GO, JAVA, JS, PHP, PY, lang_for_suffix
+from .taint_flow import REST, FileFlow, SinkFlow
+from .taint_sinks import SINKS, all_sinks
+from .taint_sources import GO, JS, PHP, PY, lang_for_suffix
 
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
@@ -105,7 +105,9 @@ _PHP_SUFFIXES = {".php"}
 # Java (#239): indexed for same-file (0-hop) flows. Imports are not resolved,
 # so a Java sink is only reached from a route in the same file.
 _JAVA_SUFFIXES = {".java"}
-_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES | _PHP_SUFFIXES | _JAVA_SUFFIXES
+# C# and Ruby (#240): indexed for same-file sinks only, like Java.
+_SAME_FILE_ONLY_SUFFIXES = _JAVA_SUFFIXES | {".cs", ".rb"}
+_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES | _PHP_SUFFIXES | _SAME_FILE_ONLY_SUFFIXES
 
 # --- Import extraction -----------------------------------------------------
 
@@ -208,276 +210,11 @@ _TAINTED = (
 _TAINTED_RE = re.compile(_TAINTED)
 
 
-class _Sink(NamedTuple):
-    """One sink signature.
-
-    ``gate``:
-      - ``"any"`` — dangerous regardless of the argument (eval, deserialization,
-        shell, SQL); fires on reachability, the flow only annotates it.
-      - ``"tainted"`` — fires when the request-token ``legacy`` pattern matches
-        the call (the pre-#239 same-call gate) **or** the intra-procedural flow
-        traces a request source into the dangerous argument (#239).
-    ``args`` — positional indexes of the dangerous argument(s) the flow checks
-    (``None`` = all arguments). ``langs`` — the languages it applies to;
-    ``None`` means the pre-#239 set (Python, JS/TS, Go, PHP) so generic
-    signatures like ``exec(`` never fire on Java method declarations.
-    """
-
-    kind: str
-    pattern: re.Pattern[str]
-    gate: str = "any"
-    legacy: re.Pattern[str] | None = None
-    args: tuple[int, ...] | None = (0,)
-    langs: frozenset[str] | None = None
-
-
+# Sink signatures live in the declarative registry `taint_sinks.yaml` (#240),
+# loaded and validated by `taint_sinks`; plugins add entries through the
+# `attackmap.taint_sinks` entry-point group. `SINKS` is the core table.
+_SINK_PATTERNS = SINKS
 _LEGACY_LANGS = frozenset({PY, JS, GO, PHP})
-_ONLY_JS = frozenset({JS})
-_ONLY_GO = frozenset({GO})
-_ONLY_PHP = frozenset({PHP})
-_ONLY_JAVA = frozenset({JAVA})
-
-
-_SINK_PATTERNS: tuple[_Sink, ...] = (
-    _Sink(
-        "sql_execute",
-        re.compile(
-            r"\b(?:cursor|conn|connection|db|session|engine|client|pool)"
-            r"\.(?:execute|query|exec_driver_sql)\s*\(",
-        ),
-    ),
-    # Go database/sql (#102): db/tx/stmt.Query|Exec (+Context/Row variants).
-    # Title-case methods + a db-ish receiver avoid `url.Query()` etc.
-    _Sink(
-        "sql_execute",
-        re.compile(
-            r"\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)"
-            r"\.(?:Query|QueryRow|Exec)\s*\(",
-        ),
-    ),
-    _Sink(
-        "sql_execute",
-        re.compile(
-            r"\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)"
-            r"\.(?:QueryContext|QueryRowContext|ExecContext)\s*\(",
-        ),
-        args=(1,),
-    ),
-    _Sink(
-        "subprocess_shell",
-        re.compile(
-            r"subprocess\.(?:run|call|Popen|check_output|check_call)"
-            r"\s*\([^)]*shell\s*=\s*True",
-            re.DOTALL,
-        ),
-    ),
-    _Sink("subprocess_shell", re.compile(r"child_process\s*\.\s*exec\s*\(")),
-    # Go os/exec (#102): exec.Command / exec.CommandContext.
-    _Sink("subprocess_shell", re.compile(r"\bexec\.Command(?:Context)?\s*\("), args=None),
-    # PHP SQL (#103): mysqli_query / pg_query (query is the 2nd arg), PDO/db
-    # ->query|exec (NOT ->prepare, which is safe), and Laravel raw
-    # DB::select|statement|raw. Parameterized-query-gated with PHP-aware detection.
-    _Sink("sql_execute", re.compile(r"\b(?:mysqli_query|pg_query)\s*\(", re.IGNORECASE), args=(1,)),
-    _Sink(
-        "sql_execute",
-        re.compile(
-            r"\$\w+->(?:query|exec)\s*\("
-            r"|\bDB::(?:select|statement|insert|update|delete|raw|unprepared)\s*\(",
-            re.IGNORECASE,
-        ),
-    ),
-    # PHP shell execution (#103).
-    _Sink("subprocess_shell", re.compile(r"\b(?:system|shell_exec|passthru|proc_open|popen)\s*\(")),
-    # PHP object deserialization (#103).
-    _Sink("unsafe_deserialization", re.compile(r"\bunserialize\s*\(")),
-    _Sink("eval", re.compile(r"(?<![\w.])eval\s*\(")),
-    _Sink("exec", re.compile(r"(?<![\w.])exec\s*\(")),
-    # `open(...)` fed a request value: same-call token, or a traced flow.
-    _Sink(
-        "dynamic_open",
-        re.compile(r"(?<![\w.])open\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"(?<![\w.])open\s*\([^)]*{_TAINTED}"),
-    ),
-    # --- unsafe deserialization (#68) --------------------------------------
-    # Dangerous regardless of args: attacker-controlled bytes into any of
-    # these is arbitrary-code / object-injection territory.
-    _Sink("unsafe_deserialization", re.compile(r"\b(?:cPickle|pickle)\.loads?\s*\(")),
-    # yaml.load WITHOUT a Safe loader in the same call, plus the explicitly-unsafe helper.
-    _Sink("unsafe_deserialization", re.compile(r"\byaml\.load\s*\((?![^)]*(?:Safe|Loader\s*=))")),
-    _Sink("unsafe_deserialization", re.compile(r"\byaml\.unsafe_load\s*\(")),
-    _Sink("unsafe_deserialization", re.compile(r"\bmarshal\.loads?\s*\(")),
-    # Ruby Marshal.load, Java ObjectInputStream, PHP unserialize, JS node-serialize .unserialize
-    _Sink(
-        "unsafe_deserialization",
-        re.compile(r"\bMarshal\.load\s*\(|\bObjectInputStream\b|\bunserialize\s*\("),
-    ),
-    # --- server-side template injection (#68) ------------------------------
-    # Flask/Jinja render_template_string / Template() built from request input.
-    _Sink(
-        "ssti",
-        re.compile(r"\brender_template_string\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\brender_template_string\s*\([^)]*{_TAINTED}"),
-    ),
-    _Sink(
-        "ssti",
-        re.compile(r"\bTemplate\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\bTemplate\s*\([^)]*{_TAINTED}"),
-    ),
-    # --- server-side request forgery (#68) ---------------------------------
-    # Outbound HTTP whose URL argument carries request input. A constant URL
-    # (or one whose literal prefix pins scheme+host) is fine.
-    _Sink(
-        "ssrf",
-        re.compile(r"\brequests\.(?:get|post|put|delete|patch|head)\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\brequests\.(?:get|post|put|delete|patch|head)\s*\([^)]*{_TAINTED}"),
-    ),
-    _Sink(
-        "ssrf",
-        re.compile(r"\brequests\.request\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\brequests\.request\s*\([^)]*{_TAINTED}"),
-        args=(1,),
-    ),
-    _Sink(
-        "ssrf",
-        re.compile(r"\bhttpx\.(?:get|post|put|delete|patch|head|Client)\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\bhttpx\.(?:get|post|put|delete|patch|head|Client)\s*\([^)]*{_TAINTED}"),
-    ),
-    _Sink(
-        "ssrf",
-        re.compile(r"\bhttpx\.request\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\bhttpx\.request\s*\([^)]*{_TAINTED}"),
-        args=(1,),
-    ),
-    _Sink(
-        "ssrf",
-        re.compile(r"\b(?:urlopen|urlretrieve)\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\b(?:urlopen|urlretrieve)\s*\([^)]*{_TAINTED}"),
-    ),
-    # JS: axios.get(req...), fetch(req...), http.get(req...)
-    _Sink(
-        "ssrf",
-        re.compile(r"\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\("),
-        gate="tainted",
-        legacy=re.compile(
-            rf"\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\([^)]*{_TAINTED}"
-        ),
-    ),
-    # Go net/http client (#239).
-    _Sink("ssrf", re.compile(r"\bhttp\.(?:Get|Head|Post|PostForm)\s*\("), gate="tainted", langs=_ONLY_GO),
-    _Sink("ssrf", re.compile(r"\bhttp\.NewRequest\s*\("), gate="tainted", args=(1,), langs=_ONLY_GO),
-    _Sink("ssrf", re.compile(r"\bhttp\.NewRequestWithContext\s*\("), gate="tainted", args=(2,), langs=_ONLY_GO),
-    # PHP cURL (#239): the URL is curl_init's argument or a CURLOPT_URL option.
-    _Sink("ssrf", re.compile(r"\bcurl_init\s*\("), gate="tainted", langs=_ONLY_PHP),
-    _Sink(
-        "ssrf",
-        re.compile(r"\bcurl_setopt\s*\(\s*\$\w+\s*,\s*CURLOPT_URL\b"),
-        gate="tainted",
-        args=(2,),
-        langs=_ONLY_PHP,
-    ),
-    # Java HTTP fetches (#239): the URL handed to a client, or the URL object a
-    # stream/connection is opened on (parsing `new URL(u)` alone fetches nothing).
-    _Sink(
-        "ssrf",
-        re.compile(
-            r"\bHttpRequest\s*\.\s*newBuilder\s*\("
-            r"|\brestTemplate\s*\.\s*(?:getForObject|getForEntity|postForObject|postForEntity|exchange)\s*\("
-        ),
-        gate="tainted",
-        langs=_ONLY_JAVA,
-    ),
-    _Sink(
-        "ssrf",
-        re.compile(r"\.\s*(?:openConnection|openStream)\s*\(\s*\)"),
-        gate="tainted",
-        args=RECEIVER,
-        langs=_ONLY_JAVA,
-    ),
-    # --- path traversal (#239: flow-gated file reads per language) ----------
-    _Sink(
-        "dynamic_open",
-        re.compile(
-            r"\bfs\s*\.\s*(?:promises\s*\.\s*)?(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync)\s*\("
-        ),
-        gate="tainted",
-        langs=_ONLY_JS,
-    ),
-    _Sink(
-        "dynamic_open",
-        re.compile(r"\b(?:os\.(?:Open|OpenFile|ReadFile|Create|WriteFile)|ioutil\.ReadFile)\s*\("),
-        gate="tainted",
-        langs=_ONLY_GO,
-    ),
-    _Sink(
-        "dynamic_open",
-        re.compile(r"\b(?:fopen|file_get_contents|readfile|file_put_contents)\s*\("),
-        gate="tainted",
-        langs=_ONLY_PHP,
-    ),
-    _Sink(
-        "dynamic_open",
-        re.compile(
-            r"\bnew\s+(?:File|FileInputStream|FileReader|FileOutputStream|FileWriter|RandomAccessFile)\s*\("
-            r"|\b(?:Paths\s*\.\s*get|Path\s*\.\s*of)\s*\("
-            r"|\bFiles\s*\.\s*(?:readAllBytes|readAllLines|readString|newInputStream|newBufferedReader|lines)\s*\("
-        ),
-        gate="tainted",
-        args=None,
-        langs=_ONLY_JAVA,
-    ),
-    # --- Java SQL and command execution (#239) ------------------------------
-    _Sink(
-        "sql_execute",
-        re.compile(
-            r"\b(?:stmt|statement|st|conn|connection|jdbcTemplate|jdbc|em|entityManager|session)"
-            r"\s*\.\s*(?:executeQuery|executeUpdate|execute|prepareStatement|createQuery|createNativeQuery"
-            r"|query|queryForObject|queryForList|update)\s*\("
-        ),
-        langs=_ONLY_JAVA,
-    ),
-    _Sink(
-        "subprocess_shell",
-        re.compile(r"\bgetRuntime\s*\(\s*\)\s*\.\s*exec\s*\(|\bnew\s+ProcessBuilder\s*\("),
-        args=None,
-        langs=_ONLY_JAVA,
-    ),
-    # --- NoSQL injection (#68) ---------------------------------------------
-    # Passing a request object straight into a Mongo query filter. Kept on
-    # the same-call token: a bare `.find(` is overwhelmingly array iteration.
-    _Sink(
-        "nosql_injection",
-        re.compile(
-            rf"\.(?:find|findOne|findOneAndUpdate|update|updateOne|updateMany|remove|deleteOne|deleteMany|aggregate|count|countDocuments)\s*\(\s*{_TAINTED}"
-        ),
-    ),
-    # $where with any interpolation is an injection risk.
-    _Sink("nosql_injection", re.compile(r"\$where")),
-    # --- open redirect (#77) -----------------------------------------------
-    # A request-derived value flowing into a redirect. Constant redirect
-    # targets (and same-site literal paths) are fine.
-    _Sink(
-        "open_redirect",
-        re.compile(r"\bredirect\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\bredirect\s*\([^)]*{_TAINTED}"),
-    ),
-    # Express/Koa: res.redirect([status,] url) ; also res.location(...)
-    _Sink(
-        "open_redirect",
-        re.compile(r"\bres\s*\.\s*(?:redirect|location)\s*\("),
-        gate="tainted",
-        legacy=re.compile(rf"\bres\s*\.\s*(?:redirect|location)\s*\([^)]*{_TAINTED}"),
-        args=None,
-    ),
-)
 
 
 # --- Capability-reach patterns (#148b) -------------------------------------
@@ -813,8 +550,8 @@ def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str
             graph[rel].update(_resolve_go_imports(content, go_module, go_dirs))
         elif abs_path.suffix in _PHP_SUFFIXES:
             graph[rel].update(_resolve_php_imports(content, rel, files, root, php_psr4))
-        elif abs_path.suffix in _JAVA_SUFFIXES:
-            continue  # same-file flows only (#239)
+        elif abs_path.suffix in _SAME_FILE_ONLY_SUFFIXES:
+            continue  # same-file flows only (#239, #240)
         else:  # JS/TS
             edges = _resolve_js_imports_named(content, rel, files, root)
             graph[rel].update(_prune_unused_edges(edges, content, ".js"))
@@ -1182,11 +919,23 @@ class _SinkHit:
 
 
 def _call_paren(content: str, match: re.Match[str]) -> int:
-    """Offset of the sink call's opening paren."""
+    """Offset of the sink call's opening paren: the one ending the match, the
+    first inside it, or one right after it — else -1 (not a call)."""
     end = match.end()
     if end > match.start() and content[end - 1] == "(":
         return end - 1
-    return content.find("(", match.start())
+    inside = content.find("(", match.start(), end)
+    if inside != -1:
+        return inside
+    after = end
+    while after < len(content) and content[after] in " \t":
+        after += 1
+    return after if after < len(content) and content[after] == "(" else -1
+
+
+def _line_end(content: str, offset: int) -> int:
+    end = content.find("\n", offset)
+    return len(content) if end == -1 else end
 
 
 def _find_sinks(
@@ -1218,8 +967,10 @@ def _find_sinks(
         # (kind, line) already emitted by the gated pass — so a capability-reach
         # hit never duplicates a request-derived sink at the same spot.
         emitted: set[tuple[str, int]] = set()
-        for sink in _SINK_PATTERNS:
-            if lang not in (sink.langs if sink.langs is not None else _LEGACY_LANGS):
+        for sink in all_sinks():
+            if lang not in sink.langs:
+                continue
+            if sink.requires is not None and sink.requires.search(content) is None:
                 continue
             kind = sink.kind
             for match in sink.pattern.finditer(content):
@@ -1231,12 +982,30 @@ def _find_sinks(
                     if not recall.include_static_args:
                         continue
                     relaxed = True
+                paren = _call_paren(content, match)
+                # The call's argument text (or, for a statement sink, the rest
+                # of the line) — what `when`/`unless` and the token gate read.
+                if sink.args == REST or paren < 0:
+                    arg_lo, arg_hi = match.end(), _line_end(content, match.end())
+                    token_hi = arg_hi
+                else:
+                    arg_lo = paren + 1
+                    arg_hi = arg_lo + len(_extract_call_arg(content, paren))
+                    first_close = content.find(")", arg_lo)
+                    token_hi = len(content) if first_close == -1 else first_close
+                arg_text = content[arg_lo:arg_hi]
+                if sink.when is not None and sink.when.search(arg_text) is None:
+                    continue
+                if sink.unless is not None and sink.unless.search(arg_text) is not None:
+                    continue
                 snippet = _line_snippet(content, match.start())
-                flow = flows.sink_flow(kind, _call_paren(content, match), sink.args, snippet, match.start())
+                flow = flows.sink_flow(kind, paren, sink.args, snippet, match.start(), match.end())
                 traced = flow is not None and (flow.tainted or flow.sanitized)
                 flow_only = False
                 if sink.gate == "tainted":
-                    legacy_ok = sink.legacy is not None and sink.legacy.match(content, match.start()) is not None
+                    # The pre-#239 same-call gate: a request-container token
+                    # between the call's paren and its first `)`.
+                    legacy_ok = sink.token_gate and _TAINTED_RE.search(content, arg_lo, token_hi) is not None
                     if not legacy_ok:
                         if not traced:
                             continue

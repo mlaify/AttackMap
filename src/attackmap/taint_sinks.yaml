@@ -1,0 +1,298 @@
+# Declarative taint sink registry (#240).
+#
+# Loaded once at import by attackmap.taint_sinks and validated there (an
+# invalid entry fails the import for this file; a plugin's invalid entry is
+# skipped with a warning). Analyzer plugins add entries through the
+# `attackmap.taint_sinks` entry-point group (see attackmap.sdk).
+#
+# Entry fields:
+#   id          unique slug (plugins: prefix with the plugin name)
+#   kind        a sink kind from `kinds:` below
+#   langs       languages: python, js, go, php, java, csharp, ruby
+#   regex       the sink signature (Python `re`; must scale linearly — every
+#               pattern is run through tests/test_regex_budget.py)
+#   cwe         primary CWE id (int) — REQUIRED for every sink
+#   gate        any      — dangerous regardless of the argument; fires on reach
+#               tainted  — fires only when request input reaches `args`: a
+#                          request-container token in the call (`token_gate`,
+#                          default true) or a traced intra-procedural flow (#239)
+#   args        dangerous argument(s): list of positional indexes (default [0]),
+#               "all", "receiver" (`url.openStream()`), or "rest" (the rest of
+#               the statement, for keyword/assignment sinks)
+#   when        only fire when the call's arguments match this regex
+#   unless      never fire when the call's arguments match this regex
+#   requires    only consider files whose content matches this regex
+#   flags       optional: [ignorecase, dotall]
+#   base_score  optional exploitability override for this entry
+#   note        free text
+#
+# Single-quoted YAML scalars keep backslashes literal: write regexes as-is.
+
+kinds:
+  sql_execute:            {label: "database (SQL execute)", cwe: 89, base_score: 35}
+  subprocess_shell:       {label: "command execution", cwe: 78, base_score: 35}
+  eval:                   {label: "code eval", cwe: 95, base_score: 35}
+  exec:                   {label: "code exec", cwe: 94, base_score: 35}
+  dynamic_open:           {label: "filesystem open", cwe: 22, base_score: 22, alias_of: path_traversal}
+  path_traversal:         {label: "filesystem path", cwe: 22, base_score: 22}
+  zip_slip:               {label: "archive extraction", cwe: 22, base_score: 30}
+  unsafe_deserialization: {label: "unsafe deserialization", cwe: 502, base_score: 35}
+  ssti:                   {label: "template injection", cwe: 1336, base_score: 30}
+  ssrf:                   {label: "outbound request (SSRF)", cwe: 918, base_score: 20}
+  nosql_injection:        {label: "NoSQL query", cwe: 943, base_score: 25}
+  open_redirect:          {label: "redirect target", cwe: 601, base_score: 15}
+  code_injection:         {label: "dynamic code / dispatch", cwe: 94, base_score: 35}
+  expression_injection:   {label: "expression language (SpEL/OGNL/MVEL/script)", cwe: 917, base_score: 35}
+  jndi_injection:         {label: "JNDI lookup", cwe: 74, base_score: 35}
+  ldap_injection:         {label: "LDAP filter", cwe: 90, base_score: 25}
+  xpath_injection:        {label: "XPath expression", cwe: 643, base_score: 22}
+  header_injection:       {label: "HTTP response header", cwe: 113, base_score: 12}
+  regex_injection:        {label: "regular expression (ReDoS)", cwe: 1333, base_score: 12}
+
+sinks:
+  # --- SQL ------------------------------------------------------------------
+  - {id: sql-cursor-execute, kind: sql_execute, langs: [python, js, go, php], cwe: 89,
+     regex: '\b(?:cursor|conn|connection|db|session|engine|client|pool)\.(?:execute|query|exec_driver_sql)\s*\('}
+  - {id: go-sql-query, kind: sql_execute, langs: [python, js, go, php], cwe: 89,
+     note: "Go database/sql (#102); title-case methods + db-ish receiver avoid url.Query()",
+     regex: '\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)\.(?:Query|QueryRow|Exec)\s*\('}
+  - {id: go-sql-query-context, kind: sql_execute, langs: [python, js, go, php], cwe: 89, args: [1],
+     regex: '\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)\.(?:QueryContext|QueryRowContext|ExecContext)\s*\('}
+  - {id: php-mysqli-query, kind: sql_execute, langs: [python, js, go, php], cwe: 89, args: [1], flags: [ignorecase],
+     regex: '\b(?:mysqli_query|pg_query)\s*\('}
+  - {id: php-pdo-query, kind: sql_execute, langs: [python, js, go, php], cwe: 89, flags: [ignorecase],
+     note: "PDO/db ->query|exec (not ->prepare) and Laravel raw DB:: calls (#103)",
+     regex: '\$\w+->(?:query|exec)\s*\(|\bDB::(?:select|statement|insert|update|delete|raw|unprepared)\s*\('}
+  - {id: java-jdbc, kind: sql_execute, langs: [java], cwe: 89,
+     regex: '\b(?:stmt|statement|st|conn|connection|jdbcTemplate|jdbc|em|entityManager|session)\s*\.\s*(?:executeQuery|executeUpdate|execute|prepareStatement|createQuery|createNativeQuery|query|queryForObject|queryForList|update)\s*\('}
+
+  # --- OS command execution ------------------------------------------------
+  - {id: py-subprocess-shell, kind: subprocess_shell, langs: [python, js, go, php], cwe: 78, flags: [dotall],
+     regex: 'subprocess\.(?:run|call|Popen|check_output|check_call)\s*\([^)]*shell\s*=\s*True'}
+  - {id: py-os-system, kind: subprocess_shell, langs: [python], cwe: 78,
+     regex: '\bos\.(?:system|popen)\s*\('}
+  - {id: node-child-process-exec, kind: subprocess_shell, langs: [python, js, go, php], cwe: 78,
+     regex: 'child_process\s*\.\s*exec(?:Sync)?\s*\('}
+  - {id: node-exec-imported, kind: subprocess_shell, langs: [js], cwe: 78,
+     note: "destructured / promisified exec(Sync) in a file that loads child_process",
+     requires: '[''"](?:node:)?child_process[''"]',
+     regex: '(?<![\w.$])(?:exec|execSync|execAsync)\s*\('}
+  - {id: node-spawn-shell, kind: subprocess_shell, langs: [js], cwe: 78, args: all,
+     requires: '[''"](?:node:)?child_process[''"]',
+     when: '\bshell\s*:\s*true',
+     regex: '(?<![\w$])(?:child_process\s*\.\s*)?spawn(?:Sync)?\s*\('}
+  - {id: go-exec-command, kind: subprocess_shell, langs: [python, js, go, php], cwe: 78, args: all,
+     regex: '\bexec\.Command(?:Context)?\s*\('}
+  - {id: php-shell, kind: subprocess_shell, langs: [python, js, go, php], cwe: 78,
+     regex: '\b(?:system|shell_exec|passthru|proc_open|popen)\s*\('}
+  - {id: php-exec, kind: subprocess_shell, langs: [php], cwe: 78,
+     note: "PHP exec() runs a shell command (previously reported as code exec)",
+     regex: '(?<![\w>$:])exec\s*\('}
+  - {id: java-runtime-exec, kind: subprocess_shell, langs: [java], cwe: 78, args: all,
+     regex: '\bgetRuntime\s*\(\s*\)\s*\.\s*exec\s*\(|\bnew\s+ProcessBuilder\s*\('}
+  - {id: dotnet-process-start, kind: subprocess_shell, langs: [csharp], cwe: 78, args: all,
+     regex: '\bProcess\s*\.\s*Start\s*\(|\bnew\s+ProcessStartInfo\s*\('}
+  - {id: ruby-system, kind: subprocess_shell, langs: [ruby], cwe: 78, args: rest,
+     note: "the argv form system('cmd', arg, …) bypasses the shell — not flagged",
+     unless: '^\s*\(?\s*[''"][^''"#]*[''"]\s*,',
+     regex: '(?<![\w.:])(?:system|exec|spawn)\b(?=\s*[(''"])'}
+  - {id: ruby-backticks, kind: subprocess_shell, langs: [ruby], cwe: 78, args: rest,
+     note: "backtick / %x command strings with interpolation",
+     regex: '`[^`\n]*#\{|%x[\[({][^\n]*#\{'}
+  - {id: ruby-open3, kind: subprocess_shell, langs: [ruby], cwe: 78, args: all,
+     regex: '\bOpen3\s*\.\s*(?:popen3|popen2|popen2e|capture2|capture2e|capture3|pipeline\w*)\b'}
+  - {id: ruby-kernel-open, kind: subprocess_shell, langs: [ruby], cwe: 78, gate: tainted,
+     note: "Kernel#open with a caller-controlled name spawns a process for '|cmd'",
+     regex: '(?<![\w.:])(?:Kernel\s*\.\s*)?open\s*\('}
+
+  # --- code evaluation / dynamic dispatch ----------------------------------
+  - {id: eval, kind: eval, langs: [python, js, go, php, ruby], cwe: 95,
+     regex: '(?<![\w.])eval\s*\('}
+  - {id: py-exec, kind: exec, langs: [python], cwe: 94,
+     regex: '(?<![\w.])exec\s*\('}
+  - {id: py-import-module, kind: code_injection, langs: [python], cwe: 94, gate: tainted,
+     regex: '\bimportlib\.import_module\s*\(|(?<![\w.])__import__\s*\('}
+  - {id: py-getattr-dispatch, kind: code_injection, langs: [python], cwe: 94, gate: tainted, args: [1],
+     regex: '(?<![\w.])getattr\s*\('}
+  - {id: js-new-function, kind: code_injection, langs: [js], cwe: 94, gate: tainted, args: all,
+     regex: '\bnew\s+Function\s*\('}
+  - {id: js-vm-run, kind: code_injection, langs: [js], cwe: 94, gate: tainted,
+     regex: '\bvm\s*\.\s*(?:runInNewContext|runInThisContext|runInContext|compileFunction)\s*\(|\bnew\s+vm\s*\.\s*Script\s*\('}
+  - {id: js-timer-string, kind: code_injection, langs: [js], cwe: 94, gate: tainted,
+     note: "setTimeout/setInterval with a string body; function callbacks are ignored",
+     unless: '^\s*(?:async\b|function\b|\(|[A-Za-z_$][\w$]*\s*=>)',
+     regex: '(?<![\w.])set(?:Timeout|Interval)\s*\('}
+  - {id: ruby-send, kind: code_injection, langs: [ruby], cwe: 94, gate: tainted,
+     regex: '\.\s*(?:send|public_send|__send__|instance_eval|class_eval|instance_variable_get)\s*\('}
+  - {id: ruby-constantize, kind: code_injection, langs: [ruby], cwe: 94,
+     regex: '\bparams\s*\[[^\]\n]{1,80}\]\s*\.\s*(?:safe_)?constantize\b'}
+
+  # --- expression language / JNDI (Java) -----------------------------------
+  - {id: java-spel, kind: expression_injection, langs: [java], cwe: 917, gate: tainted,
+     regex: '\.\s*parseExpression\s*\('}
+  - {id: java-ognl, kind: expression_injection, langs: [java], cwe: 917, gate: tainted,
+     regex: '\bOgnl(?:Util)?\s*\.\s*(?:getValue|setValue|parseExpression|compileExpression)\s*\('}
+  - {id: java-mvel, kind: expression_injection, langs: [java], cwe: 917, gate: tainted,
+     regex: '\bMVEL\s*\.\s*(?:eval|evalToString|compileExpression|executeExpression)\s*\('}
+  - {id: java-script-engine, kind: expression_injection, langs: [java], cwe: 917, gate: tainted,
+     regex: '\b(?:engine|scriptEngine|jsEngine|nashorn|groovyEngine)\s*\.\s*eval\s*\('}
+  - {id: java-jndi-lookup, kind: jndi_injection, langs: [java], cwe: 74, gate: tainted,
+     regex: '\b(?:ctx|context|initialContext|initCtx|ic|jndiContext|namingContext)\s*\.\s*lookup\s*\(|\bnew\s+InitialContext\s*\(\s*\)\s*\.\s*lookup\s*\('}
+
+  # --- LDAP / XPath ----------------------------------------------------------
+  - {id: py-ldap-search, kind: ldap_injection, langs: [python], cwe: 90, gate: tainted, args: [2],
+     note: "python-ldap search_s(base, scope, filterstr)",
+     regex: '\b\w+\s*\.\s*search(?:_s|_st|_ext|_ext_s)\s*\('}
+  - {id: py-ldap3-search, kind: ldap_injection, langs: [python], cwe: 90, gate: tainted, args: [1],
+     note: "ldap3 Connection.search(search_base, search_filter)",
+     regex: '\b(?:conn|connection|ldap_conn|ldap)\s*\.\s*search\s*\('}
+  - {id: java-ldap-search, kind: ldap_injection, langs: [java], cwe: 90, gate: tainted, args: [1],
+     regex: '\b(?:ctx|context|dirContext|ldapContext|ldapTemplate|ldap)\s*\.\s*search\s*\('}
+  - {id: php-ldap-search, kind: ldap_injection, langs: [php], cwe: 90, gate: tainted, args: [2],
+     regex: '\bldap_(?:search|list|read)\s*\('}
+  - {id: py-lxml-xpath, kind: xpath_injection, langs: [python], cwe: 643, gate: tainted,
+     regex: '\.\s*xpath\s*\('}
+  - {id: java-xpath, kind: xpath_injection, langs: [java], cwe: 643, gate: tainted,
+     regex: '\b(?:xpath|xPath|xp|xpathObj)\s*\.\s*(?:evaluate|compile)\s*\('}
+  - {id: js-xpath, kind: xpath_injection, langs: [js], cwe: 643, gate: tainted,
+     regex: '\bxpath\s*\.\s*(?:select1?|evaluate|parse)\s*\('}
+
+  # --- path traversal / file inclusion -------------------------------------
+  - {id: py-open, kind: dynamic_open, langs: [python, js, go, php], cwe: 22, gate: tainted,
+     regex: '(?<![\w.])open\s*\('}
+  - {id: node-fs-read, kind: dynamic_open, langs: [js], cwe: 22, gate: tainted,
+     regex: '\bfs\s*\.\s*(?:promises\s*\.\s*)?(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync)\s*\('}
+  - {id: go-os-open, kind: dynamic_open, langs: [go], cwe: 22, gate: tainted,
+     regex: '\b(?:os\.(?:Open|OpenFile|ReadFile|Create|WriteFile)|ioutil\.ReadFile)\s*\('}
+  - {id: php-file-read, kind: dynamic_open, langs: [php], cwe: 22, gate: tainted,
+     regex: '\b(?:fopen|file_get_contents|readfile|file_put_contents)\s*\('}
+  - {id: java-file, kind: dynamic_open, langs: [java], cwe: 22, gate: tainted, args: all,
+     regex: '\bnew\s+(?:File|FileInputStream|FileReader|FileOutputStream|FileWriter|RandomAccessFile)\s*\(|\b(?:Paths\s*\.\s*get|Path\s*\.\s*of)\s*\(|\bFiles\s*\.\s*(?:readAllBytes|readAllLines|readString|newInputStream|newBufferedReader|lines)\s*\('}
+  - {id: flask-send-file, kind: path_traversal, langs: [python], cwe: 22, gate: tainted,
+     note: "send_from_directory is deliberately absent: it joins with werkzeug safe_join",
+     regex: '(?<![\w.])(?:flask\.)?send_file\s*\('}
+  - {id: express-send-file, kind: path_traversal, langs: [js], cwe: 22, gate: tainted,
+     note: "a `root:` option makes `send` reject ../ — not flagged",
+     unless: '\broot\s*:',
+     regex: '\bres\s*\.\s*(?:sendFile|download)\s*\('}
+  - {id: go-serve-file, kind: path_traversal, langs: [go], cwe: 22, gate: tainted, args: [2],
+     regex: '\bhttp\.ServeFile\s*\('}
+  - {id: php-include, kind: path_traversal, langs: [php], cwe: 98, gate: tainted, args: rest,
+     note: "include/require of a caller-chosen path (LFI/RFI)",
+     regex: '\b(?:include|require)(?:_once)?\b'}
+
+  # --- archive extraction (zip-slip) ----------------------------------------
+  - {id: py-tar-extractall, kind: zip_slip, langs: [python], cwe: 22, args: all,
+     note: "tarfile without filter= (zipfile.extractall already strips ../)",
+     requires: '\btarfile\b',
+     unless: '\bfilter\s*=',
+     regex: '\b(?:tar|tf|tarball|tar_file|tarf|archive|tar_obj)\s*\.\s*extractall\s*\(|\btarfile\.open\s*\([^)\n]*\)\s*\.\s*extractall\s*\('}
+  - {id: node-adm-zip, kind: zip_slip, langs: [js], cwe: 22, args: all,
+     regex: '\.\s*extractAllTo(?:Async)?\s*\(|\bunzipper\s*\.\s*Extract\s*\('}
+
+  # --- unsafe deserialization ------------------------------------------------
+  - {id: unserialize, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
+     regex: '\bunserialize\s*\('}
+  - {id: py-pickle, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
+     regex: '\b(?:cPickle|pickle)\.loads?\s*\('}
+  - {id: py-yaml-load, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
+     note: "yaml.load without a Safe loader in the same call",
+     regex: '\byaml\.load\s*\((?![^)]*(?:Safe|Loader\s*=))'}
+  - {id: py-yaml-unsafe-load, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
+     regex: '\byaml\.unsafe_load\s*\('}
+  - {id: py-marshal, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
+     regex: '\bmarshal\.loads?\s*\('}
+  - {id: marshal-ois-unserialize, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
+     regex: '\bMarshal\.load\s*\(|\bObjectInputStream\b|\bunserialize\s*\('}
+  - {id: py-jsonpickle-dill, kind: unsafe_deserialization, langs: [python], cwe: 502,
+     regex: '\bjsonpickle\.decode\s*\(|\bdill\.loads?\s*\('}
+  - {id: py-shelve-open, kind: unsafe_deserialization, langs: [python], cwe: 502, gate: tainted,
+     regex: '\bshelve\.open\s*\('}
+  - {id: ruby-marshal, kind: unsafe_deserialization, langs: [ruby], cwe: 502,
+     regex: '\bMarshal\.load\s*\('}
+  - {id: dotnet-binaryformatter, kind: unsafe_deserialization, langs: [csharp], cwe: 502,
+     regex: '\bnew\s+(?:BinaryFormatter|LosFormatter|NetDataContractSerializer|SoapFormatter|ObjectStateFormatter)\s*\('}
+  - {id: dotnet-typenamehandling, kind: unsafe_deserialization, langs: [csharp], cwe: 502,
+     regex: '\bTypeNameHandling\s*=\s*TypeNameHandling\s*\.\s*(?:All|Auto|Objects|Arrays)\b'}
+  - {id: java-ois, kind: unsafe_deserialization, langs: [java], cwe: 502,
+     regex: '\bnew\s+ObjectInputStream\s*\('}
+  - {id: java-jackson-default-typing, kind: unsafe_deserialization, langs: [java], cwe: 502,
+     regex: '\.\s*(?:enableDefaultTyping|activateDefaultTyping)\s*\(|\bJsonTypeInfo\s*\.\s*Id\s*\.\s*CLASS\b'}
+  - {id: java-snakeyaml, kind: unsafe_deserialization, langs: [java], cwe: 502, args: all,
+     unless: 'SafeConstructor',
+     regex: '\bnew\s+Yaml\s*\('}
+  - {id: java-xstream, kind: unsafe_deserialization, langs: [java], cwe: 502,
+     regex: '\b(?:xstream|xStream|XSTREAM)\s*\.\s*fromXML\s*\('}
+
+  # --- server-side template injection ---------------------------------------
+  - {id: flask-render-template-string, kind: ssti, langs: [python, js, go, php], cwe: 1336, gate: tainted,
+     regex: '\brender_template_string\s*\('}
+  - {id: jinja-template, kind: ssti, langs: [python, js, go, php], cwe: 1336, gate: tainted,
+     regex: '\bTemplate\s*\('}
+
+  # --- SSRF -------------------------------------------------------------------
+  - {id: py-requests, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
+     regex: '\brequests\.(?:get|post|put|delete|patch|head)\s*\('}
+  - {id: py-requests-request, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted, args: [1],
+     regex: '\brequests\.request\s*\('}
+  - {id: py-httpx, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
+     regex: '\bhttpx\.(?:get|post|put|delete|patch|head|Client)\s*\('}
+  - {id: py-httpx-request, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted, args: [1],
+     regex: '\bhttpx\.request\s*\('}
+  - {id: py-urlopen, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
+     regex: '\b(?:urlopen|urlretrieve)\s*\('}
+  - {id: js-http-client, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
+     regex: '\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\('}
+  - {id: go-http-get, kind: ssrf, langs: [go], cwe: 918, gate: tainted,
+     regex: '\bhttp\.(?:Get|Head|Post|PostForm)\s*\('}
+  - {id: go-http-new-request, kind: ssrf, langs: [go], cwe: 918, gate: tainted, args: [1],
+     regex: '\bhttp\.NewRequest\s*\('}
+  - {id: go-http-new-request-ctx, kind: ssrf, langs: [go], cwe: 918, gate: tainted, args: [2],
+     regex: '\bhttp\.NewRequestWithContext\s*\('}
+  - {id: php-curl-init, kind: ssrf, langs: [php], cwe: 918, gate: tainted,
+     regex: '\bcurl_init\s*\('}
+  - {id: php-curl-url, kind: ssrf, langs: [php], cwe: 918, gate: tainted, args: [2],
+     regex: '\bcurl_setopt\s*\(\s*\$\w+\s*,\s*CURLOPT_URL\b'}
+  - {id: java-http-client, kind: ssrf, langs: [java], cwe: 918, gate: tainted,
+     regex: '\bHttpRequest\s*\.\s*newBuilder\s*\(|\brestTemplate\s*\.\s*(?:getForObject|getForEntity|postForObject|postForEntity|exchange)\s*\('}
+  - {id: java-url-open, kind: ssrf, langs: [java], cwe: 918, gate: tainted, args: receiver,
+     regex: '\.\s*(?:openConnection|openStream)\s*\(\s*\)'}
+
+  # --- NoSQL ----------------------------------------------------------------
+  - {id: mongo-filter-request, kind: nosql_injection, langs: [python, js, go, php], cwe: 943,
+     note: "a raw request object as the filter; a bare .find( is overwhelmingly array iteration",
+     regex: '\.(?:find|findOne|findOneAndUpdate|update|updateOne|updateMany|remove|deleteOne|deleteMany|aggregate|count|countDocuments)\s*\(\s*(?:req|request|body|query|params|payload|user_input|user_data|form_data)\s*(?:\.\s*\w|\[)'}
+  - {id: mongo-where, kind: nosql_injection, langs: [python, js, go, php], cwe: 943,
+     regex: '\$where'}
+
+  # --- open redirect ----------------------------------------------------------
+  - {id: redirect, kind: open_redirect, langs: [python, js, go, php], cwe: 601, gate: tainted,
+     regex: '\bredirect\s*\('}
+  - {id: express-redirect, kind: open_redirect, langs: [python, js, go, php], cwe: 601, gate: tainted, args: all,
+     regex: '\bres\s*\.\s*(?:redirect|location)\s*\('}
+
+  # --- HTTP response headers (CRLF / header value control) ---------------
+  - {id: py-response-header-assign, kind: header_injection, langs: [python], cwe: 113, gate: tainted, args: rest,
+     regex: '\b(?:response|resp|res|r)\s*\.\s*headers\s*\[[^\]\n]{1,200}\]\s*=(?!=)'}
+  - {id: py-set-header, kind: header_injection, langs: [python], cwe: 113, gate: tainted, args: [1],
+     regex: '\.\s*(?:set_header|add_header)\s*\('}
+  - {id: express-set-header, kind: header_injection, langs: [js], cwe: 113, gate: tainted, args: [1],
+     regex: '\bres\s*\.\s*(?:setHeader|header|set|append)\s*\('}
+  - {id: go-header-set, kind: header_injection, langs: [go], cwe: 113, gate: tainted, args: [1],
+     regex: '\.\s*Header\s*\(\s*\)\s*\.\s*(?:Set|Add)\s*\('}
+  - {id: php-header, kind: header_injection, langs: [php], cwe: 113, gate: tainted,
+     regex: '(?<![\w>$:])header\s*\('}
+  - {id: java-set-header, kind: header_injection, langs: [java], cwe: 113, gate: tainted, args: [1],
+     regex: '\b(?:response|resp|res|httpResponse|servletResponse)\s*\.\s*(?:setHeader|addHeader)\s*\('}
+
+  # --- user-controlled regular expressions (ReDoS) --------------------------
+  - {id: py-re-compile, kind: regex_injection, langs: [python], cwe: 1333, gate: tainted,
+     regex: '\bre\.(?:compile|search|match|fullmatch|findall|finditer|split|sub|subn)\s*\('}
+  - {id: js-regexp, kind: regex_injection, langs: [js], cwe: 1333, gate: tainted,
+     regex: '\bnew\s+RegExp\s*\(|(?<![\w.$])RegExp\s*\('}
+  - {id: go-regexp, kind: regex_injection, langs: [go], cwe: 1333, gate: tainted,
+     regex: '\bregexp\.(?:Compile|MustCompile|CompilePOSIX|MustCompilePOSIX|MatchString)\s*\('}
+  - {id: java-pattern, kind: regex_injection, langs: [java], cwe: 1333, gate: tainted,
+     regex: '\bPattern\s*\.\s*(?:compile|matches)\s*\('}
+  - {id: php-preg, kind: regex_injection, langs: [php], cwe: 1333, gate: tainted,
+     regex: '\bpreg_(?:match|match_all|replace|replace_callback|split|grep)\s*\('}

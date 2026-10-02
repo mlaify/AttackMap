@@ -38,9 +38,14 @@ from .srcpaths import is_test_file
 # file open are MEDIUM (narrower or lower-impact). `sql_execute` is HIGH — across
 # a trust boundary a raw query on caller-supplied data is the classic injection.
 _HIGH_SINKS = frozenset(
-    {"sql_execute", "subprocess_shell", "eval", "exec", "unsafe_deserialization", "ssti"}
+    {
+        "sql_execute", "subprocess_shell", "eval", "exec", "unsafe_deserialization", "ssti",
+        "code_injection", "expression_injection", "jndi_injection", "zip_slip",
+    }
 )
-_MEDIUM_SINKS = frozenset({"ssrf", "nosql_injection", "dynamic_open"})
+_MEDIUM_SINKS = frozenset(
+    {"ssrf", "nosql_injection", "dynamic_open", "path_traversal", "ldap_injection", "xpath_injection"}
+)
 _DANGEROUS_SINKS = _HIGH_SINKS | _MEDIUM_SINKS
 
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})

@@ -473,6 +473,17 @@ class TaintChain(_RedactedEvidence):
         "ssrf",
         "nosql_injection",
         "open_redirect",
+        # #240 — `dynamic_open` stays as the schema-compatible alias of
+        # `path_traversal` (#200).
+        "path_traversal",
+        "zip_slip",
+        "code_injection",
+        "expression_injection",
+        "jndi_injection",
+        "ldap_injection",
+        "xpath_injection",
+        "header_injection",
+        "regex_injection",
     ]
     sink_file: str
     sink_line: int | None = None

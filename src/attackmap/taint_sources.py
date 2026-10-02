@@ -31,6 +31,9 @@ import re
 
 # Language keys used throughout the flow pass.
 PY, JS, GO, PHP, JAVA = "python", "js", "go", "php", "java"
+# Indexed for sinks (#240); C# also gets flow analysis, Ruby only the
+# same-call request-token gate (no brace-delimited functions to scope).
+CSHARP, RUBY = "csharp", "ruby"
 
 _LANG_BY_SUFFIX = {
     ".py": PY,
@@ -38,6 +41,8 @@ _LANG_BY_SUFFIX = {
     ".go": GO,
     ".php": PHP,
     ".java": JAVA,
+    ".cs": CSHARP,
+    ".rb": RUBY,
 }
 
 
@@ -164,6 +169,14 @@ SOURCES: dict[str, tuple[tuple[str, re.Pattern[str], str], ...]] = {
         ("cookie", re.compile(r"\b\w+\s*\.\s*getCookies\s*\(\s*\)"), "high"),
         ("env", re.compile(r"\bSystem\s*\.\s*(?:getenv|getProperty)\s*\("), "low"),
     ),
+    CSHARP: (
+        ("query", re.compile(r"\bRequest\s*\.\s*(?:Query|QueryString)\b"), "high"),
+        ("body", re.compile(r"\bRequest\s*\.\s*(?:Form|Body|ReadFromJsonAsync)\b"), "high"),
+        ("header", re.compile(r"\bRequest\s*\.\s*Headers\b"), "high"),
+        ("cookie", re.compile(r"\bRequest\s*\.\s*Cookies\b"), "high"),
+        ("path_param", re.compile(r"\bRequest\s*\.\s*(?:RouteValues|Path)\b"), "high"),
+        ("env", re.compile(r"\bEnvironment\s*\.\s*GetEnvironmentVariable\s*\("), "low"),
+    ),
 }
 
 # Handler parameters bound from the request by a framework annotation /
@@ -176,6 +189,12 @@ PARAM_ANNOTATIONS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
         ("body", re.compile(r"@(?:RequestBody|ModelAttribute|RequestPart|FormParam|BeanParam)\b")),
         ("header", re.compile(r"@(?:RequestHeader|HeaderParam)\b")),
         ("cookie", re.compile(r"@(?:CookieValue|CookieParam)\b")),
+    ),
+    CSHARP: (
+        ("query", re.compile(r"\[\s*FromQuery\b")),
+        ("path_param", re.compile(r"\[\s*FromRoute\b")),
+        ("body", re.compile(r"\[\s*From(?:Body|Form)\b")),
+        ("header", re.compile(r"\[\s*FromHeader\b")),
     ),
     JS: (
         ("query", re.compile(r"@Query\s*\(")),
@@ -247,7 +266,27 @@ SANITIZERS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
     "open_redirect": (
         ("url_for", re.compile(r"\burl_for\s*\(")),
     ),
+    # #240 kinds
+    "regex_injection": (
+        ("regex escape", re.compile(
+            r"\bre\.escape\s*\(|\b(?:_|lodash)\.escapeRegExp\s*\(|\bescapeStringRegexp\s*\(|\bescapeRegExp\s*\("
+            r"|\bPattern\s*\.\s*quote\s*\(|\bregexp\.QuoteMeta\s*\(|\bpreg_quote\s*\("
+        )),
+    ),
+    "ldap_injection": (
+        ("LDAP filter escape", re.compile(
+            r"\bescape_filter_chars\s*\(|\bldap_escape\s*\(|\bLdapEncoder\s*\.\s*filterEncode\s*\("
+            r"|\bEncode\s*\.\s*forLdap\s*\(|\bescape_filter\s*\("
+        )),
+    ),
+    "xpath_injection": (
+        ("XPath escape", re.compile(r"\bEncode\s*\.\s*forXPath\s*\(|\bxpath_escape\s*\(")),
+    ),
+    "header_injection": (
+        ("URL-encode", re.compile(r"\b(?:encodeURIComponent|urllib\.parse\.quote|quote|rawurlencode|urlencode|url\.QueryEscape|URLEncoder\s*\.\s*encode)\s*\(")),
+    ),
 }
+SANITIZERS["path_traversal"] = SANITIZERS["dynamic_open"]
 
 # Type coercions neutralize every string-injection kind: an int can't carry
 # a payload. Applied for all sink kinds.
@@ -298,6 +337,8 @@ GUARDS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
     "subprocess_shell": (),
     "sql_execute": (),
 }
+GUARDS["path_traversal"] = GUARDS["dynamic_open"]
+GUARDS["zip_slip"] = GUARDS["dynamic_open"]
 
 # Guards valid for every sink kind: an explicit allow-list membership test or a
 # full-match regex validation of the value.
@@ -343,4 +384,13 @@ ALL_SANITIZER_KINDS: tuple[str, ...] = (
     "ssrf",
     "nosql_injection",
     "open_redirect",
+    "path_traversal",
+    "zip_slip",
+    "code_injection",
+    "expression_injection",
+    "jndi_injection",
+    "ldap_injection",
+    "xpath_injection",
+    "header_injection",
+    "regex_injection",
 )
