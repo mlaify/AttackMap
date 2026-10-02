@@ -121,3 +121,10 @@ def test_line_helpers() -> None:
     assert line_snippet(content, 2) == "bb"
     assert line_snippet(content, 9) == ""
     assert line_snippet("x" * 300, 1, max_len=10) == "x" * 9 + "…"
+
+
+def test_line_snippet_agrees_with_line_of_across_form_feeds() -> None:
+    content = "/* a */\n\f\nint x;\r\n\x85 y\nmain();\n"
+    offset = content.index("main")
+    assert line_snippet(content, line_of(content, offset)) == "main();"
+    assert line_snippet(content, 3) == "int x;"
