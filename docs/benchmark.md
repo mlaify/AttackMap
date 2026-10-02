@@ -57,3 +57,22 @@ epics attack: injection depth, unauthenticated admin/internal routes, and broade
 BOLA coverage. The corpus grows as new labeled cases (known-vuln and known-clean)
 are added; the standing invariant enforced by tests is **precision = 100%** on the
 curated set — a regression that introduces a false positive fails CI.
+
+## v0.6.0 — intra-procedural taint flows (#239)
+
+The taint pass now traces a request value through local assignments to the
+sink (`u = request.args["u"]` → `requests.get(u)`), binds sanitizers to that
+flow, and raises a dedicated SQL-injection / path-traversal finding only when a
+flow is traced. A new labelled case, `express-docs-demo`
+(`evals/benchmark/cases/`), adds two-line JS path-traversal and SSRF routes plus
+their known-clean twins (basename-reduced path, fixed-host URL).
+
+| Detector class | Precision before → after | Recall before → after |
+|---|---|---|
+| `injection` | — → 100% | 0% → 100% (0/5 → 5/5) |
+| `bola` | 100% → 100% | 50% → 50% |
+| `unauth_state_change` | 100% → 100% | 40% → 40% |
+| `webhook_exposure` | 100% → 100% | 100% → 100% |
+
+"Before" is v0.5.0 scored against the same (extended) corpus. The full run
+history lives in [`evals/benchmark/HISTORY.md`](../evals/benchmark/HISTORY.md).

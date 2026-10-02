@@ -67,9 +67,11 @@ CI setup: **[install guide](https://docs.mlaify.io/install/)**.
 - **Attack-surface recon** — routes, data stores, external calls, auth signals,
   secrets, frameworks, entrypoints; every signal carries a `file:line` citation,
   evidence snippet, and confidence.
-- **Data-flow / injection taint** (Python, JS/TS, Go, PHP) — SSRF, SSTI, NoSQL,
-  unsafe deserialization, eval/exec/shell, SQL, open redirect — sanitizer-aware,
-  with a deterministic 0–100 **exploitability score**.
+- **Data-flow / injection taint** (Python, JS/TS, Go, PHP, Java) — SSRF, SSTI,
+  NoSQL, unsafe deserialization, eval/exec/shell, SQL, path traversal, open
+  redirect — traced source → variable → sink inside each handler, with
+  flow-bound sanitizers, SARIF `codeFlows`, and a deterministic 0–100
+  **exploitability score**.
 - **Novel vuln classes** — prototype pollution, mass assignment, JWT, XXE, ReDoS,
   insecure upload, GraphQL exposure; **BOLA/IDOR** authorization; insecure-crypto
   & web-hardening; anomaly/outlier + signature-free **invariant mining**.
@@ -122,8 +124,11 @@ documented in the [CLI reference](https://docs.mlaify.io/cli/).
   SIEM team, not deployable rules.
 - **Not a replacement for dedicated SCA.** `--cve` folds CVE signal into an
   architecture-aware narrative; Trivy/Grype/Dependabot go deeper on resolution.
-- **Not a sound taint engine.** The data-flow pass is a call-graph-refined
-  import-graph walk — precision over recall; findings are evidence, not proof.
+- **Not a sound taint engine.** Taint follows local assignments *within* one
+  function (intra-procedural def-use) and a call-graph-refined import walk
+  *across* files; it does not follow a value into a helper it is passed to, and
+  branches are not distinguished. Precision over recall; findings are evidence,
+  not proof. See the limits in `src/attackmap/taint_flow.py`.
 - **Not exhaustive.** Heuristic by design, with explicit confidence tiers and
   guardrails for stale signals.
 

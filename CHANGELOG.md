@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Reusable-workflow `uses:` jobs are now pin-checked. Docker `action.yml` images are checked as well as composite steps.
   - Workflow findings now carry an `external/cwe/cwe-N` tag.
   - Behavior change: `uses: docker://img:tag` without `@sha256:` was previously skipped and is now reported. A workflow with no `permissions:` block gets a low finding (medium on an untrusted trigger).
+- **Intra-procedural taint propagation (#239).** The taint pass now follows a request value through local assignments to the sink, so the two-line `u = request.args["u"]` → `requests.get(u)` shape is caught in Python (via `ast`), JS/TS, Go, PHP and Java (brace-balanced, strings masked).
+  - Per-language source catalog in `taint_sources.py`: query, body, path params, headers, cookies, uploaded filenames and queue/event payloads, plus framework-bound handler parameters (Flask/FastAPI route params, Spring `@RequestParam`, NestJS `@Query()`). Env/argv are low-weight and never satisfy the request gate.
+  - Only the dangerous argument counts (the URL, not the JSON body; the query, not its bound params), and a URL whose literal prefix pins scheme and host is not SSRF.
+  - `TaintChain` gains `source_kind`, `source_line` and `flow` (source → propagation → sanitizer/guard → sink steps); taint findings cite each traced route and emit SARIF `codeFlows` on the sink result.
+  - New flow-confirmed findings `sql-injection` and `path-traversal`, raised only when a source is traced into the query / path. Path-traversal and SSRF sinks for JS (`fs.readFile*`), Go (`os.Open`/`ReadFile`, `http.Get`/`NewRequest`), PHP (`fopen`/`file_get_contents`/`readfile`, cURL) and Java (`Paths.get`, `new File`, `Files.read*`, `openStream`, `HttpRequest.newBuilder`), and Java SQL / `Runtime.exec` / `ProcessBuilder` sinks (same-file only — Java imports are not resolved).
+  - `attackmap bench`: injection recall 0% → 100% at 100% precision; new labelled case `express-docs-demo`. Before/after in `evals/benchmark/HISTORY.md`.
 - **Route-level auth in the plugin contract (#256).** `Route` gains `auth` (`"required"` / `"anonymous"` / `"unknown"`), `guards` and `guard_evidence`; the last is redacted like other evidence. When a plugin declares the state:
   - the unauthenticated state-changing-route finding uses it;
   - attack-surface `auth_signals` use it instead of the ±40-line file window, so a `[AllowAnonymous]` route no longer inherits its neighbour's `[Authorize]`;
@@ -70,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `--verify`, `--verify-votes`, `--hunt-lenses`, `--hunt-rounds` or `--hunt-budget` without `--hunt`
     - `--diff-output` without `--baseline`
     - out-of-range values: `--verify-votes 0`, a `--hunt-lenses` value outside 1–6, `--hunt-rounds 0`, a negative `--hunt-budget`
+- **Sanitizers are bound to the flow (#239).** A sanitizer counts only when the tainted value passes through it (`u = secure_filename(u)`) or a dominating guard checks a value derived from it (`if ip.is_private: abort(400)`); it is no longer enough for one to appear anywhere in the file. `re.escape` / `html.escape` no longer neutralize SSTI, and `ipaddress.ip_address(` alone no longer neutralizes SSRF. The file-level table remains only as a fallback for sinks outside any analyzable function.
+- **JS bare import specifiers** (`require("path")`) no longer resolve to a same-named sibling file in the taint import graph.
 
 ### Fixed
 

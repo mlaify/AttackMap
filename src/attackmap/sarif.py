@@ -18,7 +18,7 @@ from typing import Any
 
 from .srcpaths import evidence_locations
 from .md import md_text
-from .models import AttackPath, Finding, finding_rule_id
+from .models import AttackPath, Finding, TaintFlowStep, finding_rule_id
 from .taxonomy import CWE_NAMES, cwe_tag, cwe_url, taxonomy_for
 
 
@@ -191,6 +191,30 @@ def _stable_hash(*parts: object) -> str:
     return hashlib.sha256("\x1f".join(str(p) for p in parts).encode("utf-8")).hexdigest()[:32]
 
 
+def _code_flow(steps: list[TaintFlowStep]) -> dict[str, Any]:
+    """A traced source→sink flow (#239) as a SARIF ``codeFlow``: one
+    threadFlow whose locations are the source, each propagation /
+    sanitizer / guard step, and the sink."""
+    locations = []
+    for step in steps:
+        loc = _sarif_location(step.file, step.line)
+        loc["message"] = {"text": f"{step.kind}: {step.evidence_text or ''}".rstrip(": ")}
+        locations.append({"location": loc, "kinds": [step.kind]})
+    source = steps[0] if steps else None
+    text = f"{source.evidence_text} flows to the sink" if source and source.evidence_text else "taint flow"
+    return {"message": {"text": text}, "threadFlows": [{"locations": locations}]}
+
+
+def _flows_by_sink(finding: Finding) -> dict[tuple[str, int | None], list[dict[str, Any]]]:
+    out: dict[tuple[str, int | None], list[dict[str, Any]]] = {}
+    for steps in finding.code_flows:
+        if not steps:
+            continue
+        sink = steps[-1]
+        out.setdefault((sink.file.replace("\\", "/"), sink.line), []).append(_code_flow(steps))
+    return out
+
+
 def _build_result(finding: Finding, *, suppression_reason: str | None = None) -> list[dict[str, Any]]:
     """One SARIF result per finding instance (#230).
 
@@ -238,10 +262,18 @@ def _build_result(finding: Finding, *, suppression_reason: str | None = None) ->
     if not instances:
         # Repo-level finding (no citable file): identity is the rule + title.
         return [result(None, _stable_hash(rule_id, finding.title))]
-    return [
+    results = [
         result(_sarif_location(file, line), _stable_hash(rule_id, fp or f"{file}:{line}"))
         for file, line, fp in instances
     ]
+    # Traced taint flows (#239) ride on the result at their sink location.
+    flows = _flows_by_sink(finding)
+    if flows:
+        for r, (file, line, _) in zip(results, instances):
+            matched = flows.pop((file, line), None)
+            if matched:
+                r["codeFlows"] = matched
+    return results
 
 
 def _build_results(findings: list[Finding]) -> list[dict[str, Any]]:
