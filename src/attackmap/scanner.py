@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .progress import ScanProgress
 
+from .srcpaths import in_skipped_dir, is_skipped_dir
 from .redact import mask_secret
 from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
@@ -388,9 +389,11 @@ _NOISY_SYMLINK_PARTS = {"node_modules", ".git", ".venv", "venv", "dist", "build"
 
 
 def should_scan(path: Path) -> bool:
+    """``path`` is relative to the scanned root (#215): only directories
+    inside the repo decide whether a file is skipped."""
     if path.name.startswith("."):
         return False
-    if any(part in {"node_modules", ".git", ".venv", "dist", "build"} for part in path.parts):
+    if in_skipped_dir(path):
         return False
     return path.suffix in CODE_EXTENSIONS
 
@@ -718,8 +721,8 @@ def scan_repo(
             result.limitations.append(f"symlink not followed: {rel.as_posix()}")
 
     scan_files = []
-    for p in walk_repo(root_path, on_symlink=_record_symlink):
-        if not should_scan_with_suffixes(p, suffixes):
+    for p in walk_repo(root_path, prune=is_skipped_dir, on_symlink=_record_symlink):
+        if not should_scan_with_suffixes(p.relative_to(root_path), suffixes):
             continue
         if is_oversized(p):
             # #236: a multi-MB file is generated or hostile; reading and

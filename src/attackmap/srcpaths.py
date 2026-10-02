@@ -195,3 +195,40 @@ def evidence_locations(evidence: list[str]) -> list[tuple[str, int | None]]:
                 seen.add(item)
                 out.append(item)
     return out
+
+
+# --- Directories never scanned (#215) ----------------------------------------
+#
+# One set for every core walker. Matched against directory names *relative to
+# the scanned root* — never against the absolute path, so a checkout that
+# lives under e.g. /opt/atlassian/pipelines/agent/build is still scanned.
+SKIP_DIRS = frozenset(
+    {
+        "node_modules",
+        ".git",
+        ".attackmap",       # CLI cache / output dir
+        ".attackmap-gui",   # the macOS GUI's report output dir
+        ".venv",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+        ".next",
+        ".turbo",
+        "out",
+        "target",
+        ".tox",
+    }
+)
+
+
+def is_skipped_dir(name: str) -> bool:
+    """`walk_repo(prune=...)` callback: never descend into these."""
+    return name in SKIP_DIRS
+
+
+def in_skipped_dir(rel: "str | os.PathLike[str]") -> bool:
+    """True when a *repo-relative* file path sits under a skipped directory."""
+    from pathlib import PurePath
+
+    return any(part in SKIP_DIRS for part in PurePath(rel).parts[:-1])

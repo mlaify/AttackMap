@@ -92,6 +92,25 @@ def _select_modules(module: list[str], install_missing: bool) -> list:
         raise typer.BadParameter(str(exc)) from exc
 
 
+def _warn_if_nothing_scanned(scan) -> None:  # type: ignore[no-untyped-def]
+    """A run that scanned nothing is almost always a setup problem — say so
+    instead of reporting a clean "limited attack surface" (#215)."""
+    if scan.files_scanned:
+        return
+    root = Path(scan.root)
+    try:
+        has_files = any(p.is_file() for p in root.iterdir())
+    except OSError:
+        has_files = False
+    if has_files or any(root.glob("*/*")):
+        typer.echo(
+            "Warning: no source files were scanned. Check the path, and whether every file "
+            "is under a skipped directory (node_modules, dist, build, out, target, …) or in an "
+            "unsupported language.",
+            err=True,
+        )
+
+
 def _ensure_output_dir(path: Path) -> Path:
     try:
         return ensure_output_dir(path)
@@ -265,6 +284,7 @@ def _run_fleet(
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(2) from exc
         typer.echo(render_console_summary(scan, findings, attack_paths))
+        _warn_if_nothing_scanned(scan)
         fleet.results.append(
             FleetRepoResult(
                 repo_id=repo_id,
@@ -686,6 +706,7 @@ def analyze(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(2) from exc
     typer.echo(render_console_summary(scan, findings, attack_paths))
+    _warn_if_nothing_scanned(scan)
     typer.echo("")
     typer.echo(f"Reports written to: {Path(output).resolve()}")
 

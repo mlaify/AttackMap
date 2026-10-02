@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Repos inside a `build/` or `dist/` directory are scanned (#215).**
+  - Skip directories were matched against the *absolute* path. A checkout under any `build`, `dist`, `out` or `.venv` directory, such as Bitbucket Pipelines' `/opt/atlassian/pipelines/agent/build`, therefore scanned 0 files, and the JS analyzer didn't even run.
+  - Skip directories are now matched relative to the scanned root, using one shared set (`srcpaths.SKIP_DIRS`, which now includes `venv`, `target` and `.tox`). Skipped trees are pruned during the walk, so they aren't walked at all.
+  - The CLI warns when a non-empty directory produced no scanned files.
 - **Malformed suppress files no longer crash the CLI (#225).** `paths: 5`, a non-UTF-8 file or an int-typed id used to raise. Every problem is now a `Suppression warning:` naming the entry, and only that entry is skipped. The cases covered:
   - non-string `paths`
   - a mapping-shaped `suppress:`
