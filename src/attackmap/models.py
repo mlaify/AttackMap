@@ -567,6 +567,16 @@ class FindingLocation(BaseModel):
     fingerprint: str | None = None
 
 
+class FindingTaxonomy(BaseModel):
+    """Standard ids for a finding's rule (#250), looked up by `rule_id` in
+    `attackmap.taxonomy` — never inferred from title or evidence text."""
+
+    cwe: list[str] = Field(default_factory=list)  # ["CWE-918"]
+    owasp: list[str] = Field(default_factory=list)  # ["A10:2021", "API7:2023"]
+    asvs: list[str] = Field(default_factory=list)  # ASVS 4.0.3, ["V12.6.1"]
+    attack: list[str] = Field(default_factory=list)  # ["T1190", "T1552.005"]
+
+
 class Finding(_RedactedEvidence):
     title: str
     severity: Literal["low", "medium", "high"]
@@ -593,6 +603,37 @@ class Finding(_RedactedEvidence):
     # findings that sit on a route→sink path; `None` when not applicable.
     exploitability: int | None = None
     exploitability_tier: ExploitabilityTier | None = None
+    # CWE / OWASP / ASVS / ATT&CK ids for `rule_id` (#250). Filled from the
+    # registry on construction; `None` for rules it doesn't know.
+    taxonomy: FindingTaxonomy | None = None
+
+    @model_validator(mode="after")
+    def _apply_rule_taxonomy(self) -> "Finding":
+        from .taxonomy import ATTACK_TECHNIQUES, attack_url, taxonomy_for
+
+        entry = taxonomy_for(self.rule_id)
+        if entry is None:
+            return self
+        if self.taxonomy is None:
+            object.__setattr__(
+                self,
+                "taxonomy",
+                FindingTaxonomy(
+                    cwe=entry.cwe_ids, owasp=list(entry.owasp), asvs=list(entry.asvs), attack=list(entry.attack)
+                ),
+            )
+        if entry.attack:
+            # The registry is authoritative for ATT&CK on registered rules.
+            object.__setattr__(
+                self,
+                "attack_techniques",
+                [
+                    AttackTechnique(technique_id=tid, name=name, tactic=tactic, url=attack_url(tid))
+                    for tid in entry.attack
+                    for name, tactic in [ATTACK_TECHNIQUES[tid]]
+                ],
+            )
+        return self
 
 
 class AttackPath(BaseModel):
@@ -697,6 +738,8 @@ class DetectionOpportunity(BaseModel):
     suggested_rule: str  # human-readable rule sketch (Sigma/KQL/Splunk-style)
     related_insight_ids: list[str] = Field(default_factory=list)
     related_finding_titles: list[str] = Field(default_factory=list)
+    # Rule ids of the linked findings (#250), linked via the taxonomy registry.
+    related_rule_ids: list[str] = Field(default_factory=list)
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)
 
 

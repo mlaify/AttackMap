@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .attack_taxonomy import techniques_for_finding, techniques_for_insight
+from .taxonomy import taxonomy_for
 from .models import (
     AttackTechnique,
     DetectionOpportunity,
@@ -29,6 +30,7 @@ def _opportunity(
     suggested_rule: str,
     related_insight_ids: list[str] | None = None,
     related_finding_titles: list[str] | None = None,
+    related_rule_ids: list[str] | None = None,
     attack_techniques: list[AttackTechnique] | None = None,
 ) -> DetectionOpportunity:
     return DetectionOpportunity(
@@ -39,6 +41,7 @@ def _opportunity(
         suggested_rule=suggested_rule,
         related_insight_ids=related_insight_ids or [],
         related_finding_titles=related_finding_titles or [],
+        related_rule_ids=related_rule_ids or [],
         attack_techniques=attack_techniques or [],
     )
 
@@ -283,8 +286,8 @@ def generate_detection_opportunities(
 ) -> list[DetectionOpportunity]:
     """Produce one DetectionOpportunity per insight kind observed.
 
-    Findings are folded into existing opportunities by title-keyword overlap so
-    we don't double-count (e.g., a heuristic finding about webhook auth and the
+    Findings are folded into existing opportunities by their rule id's
+    ATT&CK techniques so we don't double-count (e.g., a heuristic finding about webhook auth and the
     `sensitive_asset_reachability` insight share a detection rule).
     """
     opportunities: list[DetectionOpportunity] = []
@@ -300,15 +303,22 @@ def generate_detection_opportunities(
         opportunities.append(generator(insight))
 
     if findings:
+        # Link findings by rule id (#250): a finding relates to an opportunity
+        # when its rule's registered ATT&CK techniques share a technique
+        # (parent id) with the opportunity's — ignoring T1190, which nearly
+        # every web finding carries. No title-word matching.
         for opportunity in opportunities:
-            related: list[str] = []
-            haystack_keywords = opportunity.title.lower().split()
+            opp_parents = {_parent(t.technique_id) for t in opportunity.attack_techniques} - _UBIQUITOUS
+            if not opp_parents:
+                continue
             for finding in findings:
-                title_lower = finding.title.lower()
-                if any(keyword in title_lower for keyword in haystack_keywords if len(keyword) > 4):
-                    related.append(finding.title)
-            if related:
-                opportunity.related_finding_titles.extend(related[:3])
+                entry = taxonomy_for(finding.rule_id)
+                if entry is None or not (opp_parents & {_parent(t) for t in entry.attack}):
+                    continue
+                if finding.rule_id not in opportunity.related_rule_ids:
+                    opportunity.related_rule_ids.append(finding.rule_id)  # type: ignore[arg-type]
+                    if len(opportunity.related_finding_titles) < 3:
+                        opportunity.related_finding_titles.append(finding.title)
 
         finding_techniques: list[AttackTechnique] = []
         seen_tids: set[str] = set()
@@ -333,11 +343,19 @@ def generate_detection_opportunities(
                         "`{finding_id, route, status_code}` payload, and aggregate in the SIEM."
                     ),
                     related_finding_titles=[f.title for f in findings[:5]],
+                    related_rule_ids=sorted({f.rule_id for f in findings if f.rule_id})[:10],
                     attack_techniques=finding_techniques[:6],
                 )
             )
 
     return opportunities
+
+
+_UBIQUITOUS = frozenset({"T1190"})
+
+
+def _parent(technique_id: str) -> str:
+    return technique_id.split(".", 1)[0]
 
 
 __all__ = ["generate_detection_opportunities"]

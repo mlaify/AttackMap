@@ -93,6 +93,16 @@ align on direction.
   evidence-text snippet, and a confidence score. See `src/attackmap/sdk/` for
   the analyzer SDK contract.
 
+### Adding a new detector rule
+
+Every rule id that `attackmap rules` lists needs a taxonomy entry: at least
+one CWE and one OWASP category (Top 10 2021 or API Security Top 10 2023), plus
+optional ASVS 4.0.3 and ATT&CK ids. Add one line to `RULE_TAXONOMY` in
+[`src/attackmap/taxonomy.py`](src/attackmap/taxonomy.py); the module docstring
+explains the fields. `tests/test_taxonomy.py` fails for any unregistered rule.
+Look the ids up at cwe.mitre.org, owasp.org and attack.mitre.org rather than
+from memory, and add any new CWE or technique to the catalogs in that file.
+
 ### Adding a new analyzer plugin
 
 The full developer cookbook — scaffolding, the contract, testing, and

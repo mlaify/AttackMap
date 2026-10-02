@@ -92,10 +92,68 @@
                         "null"
                       ],
                       "minimum": 1
+                    },
+                    "fingerprint": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Per-instance identity across runs (#222); allowed by the schema from 1.4.0."
                     }
                   },
                   "additionalProperties": false
                 }
+              },
+              "rule_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Stable detector rule id (#223); `null` for findings without one (added in 1.4.0, #250)."
+              },
+              "taxonomy": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Standard ids for the finding's rule, looked up by rule id in the taxonomy registry; `null` for unregistered rules (added in 1.4.0, #250).",
+                "required": [
+                  "cwe",
+                  "owasp",
+                  "asvs",
+                  "attack"
+                ],
+                "properties": {
+                  "cwe": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^CWE-[0-9]+$"
+                    }
+                  },
+                  "owasp": {
+                    "type": "array",
+                    "description": "OWASP Top 10 2021 (A01:2021), API Security Top 10 2023 (API1:2023) or LLM Top 10 2025 ids.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "asvs": {
+                    "type": "array",
+                    "description": "OWASP ASVS 4.0.3 requirement ids.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "attack": {
+                    "type": "array",
+                    "description": "MITRE ATT&CK Enterprise technique ids.",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
               }
             }
           }

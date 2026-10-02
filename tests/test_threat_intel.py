@@ -50,12 +50,12 @@ def test_techniques_for_insight_returns_expected_techniques_per_kind() -> None:
         "shared_secret_blast_radius": "T1552",
         "sensitive_asset_reachability": "T1190",
         "admin_action_without_auth": "T1078",
-        "audit_gap": "T1562",
+        "audit_gap": "T1685",  # T1562 was revoked in ATT&CK v19
         "trust_boundary_violation": "T1199",
         "asymmetric_protection": "T1190",
         "control_strength_mismatch": "T1110",
         "single_point_of_failure": "T1552",
-        "control_bypass": "T1562",
+        "control_bypass": "T1685",
         "defense_gap_in_chain": "T1190",
     }
     for kind, expected_tid in expected.items():

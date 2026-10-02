@@ -15,6 +15,7 @@ from .diff import finding_id
 from .exploitability import score_exploitability
 from .models import AttackPath, AttackSurface, ExploitabilityScore, Finding, ScanResult
 from .review_json import build_defensive_review_json
+from .taxonomy import taxonomy_label
 from .sarif import build_sarif
 from .safe_fs import ensure_output_dir, safe_write_text
 from .suppress import SuppressedFinding
@@ -159,6 +160,13 @@ def render_exploitability_ranking(scores: list[ExploitabilityScore]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _taxonomy_suffix(item: object) -> str:
+    """`` (CWE-918 · A10:2021)`` for a finding or snapshot with a registered
+    rule id (#250); empty otherwise."""
+    label = taxonomy_label(getattr(item, "rule_id", None))
+    return f" ({label})" if label else ""
+
+
 def render_pr_comment(
     findings: list[Finding], diff: object | None = None, *, suppressions: dict | None = None
 ) -> str:
@@ -186,7 +194,7 @@ def render_pr_comment(
         if new:
             lines.append("### New findings")
             for s in sorted(new, key=lambda s: sev_rank.get(s.severity, 3)):
-                lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
+                lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}{_taxonomy_suffix(s)}")
             lines.append("")
         newly_suppressed = list(getattr(diff, "newly_suppressed", []) or [])
         if newly_suppressed:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .security_overlay import build_security_overlay
 
-SCHEMA_VERSION = "1.3.0"  # 1.3.0: weaknesses[].locations (#214)
+SCHEMA_VERSION = "1.4.0"  # 1.3.0: weaknesses[].locations (#214); 1.4.0: weaknesses[].rule_id/taxonomy (#250)
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
 
@@ -126,6 +126,8 @@ def _weaknesses_and_hotspots(
         weakness_items.append(
             {
                 "title": finding.title,
+                "rule_id": finding.rule_id,
+                "taxonomy": finding.taxonomy.model_dump() if finding.taxonomy else None,
                 "severity": finding.severity,
                 "confidence": finding.confidence,
                 "evidence_basis": _basis_label_for_surfaces(related),
