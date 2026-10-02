@@ -221,12 +221,18 @@ def _scan_action(data: dict, rel: str, lines: list[str]) -> list[WorkflowIssue]:
     if not isinstance(steps, list):
         return []
     issues: list[WorkflowIssue] = []
-    for step in steps:
+    runs_span = _child_key_spans(lines, "runs").get("steps")
+    step_spans = _item_spans(lines, "steps", (runs_span[0], runs_span[1]) if runs_span else None)
+    if len(step_spans) != len(steps):
+        step_spans = []
+    for index, step in enumerate(steps):
         if not isinstance(step, dict):
             continue
         step_name = str(step.get("name") or step.get("id") or step.get("uses") or "step")
         where = f"composite action step '{step_name}'"
+        ctx.lines = _scoped(lines, step_spans[index] if step_spans else None)
         issues.extend(_scan_step(step, where, ctx, env={}, state=_JobState()))
+    ctx.lines = lines
     return issues
 
 
@@ -329,15 +335,108 @@ def _input_severities(data: dict, triggers: set[str]) -> dict[str, str]:
     return out
 
 
+class _Scoped(list):
+    """The workflow's lines plus the 1-based (start, end) span of the job or
+    step being checked. `_line_for` searches the span first, so two identical
+    `uses: actions/checkout@v4` steps in different jobs get their own lines
+    instead of both getting the first one."""
+
+    def __init__(self, lines: list[str], span: tuple[int, int] | None) -> None:
+        super().__init__(lines)
+        self.span = span
+
+
+def _scoped(lines: list[str], span: tuple[int, int] | None) -> list[str]:
+    base = list(lines) if isinstance(lines, _Scoped) else lines
+    return _Scoped(base, span) if span else base
+
+
 def _line_for(lines: list[str], *needles: str, contains_all: bool = False) -> int | None:
-    """Best-effort 1-based line number of the first line matching needle(s)."""
-    for idx, line in enumerate(lines, start=1):
-        if contains_all:
-            if all(n in line for n in needles):
+    """Best-effort 1-based line number of the first line matching needle(s),
+    looking inside the current job/step span first (see `_Scoped`)."""
+
+    def matches(line: str) -> bool:
+        return all(n in line for n in needles) if contains_all else any(n in line for n in needles)
+
+    span = getattr(lines, "span", None)
+    if span:
+        start, end = span
+        for idx in range(max(start, 1), min(end, len(lines)) + 1):
+            if matches(lines[idx - 1]):
                 return idx
-        elif any(n in line for n in needles):
+    for idx, line in enumerate(lines, start=1):
+        if matches(line):
             return idx
     return None
+
+
+_KEY_LINE = re.compile(r"^(?P<indent>[ ]*)(?P<key>[\w.-]+)\s*:(?:\s|$)")
+_ITEM_LINE = re.compile(r"^(?P<indent>[ ]*)-(?:\s|$)")
+
+
+def _child_key_spans(lines: list[str], parent: str, region: tuple[int, int] | None = None) -> dict[str, tuple[int, int]]:
+    """1-based spans of the keys directly under the block key `parent:`
+    (e.g. each job under `jobs:`), found from the text since PyYAML keeps no
+    positions. Empty when the layout isn't the usual block style."""
+    lo, hi = region or (1, len(lines))
+    parent_line = None
+    for idx in range(lo, hi + 1):
+        m = _KEY_LINE.match(lines[idx - 1])
+        if m and m.group("key") == parent:
+            parent_line, parent_indent = idx, len(m.group("indent"))
+            break
+    if parent_line is None:
+        return {}
+    starts: list[tuple[str, int]] = []
+    child_indent = None
+    for idx in range(parent_line + 1, hi + 1):
+        text = lines[idx - 1]
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+        indent = len(text) - len(text.lstrip(" "))
+        if indent <= parent_indent:
+            hi = idx - 1
+            break
+        m = _KEY_LINE.match(text)
+        if m and (child_indent is None or indent == child_indent):
+            child_indent = indent
+            starts.append((m.group("key"), idx))
+    return {
+        key: (start, (starts[i + 1][1] - 1) if i + 1 < len(starts) else hi)
+        for i, (key, start) in enumerate(starts)
+    }
+
+
+def _item_spans(lines: list[str], parent: str, region: tuple[int, int] | None) -> list[tuple[int, int]]:
+    """1-based spans of the list items under `parent:` (e.g. each step under
+    `steps:`) within `region`."""
+    if not region:
+        return []
+    lo, hi = region
+    parent_line = None
+    for idx in range(lo, hi + 1):
+        m = _KEY_LINE.match(lines[idx - 1])
+        if m and m.group("key") == parent:
+            parent_line, parent_indent = idx, len(m.group("indent"))
+            break
+    if parent_line is None:
+        return []
+    starts: list[int] = []
+    item_indent = None
+    end = hi
+    for idx in range(parent_line + 1, hi + 1):
+        text = lines[idx - 1]
+        if not text.strip() or text.lstrip().startswith("#"):
+            continue
+        indent = len(text) - len(text.lstrip(" "))
+        m = _ITEM_LINE.match(text)
+        if m and (item_indent is None or indent == item_indent) and indent >= parent_indent:
+            item_indent = indent
+            starts.append(idx)
+        elif indent <= parent_indent and not m:
+            end = idx - 1
+            break
+    return [(start, (starts[i + 1] - 1) if i + 1 < len(starts) else end) for i, start in enumerate(starts)]
 
 
 def _iter_jobs(data: dict):
@@ -458,7 +557,11 @@ def _scan_one(data: dict, rel: str, lines: list[str]) -> list[WorkflowIssue]:
         )
 
     workflow_env = data.get("env")
+    all_lines = lines
+    job_spans = _child_key_spans(all_lines, "jobs")
     for job_id, job in jobs:
+        job_span = job_spans.get(job_id)
+        lines = ctx.lines = _scoped(all_lines, job_span)
         # Job-level broad permissions.
         if _is_write_all(job.get("permissions")):
             issues.append(
@@ -507,12 +610,17 @@ def _scan_one(data: dict, rel: str, lines: list[str]) -> list[WorkflowIssue]:
             continue
         state = _JobState()
         job_env = _env_map(workflow_env, job.get("env"))
-        for step in steps:
+        step_spans = _item_spans(all_lines, "steps", job_span)
+        if len(step_spans) != len(steps):
+            step_spans = []  # unusual layout: fall back to the job span
+        for index, step in enumerate(steps):
             if not isinstance(step, dict):
                 continue
             step_name = str(step.get("name") or step.get("id") or step.get("uses") or "step")
             where = f"job '{job_id}' step '{step_name}'"
+            ctx.lines = _scoped(all_lines, step_spans[index] if step_spans else job_span)
             issues.extend(_scan_step(step, where, ctx, env=job_env, state=state))
+            ctx.lines = lines
         if state.artifact_download and not state.reported_artifact:
             # Downloaded but never executed in this job: still untrusted data
             # (it may be consumed as config or uploaded on), so medium.

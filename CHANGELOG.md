@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `--diff-output` without `--baseline`
     - out-of-range values: `--verify-votes 0`, a `--hunt-lenses` value outside 1–6, `--hunt-rounds 0`, a negative `--hunt-budget`
 
+### Fixed
+
+- **Workflow findings point at the right step.** Line numbers came from the first matching line in the file, so identical steps in different jobs (two `uses: actions/checkout@v4`) all pointed at the first job. Lines are now looked up within the current job's and step's span, found from the YAML text. Flow-style YAML falls back to the old file-wide search.
+
 ## [0.5.0] - 2026-10-02
 
 Completes the v0.5.0 plan (#260): scanner robustness, an enforced plugin contract, false-positive fixes across 12 analyzer plugins, and macOS app and docs fixes. Install with `brew install mlaify/tap/attackmap` or the `[all]` extra.
