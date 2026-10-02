@@ -45,7 +45,7 @@ def test_merge_schema_covers_every_list_field_on_scan_result() -> None:
         for name, field in ScanResult.model_fields.items()
         # Plain-string lists are unioned by merge_analyzer_results, not by
         # MERGE_SCHEMA (whose items get per-signal provenance stamped).
-        if str(field.annotation).startswith("list[") and name not in {"languages", "limitations"}
+        if str(field.annotation).startswith("list[") and name not in {"languages", "limitations", "analyzer_errors"}
     }
     schema_fields = {rule.attr for rule in MERGE_SCHEMA}
     assert list_fields == schema_fields, (

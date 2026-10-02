@@ -32,6 +32,8 @@ from .sdk.contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
+from .models import AnalyzerError
+from .redact import redact_text
 from .sdk.models import (
     AuthHint,
     DatabaseHint,
@@ -697,20 +699,62 @@ def analyze_repository(
     analyzers: Iterable[Analyzer] | None = None,
     progress: "ScanProgress | None" = None,
     recall: bool = False,
+    strict: bool = False,
 ) -> AnalyzerResult:
+    """Run every active analyzer and merge their results.
+
+    One analyzer failing (raising, or returning something that isn't a scan
+    result) no longer aborts the scan (#220): it is logged, recorded under
+    ``analyzer_errors`` and skipped. ``strict=True`` re-raises instead, for
+    plugin development and CI that wants fail-fast.
+    """
     repo_root = Path(root).resolve()
     active_analyzers = resolve_run_analyzers(repo_root, analyzers=analyzers)
     results: list[AnalyzerResult] = []
+    errors: list[AnalyzerError] = []
     for analyzer in active_analyzers:
-        result = _call_analyze(analyzer, repo_root, progress, recall)
+        try:
+            result = _coerce_result(_call_analyze(analyzer, repo_root, progress, recall), repo_root)
+        except Exception as exc:
+            if strict:
+                raise
+            error = AnalyzerError(
+                analyzer=analyzer.name,
+                error_type=type(exc).__name__,
+                message=redact_text(str(exc))[:_ANALYZER_ERROR_MAX_CHARS],
+            )
+            errors.append(error)
+            logger.warning("Analyzer %r failed: %s: %s", analyzer.name, error.error_type, error.message)
+            if progress is not None:
+                progress.stage(f"Analyzer {analyzer.name} failed ({error.error_type}); continuing")
+            continue
         _stamp_provenance(result, analyzer.name)
         results.append(result)
     merged = merge_analyzer_results(results, root=repo_root) if results else AnalyzerResult(root=str(repo_root))
+    merged.analyzer_errors = errors
     # Whole-repo passes run once, over every analyzer's merged signals (#219).
     run_repo_passes(merged, repo_root, progress=progress, recall=recall)
     if progress is not None:
         progress.done()
     return merged
+
+
+_ANALYZER_ERROR_MAX_CHARS = 500
+
+
+class AnalyzerResultError(TypeError):
+    """An analyzer returned something that isn't a scan result."""
+
+
+def _coerce_result(result: object, root: Path) -> AnalyzerResult:
+    """Accept a ScanResult, validate a dict, reject anything else (#220)."""
+    if isinstance(result, AnalyzerResult):
+        return result
+    if isinstance(result, dict):
+        return AnalyzerResult.model_validate({"root": str(root), **result})
+    raise AnalyzerResultError(
+        f"analyze() returned {type(result).__name__}, expected ScanResult"
+    )
 
 
 def _call_analyze(

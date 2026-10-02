@@ -192,6 +192,7 @@ def _run_fleet(
     output_format: str = "all",
     install_missing: bool = False,
     suppress_from_ref: str | None = None,
+    strict_analyzers: bool = False,
 ) -> None:
     """Multi-repo fleet scan (#146a). Scans each repo independently — reusing the
     same building blocks a single-repo run uses — writes per-repo reports into
@@ -219,7 +220,11 @@ def _run_fleet(
             active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
             scan_progress = create_progress(progress_format, no_progress=no_progress)
             scan = analyze_repository(
-                repo_path, analyzers=active_analyzers, progress=scan_progress, recall=recall
+                repo_path,
+                analyzers=active_analyzers,
+                progress=scan_progress,
+                recall=recall,
+                strict=strict_analyzers,
             )
             if cve and scan.dependencies:
                 try:
@@ -479,6 +484,11 @@ def analyze(
         "--strict-suppressions",
         help="Exit 2 if any suppression has expired (past its `expires:` / `until=` date).",
     ),
+    strict_analyzers: bool = typer.Option(
+        False,
+        "--strict-analyzers",
+        help="Fail fast if any analyzer raises or returns an invalid result, instead of skipping it and listing it under analyzer_errors (for plugin development and CI).",
+    ),
     fail_on_new_suppression: bool = typer.Option(
         False,
         "--fail-on-new-suppression",
@@ -554,6 +564,7 @@ def analyze(
             output_format=format,
             install_missing=install_missing,
             suppress_from_ref=suppress_from_ref,
+            strict_analyzers=strict_analyzers,
             # Single-repo-only features aren't fleet-aware yet — reject rather
             # than silently ignore, so the user isn't surprised (#146b+ wire them).
             fleet_incompatible={
@@ -600,7 +611,11 @@ def analyze(
     active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
     scan_progress = create_progress(progress_format, no_progress=no_progress)
     scan = analyze_repository(
-        repo_path, analyzers=active_analyzers, progress=scan_progress, recall=recall
+        repo_path,
+        analyzers=active_analyzers,
+        progress=scan_progress,
+        recall=recall,
+        strict=strict_analyzers,
     )
     if recall:
         speculative = sum(1 for c in scan.taint_chains if c.speculative)
