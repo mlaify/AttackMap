@@ -74,6 +74,8 @@ from .contracts import (
     normalize_analyzer_metadata,
 )
 from ..safe_fs import contained_file, is_contained, read_repo_text, walk_repo
+from . import fs
+from .fs import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, line_snippet, read_source, rel
 from .models import (
     AuthHint,
     DatabaseHint,
@@ -114,4 +116,13 @@ __all__ = [
     "is_contained",
     "contained_file",
     "read_repo_text",
+    # Shared plugin walker/reader (#253): prunes by repo-relative dir name,
+    # skips AttackMap output, caps size, never raises on unreadable files.
+    "fs",
+    "DEFAULT_SKIP_DIRS",
+    "iter_repo_files",
+    "read_source",
+    "rel",
+    "line_of",
+    "line_snippet",
 ]
