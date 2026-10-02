@@ -85,8 +85,12 @@ def test_pattern_scales_linearly(name: str, pattern: re.Pattern[str]) -> None:
         large = _time(pattern, large_payload)
         if large < MIN_SECONDS:
             continue
-        # Best-of-N damps scheduler noise on shared CI runners.
-        large = min(large, _time(pattern, large_payload))
+        # Best-of-N damps scheduler noise on shared CI runners, and the floor
+        # is re-checked on the best run: one stalled sample (a 0.1s pattern
+        # paused past MIN_SECONDS) must not get compared against a fast small run.
+        large = min(large, *(_time(pattern, large_payload) for _ in range(2)))
+        if large < MIN_SECONDS:
+            continue
         small = max(min(_time(pattern, small_payload) for _ in range(3)), 1e-4)
         if large / small > MAX_RATIO:
             slow.append(f"{label}: {small:.3f}s -> {large:.3f}s")
