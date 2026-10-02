@@ -292,6 +292,8 @@ def _evidence_pack(
             "id": f"finding:{idx + 1}",
             "finding_id": finding_id(finding.title),
             "title": finding.title,
+            "rule_id": finding.rule_id,
+            "taxonomy": finding.taxonomy.model_dump() if finding.taxonomy else None,
             "severity": finding.severity,
             "confidence": finding.confidence,
             "score": finding.score,

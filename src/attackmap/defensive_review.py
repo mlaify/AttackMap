@@ -14,6 +14,7 @@ from .models import (
     ScanResult,
 )
 from .security_overlay import SecurityOverlay, build_security_overlay
+from .taxonomy import taxonomy_label
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -344,7 +345,11 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
     )
     for (score, factors), finding in finding_scores[:3]:
         related_surfaces = _related_surfaces_for_finding(finding, attack_surfaces)
-        items.append(f"- [{finding.severity.upper()} | score {score:.1f}] {md_text(finding.title)}")
+        label = taxonomy_label(finding.rule_id)
+        items.append(
+            f"- [{finding.severity.upper()} | score {score:.1f}] {md_text(finding.title)}"
+            + (f" ({label})" if label else "")
+        )
         items.append(f"- Reason: {_top_score_reasons(factors, top_n=3)}")
         items.append(f"- Provenance: {_provenance_breakdown(related_surfaces)}")
 

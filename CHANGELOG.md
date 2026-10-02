@@ -21,9 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - on duplicate route keys, a known state fills in an unknown one.
 
   `"unknown"` (the default) keeps the existing resolution, so older plugins are unaffected.
+- **CWE, OWASP, ASVS and ATT&CK ids on every finding (#250).** A registry in `attackmap/taxonomy.py` maps each rule id to its CWE ids, OWASP Top 10 2021 / API Security Top 10 2023 categories, ASVS 4.0.3 requirements and ATT&CK techniques, including sub-techniques such as T1552.001, T1552.005, T1195.001/.002 and T1505.003. All 63 weakness rules are mapped, including the #246 workflow rules. A test fails for any rule without a CWE and an OWASP id, so new detectors must register. The ids appear in:
+  - `attackmap-report.json`, as a new `taxonomy` field on each finding;
+  - SARIF: `external/cwe/cwe-NNN` tags, a CWE `helpUri`, rule `relationships`, a run-level CWE `taxonomies` entry, and `cwe`/`owasp`/`asvs`/`attack` rule properties;
+  - `defensive-review.json` (schema 1.4.0), as `weaknesses[].rule_id` and `weaknesses[].taxonomy`;
+  - the PR comment, diff Markdown and `defensive-review.md` finding lines, e.g. `(CWE-918 · A10:2021 · API7:2023)`.
+  - Workflow finding CWE tags now come from the registry and use CodeQL's zero-padded form, e.g. `external/cwe/cwe-078`. `script-injection` is tagged CWE-78 and CWE-94.
 
 ### Changed
 
+- **ATT&CK mapping for findings comes from the rule id (#250).** It is no longer substring-matched against title and evidence, which mapped "monkey" to T1552, `cursor.execute` to T1059 and "author" to T1078. Findings without a registered rule id (some plugin findings) fall back to whole-word matching on the title only. Detection opportunities link findings by their rule's ATT&CK techniques and list them in a new `related_rule_ids` field; the fuzzy title-word match is gone. Insight mappings use T1685 (Disable or Modify Tools) in place of T1562, which ATT&CK v19 revoked. Tactic names follow ATT&CK v19 (for example "Stealth" and "Defense Impairment").
 - **`analyze` validates every option before scanning (#229).**
   - Enum options are checked up front and the error lists the accepted values: `--progress-format` (now including `tty`), `--format`, `--llm-provider/-speed/-effort/-backend`. A typo in an LLM option used to surface only after the full scan and report writing. In the `--llm` and `--remediate` paths it could be swallowed by the broad error handling.
   - **Behavior change:** these now fail with exit 2 instead of being silently ignored or clamped:
@@ -34,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Workflow findings point at the right step.** Line numbers came from the first matching line in the file, so identical steps in different jobs (two `uses: actions/checkout@v4`) all pointed at the first job. Lines are now looked up within the current job's and step's span, found from the YAML text. Flow-style YAML falls back to the old file-wide search.
+- `defensive-review.schema.json` now allows `weaknesses[].locations[].fingerprint`, which the report has emitted since #222.
 
 ## [0.5.0] - 2026-10-02
 

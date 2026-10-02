@@ -36,6 +36,7 @@ from typing import Any
 
 from .md import md_code, md_text
 from .models import Finding
+from .taxonomy import taxonomy_label
 
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
@@ -63,6 +64,13 @@ class FindingSnapshot:
     # Per-instance identity (#222): fingerprint -> "file:line" label. Empty for
     # findings without fingerprinted locations (e.g. pre-0.4.32 baselines).
     instances: tuple[tuple[str, str], ...] = ()
+    # Stable rule id (#223), used to label taxonomy ids in Markdown (#250).
+    rule_id: str | None = None
+
+    @property
+    def taxonomy_suffix(self) -> str:
+        label = taxonomy_label(self.rule_id)
+        return f" ({label})" if label else ""
 
     @classmethod
     def from_finding(cls, f: Finding) -> "FindingSnapshot":
@@ -78,6 +86,7 @@ class FindingSnapshot:
                 for loc in f.locations
                 if loc.fingerprint
             ),
+            rule_id=f.rule_id,
         )
 
     @classmethod
@@ -96,6 +105,7 @@ class FindingSnapshot:
             tags=tuple(d.get("tags") or ()),
             evidence=tuple(d.get("evidence") or ()),
             instances=tuple(instances),
+            rule_id=d.get("rule_id") if isinstance(d.get("rule_id"), str) else None,
         )
 
 
@@ -188,7 +198,7 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
         lines = []
         for s in _sorted(items):
             # Titles and evidence embed repo-derived text: escape it (#233).
-            lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
+            lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}{s.taxonomy_suffix}")
             if s.evidence:
                 # First evidence line only — keeps the comment scannable.
                 lines.append(f"  - _e.g._ {md_code(s.evidence[0])}")

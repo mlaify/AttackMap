@@ -19,6 +19,7 @@ from typing import Any
 from .srcpaths import evidence_locations
 from .md import md_text
 from .models import AttackPath, Finding, finding_rule_id
+from .taxonomy import CWE_NAMES, cwe_tag, cwe_url, taxonomy_for
 
 
 SARIF_VERSION = "2.1.0"
@@ -133,7 +134,57 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
                 "security-severity": _security_severity(finding.severity, finding.confidence),
             },
         }
+        _add_rule_taxonomy(rules_by_id[rule_id], rule_id)
     return list(rules_by_id.values())
+
+
+CWE_TAXONOMY = "CWE"
+
+
+def _add_rule_taxonomy(rule: dict[str, Any], rule_id: str) -> None:
+    """CWE tags, helpUri, CWE relationships and the OWASP/ASVS/ATT&CK ids
+    from the taxonomy registry (#250). Unregistered rules are left as is."""
+    entry = taxonomy_for(rule_id)
+    if entry is None:
+        return
+    props = rule["properties"]
+    # Detectors may already tag the CWE (workflow findings do); keep one copy.
+    props["tags"] = list(dict.fromkeys([*props["tags"], *(cwe_tag(c) for c in entry.cwe)]))
+    props["cwe"] = entry.cwe_ids
+    props["owasp"] = list(entry.owasp)
+    if entry.asvs:
+        props["asvs"] = list(entry.asvs)
+    if entry.attack:
+        props["attack"] = list(entry.attack)
+    rule["helpUri"] = cwe_url(entry.cwe[0])
+    rule["relationships"] = [
+        {"target": {"id": str(c), "toolComponent": {"name": CWE_TAXONOMY}}, "kinds": ["superset"]}
+        for c in entry.cwe
+    ]
+
+
+def _cwe_taxonomy(rules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The run's CWE `taxonomies` entry: one taxon per CWE a rule cites."""
+    ids = sorted(
+        {int(rel["target"]["id"]) for rule in rules for rel in rule.get("relationships", [])}
+    )
+    if not ids:
+        return None
+    return {
+        "name": CWE_TAXONOMY,
+        "organization": "MITRE",
+        "informationUri": "https://cwe.mitre.org/",
+        "shortDescription": {"text": "The MITRE Common Weakness Enumeration"},
+        "taxa": [
+            {
+                "id": str(c),
+                "name": CWE_NAMES.get(c, f"CWE-{c}"),
+                "shortDescription": {"text": CWE_NAMES.get(c, f"CWE-{c}")},
+                "helpUri": cwe_url(c),
+            }
+            for c in ids
+        ],
+    }
 
 
 def _stable_hash(*parts: object) -> str:
@@ -249,6 +300,9 @@ def build_sarif(
         "informationUri": TOOL_INFO_URI,
         "rules": rules,
     }
+    cwe_taxonomy = _cwe_taxonomy(rules)
+    if cwe_taxonomy is not None:
+        driver["supportedTaxonomies"] = [{"name": CWE_TAXONOMY}]
     run: dict[str, Any] = {
         "tool": {"driver": driver},
         # Artifact URIs are relative to the scanned repo root; the absolute
@@ -256,6 +310,8 @@ def build_sarif(
         "originalUriBaseIds": {SRCROOT: {"description": {"text": "Root of the scanned repository."}}},
         "results": results,
     }
+    if cwe_taxonomy is not None:
+        run["taxonomies"] = [cwe_taxonomy]
     if attack_paths:
         # Attach codeflows at the run level via a properties bag. SARIF
         # allows tool-defined properties here; consumers who care about
