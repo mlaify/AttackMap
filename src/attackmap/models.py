@@ -16,12 +16,30 @@ from .redact import redact_list, redact_text
 _PROVENANCE_FIELD = Field(default=None, exclude=True, repr=False)
 
 
+RouteAuth = Literal["required", "anonymous", "unknown"]
+
+
 class Route(BaseModel):
     path: str
     method: str = "ANY"
     file: str
     line: int | None = None
     source_analyzer: str | None = _PROVENANCE_FIELD
+    # Route-level auth as the plugin resolved it (#256): `required` (a guard
+    # such as [Authorize] / @PreAuthorize / an auth middleware applies),
+    # `anonymous` (explicitly public, e.g. [AllowAnonymous]), or `unknown`
+    # (not determined — core falls back to its own resolution).
+    auth: RouteAuth = "unknown"
+    # Names of the guards that apply, e.g. ["[Authorize(Policy=Admin)]"].
+    guards: list[str] = Field(default_factory=list)
+    # Source text that established `auth` (redacted like other evidence).
+    guard_evidence: str | None = None
+
+    @model_validator(mode="after")
+    def _redact_guard_evidence(self) -> "Route":
+        if self.guard_evidence:
+            object.__setattr__(self, "guard_evidence", redact_text(self.guard_evidence))
+        return self
 
 
 # Fields that carry text copied out of the scanned repository. Every model

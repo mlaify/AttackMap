@@ -43,6 +43,9 @@ class MergeRule:
 
     attr: str
     key: Callable[[Any], tuple]
+    # Optional: called as `upgrade(existing, duplicate)` when a later signal
+    # hashes to an existing key, to fold in information the first one lacked.
+    upgrade: Callable[[Any, Any], None] | None = None
 
     def __post_init__(self) -> None:
         if not self.attr.isidentifier():
@@ -52,8 +55,17 @@ class MergeRule:
 # The complete schema of list fields on `ScanResult` that get merged
 # across analyzer outputs. Order is preserved in the merged result;
 # duplicates (by key) are suppressed.
+
+def _upgrade_route_auth(existing: Any, duplicate: Any) -> None:
+    """Known route auth beats unknown (#256): first-seen still wins the route,
+    but a later analyzer that resolved the guard fills it in."""
+    if getattr(existing, "auth", "unknown") == "unknown" and getattr(duplicate, "auth", "unknown") != "unknown":
+        existing.auth = duplicate.auth
+        existing.guards = list(duplicate.guards)
+        existing.guard_evidence = duplicate.guard_evidence
+
 MERGE_SCHEMA: tuple[MergeRule, ...] = (
-    MergeRule("routes", lambda item: (item.path, item.method, item.file)),
+    MergeRule("routes", lambda item: (item.path, item.method, item.file), upgrade=_upgrade_route_auth),
     # Method is part of the identity (#146b): two verbs on the same target in one
     # file (GET + POST /items) are distinct calls, not duplicates — collapsing
     # them would drop a method before cross-repo contract linking runs.
@@ -122,12 +134,21 @@ def merge_into(destination: Any, items: Iterable[Any], rule: MergeRule, seen: se
     want to merge across multiple sources without rescanning the list.
     """
     target = getattr(destination, rule.attr)
+    index: dict | None = None
     for item in items:
         k = rule.key(item)
         if k in seen:
+            if rule.upgrade is not None:
+                if index is None:
+                    index = {rule.key(existing): existing for existing in target}
+                existing = index.get(k)
+                if existing is not None:
+                    rule.upgrade(existing, item)
             continue
         seen.add(k)
         target.append(item)
+        if index is not None:
+            index[k] = item
 
 
 def initial_seen(destination: Any, rule: MergeRule) -> set:

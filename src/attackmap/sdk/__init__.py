@@ -51,6 +51,11 @@ declared in `attackmap.merge.MERGE_SCHEMA`; the rules are:
   selected with ``--module``; ``detect()`` still gates it.
 - **Dedup**: each list field has a stable tuple key, e.g. routes are
   deduped by ``(path, method, file)`` and auth hints by ``(hint, file)``.
+- **Route auth** (#256): a plugin that knows a route's guard sets
+  ``Route.auth`` to ``"required"`` or ``"anonymous"`` (plus ``guards`` and
+  ``guard_evidence``). Core trusts it over its own regex resolution and the
+  ±40-line auth-hint window; ``"unknown"`` (the default) keeps the old
+  behavior. On duplicate route keys a known state fills in an unknown one.
 - **Languages**: union, sorted for stable display.
 - **Files scanned**: summed.
 

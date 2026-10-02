@@ -75,7 +75,14 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
 
     for route in scan.routes:
         path_lower = route.path.lower()
-        auth_signals = _auth_hints_for_route(route, scan.auth_hints, auth_hints_by_file)
+        # A plugin-declared route auth state (#256) beats the ±40-line file
+        # window, which lets a route inherit its neighbour's guard.
+        if route.auth == "required":
+            auth_signals = sorted(set(route.guards)) or ["plugin_declared_auth"]
+        elif route.auth == "anonymous":
+            auth_signals = []
+        else:
+            auth_signals = _auth_hints_for_route(route, scan.auth_hints, auth_hints_by_file)
         supporting_signals = sorted(supporting_hints_by_file.get(route.file, set())) or sorted(
             {hint.hint for hint in all_supporting_hints}
         )
