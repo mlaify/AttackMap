@@ -765,10 +765,34 @@ _WEB_HARDENING_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Steal Web Session Cookie",
         "tactic": "Credential Access",
     },
+    "cors_wildcard_origin": {
+        "severity": "low",
+        "title": "CORS allows any origin (without credentials)",
+        "mitigation": "A wildcard or reflected origin lets any site read these responses. That is fine for genuinely public, unauthenticated data; otherwise allow-list the trusted origins. Never add credentials to this policy.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "cors_untrusted_origin": {
+        # high when the file also allows credentials, else medium
+        "title": "Origin allow-list admits untrusted origins (unanchored regex, partial match or null)",
+        "mitigation": "Compare the Origin against an exact allow-list of scheme://host[:port] values. Anchor origin regexes with `^` and `$` and escape dots; check subdomains with `.endsWith('.example.com')` (leading dot), never `includes`/`endsWith('example.com')`. Never allow the `null` origin, which sandboxed iframes and `file:` pages send.",
+        "technique_id": "T1539",
+        "technique_name": "Steal Web Session Cookie",
+        "tactic": "Credential Access",
+    },
     "csrf_disabled": {
         "severity": "medium",
         "title": "CSRF protection disabled or exempted",
         "mitigation": "Keep CSRF protection on for cookie-authenticated, state-changing routes. If an endpoint is a token-authenticated API that legitimately doesn't need it, scope the exemption narrowly and document why.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "csrf_unprotected_session": {
+        "severity": "medium",
+        "title": "Cookie-session auth with state-changing routes and no CSRF protection",
+        "mitigation": "Cookie-authenticated state-changing routes need a CSRF defence: CSRF-token middleware (`csrf-csrf`/`csrf-sync`, Django `CsrfViewMiddleware`, Flask-WTF `CSRFProtect`) or a session cookie with `SameSite=Strict` (or `Lax`, if no state changes on GET).",
         "technique_id": "T1190",
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
@@ -798,6 +822,11 @@ _WEB_HARDENING_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Initial Access",
     },
 }
+
+
+# Methods a forged cross-site request can use to change state (#244). `ANY`
+# covers routers that don't record a method (Django URLconfs).
+_CSRF_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE", "ANY"})
 
 
 # Per-kind spec for novel vuln-class findings (#77).
@@ -857,6 +886,22 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_id": "T1190",
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
+    },
+    "graphql_no_query_limits": {
+        "severity": "low",
+        "title": "GraphQL server without query depth or complexity limits",
+        "mitigation": "Bound query cost at the server: a depth limit (`graphql-depth-limit`, Strawberry `QueryDepthLimiter`, graphene `depth_limit_validator`), a complexity or cost limit (`graphql-query-complexity`, gqlgen `FixedComplexityLimit`), or GraphQL Armor. Deeply nested or aliased queries otherwise exhaust the server.",
+        "technique_id": "T1499.003",
+        "technique_name": "Endpoint Denial of Service: Application Exhaustion Flood",
+        "tactic": "Impact",
+    },
+    "graphql_batching": {
+        "severity": "medium",
+        "title": "GraphQL HTTP batching enabled",
+        "mitigation": "Disable batched HTTP requests unless clients need them. If they do, cap the batch size and rate-limit per operation, not per HTTP request, so one request can't carry thousands of login or OTP attempts.",
+        "technique_id": "T1110",
+        "technique_name": "Brute Force",
+        "tactic": "Credential Access",
     },
     "prompt_injection_attempt": {
         "severity": "low",
@@ -1616,6 +1661,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         items = web_by_kind.get(kind)
         if not items:
             continue
+        if kind == "csrf_unprotected_session" and not any(
+            r.method.upper() in _CSRF_MUTATING_METHODS for r in scan.routes
+        ):
+            continue  # no state-changing route to forge a request against
         evidence = [
             f"{i.file}:{i.line} — {i.evidence_text}" if i.evidence_text else f"{i.file}:{i.line}"
             for i in items[:10]
@@ -1626,7 +1675,8 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             Finding(
                 title=spec["title"],
                 rule_id=_rule_slug_kind(kind),
-                severity=spec["severity"],  # type: ignore[arg-type]
+                # Some kinds tier per instance (CORS: credentials or not, #244).
+                severity=max((i.severity for i in items), key=_SEVERITY_ORDER.__getitem__),  # type: ignore[arg-type]
                 evidence=evidence,
                 locations=_locs(items),
                 mitigation=spec["mitigation"],

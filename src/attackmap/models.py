@@ -207,6 +207,8 @@ class CodeWeakness(_RedactedEvidence):
         "redos",
         "insecure_upload",
         "graphql_exposure",
+        "graphql_no_query_limits",
+        "graphql_batching",
         "prompt_injection_attempt",
     ]
     file: str
@@ -268,7 +270,10 @@ class WebHardeningIssue(_RedactedEvidence):
 
     kind: Literal[
         "cors_wildcard_credentials",
+        "cors_wildcard_origin",
+        "cors_untrusted_origin",
         "csrf_disabled",
+        "csrf_unprotected_session",
         "insecure_cookie",
         "weak_csp",
         "debug_enabled",

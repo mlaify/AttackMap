@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `defensive-review.json` (schema 1.4.0), as `weaknesses[].rule_id` and `weaknesses[].taxonomy`;
   - the PR comment, diff Markdown and `defensive-review.md` finding lines, e.g. `(CWE-918 · A10:2021 · API7:2023)`.
   - Workflow finding CWE tags now come from the registry and use CodeQL's zero-padded form, e.g. `external/cwe/cwe-078`. `script-injection` is tagged CWE-78 and CWE-94.
+- **Deeper web and API hardening checks (#244).** Five new rules, all registered in the taxonomy:
+  - CORS now looks at the origin policy as well as credentials:
+    - a reflected origin with credentials is `cors-wildcard-credentials` (high). This covers `req.headers.origin` echoed into `Access-Control-Allow-Origin`, an `origin` callback that always calls `cb(null, true)`, FastAPI `allow_origins=["*"]`, and Django `CORS_ALLOW_ALL_ORIGINS` / `CORS_ORIGIN_ALLOW_ALL`. Allow-list-guarded reflection is ignored.
+    - a wildcard or reflected origin without credentials is the new `cors-wildcard-origin` (low).
+    - the new `cors-untrusted-origin` catches allow-lists that admit attacker origins: an unanchored or `.*example` origin regex (taking into account that Starlette full-matches and django-cors-headers anchors only the start), `endsWith('example.com')`/`includes(...)` checks, and an allowed `null` origin. It is high with credentials, otherwise medium. Exact allow-lists and anchored regexes are not flagged.
+  - `graphql-no-query-limits` (low): an Apollo, express-graphql, Yoga, Mercurius, Strawberry, graphene `GraphQLView` or gqlgen server built in a file with no depth, complexity or cost limit.
+  - `graphql-batching` (medium): `allowBatchedHttpRequests: true` or Yoga `batching`.
+  - `csrf-unprotected-session` (medium): cookie-session auth (`express-session`, `cookie-session`, Django `SessionMiddleware`, Flask-Login) with state-changing routes and no CSRF defence anywhere in the repo. A CSRF-token middleware, `@csrf_protect`, `CSRFProtect`/`FlaskForm`, or a `SameSite=Strict`/`Lax` session cookie counts as a defence. A commented-out `CsrfViewMiddleware` does not.
 
 ### Changed
 

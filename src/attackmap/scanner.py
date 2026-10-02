@@ -20,7 +20,7 @@ from .sbom import analyze_sbom
 from .workflow_scanner import scan_workflows
 from .srcpaths import is_test_file, is_vendored_file
 from .weaknesses import find_code_weaknesses
-from .webhardening import find_web_hardening_issues
+from .webhardening import find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import DEFAULT_RECALL, analyze_taint, recall_config
 
@@ -751,6 +751,7 @@ def scan_files(
     if progress is not None:
         progress.begin(len(scan_files))
 
+    csrf_protected = False
     for file_path in scan_files:
         if progress is not None:
             progress.advance(str(file_path.relative_to(root_path)))
@@ -821,9 +822,16 @@ def scan_files(
             result.crypto_weaknesses.extend(find_crypto_weaknesses(content, relative))
             # Web-hardening gaps (#71): CORS, CSRF, cookies, CSP, debug.
             result.web_hardening_issues.extend(find_web_hardening_issues(content, relative))
+            csrf_protected = csrf_protected or has_csrf_protection(content)
             # Novel vuln classes (#77): proto pollution, mass assignment, JWT, XXE.
             result.code_weaknesses.extend(find_code_weaknesses(content, relative))
 
+    if csrf_protected:
+        # A CSRF defence anywhere in the repo (#244) — session config and CSRF
+        # middleware often live in different files — clears the inference.
+        result.web_hardening_issues = [
+            i for i in result.web_hardening_issues if i.kind != "csrf_unprotected_session"
+        ]
     result.languages.sort()
     return result
 
