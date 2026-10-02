@@ -67,11 +67,13 @@ CI setup: **[install guide](https://docs.mlaify.io/install/)**.
 - **Attack-surface recon** — routes, data stores, external calls, auth signals,
   secrets, frameworks, entrypoints; every signal carries a `file:line` citation,
   evidence snippet, and confidence.
-- **Data-flow / injection taint** (Python, JS/TS, Go, PHP, Java) — SSRF, SSTI,
-  NoSQL, unsafe deserialization, eval/exec/shell, SQL, path traversal, open
-  redirect — traced source → variable → sink inside each handler, with
-  flow-bound sanitizers, SARIF `codeFlows`, and a deterministic 0–100
-  **exploitability score**.
+- **Data-flow / injection taint** (Python, JS/TS, Go, PHP, Java, C#, Ruby) —
+  SQL, shell, eval/code and expression (SpEL/OGNL) injection, JNDI, SSRF, SSTI,
+  NoSQL, LDAP, XPath, path traversal and zip-slip, deserialization, open
+  redirect, header and regex injection — traced source → variable → sink
+  inside each handler, with flow-bound sanitizers, SARIF `codeFlows`, a
+  plugin-extensible sink registry (`taint_sinks.yaml`), and a deterministic
+  0–100 **exploitability score**.
 - **Novel vuln classes** — prototype pollution, mass assignment, JWT, XXE, ReDoS,
   insecure upload, GraphQL exposure; **BOLA/IDOR** authorization; insecure-crypto
   & web-hardening; anomaly/outlier + signature-free **invariant mining**.

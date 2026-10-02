@@ -67,6 +67,7 @@ from .srcpaths import line_number
 from .taint_sources import (
     ALL_SANITIZER_KINDS,
     CAST_SANITIZERS,
+    CSHARP,
     EARLY_EXIT,
     GO,
     JAVA,
@@ -94,8 +95,11 @@ _MAX_EVAL_DEPTH = 60    # Python expression recursion bound
 
 Step = tuple[int, str, str]  # (line, kind, note); kind: source|propagation|sanitizer|guard|sink
 
-# `args_spec` value meaning "the call's receiver" (`url.openStream()`).
+# `args_spec` sentinels: the call's receiver (`url.openStream()`), and the rest
+# of the statement after the match (keyword / assignment sinks such as PHP
+# `include $f;` or `response.headers["X"] = v`).
 RECEIVER: tuple[int, ...] = (-1,)
+REST: tuple[int, ...] = (-2,)
 
 
 @dataclass(frozen=True)
@@ -551,17 +555,41 @@ class _PyFlow:
                 tests.append(st.test)
         return tests
 
+    def _rest_nodes(self, fn: ast.AST, line: int) -> tuple[int, list[ast.AST]] | None:
+        """The value of the simple statement on ``line`` (an assignment's
+        right-hand side, or an expression statement) for statement sinks."""
+        best: ast.stmt | None = None
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr)) and node.lineno == line:
+                best = node
+                break
+        if best is None or getattr(best, "value", None) is None:
+            return None
+        return best.lineno, [best.value]  # type: ignore[attr-defined]
+
     def sink_flow(
-        self, kind: str, paren: int, args_spec: tuple[int, ...] | None, snippet: str, match_start: int
+        self,
+        kind: str,
+        paren: int,
+        args_spec: tuple[int, ...] | None,
+        snippet: str,
+        match_start: int,
+        match_end: int,
     ) -> SinkFlow | None:
-        line = line_number(self.content, paren)
+        anchor = match_start if args_spec == REST else paren
+        line = line_number(self.content, anchor)
         fn = self._enclosing(line)
         if fn is None:
             return None
+        if args_spec == REST:
+            found = self._rest_nodes(fn, line)
+            if found is None:
+                return None
+            call_line, nodes = found
+            return self._finish(kind, fn, call_line, nodes, snippet)
         call = self._find_call(fn, paren)
         if call is None:
             return None
-        env = self._env_at(fn, call.lineno)
         if args_spec is None:
             nodes: list[ast.AST] = list(call.args) + [kw.value for kw in call.keywords]
         elif args_spec == RECEIVER:
@@ -571,15 +599,19 @@ class _PyFlow:
             nodes += [kw.value for kw in call.keywords if kw.arg in _PY_ARG_KEYWORDS]
             if not nodes:
                 nodes = [kw.value for kw in call.keywords]
+        return self._finish(kind, fn, call.lineno, nodes, snippet)
+
+    def _finish(self, kind: str, fn: ast.AST, call_line: int, nodes: list[ast.AST], snippet: str) -> SinkFlow:
+        env = self._env_at(fn, call_line)
         atoms: list[Atom] = []
         for node in nodes:
             if _fixed_prefix(kind, self._leading_literal(node)):
                 continue
             atoms += self._eval(node, env)
         atoms = _dedupe(atoms)
-        atoms = self._apply_guards(kind, fn, call.lineno, env, atoms)
+        atoms = self._apply_guards(kind, fn, call_line, env, atoms)
         start = min([d.lineno for d in fn.decorator_list] + [fn.lineno])  # type: ignore[attr-defined]
-        return _verdict(kind, atoms, call.lineno, snippet, (start, fn.end_lineno or start))  # type: ignore[attr-defined]
+        return _verdict(kind, atoms, call_line, snippet, (start, fn.end_lineno or start))  # type: ignore[attr-defined]
 
     def _apply_guards(self, kind: str, fn: ast.AST, line: int, env: dict, atoms: list[Atom]) -> list[Atom]:
         live = {a.ident for a in atoms if a.sanitizer_for(kind) is None}
@@ -609,6 +641,7 @@ _MASK_SPECIAL = {
     JAVA: re.compile(r"[\"'/]"),
     PHP: re.compile(r"[\"'/#]"),
 }
+_MASK_SPECIAL[CSHARP] = _MASK_SPECIAL[JAVA]
 _PHP_VAR_RE = re.compile(r"\$[A-Za-z_]\w*")
 # String-literal bodies (unambiguous alternation → linear).
 _QUOTED_BODY = {
@@ -633,6 +666,8 @@ _IDENT_RE = {
     GO: re.compile(r"(?<![\w.])[A-Za-z_]\w*"),
     PHP: re.compile(r"\$[A-Za-z_]\w*"),
 }
+_ASSIGN_OP[CSHARP] = _ASSIGN_OP[JAVA]
+_IDENT_RE[CSHARP] = _IDENT_RE[JAVA]
 _GO_OUTPARAM_RE = re.compile(r"&\s*([A-Za-z_]\w*)")
 _IF_RE = re.compile(r"\bif\b")
 _FN_KEYWORD_RE = re.compile(r"\b(?:function|func)\b")
@@ -1188,8 +1223,16 @@ class _TextFlow:
         return self.opens[k] + 1, self.closes[k]
 
     def sink_flow(
-        self, kind: str, paren: int, args_spec: tuple[int, ...] | None, snippet: str, match_start: int
+        self,
+        kind: str,
+        paren: int,
+        args_spec: tuple[int, ...] | None,
+        snippet: str,
+        match_start: int,
+        match_end: int,
     ) -> SinkFlow | None:
+        if args_spec == REST:
+            paren = match_start
         found = self._enclosing_fn(paren)
         if found is None:
             if self.lang != PHP:
@@ -1198,11 +1241,12 @@ class _TextFlow:
             found = (-1, (0, -1, -1))
         k, hdr = found
         env = self._env_at(k, hdr, paren)
-        close = self._match_paren(paren, _MAX_ARGS)
-        if args_spec == RECEIVER:
+        if args_spec == REST:
+            regions = [(match_end, self._stmt_end(match_end, len(self.m)))]
+        elif args_spec == RECEIVER:
             regions = [self._receiver(match_start)]
         else:
-            regions = self._split_args(paren + 1, close)
+            regions = self._split_args(paren + 1, self._match_paren(paren, _MAX_ARGS))
             if args_spec is not None:
                 regions = [regions[i] for i in args_spec if 0 <= i < len(regions)]
         atoms: list[Atom] = []
@@ -1222,6 +1266,9 @@ class _TextFlow:
 # =============================================================================
 
 
+_FLOW_LANGS = frozenset({PY, JS, GO, PHP, JAVA, CSHARP})
+
+
 class FileFlow:
     """Lazily-built, per-file flow context. Build one per file and reuse it for
     every sink in that file — the parse / mask / brace index are cached."""
@@ -1230,7 +1277,8 @@ class FileFlow:
         self.content = content
         self.lang = lang_for_suffix(suffix)
         self._impl: _PyFlow | _TextFlow | None = None
-        self._failed = self.lang is None
+        # Ruby has no brace-delimited functions to scope: token gate only.
+        self._failed = self.lang is None or self.lang not in _FLOW_LANGS
 
     def _get(self) -> _PyFlow | _TextFlow | None:
         if self._failed:
@@ -1250,14 +1298,19 @@ class FileFlow:
         args_spec: tuple[int, ...] | None,
         snippet: str = "",
         match_start: int | None = None,
+        match_end: int | None = None,
     ) -> SinkFlow | None:
         """Flow verdict for the sink call whose argument list opens at
         ``paren``; None when the enclosing function can't be determined (the
         caller then keeps its legacy same-call gate)."""
         impl = self._get()
-        if impl is None or paren < 0 or paren >= len(self.content) or self.content[paren] != "(":
+        if impl is None:
+            return None
+        start = paren if match_start is None else match_start
+        end = start if match_end is None else match_end
+        if args_spec != REST and (paren < 0 or paren >= len(self.content) or self.content[paren] != "("):
             return None
         try:
-            return impl.sink_flow(kind, paren, args_spec, snippet, paren if match_start is None else match_start)
+            return impl.sink_flow(kind, paren, args_spec, snippet, start, end)
         except RecursionError:
             return None

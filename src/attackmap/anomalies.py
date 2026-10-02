@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .safe_fs import contained_file
+from .taint_sinks import kind_label
 from .models import Anomaly, Route, ScanResult
 from .srcpaths import is_test_file
 
@@ -432,7 +433,7 @@ def _invariant_violations(scan: ScanResult, ctx: _SignalCtx) -> list[Anomaly]:
                 unguarded.append(handler)
         if not _is_outlier_split(len(guarded), len(unguarded), len(handlers)):
             continue
-        label = _SINK_LABELS.get(kind, kind)
+        label = _SINK_LABELS.get(kind) or kind_label(kind)
         invariant = (
             f"{len(guarded)} of {len(handlers)} handlers that reach a {label} sink "
             f"apply an auth/validation guard before it"

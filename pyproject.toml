@@ -100,6 +100,10 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Declarative taint sink registry (#240).
+attackmap = ["taint_sinks.yaml"]
+
 [tool.setuptools.dynamic]
 version = {attr = "attackmap.__version__"}
 

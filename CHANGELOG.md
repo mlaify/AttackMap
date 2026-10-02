@@ -42,6 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `TaintChain` gains `source_kind`, `source_line` and `flow` (source → propagation → sanitizer/guard → sink steps); taint findings cite each traced route and emit SARIF `codeFlows` on the sink result.
   - New flow-confirmed findings `sql-injection` and `path-traversal`, raised only when a source is traced into the query / path. Path-traversal and SSRF sinks for JS (`fs.readFile*`), Go (`os.Open`/`ReadFile`, `http.Get`/`NewRequest`), PHP (`fopen`/`file_get_contents`/`readfile`, cURL) and Java (`Paths.get`, `new File`, `Files.read*`, `openStream`, `HttpRequest.newBuilder`), and Java SQL / `Runtime.exec` / `ProcessBuilder` sinks (same-file only — Java imports are not resolved).
   - `attackmap bench`: injection recall 0% → 100% at 100% precision; new labelled case `express-docs-demo`. Before/after in `evals/benchmark/HISTORY.md`.
+- **Taint sink registry and catalog expansion (#240).** Sinks now live in a declarative, schema-validated registry, `src/attackmap/taint_sinks.yaml`. Each entry has a kind, languages, regex, gate, dangerous argument(s) and a **required** CWE.
+  - Plugins contribute sinks through the `attackmap.taint_sinks` entry-point group. `attackmap.sdk` exports `TAINT_SINK_PLUGIN_GROUP`, `TAINT_SINK_KINDS` and `validate_taint_sink`. An invalid plugin entry is skipped with a warning.
+  - New sink kinds, each with a finding, a CWE/OWASP taxonomy entry and an exploitability base score: `path_traversal` (`dynamic_open` stays as its schema-compatible alias), `zip_slip`, `code_injection`, `expression_injection`, `jndi_injection`, `ldap_injection`, `xpath_injection`, `header_injection` and `regex_injection`.
+  - New signatures:
+    - Path traversal: Flask `send_file`, Express `res.sendFile`/`download` (without `root:`), Go `http.ServeFile`, PHP `include`/`require`.
+    - Zip-slip: tarfile `extractall` without `filter=`, adm-zip, unzipper.
+    - Command execution: Node destructured `exec`/`execSync`, `spawn(…, {shell: true})`, `os.system`, .NET `Process.Start`, Ruby `system`/backticks/`%x`/`Open3`/`Kernel#open`.
+    - Code and expression injection: `new Function`, `vm.run*`, string `setTimeout`, `importlib.import_module`/`__import__`/`getattr`, Ruby `send`/`constantize`, SpEL/OGNL/MVEL/`ScriptEngine.eval`, JNDI `lookup`.
+    - LDAP and XPath search filters and expressions.
+    - Response headers.
+    - User-controlled regular expressions.
+    - Deserialization: `jsonpickle`, `dill`, `shelve`, .NET `BinaryFormatter`/`TypeNameHandling`, Jackson default typing, SnakeYAML without `SafeConstructor`, XStream.
+  - C# is indexed with flow analysis. Ruby is indexed with the same-call request-token gate only.
+  - **Behavior change:** PHP `exec()` is now reported as command execution, not code exec. A bare JS `exec(` counts only in files that load `child_process`.
 - **Route-level auth in the plugin contract (#256).** `Route` gains `auth` (`"required"` / `"anonymous"` / `"unknown"`), `guards` and `guard_evidence`; the last is redacted like other evidence. When a plugin declares the state:
   - the unauthenticated state-changing-route finding uses it;
   - attack-surface `auth_signals` use it instead of the ±40-line file window, so a `[AllowAnonymous]` route no longer inherits its neighbour's `[Authorize]`;
