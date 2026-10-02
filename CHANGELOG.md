@@ -7,10 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Security
-
-- **`--suppress-from-ref` could run commands from a scanned repo's git config.** It found lines added since the ref with `git diff <ref> -- <file>`, which compares against the working tree and so runs any `filter.<driver>.clean` command that `.gitattributes` names. A hostile `.git/config` could point that at arbitrary commands, and `--no-textconv` / `--no-ext-diff` don't disable clean filters. Old content now comes from `git cat-file blob`, which applies no filters, and is diffed against the working file in Python, so git never reads the working tree. A test with filter, textconv, diff-command and fsmonitor drivers configured confirms none of them run.
-
 ### Added
 
 - **More dependency ecosystems (#255).** `DependencyHint.ecosystem` and `Vulnerability.ecosystem` now accept `maven`, `nuget`, `conan`, `vcpkg`, `gem`, `cocoapods`, `hex` and `pub`. The set is exported from `attackmap.sdk` as `DependencyEcosystem` / `DEPENDENCY_ECOSYSTEMS`.
@@ -75,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Workflow findings point at the right step.** Line numbers came from the first matching line in the file, so identical steps in different jobs (two `uses: actions/checkout@v4`) all pointed at the first job. Lines are now looked up within the current job's and step's span, found from the YAML text. Flow-style YAML falls back to the old file-wide search.
 - `defensive-review.schema.json` now allows `weaknesses[].locations[].fingerprint`, which the report has emitted since #222.
+
+## [0.5.1] - 2026-10-02
+
+Security release. Upgrade if you scan untrusted repositories with `--suppress-from-ref` (v0.5.0).
+
+### Security
+
+- **`--suppress-from-ref` could run commands from a scanned repo's git config.** v0.5.0 found lines added since the ref with an unhardened `git diff <ref> -- <file>`. That diff reads the working tree, so it runs any `filter.<driver>.clean` command that `.gitattributes` names. It also honoured `core.fsmonitor`, `diff.external`, the pager and textconv drivers, and system/global git config. A hostile `.git/config`, for example in a downloaded repo or tarball, could therefore execute arbitrary commands.
+  - Every git call now forces those settings off and ignores system/global config. It also never prompts and never lazily fetches.
+  - Old content is read with `git cat-file blob`, which applies no filters, and diffed against the working file in Python.
+  - A test configures clean/smudge/textconv/diff-command/fsmonitor drivers and asserts that none of them run.
+- **Redaction gap:** a quoted secret in an evidence snippet that was cut at its length cap had no closing quote, so it escaped masking. It is now masked.
 
 ## [0.5.0] - 2026-10-02
 
@@ -1190,7 +1198,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/mlaify/AttackMap/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/mlaify/AttackMap/compare/v0.4.31...v0.5.0
 [0.4.31]: https://github.com/mlaify/AttackMap/compare/v0.4.30...v0.4.31
 [0.4.30]: https://github.com/mlaify/AttackMap/compare/v0.4.29...v0.4.30
