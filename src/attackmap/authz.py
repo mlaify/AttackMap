@@ -30,7 +30,7 @@ from pathlib import Path
 
 from .safe_fs import contained_file, is_unsafe_link
 from .models import BolaCandidate, Route, ScanResult
-from .srcpaths import is_test_file, is_vendored_file
+from .srcpaths import JS_TS_SUFFIXES, is_test_file, is_vendored_file
 
 # Path parameter forms across frameworks:
 #   {id} {user_id} {int:id}        Flask / FastAPI / Starlette
@@ -291,7 +291,7 @@ def _db_reachability(
 # --- GraphQL SDL scoping (#139) --------------------------------------------
 
 _GRAPHQL_EXTS = {".graphql", ".gql"}
-_GRAPHQL_CODE_EXTS = {".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".rb"}
+_GRAPHQL_CODE_EXTS = JS_TS_SUFFIXES | {".py", ".go", ".rb"}
 _GRAPHQL_SKIP_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv", "vendor"}
 _GRAPHQL_MAX_DEPTH = 6
 _GRAPHQL_MAX_FILES = 2000

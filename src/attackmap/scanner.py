@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .progress import ScanProgress
 
-from .srcpaths import in_skipped_dir, is_skipped_dir, line_number
+from .srcpaths import JS_TS_SUFFIXES, in_skipped_dir, is_skipped_dir, line_number
 from .redact import mask_secret
 from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
@@ -628,7 +628,7 @@ def _extract_php_routes(content: str, file: str) -> list[Route]:
 def extract_routes(content: str, file: str, suffix: str) -> list[Route]:
     if suffix == ".py":
         return _extract_python_routes(content, file)
-    if suffix in {".js", ".ts", ".tsx"}:
+    if suffix in JS_TS_SUFFIXES:
         return _extract_javascript_routes(content, file)
     if suffix == ".go":
         return _extract_go_routes(content, file)

@@ -33,10 +33,11 @@ import re
 from pathlib import Path
 
 from .safe_fs import read_repo_text, walk_repo
+from .srcpaths import JS_TS_SUFFIXES
 from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
 
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
-_JS_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+_JS_SUFFIXES = JS_TS_SUFFIXES
 _PY_SUFFIXES = {".py"}
 _JAVA_SUFFIXES = {".java", ".kt"}
 

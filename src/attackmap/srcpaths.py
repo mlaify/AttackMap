@@ -18,6 +18,11 @@ import os
 import re
 
 # Any path segment equal to one of these marks the file as test code.
+# Every JavaScript/TypeScript source suffix the core scans (#227). Shared by
+# the scanner, analyzers, taint, authz and fusion passes so none of them
+# silently drops ES-module or CommonJS files.
+JS_TS_SUFFIXES = frozenset({".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"})
+
 _TEST_DIR_SEGMENTS = frozenset(
     {"tests", "test", "__tests__", "spec", "specs", "testing", "e2e", "__mocks__", "fixtures"}
 )
