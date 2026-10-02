@@ -56,6 +56,27 @@ SECRET_TOKEN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b(glpat-[A-Za-z0-9_-]{20,})\b"), "gitlab_pat"),
     (re.compile(r"\b(npm_[A-Za-z0-9]{36})\b"), "npm_token"),
     (re.compile(r"\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b"), "jwt"),
+    # --- #252: credential families without a classic prefix -------------
+    # AWS secret access key: 40 chars, only trusted next to its key name.
+    (re.compile(r"(?i)aws_?secret_?(?:access_?)?key['\"]?\s{0,5}(?::=|=>|[:=])\s{0,5}['\"]?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])"), "aws_secret_access_key"),
+    # Azure storage / Service Bus connection-string keys.
+    (re.compile(r"(?i)\bAccountKey=([A-Za-z0-9+/]{40,100}={0,2})"), "azure_storage_account_key"),
+    (re.compile(r"(?i)\bSharedAccessKey=([A-Za-z0-9+/]{40,64}={0,2})"), "azure_shared_access_key"),
+    # Azure AD (Entra) client secret: 3 chars, a digit, `Q~`, 31-34 chars.
+    (re.compile(r"(?<![A-Za-z0-9_~.-])([A-Za-z0-9_~.]{3}\dQ~[A-Za-z0-9_~.-]{31,34})(?![A-Za-z0-9_~.-])"), "azure_ad_client_secret"),
+    # Datadog API / application keys (hex, keyed by name).
+    (re.compile(r"(?i)\b(?:dd|datadog)_?(?:api|app(?:lication)?)_?key['\"]?\s{0,5}[:=]\s{0,5}['\"]?([a-f0-9]{32}(?:[a-f0-9]{8})?)\b"), "datadog_key"),
+    # Heroku platform API key (new format).
+    (re.compile(r"\b(HRKU-AA[0-9A-Za-z_-]{58})\b"), "heroku_api_key"),
+    # DigitalOcean personal / OAuth / refresh tokens.
+    (re.compile(r"\b(do[opr]_v1_[a-f0-9]{64})\b"), "digitalocean_token"),
+    # HashiCorp Vault service / batch tokens.
+    (re.compile(r"\b(hv[sb]\.[A-Za-z0-9_-]{24,})\b"), "vault_token"),
+    # .npmrc registry auth: `//registry.npmjs.org/:_authToken=…`, `_auth=`/`_password=`.
+    (re.compile(r":_authToken\s{0,5}=\s{0,5}([A-Za-z0-9._~+/=-]{8,})"), "npm_auth_token"),
+    (re.compile(r"(?m)^\s{0,8}(?:\S{0,200}:)?_(?:auth|password)\s{0,5}=\s{0,5}([A-Za-z0-9+/=]{8,})"), "npm_basic_auth"),
+    # Docker registry auth blob in `.dockercfg` / `config.json`.
+    (re.compile(r"\"auth\"\s{0,5}:\s{0,5}\"([A-Za-z0-9+/]{12,}={0,2})\""), "docker_registry_auth"),
 ]
 
 _CRED_WORDS = (
@@ -83,7 +104,9 @@ _KEY_ASSIGN = re.compile(
     rf"(?P<prefix>['\"]?(?<![\w.-])[\w.-]{{0,64}}?(?:{_CRED_WORDS})[\w.-]{{0,64}}['\"]?\s*(?::=|=>|[:=])\s*)"
     # A bare value directly followed by `(`, `[` or more identifier text is
     # code (`request.headers.get(...)`, `os.environ[...]`), not a literal.
-    r"(?:(?P<q>['\"])(?P<qvalue>[^'\"\n]{4,}?)(?P=q)|(?P<bare>[^\s'\",;#()\[\]{}]{4,})(?![(\[.\w]))",
+    # An unterminated quoted value (a snippet cut at its length cap) is masked
+    # too: losing the closing quote must not let the secret through (#252).
+    r"(?:(?P<q>['\"])(?P<qvalue>[^'\"\n]{4,}?)(?:(?P=q)|$)|(?P<bare>[^\s'\",;#()\[\]{}]{4,})(?![(\[.\w]))",
     re.IGNORECASE,
 )
 _QUOTED_LITERAL = re.compile(r"(?P<q>['\"])(?P<value>[A-Za-z0-9+/_=-]{24,256})(?P=q)")
@@ -134,13 +157,20 @@ def _looks_random(value: str) -> bool:
     return shannon_entropy(value) >= 4.2
 
 
+def _mask_group(m: re.Match[str]) -> str:
+    """Mask only the secret (group 1), keeping any key-name context the
+    pattern matched around it (``AccountKey=``, ``aws_secret_access_key =``)."""
+    whole, start = m.group(0), m.start(0)
+    return whole[: m.start(1) - start] + mask_secret(m.group(1)) + whole[m.end(1) - start :]
+
+
 def redact_text(text: str | None) -> str | None:
     """Mask every credential-looking value in ``text``. Idempotent."""
     if not text or len(text) < 8:
         return text
     out = text
     for pattern, _kind in SECRET_TOKEN_PATTERNS:
-        out = pattern.sub(lambda m: mask_secret(m.group(1)), out)
+        out = pattern.sub(_mask_group, out)
 
     def _userinfo(m: re.Match[str]) -> str:
         user, password = m.group("user"), m.group("password")
@@ -164,6 +194,9 @@ def redact_text(text: str | None) -> str | None:
     def _assign(m: re.Match[str]) -> str:
         if m.group("q"):
             value = m.group("qvalue")
+            terminated = m.group(0).endswith(m.group("q")) and len(m.group(0)) > len(m.group("prefix")) + 1 + len(value)
+            if not terminated:
+                value = value.rstrip("…")  # snippet cut mid-value: not "already masked"
             if _is_masked(value) or _REFERENCE_VALUE.match(value):
                 return m.group(0)
             return f"{m.group('prefix')}{m.group('q')}{MASK}{m.group('q')}"

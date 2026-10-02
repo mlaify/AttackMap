@@ -23,7 +23,7 @@ from .srcpaths import SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .redact import mask_secret
 from .safe_fs import max_file_bytes, walk_repo
 from .models import DatabaseHint, ExternalCall, ScanResult, SecretHint
-from .scanner import _line_snippet
+from .scanner import _append_hardcoded_secret_hints, _line_snippet
 
 # Config files larger than this are skipped — at that size they're invariably
 # generated (lock files, minified bundles, or AttackMap's own JSON reports)
@@ -92,6 +92,16 @@ CONFIG_EXCLUDE_FILENAMES = frozenset({
 
 _SKIP_DIRS = SKIP_DIRS  # shared set (#215)
 
+# Credential dotfiles (#252): registry / VCS / SSH credentials that neither
+# the source pass (skips dotfiles) nor the suffix match above would read.
+# Symlinked ones are still skipped by walk_repo (#234).
+CREDENTIAL_FILENAMES = frozenset({
+    ".npmrc", ".pypirc", ".netrc", "_netrc", ".dockercfg", ".git-credentials",
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+})
+# `.netrc`: `machine host login user password SECRET`.
+_NETRC_PASSWORD_RE = re.compile(r"\bpassword\s{1,20}(?P<value>\S{4,256})")
+
 
 # --- DB URL extraction --------------------------------------------------------
 
@@ -137,7 +147,7 @@ _SECRET_KEY_RE = re.compile(
     # a long dashed token a new start — #236.)
     r"(?:^|[\s,{\[])"
     r"['\"]?(?P<key>[a-zA-Z0-9_.-]{0,64}"             # optional key prefix (bounded, #236)
-    r"(?:password|passwd|secret|token|api[_-]?key|priv[_-]?key|apikey))"
+    r"(?:password|passwd|secret|token|api[_-]?key|priv[_-]?key|private[_-]?key|apikey|_pass|_pwd))"
     r"['\"]?"
     r"\s*[:=]\s*"
     r"(?:['\"](?P<value>[^'\"\n]{4,})['\"]|(?P<bare>[^\s#'\",]{4,}))",
@@ -192,6 +202,8 @@ def _redact(value: str) -> str:
 def should_scan_config_file(path: Path) -> bool:
     """True if the file is a config file this module should extract from."""
     name = path.name.lower()
+    if name in CREDENTIAL_FILENAMES or (name.startswith("id_") and name.split(".")[0] in CREDENTIAL_FILENAMES and not name.endswith(".pub")):
+        return True
     if name in CONFIG_EXCLUDE_FILENAMES:
         return False
     if path.suffix.lower() in CONFIG_SUFFIXES:
@@ -225,7 +237,31 @@ def scan_config_repo(root: str | Path) -> ScanResult:
         _extract_db_urls(content, relative, result)
         _extract_http_targets(content, relative, result)
         _extract_secret_kvs(content, relative, result)
+        if path.name.lower() in {".netrc", "_netrc"}:
+            _extract_netrc(content, relative, result)
+        # Provider-shaped tokens, URL passwords and GCP service-account keys
+        # (#252). No entropy fallback or keyword rule here: config already
+        # has the key/value pass, and the entropy fallback is noisy on data.
+        _append_hardcoded_secret_hints(result, relative, content, entropy=False, generic=False)
     return result
+
+
+def _extract_netrc(content: str, relative: str, result: ScanResult) -> None:
+    index = _LineIndex(content)
+    for match in _NETRC_PASSWORD_RE.finditer(content):
+        value = match.group("value")
+        if _is_placeholder(value):
+            continue
+        result.secret_hints.append(
+            SecretHint(
+                name=_redact(value),
+                file=relative,
+                line=index.line_of(match.start()),
+                evidence_text=_line_snippet(content, match.start()).replace(value, _redact(value)),
+                confidence=1.0,
+                kind="netrc_password",
+            )
+        )
 
 
 def _extract_db_urls(content: str, relative: str, result: ScanResult) -> None:
@@ -292,6 +328,21 @@ def _extract_host(url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _masked_kv_snippet(content: str, match: re.Match[str], value: str) -> str:
+    """The line up to the value, then the masked value. Masking explicitly
+    (not via the generic evidence redaction) matters when the line is long:
+    a truncated snippet loses the closing quote that redaction keys on, and a
+    multi-line value such as a JSON-escaped PEM key would leak (#252)."""
+    group = "value" if match.group("value") is not None else "bare"
+    start = match.start(group)
+    line_start = content.rfind("\n", 0, start) + 1
+    head = content[line_start:start].lstrip()
+    if len(head) > 120:
+        head = "…" + head[-119:]
+    quote = content[start - 1] if group == "value" else ""
+    return f"{head}{_redact(value)}{quote}"
+
+
 def _extract_secret_kvs(content: str, relative: str, result: ScanResult) -> None:
     seen: set[tuple[str, int]] = {(h.name, h.line or 0) for h in result.secret_hints if h.file == relative}
     index = _LineIndex(content)
@@ -316,7 +367,7 @@ def _extract_secret_kvs(content: str, relative: str, result: ScanResult) -> None
                 name=key,
                 file=relative,
                 line=line,
-                evidence_text=_line_snippet(content, match.start("key")),
+                evidence_text=_masked_kv_snippet(content, match, value),
                 confidence=0.9,
                 kind="config_literal",
             )
