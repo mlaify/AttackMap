@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import re
 
 from .fingerprint import assign_fingerprints
 from .analyzer import identify_attack_surfaces
-from .models import AttackPath, AttackSurface, AuthHint, Finding, ScanResult
+from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .threat_model import generate_attack_paths, generate_findings
 
 
@@ -16,6 +17,10 @@ class AnalysisOutputs:
     attack_paths: list[AttackPath]
 
 
+logger = logging.getLogger(__name__)
+_WARNED_OVERLOADED: set[str] = set()
+
+# Deprecated (#258): prefixes the official plugins used to put in auth_hints.
 NON_AUTH_HINT_PREFIXES: tuple[str, ...] = (
     "service_name:",
     "service_role:",
@@ -59,10 +64,13 @@ def _auth_filtered_scan(scan: ScanResult) -> ScanResult:
     """
     Build a conservative auth-focused view of ScanResult.
 
-    Why:
-    `auth_hints` is temporarily overloaded with non-auth analyzer metadata
-    (service names, edges, protocol notes). For attack-surface and finding
-    generation, treat only likely auth signals as auth to avoid overconfidence.
+    The official plugins emit service/edge/protocol/framework metadata as typed
+    hints since #258, so for them this only drops weak auth hints. It remains
+    as a compatibility shim for older or third-party plugins that still put
+    that metadata in `auth_hints`: those are dropped (with a one-time warning)
+    so a file full of `controller:*` hints doesn't look authenticated.
+    Kept hints are copied whole, so `line` / `evidence_text` survive for the
+    route-to-auth windowing.
     """
     migrated_non_auth_hints = {
         (hint.hint, hint.file)
@@ -74,12 +82,27 @@ def _auth_filtered_scan(scan: ScanResult) -> ScanResult:
             *scan.framework_hints,
         ]
     }
+    overloaded = sorted(
+        {
+            hint.source_analyzer or "unknown"
+            for hint in scan.auth_hints
+            if hint.hint.lower().startswith(NON_AUTH_HINT_PREFIXES)
+        }
+    )
+    for analyzer in overloaded:
+        if analyzer not in _WARNED_OVERLOADED:
+            _WARNED_OVERLOADED.add(analyzer)
+            logger.warning(
+                "Analyzer %r puts non-auth metadata in auth_hints; emit ServiceHint/EdgeHint/"
+                "EntrypointHint/ProtocolHint/FrameworkHint instead (deprecated, see #258).",
+                analyzer,
+            )
     filtered_auth_hints = [
-        hint
+        hint.model_copy()
         for hint in scan.auth_hints
         if (hint.hint, hint.file) not in migrated_non_auth_hints and _is_likely_auth_signal(hint.hint)
     ]
-    return scan.model_copy(update={"auth_hints": [AuthHint(hint=hint.hint, file=hint.file) for hint in filtered_auth_hints]})
+    return scan.model_copy(update={"auth_hints": filtered_auth_hints})
 
 
 def to_attack_surface(scan: ScanResult) -> list[AttackSurface]:

@@ -320,6 +320,11 @@ def _file_service_map(scan: ScanResult) -> dict[str, str]:
     return mapping
 
 
+def _sink_on_chain(evidence: list[str]) -> bool:
+    """False when the chain's sink was only borrowed from elsewhere in the repo."""
+    return not any("elsewhere in repo" in item for item in evidence)
+
+
 def _build_service_chains(scan: ScanResult) -> list[ServiceChain]:
     service_edges = _extract_edge_hints(scan)
     has_service_hints = any(h.hint.startswith("service_name:") for h in [*scan.service_hints, *scan.auth_hints])
@@ -1140,9 +1145,18 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     surfaces = attack_surfaces if attack_surfaces is not None else identify_attack_surfaces(scan)
     runtime_surfaces = [surface for surface in surfaces if not _is_low_quality_source(surface.file)]
     findings: list[Finding] = []
-    atproto_chains = _build_atproto_chains(scan)
-    service_chains = _build_service_chains(scan)
-    chains = _build_probable_chains(scan) if _is_framework_mvc_scan(scan) else []
+    # Chain *findings* need evidence for every hop (#258 follow-up): a sink found
+    # only "elsewhere in repo" is not on the chain, and an "inter-service" chain
+    # needs an actual inter-service edge. Attack paths keep the looser chains.
+    atproto_chains = [c for c in _build_atproto_chains(scan) if _sink_on_chain(c.evidence)]
+    service_chains = [
+        c for c in _build_service_chains(scan) if c.next_service and _sink_on_chain(c.evidence)
+    ]
+    chains = (
+        [c for c in _build_probable_chains(scan) if _sink_on_chain(c.evidence)]
+        if _is_framework_mvc_scan(scan)
+        else []
+    )
     webhook_surfaces = [
         surface
         for surface in runtime_surfaces
