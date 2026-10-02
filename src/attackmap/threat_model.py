@@ -1467,8 +1467,36 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                     "and move to environment-injected or vault-managed values. Anyone with read "
                     "access to the repository already has these secrets."
                 ),
-                confidence="high",
+                # Keyword-proximity assignments alone (#252) are a weaker signal.
+                confidence="high" if any(h.confidence >= 0.6 for h in hardcoded_secrets) else "medium",
                 tags=["secret-exposure", "data-risk", "hardcoded-literal"],
+            )
+        )
+
+    # Secrets in git history (#252, opt-in --secrets-history). One finding;
+    # evidence says whether each value is still in HEAD.
+    if scan.secret_history:
+        history = scan.secret_history
+        removed = sum(1 for h in history if not h.still_in_head)
+        findings.append(
+            Finding(
+                title="Hard-coded secrets were found in git history",
+                rule_id="secret-in-git-history",
+                severity="high",
+                evidence=[
+                    f"[{h.kind}] {h.name} in {h.file} — introduced in {h.introduced_in[:12]}, "
+                    f"{'still in HEAD' if h.still_in_head else 'removed from HEAD (still in history)'}"
+                    for h in history[:10]
+                ]
+                + ([f"+{len(history) - 10} more"] if len(history) > 10 else []),
+                locations=_locs(history),
+                mitigation=(
+                    "Rotate every listed credential: removing it in a later commit does not revoke it, and "
+                    f"{removed} of {len(history)} survive only in history, where every clone and fork keeps them. "
+                    "Then rewrite history (git filter-repo) if the repository is shared, and add a pre-commit secret scanner."
+                ),
+                confidence="high",
+                tags=["secret-exposure", "data-risk", "git-history"],
             )
         )
 
@@ -2409,6 +2437,7 @@ def rule_catalog() -> list[tuple[str, str, str]]:
         ("weak-auth-route", "Authentication routes were detected without strong nearby auth controls", "medium"),
         ("unauth-outbound-integration", "Public routes appear to influence outbound integrations without clear auth signals", "medium"),
         ("hardcoded-secret", "Hard-coded secret literals were found in source or config", "high"),
+        ("secret-in-git-history", "Hard-coded secrets were found in git history", "high"),
         ("secret-env-reference", "Secret-bearing environment variables are referenced in executable paths", "medium"),
         ("public-data-route", "Public routes likely sit close to sensitive data operations", "medium"),
         ("atproto-trust-chain", "AT Protocol XRPC surface chains into a downstream trust boundary", "medium"),

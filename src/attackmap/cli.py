@@ -207,6 +207,7 @@ def _validate_analyze_options(
     hunt_budget: int,
     baseline: str | None,
     diff_output: str | None,
+    secrets_history: int = 0,
 ) -> None:
     """Reject bad values and orphaned flags before any scanning starts (#229).
 
@@ -234,6 +235,8 @@ def _validate_analyze_options(
     if _given(ctx, "diff_output") and diff_output is not None and baseline is None:
         raise typer.BadParameter("--diff-output requires --baseline to be set.")
 
+    if not 0 <= secrets_history <= 5000:
+        raise typer.BadParameter(f"--secrets-history must be between 0 (off) and 5000 commits (got {secrets_history}).")
     if verify_votes < 1:
         raise typer.BadParameter(f"--verify-votes must be at least 1 (got {verify_votes}).")
     if not 1 <= hunt_lenses <= len(HUNT_LENSES):
@@ -576,6 +579,11 @@ def analyze(
         "--fail-on-new-suppression",
         help="Exit non-zero if a finding active in the baseline is suppressed in this run (e.g. a suppression added by the PR). Requires --baseline.",
     ),
+    secrets_history: int = typer.Option(
+        0,
+        "--secrets-history",
+        help="Also scan the patches of the last N commits (all refs) for hard-coded secrets, reporting the introducing commit and whether each is still in HEAD. Off by default (0); capped at 5000 commits and 64 MB of patch text. Git runs with hooks, pagers, external diff and textconv disabled.",
+    ),
     cve: bool = typer.Option(
         False,
         "--cve",
@@ -641,6 +649,7 @@ def analyze(
         hunt_budget=hunt_budget,
         baseline=baseline,
         diff_output=diff_output,
+        secrets_history=secrets_history,
     )
 
     # Multi-repo fleet mode (#146a): scan each repo independently and assemble a
@@ -672,6 +681,7 @@ def analyze(
                 "--hunt": hunt,
                 "--remediate": remediate,
                 "--triage": triage,
+                "--secrets-history": secrets_history > 0,
             },
         )
         return
@@ -717,6 +727,17 @@ def analyze(
         typer.echo(
             f"Recall mode: widened taint discovery, {speculative} speculative "
             "chain(s) surfaced (marked low-confidence; adjudicate with --hunt --verify)."
+        )
+    if secrets_history:
+        from .secrets_history import scan_secret_history
+
+        typer.echo(f"Scanning the last {secrets_history} commit(s) for secrets in git history…")
+        history_hits, history_notes = scan_secret_history(repo_path, secrets_history)
+        scan.secret_history = history_hits
+        scan.limitations.extend(history_notes)
+        removed = sum(1 for h in history_hits if not h.still_in_head)
+        typer.echo(
+            f"Secrets in history: {len(history_hits)} found, {removed} no longer in HEAD."
         )
     if cve and scan.dependencies:
         typer.echo(f"Checking {len(scan.dependencies)} dependencies against OSV.dev…")

@@ -336,6 +336,27 @@ HARDCODED_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # to a JSON header. Recognized by shape here; verified for shape
     # (base64url + non-trivial length) in the extractor below.
     (re.compile(r"\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b"), "jwt"),
+    # --- #252: credential families without a classic prefix -------------
+    # AWS secret access key: 40 chars, only trusted next to its key name.
+    (re.compile(r"(?i)aws_?secret_?(?:access_?)?key['\"]?\s{0,5}(?::=|=>|[:=])\s{0,5}['\"]?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])"), "aws_secret_access_key"),
+    # Azure storage / Service Bus connection-string keys.
+    (re.compile(r"(?i)\bAccountKey=([A-Za-z0-9+/]{40,100}={0,2})"), "azure_storage_account_key"),
+    (re.compile(r"(?i)\bSharedAccessKey=([A-Za-z0-9+/]{40,64}={0,2})"), "azure_shared_access_key"),
+    # Azure AD (Entra) client secret: 3 chars, a digit, `Q~`, 31-34 chars.
+    (re.compile(r"(?<![A-Za-z0-9_~.-])([A-Za-z0-9_~.]{3}\dQ~[A-Za-z0-9_~.-]{31,34})(?![A-Za-z0-9_~.-])"), "azure_ad_client_secret"),
+    # Datadog API / application keys (hex, keyed by name).
+    (re.compile(r"(?i)\b(?:dd|datadog)_?(?:api|app(?:lication)?)_?key['\"]?\s{0,5}[:=]\s{0,5}['\"]?([a-f0-9]{32}(?:[a-f0-9]{8})?)\b"), "datadog_key"),
+    # Heroku platform API key (new format).
+    (re.compile(r"\b(HRKU-AA[0-9A-Za-z_-]{58})\b"), "heroku_api_key"),
+    # DigitalOcean personal / OAuth / refresh tokens.
+    (re.compile(r"\b(do[opr]_v1_[a-f0-9]{64})\b"), "digitalocean_token"),
+    # HashiCorp Vault service / batch tokens.
+    (re.compile(r"\b(hv[sb]\.[A-Za-z0-9_-]{24,})\b"), "vault_token"),
+    # .npmrc registry auth: `//registry.npmjs.org/:_authToken=…`, `_auth=`/`_password=`.
+    (re.compile(r":_authToken\s{0,5}=\s{0,5}([A-Za-z0-9._~+/=-]{8,})"), "npm_auth_token"),
+    (re.compile(r"(?m)^\s{0,8}(?:\S{0,200}:)?_(?:auth|password)\s{0,5}=\s{0,5}([A-Za-z0-9+/=]{8,})"), "npm_basic_auth"),
+    # Docker registry auth blob in `.dockercfg` / `config.json`.
+    (re.compile(r"\"auth\"\s{0,5}:\s{0,5}\"([A-Za-z0-9+/]{12,}={0,2})\""), "docker_registry_auth"),
 ]
 
 # Minimum length for the high-entropy fallback. Under this, entropy
@@ -811,7 +832,10 @@ def scan_files(
                     )
                 )
 
-        _append_hardcoded_secret_hints(result, relative, content)
+        # The keyword-proximity and URL-credential rules (#252) are skipped in
+        # test/vendored code, where fake credential fixtures are the norm.
+        first_party = not is_test_file(relative) and not is_vendored_file(relative)
+        _append_hardcoded_secret_hints(result, relative, content, generic=first_party, urls=first_party)
 
         # The weakness passes below are noise in test scaffolding (#67) and in
         # vendored/minified third-party code (#95) — a bug in a dependency the
@@ -932,57 +956,126 @@ def _looks_like_secret_candidate(value: str) -> bool:
     return True
 
 
-def _append_hardcoded_secret_hints(result: ScanResult, relative: str, content: str) -> None:
-    """Emit SecretHint records for literals pasted into source or config
-    (#39). Provider-prefixed patterns fire first; a Shannon-entropy
-    fallback catches high-entropy literals that don't match a known
-    provider. Both redact the value before it lands in evidence_text.
-    """
-    seen: set[tuple[str, str, int]] = {
-        (hint.kind, hint.file, hint.line or 0) for hint in result.secret_hints
-    }
-    matched_spans: list[tuple[int, int]] = []  # positions of provider matches
+# --- #252: prefix-less credentials ----------------------------------------
+
+# Credentials embedded in a URL (`https://user:pass@host`). Kept out of the
+# redaction token list: `redact._URI_USERINFO` already masks userinfo.
+_BASIC_AUTH_URL_RE = re.compile(
+    r"\b(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]{1,15})://[^\s:/@'\"]{1,128}:(?P<secret>[^\s/@'\"]{3,256})@[A-Za-z0-9.\[-]"
+)
+# Keyword-proximity assignment of a quoted literal to a credential-named key.
+_CREDENTIAL_ASSIGN_RE = re.compile(
+    r"(?<![\w.-])(?P<key>[\w.-]{0,40}?(?:password|passwd|pwd|secret|token|api[_-]?key)[\w.-]{0,40}?)['\"]?"
+    r"\s{0,5}(?::=|=>|[:=])\s{0,5}(?P<q>['\"])(?P<secret>[^'\"\s]{8,128})(?P=q)",
+    re.IGNORECASE,
+)
+# GCP service-account key file: the type marker plus an embedded private key.
+_GCP_SA_TYPE_RE = re.compile(r"\"type\"\s{0,5}:\s{0,5}\"service_account\"")
+_GCP_SA_KEY_RE = re.compile(r"\"private_key\"\s{0,5}:\s{0,5}\"(?P<secret>-----BEGIN [A-Z ]{0,20}PRIVATE KEY-----[^\"]{0,8000})\"")
+
+# Values that are placeholders, templates or references, not credentials.
+_PLACEHOLDER_WORDS = (
+    "changeme", "change_me", "change-me", "example", "placeholder", "dummy", "sample", "your_", "your-",
+    "yourpass", "xxxx", "redacted", "replace", "secret_here", "token_here", "password_here", "insert",
+    "fake", "mock",
+)
+_PLACEHOLDER_EXACT = frozenset({
+    "password", "passwd", "secret", "token", "apikey", "api_key", "api-key", "pass", "none", "null",
+    "undefined", "test", "testing", "default", "notasecret",
+})
+# Key names that carry a secret's *metadata*, not the secret.
+_NON_SECRET_KEY_PARTS = (
+    "name", "field", "header", "param", "type", "url", "uri", "path", "file", "_id", "env", "var",
+    "label", "prompt", "length", "regex", "pattern", "prefix", "endpoint", "hash", "policy",
+    "expir", "ttl", "count", "format", "placeholder", "message", "error", "hint", "reset", "column",
+    "table", "kind", "mode", "style", "class", "selector", "route", "template", "strength", "rule",
+)
+_IDENTIFIER_VALUE_RE = re.compile(
+    r"^(?:[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+|[a-z]+(?:[A-Z][a-z0-9]+)+)$"
+)
+
+
+def is_placeholder_secret(value: str) -> bool:
+    """A credential-shaped value that is a placeholder, template, env lookup
+    or masked value rather than a real secret."""
+    trimmed = value.strip()
+    lowered = trimmed.lower()
+    if not trimmed or lowered in _PLACEHOLDER_EXACT:
+        return True
+    if trimmed.startswith(("${", "{{", "<", "%(", "$", "%", "#{", "@{")) or trimmed.endswith(("}", ">")):
+        return True
+    if any(word in lowered for word in _PLACEHOLDER_WORDS):
+        return True
+    if len(set(trimmed)) <= 2 or "***" in trimmed or "…" in trimmed:
+        return True
+    return False
+
+
+def _credential_assignment_ok(key: str, value: str) -> bool:
+    key_l = key.lower()
+    if any(part in key_l for part in _NON_SECRET_KEY_PARTS):
+        return False
+    if is_placeholder_secret(value) or value.lower() == key_l:
+        return False
+    if _IDENTIFIER_VALUE_RE.match(value):
+        return False  # an identifier / env-var name / dotted reference
+    if "/" in value or "://" in value or value.startswith(("http", ".")):
+        return False
+    if value.replace(".", "").replace("-", "").replace("_", "").isdigit():
+        return False
+    return True
+
+
+def iter_secret_matches(
+    content: str, *, entropy: bool = True, generic: bool = True, urls: bool = True
+):
+    """Yield ``(kind, literal, offset, confidence)`` for every hard-coded
+    credential in ``content``: provider patterns, URL userinfo passwords,
+    GCP service-account keys, then (opt.) the keyword-proximity assignment
+    and the high-entropy fallback. ``literal`` is the raw secret — callers
+    must mask it before it leaves the process (#235)."""
+    matched_spans: list[tuple[int, int]] = []
+
+    def _overlaps(start: int, end: int) -> bool:
+        return any(s < end and start < e for s, e in matched_spans)
+
+    # A GCP service-account key file is reported as such, not as a bare PEM.
+    if _GCP_SA_TYPE_RE.search(content):
+        key = _GCP_SA_KEY_RE.search(content)
+        if key:
+            matched_spans.append((key.start("secret"), key.end("secret")))
+            yield "gcp_service_account_key", key.group("secret"), key.start(), 1.0
 
     for pattern, kind in HARDCODED_SECRET_PATTERNS:
         for match in pattern.finditer(content):
             literal = match.group(1)
+            if kind == "pem_private_key" and _overlaps(match.start(1), match.end(1)):
+                continue
             # JWT shape needs additional verification — the base-64 header
             # segment must decode to something starting with `{` and
-            # containing an "alg" key. Reject anything that just happens
-            # to look like the shape.
+            # containing an "alg" key.
             if kind == "jwt" and not _is_jwt_shape(literal):
                 continue
-            line = _line_of(content, match.start())
-            key = (kind, relative, line)
-            if key in seen:
+            if kind in {"npm_auth_token", "npm_basic_auth", "docker_registry_auth"} and is_placeholder_secret(literal):
                 continue
-            seen.add(key)
-            matched_spans.append((match.start(), match.end()))
-            # PEM only captures the (non-secret) header line — keep it verbatim.
-            # Everything else is redacted in both the name *and* the evidence
-            # snippet so the raw credential never reaches report.json.
-            redact = kind != "pem_private_key"
-            display_name = _redact_secret(literal) if redact else literal
-            result.secret_hints.append(
-                SecretHint(
-                    name=display_name,
-                    file=relative,
-                    line=line,
-                    evidence_text=_redacted_snippet(content, match.start(), literal, redact=redact),
-                    confidence=1.0,
-                    kind=kind,
-                )
-            )
+            matched_spans.append((match.start(1), match.end(1)))
+            yield kind, literal, match.start(), 1.0
 
-    # High-entropy fallback — only if no provider match was already found
-    # at this position, to avoid double-emitting the same literal.
-    def _overlaps_matched(pos: int) -> bool:
-        return any(start <= pos < end for start, end in matched_spans)
+    for match in (_BASIC_AUTH_URL_RE.finditer(content) if urls else ()):
+        literal = match.group("secret")
+        if is_placeholder_secret(literal) or _overlaps(match.start("secret"), match.end("secret")):
+            continue
+        host = content[match.end("secret") + 1 : match.end("secret") + 64].split("/", 1)[0].split(":", 1)[0]
+        if host.lower() in {"localhost", "127.0.0.1", "0.0.0.0", "[::1]"}:
+            continue  # a local dev DSN
+        matched_spans.append((match.start("secret"), match.end("secret")))
+        yield "basic_auth_url", literal, match.start("secret"), 0.9
 
-    for match in _QUOTED_LITERAL.finditer(content):
+    # High-entropy fallback — only where no stronger match already fired.
+    for match in (_QUOTED_LITERAL.finditer(content) if entropy else ()):
         literal = match.group(1)
         pos = match.start(1)
-        if _overlaps_matched(pos):
+        if _overlaps(pos, match.end(1)):
             continue
         if not _looks_like_secret_candidate(literal):
             continue
@@ -990,19 +1083,51 @@ def _append_hardcoded_secret_hints(result: ScanResult, relative: str, content: s
             continue  # base64/base32/hex alphabet constant, not a secret (#96)
         if _shannon_entropy(literal) < _ENTROPY_THRESHOLD:
             continue
-        line = _line_of(content, pos)
-        key = ("high_entropy", relative, line)
-        if key in seen:
+        matched_spans.append((pos, match.end(1)))
+        yield "high_entropy", literal, pos, 0.7
+
+    if generic:
+        for match in _CREDENTIAL_ASSIGN_RE.finditer(content):
+            literal = match.group("secret")
+            if _overlaps(match.start("secret"), match.end("secret")):
+                continue
+            if not _credential_assignment_ok(match.group("key"), literal):
+                continue
+            matched_spans.append((match.start("secret"), match.end("secret")))
+            yield "credential_assignment", literal, match.start("secret"), 0.5
+
+
+def _append_hardcoded_secret_hints(
+    result: ScanResult, relative: str, content: str, *, entropy: bool = True, generic: bool = True,
+    urls: bool = True,
+) -> None:
+    """Emit SecretHint records for literals pasted into source or config
+    (#39, #252). Every value is redacted before it lands in a hint."""
+    seen: set[tuple[str, str, int]] = {
+        (hint.kind, hint.file, hint.line or 0) for hint in result.secret_hints
+    }
+    # A line that already carries a secret hint (e.g. a config DB URL
+    # password) doesn't get a second, weaker one.
+    lines_with_hint = {hint.line for hint in result.secret_hints if hint.file == relative}
+    for kind, literal, offset, confidence in iter_secret_matches(content, entropy=entropy, generic=generic, urls=urls):
+        line = _line_of(content, offset)
+        key = (kind, relative, line)
+        if key in seen or (confidence < 1.0 and line in lines_with_hint):
             continue
         seen.add(key)
+        lines_with_hint.add(line)
+        # PEM only captures the (non-secret) header line — keep it verbatim.
+        # Everything else is redacted in both the name *and* the evidence
+        # snippet so the raw credential never reaches report.json.
+        redact = kind != "pem_private_key"
         result.secret_hints.append(
             SecretHint(
-                name=_redact_secret(literal),
+                name=_redact_secret(literal) if redact else literal,
                 file=relative,
                 line=line,
-                evidence_text=_redacted_snippet(content, pos, literal),
-                confidence=0.7,
-                kind="high_entropy",
+                evidence_text=_redacted_snippet(content, offset, literal, redact=redact),
+                confidence=confidence,
+                kind=kind,
             )
         )
 

@@ -183,6 +183,24 @@ class SecretHint(_RedactedEvidence):
     kind: str = "env_reference"
 
 
+class SecretHistoryHit(_RedactedEvidence):
+    """A hard-coded secret found in git history (#252, ``--secrets-history``).
+
+    ``name`` is the masked value; ``introduced_in`` is the oldest scanned
+    commit that added it; ``still_in_head`` is False when a later commit
+    removed it from the file (it remains in every clone's history).
+    """
+
+    name: str
+    kind: str
+    file: str
+    line: int | None = None
+    introduced_in: str
+    still_in_head: bool
+    evidence_text: str | None = None
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class DependencyHint(_RedactedEvidence):
     """A single third-party dependency declared in a manifest or lockfile.
 
@@ -827,6 +845,7 @@ class ScanResult(BaseModel):
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
     supply_chain_issues: list[SupplyChainIssue] = Field(default_factory=list)
+    secret_history: list[SecretHistoryHit] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
     # What the scan deliberately did not analyze (e.g. symlinks that point out
     # of the repo, #234) — so a clean report isn't mistaken for full coverage.
