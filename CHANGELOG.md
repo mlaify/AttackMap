@@ -55,6 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Plugin false-positive fixes (Phase 5), now pinned in `plugins_lock.py` and the `[all]` extra.**
+  - **go:** `Header.Get`/`Query.Get` and similar calls are no longer routes. `_test.go` and `testdata/` aren't scanned.
+  - **java-spring:** bare `@GetMapping`, `path=`, array values and class-level prefixes now work, through a proper annotation parser.
+  - **dotnet:** fixes ASP.NET route templates, adds `MapGroup` prefixes, and adds per-route `[Authorize]`/`[AllowAnonymous]`/`RequireAuthorization`. `GetConnectionString` is no longer a secret.
+  - **terraform:** open egress is no longer reported as ingress. `aws_iam_policy_document` wildcards, `.tf.json` files and secrets in `.tfvars` are now analyzed.
+  - **c / cpp:** each `.h` file is owned by exactly one of the two plugins. C `detect()` requires a `.c` file. Drogon routes are now found.
+  - **node-service:** only router receivers produce routes, so `req.get`, `cache.get` and `axios.get` don't. HTTP clients become external calls.
+  - **php-web, php-laminas, omeka-s:** Slim and config routes need a router or path, secret names are case-sensitive, `jwt` needs a JWT library, and navigation route *names* are no longer routes. php-web `detect()` needs PHP.
+  - **iac:** handles multi-stage Dockerfiles and `Dockerfile.*` / `compose.*` variants. Finds `ENV`/`ARG` secrets, exposure from `ports:`, and docker.sock/cap_add/pid privileges.
+  - **atproto:** only query, procedure and subscription lexicons become routes (GET/POST/WS). Stricter `detect()`, plus per-handler auth hints.
+  - With all 19 analyzers enabled, the 26 plugin fixtures and the core and macOS app repos scan with no analyzer errors.
 - **`.env.example` variables are no longer "hard-coded secret literals".** Any `SecretHint` whose kind wasn't `env_reference` counted as a hard-coded literal, including the iac plugin's `env_template` hints, which are variable names declared in `.env.example`-style templates. That produced a HIGH `hardcoded-secret` finding for every templated `DATABASE_PASSWORD=`. `env_template` now joins the env-reference finding.
 - **Typed plugin signals and the `auth_hints` shim (#258).**
   - The official plugins now emit service, edge, entrypoint, protocol and framework metadata as typed hints, with `line` and `evidence_text`. They no longer put it in `auth_hints`.
