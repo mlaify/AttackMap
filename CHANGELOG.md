@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CI workflow scanner gaps (#246).** Eleven new workflow rules: `workflow_run_artifact_poisoning` (high, CWE-829, when the triggering run's artifacts or head are executed), `issue_comment_pr_checkout`, `github_script_injection`, `github_env_injection` (`$GITHUB_ENV`/`$GITHUB_PATH`/`$GITHUB_OUTPUT`, directly or via an `env:` binding), `default_token_permissions`, `oidc_on_untrusted_trigger`, `secrets_inherit`, `checkout_persist_credentials`, `cache_poisoning_pr_target`, `docker_action_unpinned` and `curl_pipe_shell`.
+  - Trigger trust: on `pull_request_target`, `issue_comment` and `workflow_run`, `secret_in_run` and `broad_permissions` are raised to high. `git fetch … pull/N/head` and `gh pr checkout` in `run:` count as PR checkouts.
+  - Free-text `inputs.*` of `workflow_call` (medium) and `workflow_dispatch` (low) workflows count as script injection. The new `workflow_run.head_branch`/`head_commit.*`/`display_title` contexts do too.
+  - Reusable-workflow `uses:` jobs are now pin-checked. Docker `action.yml` images are checked as well as composite steps.
+  - Workflow findings now carry an `external/cwe/cwe-N` tag.
+  - Behavior change: `uses: docker://img:tag` without `@sha256:` was previously skipped and is now reported. A workflow with no `permissions:` block gets a low finding (medium on an untrusted trigger).
 - **Route-level auth in the plugin contract (#256).** `Route` gains `auth` (`"required"` / `"anonymous"` / `"unknown"`), `guards` and `guard_evidence`; the last is redacted like other evidence. When a plugin declares the state:
   - the unauthenticated state-changing-route finding uses it;
   - attack-surface `auth_signals` use it instead of the ±40-line file window, so a `[AllowAnonymous]` route no longer inherits its neighbour's `[Authorize]`;

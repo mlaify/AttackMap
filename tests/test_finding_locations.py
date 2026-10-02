@@ -66,7 +66,7 @@ def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
 _CLASSES = {
     "src/client.py": "import requests\n\ndef f(u):\n    return requests.get(u, verify=False)\n",
     "src/crypto.py": "import hashlib\n\ndef h(password):\n    return hashlib.md5(password.encode()).hexdigest()\n",
-    ".github/workflows/ci.yml": "on: pull_request\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@main\n",
+    ".github/workflows/ci.yml": "on: pull_request\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@main\npermissions: {}\n",
 }
 
 

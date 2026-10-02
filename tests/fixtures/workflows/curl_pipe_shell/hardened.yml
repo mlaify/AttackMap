@@ -1,0 +1,11 @@
+on: [push]
+permissions:
+  contents: read
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -fsSLo install.sh https://example.com/install.sh
+          echo "3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  install.sh" | sha256sum -c -
+          bash install.sh

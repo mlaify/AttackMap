@@ -1,0 +1,11 @@
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          BRANCH: ${{ github.head_ref }}
+        run: echo "BRANCH_NAME=$BRANCH" >> "$GITHUB_ENV"

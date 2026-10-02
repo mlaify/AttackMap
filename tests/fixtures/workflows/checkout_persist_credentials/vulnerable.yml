@@ -1,0 +1,11 @@
+on: [pull_request_target]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: npm install && npm test

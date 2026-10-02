@@ -1,0 +1,21 @@
+# Artifact poisoning: the PR's "build" run uploads an artifact that this
+# privileged workflow_run job downloads and executes.
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@8f4b7f84864484a7bf31766abe9204da3cbe65b3
+        with:
+          name: pr-artifact
+          path: artifact
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run the artifact's script
+        run: ./artifact/script.sh

@@ -16,8 +16,14 @@ def _repo(tmp_path: Path, yaml_text: str, name: str = "ci.yml") -> Path:
     return tmp_path
 
 
+def _scan(tmp_path: Path):
+    """Issues minus `default_token_permissions` (#246), which fires on any
+    workflow without a permissions: block and has its own tests."""
+    return [i for i in scan_workflows(tmp_path) if i.kind != "default_token_permissions"]
+
+
 def _kinds(tmp_path: Path) -> list[str]:
-    return [i.kind for i in scan_workflows(tmp_path)]
+    return [i.kind for i in _scan(tmp_path)]
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +43,7 @@ jobs:
       - uses: some/action@main
 """,
     )
-    issues = scan_workflows(repo)
+    issues = _scan(repo)
     assert [i.kind for i in issues] == ["unpinned_action"]
     assert issues[0].severity == "medium"
 
@@ -54,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
 """,
     )
-    issues = scan_workflows(repo)
+    issues = _scan(repo)
     assert [i.kind for i in issues] == ["unpinned_action"]
     assert issues[0].severity == "low"
 
@@ -84,10 +90,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/local
-      - uses: docker://alpine:3.19
+      - uses: docker://alpine@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
 """,
     )
     assert _kinds(repo) == []
+
+
+def test_docker_action_by_tag_is_unpinned(tmp_path: Path) -> None:
+    repo = _repo(
+        tmp_path,
+        """
+on: [push]
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker://alpine:3.19
+""",
+    )
+    assert _kinds(repo) == ["docker_action_unpinned"]
 
 
 def test_pr_target_checkout_of_head_ref_is_high(tmp_path: Path) -> None:
@@ -104,7 +125,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 """,
     )
-    issues = scan_workflows(repo)
+    issues = _scan(repo)
     kinds = {i.kind for i in issues}
     assert "pr_target_checkout" in kinds
     pr = next(i for i in issues if i.kind == "pr_target_checkout")
@@ -175,7 +196,7 @@ jobs:
           echo "${{ github.event.issue.title }}"
 """,
     )
-    issues = scan_workflows(repo)
+    issues = _scan(repo)
     inj = [i for i in issues if i.kind == "script_injection"]
     assert len(inj) == 1
     assert inj[0].severity == "high"
@@ -228,7 +249,7 @@ jobs:
       - run: echo hi
 """,
     )
-    broad = [i for i in scan_workflows(repo) if i.kind == "broad_permissions"]
+    broad = [i for i in _scan(repo) if i.kind == "broad_permissions"]
     assert len(broad) == 2
     assert {i.context for i in broad} == {
         "workflow (top-level permissions)",
@@ -265,7 +286,7 @@ jobs:
       - run: echo hi
 """,
     )
-    issues = [i for i in scan_workflows(repo) if i.kind == "self_hosted_pr"]
+    issues = [i for i in _scan(repo) if i.kind == "self_hosted_pr"]
     assert len(issues) == 1
     assert issues[0].severity == "high"
 

@@ -1,0 +1,8 @@
+on: [push]
+permissions:
+  contents: read
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsSL https://example.com/install.sh | sudo bash

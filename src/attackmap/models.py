@@ -298,6 +298,18 @@ class WorkflowIssue(_RedactedEvidence):
         "script_injection",
         "broad_permissions",
         "self_hosted_pr",
+        # #246
+        "workflow_run_artifact_poisoning",
+        "issue_comment_pr_checkout",
+        "github_script_injection",
+        "github_env_injection",
+        "default_token_permissions",
+        "oidc_on_untrusted_trigger",
+        "secrets_inherit",
+        "checkout_persist_credentials",
+        "cache_poisoning_pr_target",
+        "docker_action_unpinned",
+        "curl_pipe_shell",
     ]
     file: str
     line: int | None = None
