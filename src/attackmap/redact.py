@@ -83,7 +83,9 @@ _KEY_ASSIGN = re.compile(
     rf"(?P<prefix>['\"]?(?<![\w.-])[\w.-]{{0,64}}?(?:{_CRED_WORDS})[\w.-]{{0,64}}['\"]?\s*(?::=|=>|[:=])\s*)"
     # A bare value directly followed by `(`, `[` or more identifier text is
     # code (`request.headers.get(...)`, `os.environ[...]`), not a literal.
-    r"(?:(?P<q>['\"])(?P<qvalue>[^'\"\n]{4,}?)(?P=q)|(?P<bare>[^\s'\",;#()\[\]{}]{4,})(?![(\[.\w]))",
+    # An unterminated quoted value (a snippet cut at its length cap) is masked
+    # too: losing the closing quote must not let the secret through.
+    r"(?:(?P<q>['\"])(?P<qvalue>[^'\"\n]{4,}?)(?:(?P=q)|$)|(?P<bare>[^\s'\",;#()\[\]{}]{4,})(?![(\[.\w]))",
     re.IGNORECASE,
 )
 _QUOTED_LITERAL = re.compile(r"(?P<q>['\"])(?P<value>[A-Za-z0-9+/_=-]{24,256})(?P=q)")
@@ -164,6 +166,9 @@ def redact_text(text: str | None) -> str | None:
     def _assign(m: re.Match[str]) -> str:
         if m.group("q"):
             value = m.group("qvalue")
+            terminated = m.group(0).endswith(m.group("q")) and len(m.group(0)) > len(m.group("prefix")) + 1 + len(value)
+            if not terminated:
+                value = value.rstrip("…")  # snippet cut mid-value: not "already masked"
             if _is_masked(value) or _REFERENCE_VALUE.match(value):
                 return m.group(0)
             return f"{m.group('prefix')}{m.group('q')}{MASK}{m.group('q')}"
