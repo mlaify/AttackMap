@@ -17,6 +17,7 @@ from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .crypto import find_crypto_weaknesses
 from .sbom import analyze_sbom
+from .supply_chain import scan_supply_chain
 from .workflow_scanner import scan_workflows
 from .srcpaths import is_test_file, is_vendored_file
 from .weaknesses import find_code_weaknesses
@@ -858,6 +859,12 @@ def run_repo_passes(
     if progress is not None:
         progress.stage("Dependency inventory (SBOM)")
     result.dependencies = result.dependencies + analyze_sbom(root_path)
+    # Supply-chain risk beyond CVEs (#247): offline, over the same manifests.
+    if progress is not None:
+        progress.stage("Dependency supply-chain risk")
+    result.supply_chain_issues = result.supply_chain_issues + scan_supply_chain(
+        root_path, result.dependencies
+    )
     # CI workflow security (#142): parse .github/workflows for unpinned actions,
     # pull_request_target checkouts, secrets/injectable context in run steps,
     # over-broad permissions, and self-hosted runners on PR triggers.

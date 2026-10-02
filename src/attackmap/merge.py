@@ -120,6 +120,10 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         lambda item: (item.kind, item.file, item.line, item.context),
     ),
     MergeRule(
+        "supply_chain_issues",
+        lambda item: (item.kind, item.file, item.line, item.package),
+    ),
+    MergeRule(
         "anomalies",
         lambda item: (item.kind, item.route_method, item.route_path, item.route_file),
     ),

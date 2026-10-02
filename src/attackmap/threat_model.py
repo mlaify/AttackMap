@@ -1052,6 +1052,54 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
 }
 
 
+
+# Dependency supply-chain risk beyond CVEs (#247). Severity comes from the
+# emitted issues (tiered per instance, e.g. locked vs unlocked).
+_SUPPLY_CHAIN_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "dependency_confusion": {
+        "title": "Dependency confusion risk: internal package names resolvable from a public registry",
+        "mitigation": "Install private packages from a single index that proxies the public one (`--index-url`, not `--extra-index-url`); publish npm packages under an owned scope with an `@org:registry=` mapping; register placeholder names on the public registry for internal packages.",
+        "technique_id": "T1195.001",
+        "technique_name": "Supply Chain Compromise: Compromise Software Dependencies and Development Tools",
+        "tactic": "Initial Access",
+    },
+    "typosquat_candidate": {
+        "title": "Possible typosquatted dependency (one edit from a popular package)",
+        "mitigation": "Confirm the dependency is the package you meant (check the registry page, maintainers and download counts). If it's a typo of the popular package, replace it and audit any machine that installed it.",
+        "technique_id": "T1195.001",
+        "technique_name": "Supply Chain Compromise: Compromise Software Dependencies and Development Tools",
+        "tactic": "Initial Access",
+    },
+    "mutable_vcs_dependency": {
+        "title": "Dependency pinned to a mutable git ref, URL or fork",
+        "mitigation": "Pin VCS dependencies to a full commit SHA (`git+https://…@<sha>`, `github:user/repo#<sha>`, Cargo `rev = \"<sha>\"`), add a hash to archive URLs (`#sha256=` / `--hash=`), and prefer published registry releases over forks.",
+        "technique_id": "T1195.001",
+        "technique_name": "Supply Chain Compromise: Compromise Software Dependencies and Development Tools",
+        "tactic": "Initial Access",
+    },
+    "install_script": {
+        "title": "Dependency install scripts run code at install time",
+        "mitigation": "Install with `--ignore-scripts` in CI and allow-list the packages that need build steps. Never pipe a download into a shell from an install hook; vendor or checksum-verify the script instead.",
+        "technique_id": "T1059",
+        "technique_name": "Command and Scripting Interpreter",
+        "tactic": "Execution",
+    },
+    "unlocked_manifest": {
+        "title": "Dependencies resolved without a lockfile or integrity hashes",
+        "mitigation": "Commit the lockfile (`package-lock.json`, `composer.lock`, `Pipfile.lock`) and install with the frozen/ci mode (`npm ci`, `composer install`); regenerate lockfile entries that lack an `integrity` hash.",
+        "technique_id": "T1195.001",
+        "technique_name": "Supply Chain Compromise: Compromise Software Dependencies and Development Tools",
+        "tactic": "Initial Access",
+    },
+    "insecure_registry": {
+        "title": "Package registry reached over plain HTTP or without TLS verification",
+        "mitigation": "Use `https://` for every registry and index URL, and remove `strict-ssl=false` / `--trusted-host` so a network attacker can't substitute packages in transit.",
+        "technique_id": "T1557",
+        "technique_name": "Adversary-in-the-Middle",
+        "tactic": "Credential Access",
+    },
+}
+
 _ANOMALY_FINDING_SPEC: dict[str, dict[str, str]] = {
     "auth_outlier": {
         "severity": "high",
@@ -1768,6 +1816,43 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    # Dependency supply-chain risk (#247). One aggregated finding per kind,
+    # severity the max over that kind's issues.
+    supply_by_kind: dict[str, list] = {}
+    for issue in scan.supply_chain_issues:
+        supply_by_kind.setdefault(issue.kind, []).append(issue)
+    for kind, spec in _SUPPLY_CHAIN_FINDING_SPEC.items():
+        items = supply_by_kind.get(kind)
+        if not items:
+            continue
+        severity = max((i.severity for i in items), key=_SEVERITY_ORDER.__getitem__)
+        evidence = []
+        for i in items[:10]:
+            loc = f"{i.file}:{i.line}" if i.line else i.file
+            evidence.append(f"{loc} — {i.evidence_text}" if i.evidence_text else loc)
+        if len(items) > 10:
+            evidence.append(f"+{len(items) - 10} more occurrence(s)")
+        findings.append(
+            Finding(
+                title=spec["title"],
+                rule_id=_rule_slug_kind(kind),
+                severity=severity,  # type: ignore[arg-type]
+                evidence=evidence,
+                locations=_locs(items),
+                mitigation=spec["mitigation"],
+                confidence="medium" if kind == "typosquat_candidate" else "high",
+                tags=["supply-chain", "dependency-risk"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
+
     # Anomaly / outlier findings (#78). One aggregated finding per kind,
     # each evidence line naming the peer group and the deviation. The
     # finding's confidence tracks the strongest (most consistent) cohort.
@@ -2338,6 +2423,7 @@ def rule_catalog() -> list[tuple[str, str, str]]:
     for spec_table in (
         _TAINT_FINDING_SPEC, _CRYPTO_FINDING_SPEC, _WEB_HARDENING_FINDING_SPEC,
         _CODE_WEAKNESS_FINDING_SPEC, _WORKFLOW_FINDING_SPEC, _ANOMALY_FINDING_SPEC,
+        _SUPPLY_CHAIN_FINDING_SPEC,
     ):
         for kind, spec in spec_table.items():
             rules.append((_rule_slug_kind(kind), spec["title"], spec.get("severity", "varies")))
