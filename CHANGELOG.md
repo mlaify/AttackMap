@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`attackmap capabilities`** prints a stable JSON description of the CLI: `version`, `commands`, every long option `analyze` accepts, whether `analyze` takes multiple repo paths, and the progress protocol version. GUIs and wrappers can feature-detect from it instead of scraping `analyze --help` (AttackMap-mac#4).
 - **`attackmap.sdk.fs`: a shared repo walker for plugins (#253).**
   - `iter_repo_files(root, suffixes=, names=, skip_dirs=DEFAULT_SKIP_DIRS, max_bytes=, include_tests=, on_skip=)` prunes skip dirs by *repo-relative* name, so a repo under `/build/...` is no longer silently empty. It never follows symlinks out of the repo, skips AttackMap output dirs, and caps file size.
   - `read_source()` decodes UTF-8, then cp1252, then latin-1, returns None for unreadable or binary files, and never raises.
