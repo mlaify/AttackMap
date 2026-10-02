@@ -61,6 +61,7 @@ CWE_NAMES: dict[int, str] = {
     20: "Improper Input Validation",
     22: "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
     78: "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
+    89: "Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')",
     94: "Improper Control of Generation of Code ('Code Injection')",
     95: "Improper Neutralization of Directives in Dynamically Evaluated Code ('Eval Injection')",
     200: "Exposure of Sensitive Information to an Unauthorized Actor",
@@ -229,6 +230,9 @@ RULE_TAXONOMY: dict[str, RuleTaxonomy] = {
     "ssti": RuleTaxonomy(cwe=(1336, 94), owasp=("A03:2021",), asvs=("V5.2.5",), attack=("T1059", "T1190")),
     "ssrf": RuleTaxonomy(cwe=(918,), owasp=("A10:2021", "API7:2023"), asvs=("V5.2.6", "V12.6.1"), attack=("T1190", "T1552.005")),
     "nosql-injection": RuleTaxonomy(cwe=(943,), owasp=("A03:2021",), asvs=("V5.3.4",), attack=("T1190",)),
+    # Flow-confirmed taint findings (#239)
+    "sql-injection": RuleTaxonomy(cwe=(89,), owasp=("A03:2021",), asvs=("V5.3.4", "V5.3.5"), attack=("T1190",)),
+    "path-traversal": RuleTaxonomy(cwe=(22,), owasp=("A01:2021",), asvs=("V12.3.1",), attack=("T1190",)),
     "open-redirect": RuleTaxonomy(cwe=(601,), owasp=("A01:2021",), asvs=("V5.1.5",), attack=("T1204.001", "T1566.002")),
     # Crypto (#70)
     "weak-password-hash": RuleTaxonomy(cwe=(916, 328), owasp=("A02:2021",), asvs=("V2.4.1",), attack=("T1110.002",)),

@@ -13,6 +13,7 @@ from .models import (
     Route,
     ScanResult,
     TaintChain,
+    TaintFlowStep,
 )
 from .srcpaths import evidence_locations
 from .route_auth_fusion import synthesize_unauthenticated_routes
@@ -699,6 +700,75 @@ _TAINT_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Execution",
     },
 }
+
+
+# Flow-confirmed findings (#239) for sink kinds that are NOT dangerous on
+# reachability alone — a SQL call or file open is everywhere. These fire only
+# when the intra-procedural pass traced a request source into the sink's
+# dangerous argument (`TaintChain.source_kind` set, not sanitized), so the
+# finding names the exact source line and route.
+_FLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "sql_execute": {
+        "rule_id": "sql-injection",
+        "severity": "high",
+        "title": "Request input flows into a raw SQL query (SQL injection)",
+        "mitigation": "Use parameterized queries / bound parameters for every request-derived value. Never build SQL with f-strings, concatenation, .format or %; allow-list identifiers (table/column names) that can't be bound.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "dynamic_open": {
+        "rule_id": "path-traversal",
+        "severity": "high",
+        "title": "Request input flows into a filesystem path (path traversal)",
+        "mitigation": "Never build filesystem paths from request input directly. Reduce it to a basename (secure_filename / path.basename), resolve it against a fixed base directory and verify the result stays inside it, or map an opaque id to a server-side path.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+}
+
+# Cap on per-route flow lines cited in one aggregated taint finding, and on
+# the SARIF codeFlows it carries.
+_MAX_FLOW_EVIDENCE = 10
+_MAX_CODE_FLOWS = 20
+
+
+def _flow_evidence(chains: list[TaintChain]) -> list[str]:
+    """One `flow:` evidence line per distinct route with a traced source (#239)."""
+    lines: list[str] = []
+    seen: set[tuple[str, str, str, int | None]] = set()
+    traced = [c for c in chains if c.source_kind]
+    for c in sorted(traced, key=lambda c: (c.hops, c.route_file, c.sink_line or 0, c.route_path)):
+        key = (c.route_method, c.route_path, c.sink_file, c.sink_line)
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(lines) == _MAX_FLOW_EVIDENCE:
+            lines.append(f"+{len(traced) - _MAX_FLOW_EVIDENCE} more traced flow(s)")
+            break
+        lines.append(
+            f"flow: {c.route_method} {c.route_path} — {c.source_kind} source at "
+            f"{c.sink_file}:{c.source_line} → sink at {c.sink_file}:{c.sink_line}"
+        )
+    return lines
+
+
+def _code_flows(chains: list[TaintChain]) -> list[list[TaintFlowStep]]:
+    """Distinct traced flows (by sink + source) for SARIF codeFlows."""
+    out: list[list[TaintFlowStep]] = []
+    seen: set[tuple[str, int | None, int | None]] = set()
+    for c in chains:
+        if not c.flow:
+            continue
+        key = (c.sink_file, c.sink_line, c.source_line)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(list(c.flow))
+        if len(out) == _MAX_CODE_FLOWS:
+            break
+    return out
 
 
 # Per-kind spec for insecure-crypto findings (#70). One aggregated
@@ -1931,10 +2001,16 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     # route, ordered by the spec's declaration.
     taint_by_kind: dict[str, list] = {}
     speculative_by_kind: dict[str, list] = {}
+    flow_by_kind: dict[str, list] = {}
     for chain in scan.taint_chains:
         # Sanitized chains (#137) are neutralized before the sink — keep them
         # as evidence in scan.taint_chains but don't raise a finding for them.
         if chain.sanitized:
+            continue
+        if chain.sink_kind in _FLOW_FINDING_SPEC:
+            # Reach alone isn't a finding for these kinds — only a traced flow (#239).
+            if chain.source_kind and not chain.speculative:
+                flow_by_kind.setdefault(chain.sink_kind, []).append(chain)
             continue
         if chain.sink_kind not in _TAINT_FINDING_SPEC:
             continue
@@ -1960,6 +2036,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             evidence.append(
                 f"+{len(kind_chains) - 1} more route(s) reach a {_TAINT_SINK_LABEL.get(kind, kind)} sink"
             )
+        evidence += _flow_evidence(kind_chains)
         taint_finding = Finding(
             title=spec["title"],
             rule_id=_rule_slug_kind(kind),
@@ -1978,8 +2055,43 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 )
             ],
         )
+        taint_finding.code_flows = _code_flows(kind_chains)
         taint_findings_by_kind[kind] = taint_finding
         findings.append(taint_finding)
+
+    # Flow-confirmed SQL injection / path traversal (#239): one aggregated
+    # finding per kind, citing each traced route→source→sink.
+    for kind, spec in _FLOW_FINDING_SPEC.items():
+        kind_chains = flow_by_kind.get(kind)
+        if not kind_chains:
+            continue
+        top = min(kind_chains, key=lambda c: (c.hops, -c.confidence))
+        evidence = [
+            f"route {top.route_method} {top.route_path} in {top.route_file}",
+            f"sink at {top.sink_file}:{top.sink_line} ({_TAINT_SINK_LABEL.get(kind, kind)})",
+            f"import path: {' → '.join(top.files)} ({top.hops} hop(s))",
+        ] + _flow_evidence(kind_chains)
+        flow_finding = Finding(
+            title=spec["title"],
+            rule_id=spec["rule_id"],
+            severity=spec["severity"],  # type: ignore[arg-type]
+            evidence=evidence,
+            locations=_locs(kind_chains, "sink_file", "sink_line") + _locs(kind_chains, "route_file", "route_line"),
+            mitigation=spec["mitigation"],
+            confidence="high" if any(c.confidence >= 0.75 for c in kind_chains) else "medium",
+            tags=["taint-chain", "taint-flow", "input-handling", "data-risk"],
+            attack_techniques=[
+                AttackTechnique(
+                    technique_id=spec["technique_id"],
+                    name=spec["technique_name"],
+                    tactic=spec["tactic"],
+                    url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                )
+            ],
+            code_flows=_code_flows(kind_chains),
+        )
+        taint_findings_by_kind[kind] = flow_finding
+        findings.append(flow_finding)
 
     # Exploitability fusion (#79): attach the best 'exploitable now' score for
     # each sink kind to its aggregated taint finding, so triage can lead with
@@ -2456,6 +2568,8 @@ def rule_catalog() -> list[tuple[str, str, str]]:
     ):
         for kind, spec in spec_table.items():
             rules.append((_rule_slug_kind(kind), spec["title"], spec.get("severity", "varies")))
+    for spec in _FLOW_FINDING_SPEC.values():
+        rules.append((spec["rule_id"], spec["title"], spec["severity"]))
     for kind in _TAINT_FINDING_SPEC:
         label = _TAINT_SINK_LABEL.get(kind, kind)
         rules.append((f"speculative-{_rule_slug_kind(kind)}", f"Speculative reach to a {label} sink (recall mode)", "low"))

@@ -33,10 +33,13 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
-from .models import Route, ScanResult, TaintChain
+from .models import Route, ScanResult, TaintChain, TaintFlowStep
 from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number
+from .taint_flow import RECEIVER, FileFlow, SinkFlow
+from .taint_sources import GO, JAVA, JS, PHP, PY, lang_for_suffix
 
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
@@ -99,7 +102,10 @@ _PY_SUFFIXES = {".py"}
 _JS_TS_SUFFIXES = JS_TS_SUFFIXES
 _GO_SUFFIXES = {".go"}
 _PHP_SUFFIXES = {".php"}
-_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES | _PHP_SUFFIXES
+# Java (#239): indexed for same-file (0-hop) flows. Imports are not resolved,
+# so a Java sink is only reached from a route in the same file.
+_JAVA_SUFFIXES = {".java"}
+_SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES | _PHP_SUFFIXES | _JAVA_SUFFIXES
 
 # --- Import extraction -----------------------------------------------------
 
@@ -199,24 +205,65 @@ _TAINTED = (
 )
 
 
-_SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
+_TAINTED_RE = re.compile(_TAINTED)
+
+
+class _Sink(NamedTuple):
+    """One sink signature.
+
+    ``gate``:
+      - ``"any"`` — dangerous regardless of the argument (eval, deserialization,
+        shell, SQL); fires on reachability, the flow only annotates it.
+      - ``"tainted"`` — fires when the request-token ``legacy`` pattern matches
+        the call (the pre-#239 same-call gate) **or** the intra-procedural flow
+        traces a request source into the dangerous argument (#239).
+    ``args`` — positional indexes of the dangerous argument(s) the flow checks
+    (``None`` = all arguments). ``langs`` — the languages it applies to;
+    ``None`` means the pre-#239 set (Python, JS/TS, Go, PHP) so generic
+    signatures like ``exec(`` never fire on Java method declarations.
+    """
+
+    kind: str
+    pattern: re.Pattern[str]
+    gate: str = "any"
+    legacy: re.Pattern[str] | None = None
+    args: tuple[int, ...] | None = (0,)
+    langs: frozenset[str] | None = None
+
+
+_LEGACY_LANGS = frozenset({PY, JS, GO, PHP})
+_ONLY_JS = frozenset({JS})
+_ONLY_GO = frozenset({GO})
+_ONLY_PHP = frozenset({PHP})
+_ONLY_JAVA = frozenset({JAVA})
+
+
+_SINK_PATTERNS: tuple[_Sink, ...] = (
+    _Sink(
         "sql_execute",
         re.compile(
             r"\b(?:cursor|conn|connection|db|session|engine|client|pool)"
             r"\.(?:execute|query|exec_driver_sql)\s*\(",
         ),
     ),
-    (
-        # Go database/sql (#102): db/tx/stmt.Query|Exec (+Context/Row variants).
-        # Title-case methods + a db-ish receiver avoid `url.Query()` etc.
+    # Go database/sql (#102): db/tx/stmt.Query|Exec (+Context/Row variants).
+    # Title-case methods + a db-ish receiver avoid `url.Query()` etc.
+    _Sink(
         "sql_execute",
         re.compile(
             r"\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)"
-            r"\.(?:Query|QueryRow|QueryContext|QueryRowContext|Exec|ExecContext)\s*\(",
+            r"\.(?:Query|QueryRow|Exec)\s*\(",
         ),
     ),
-    (
+    _Sink(
+        "sql_execute",
+        re.compile(
+            r"\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)"
+            r"\.(?:QueryContext|QueryRowContext|ExecContext)\s*\(",
+        ),
+        args=(1,),
+    ),
+    _Sink(
         "subprocess_shell",
         re.compile(
             r"subprocess\.(?:run|call|Popen|check_output|check_call)"
@@ -224,138 +271,211 @@ _SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.DOTALL,
         ),
     ),
-    (
-        "subprocess_shell",
-        re.compile(r"child_process\s*\.\s*exec\s*\("),
-    ),
-    (
-        # Go os/exec (#102): exec.Command / exec.CommandContext.
-        "subprocess_shell",
-        re.compile(r"\bexec\.Command(?:Context)?\s*\("),
-    ),
-    (
-        # PHP SQL (#103): mysqli_query / pg_query, PDO/db ->query|exec (NOT
-        # ->prepare, which is safe), and Laravel raw DB::select|statement|raw.
-        # Parameterized-query-gated with PHP-aware detection.
+    _Sink("subprocess_shell", re.compile(r"child_process\s*\.\s*exec\s*\(")),
+    # Go os/exec (#102): exec.Command / exec.CommandContext.
+    _Sink("subprocess_shell", re.compile(r"\bexec\.Command(?:Context)?\s*\("), args=None),
+    # PHP SQL (#103): mysqli_query / pg_query (query is the 2nd arg), PDO/db
+    # ->query|exec (NOT ->prepare, which is safe), and Laravel raw
+    # DB::select|statement|raw. Parameterized-query-gated with PHP-aware detection.
+    _Sink("sql_execute", re.compile(r"\b(?:mysqli_query|pg_query)\s*\(", re.IGNORECASE), args=(1,)),
+    _Sink(
         "sql_execute",
         re.compile(
-            r"\b(?:mysqli_query|pg_query)\s*\("
-            r"|\$\w+->(?:query|exec)\s*\("
+            r"\$\w+->(?:query|exec)\s*\("
             r"|\bDB::(?:select|statement|insert|update|delete|raw|unprepared)\s*\(",
             re.IGNORECASE,
         ),
     ),
-    (
-        # PHP shell execution (#103).
-        "subprocess_shell",
-        re.compile(r"\b(?:system|shell_exec|passthru|proc_open|popen)\s*\("),
-    ),
-    (
-        # PHP object deserialization (#103).
-        "unsafe_deserialization",
-        re.compile(r"\bunserialize\s*\("),
-    ),
-    (
-        "eval",
-        re.compile(r"(?<![\w.])eval\s*\("),
-    ),
-    (
-        "exec",
-        re.compile(r"(?<![\w.])exec\s*\("),
-    ),
-    (
+    # PHP shell execution (#103).
+    _Sink("subprocess_shell", re.compile(r"\b(?:system|shell_exec|passthru|proc_open|popen)\s*\(")),
+    # PHP object deserialization (#103).
+    _Sink("unsafe_deserialization", re.compile(r"\bunserialize\s*\(")),
+    _Sink("eval", re.compile(r"(?<![\w.])eval\s*\(")),
+    _Sink("exec", re.compile(r"(?<![\w.])exec\s*\(")),
+    # `open(...)` fed a request value: same-call token, or a traced flow.
+    _Sink(
         "dynamic_open",
-        # `open(...)` with a request-shaped identifier in the args
-        # (heuristic; misses variables assigned from tainted input).
-        re.compile(rf"(?<![\w.])open\s*\([^)]*{_TAINTED}"),
+        re.compile(r"(?<![\w.])open\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"(?<![\w.])open\s*\([^)]*{_TAINTED}"),
     ),
     # --- unsafe deserialization (#68) --------------------------------------
     # Dangerous regardless of args: attacker-controlled bytes into any of
     # these is arbitrary-code / object-injection territory.
-    (
+    _Sink("unsafe_deserialization", re.compile(r"\b(?:cPickle|pickle)\.loads?\s*\(")),
+    # yaml.load WITHOUT a Safe loader in the same call, plus the explicitly-unsafe helper.
+    _Sink("unsafe_deserialization", re.compile(r"\byaml\.load\s*\((?![^)]*(?:Safe|Loader\s*=))")),
+    _Sink("unsafe_deserialization", re.compile(r"\byaml\.unsafe_load\s*\(")),
+    _Sink("unsafe_deserialization", re.compile(r"\bmarshal\.loads?\s*\(")),
+    # Ruby Marshal.load, Java ObjectInputStream, PHP unserialize, JS node-serialize .unserialize
+    _Sink(
         "unsafe_deserialization",
-        # pickle / cPickle .load / .loads
-        re.compile(r"\b(?:cPickle|pickle)\.loads?\s*\("),
-    ),
-    (
-        "unsafe_deserialization",
-        # yaml.load WITHOUT a Safe loader in the same call, plus the
-        # explicitly-unsafe helper.
-        re.compile(r"\byaml\.load\s*\((?![^)]*(?:Safe|Loader\s*=))"),
-    ),
-    (
-        "unsafe_deserialization",
-        re.compile(r"\byaml\.unsafe_load\s*\("),
-    ),
-    (
-        "unsafe_deserialization",
-        re.compile(r"\bmarshal\.loads?\s*\("),
-    ),
-    (
-        "unsafe_deserialization",
-        # Ruby Marshal.load, Java ObjectInputStream, PHP unserialize,
-        # JS node-serialize .unserialize
         re.compile(r"\bMarshal\.load\s*\(|\bObjectInputStream\b|\bunserialize\s*\("),
     ),
     # --- server-side template injection (#68) ------------------------------
-    (
+    # Flask/Jinja render_template_string / Template() built from request input.
+    _Sink(
         "ssti",
-        # Flask/Jinja render_template_string with request-shaped input,
-        # or a Jinja Template() constructed straight from request input.
-        re.compile(rf"\brender_template_string\s*\([^)]*{_TAINTED}"),
+        re.compile(r"\brender_template_string\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\brender_template_string\s*\([^)]*{_TAINTED}"),
     ),
-    (
+    _Sink(
         "ssti",
-        re.compile(rf"\bTemplate\s*\([^)]*{_TAINTED}"),
+        re.compile(r"\bTemplate\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\bTemplate\s*\([^)]*{_TAINTED}"),
     ),
     # --- server-side request forgery (#68) ---------------------------------
-    # Outbound HTTP where a request container access flows into the call.
-    # A constant URL is fine, so these are gated on _TAINTED.
-    (
+    # Outbound HTTP whose URL argument carries request input. A constant URL
+    # (or one whose literal prefix pins scheme+host) is fine.
+    _Sink(
         "ssrf",
-        re.compile(
-            rf"\brequests\.(?:get|post|put|delete|patch|head|request)\s*\([^)]*{_TAINTED}"
-        ),
+        re.compile(r"\brequests\.(?:get|post|put|delete|patch|head)\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\brequests\.(?:get|post|put|delete|patch|head)\s*\([^)]*{_TAINTED}"),
     ),
-    (
+    _Sink(
         "ssrf",
-        re.compile(rf"\bhttpx\.(?:get|post|put|delete|patch|head|request|Client)\s*\([^)]*{_TAINTED}"),
+        re.compile(r"\brequests\.request\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\brequests\.request\s*\([^)]*{_TAINTED}"),
+        args=(1,),
     ),
-    (
+    _Sink(
         "ssrf",
-        re.compile(rf"\b(?:urlopen|urlretrieve)\s*\([^)]*{_TAINTED}"),
+        re.compile(r"\bhttpx\.(?:get|post|put|delete|patch|head|Client)\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\bhttpx\.(?:get|post|put|delete|patch|head|Client)\s*\([^)]*{_TAINTED}"),
     ),
-    (
+    _Sink(
         "ssrf",
-        # JS: axios.get(req...), fetch(req...), http.get(req...)
-        re.compile(
+        re.compile(r"\bhttpx\.request\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\bhttpx\.request\s*\([^)]*{_TAINTED}"),
+        args=(1,),
+    ),
+    _Sink(
+        "ssrf",
+        re.compile(r"\b(?:urlopen|urlretrieve)\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\b(?:urlopen|urlretrieve)\s*\([^)]*{_TAINTED}"),
+    ),
+    # JS: axios.get(req...), fetch(req...), http.get(req...)
+    _Sink(
+        "ssrf",
+        re.compile(r"\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\("),
+        gate="tainted",
+        legacy=re.compile(
             rf"\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\([^)]*{_TAINTED}"
         ),
     ),
+    # Go net/http client (#239).
+    _Sink("ssrf", re.compile(r"\bhttp\.(?:Get|Head|Post|PostForm)\s*\("), gate="tainted", langs=_ONLY_GO),
+    _Sink("ssrf", re.compile(r"\bhttp\.NewRequest\s*\("), gate="tainted", args=(1,), langs=_ONLY_GO),
+    _Sink("ssrf", re.compile(r"\bhttp\.NewRequestWithContext\s*\("), gate="tainted", args=(2,), langs=_ONLY_GO),
+    # PHP cURL (#239): the URL is curl_init's argument or a CURLOPT_URL option.
+    _Sink("ssrf", re.compile(r"\bcurl_init\s*\("), gate="tainted", langs=_ONLY_PHP),
+    _Sink(
+        "ssrf",
+        re.compile(r"\bcurl_setopt\s*\(\s*\$\w+\s*,\s*CURLOPT_URL\b"),
+        gate="tainted",
+        args=(2,),
+        langs=_ONLY_PHP,
+    ),
+    # Java HTTP fetches (#239): the URL handed to a client, or the URL object a
+    # stream/connection is opened on (parsing `new URL(u)` alone fetches nothing).
+    _Sink(
+        "ssrf",
+        re.compile(
+            r"\bHttpRequest\s*\.\s*newBuilder\s*\("
+            r"|\brestTemplate\s*\.\s*(?:getForObject|getForEntity|postForObject|postForEntity|exchange)\s*\("
+        ),
+        gate="tainted",
+        langs=_ONLY_JAVA,
+    ),
+    _Sink(
+        "ssrf",
+        re.compile(r"\.\s*(?:openConnection|openStream)\s*\(\s*\)"),
+        gate="tainted",
+        args=RECEIVER,
+        langs=_ONLY_JAVA,
+    ),
+    # --- path traversal (#239: flow-gated file reads per language) ----------
+    _Sink(
+        "dynamic_open",
+        re.compile(
+            r"\bfs\s*\.\s*(?:promises\s*\.\s*)?(?:readFile|readFileSync|createReadStream|writeFile|writeFileSync)\s*\("
+        ),
+        gate="tainted",
+        langs=_ONLY_JS,
+    ),
+    _Sink(
+        "dynamic_open",
+        re.compile(r"\b(?:os\.(?:Open|OpenFile|ReadFile|Create|WriteFile)|ioutil\.ReadFile)\s*\("),
+        gate="tainted",
+        langs=_ONLY_GO,
+    ),
+    _Sink(
+        "dynamic_open",
+        re.compile(r"\b(?:fopen|file_get_contents|readfile|file_put_contents)\s*\("),
+        gate="tainted",
+        langs=_ONLY_PHP,
+    ),
+    _Sink(
+        "dynamic_open",
+        re.compile(
+            r"\bnew\s+(?:File|FileInputStream|FileReader|FileOutputStream|FileWriter|RandomAccessFile)\s*\("
+            r"|\b(?:Paths\s*\.\s*get|Path\s*\.\s*of)\s*\("
+            r"|\bFiles\s*\.\s*(?:readAllBytes|readAllLines|readString|newInputStream|newBufferedReader|lines)\s*\("
+        ),
+        gate="tainted",
+        args=None,
+        langs=_ONLY_JAVA,
+    ),
+    # --- Java SQL and command execution (#239) ------------------------------
+    _Sink(
+        "sql_execute",
+        re.compile(
+            r"\b(?:stmt|statement|st|conn|connection|jdbcTemplate|jdbc|em|entityManager|session)"
+            r"\s*\.\s*(?:executeQuery|executeUpdate|execute|prepareStatement|createQuery|createNativeQuery"
+            r"|query|queryForObject|queryForList|update)\s*\("
+        ),
+        langs=_ONLY_JAVA,
+    ),
+    _Sink(
+        "subprocess_shell",
+        re.compile(r"\bgetRuntime\s*\(\s*\)\s*\.\s*exec\s*\(|\bnew\s+ProcessBuilder\s*\("),
+        args=None,
+        langs=_ONLY_JAVA,
+    ),
     # --- NoSQL injection (#68) ---------------------------------------------
-    (
+    # Passing a request object straight into a Mongo query filter. Kept on
+    # the same-call token: a bare `.find(` is overwhelmingly array iteration.
+    _Sink(
         "nosql_injection",
-        # Passing a request object straight into a Mongo query filter.
         re.compile(
             rf"\.(?:find|findOne|findOneAndUpdate|update|updateOne|updateMany|remove|deleteOne|deleteMany|aggregate|count|countDocuments)\s*\(\s*{_TAINTED}"
         ),
     ),
-    (
-        "nosql_injection",
-        # $where with any interpolation is an injection risk.
-        re.compile(r"\$where"),
-    ),
+    # $where with any interpolation is an injection risk.
+    _Sink("nosql_injection", re.compile(r"\$where")),
     # --- open redirect (#77) -----------------------------------------------
     # A request-derived value flowing into a redirect. Constant redirect
-    # targets are fine, so gated on a request container access.
-    (
+    # targets (and same-site literal paths) are fine.
+    _Sink(
         "open_redirect",
-        re.compile(rf"\bredirect\s*\([^)]*{_TAINTED}"),
+        re.compile(r"\bredirect\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\bredirect\s*\([^)]*{_TAINTED}"),
     ),
-    (
+    # Express/Koa: res.redirect([status,] url) ; also res.location(...)
+    _Sink(
         "open_redirect",
-        # Express/Koa: res.redirect(req.query.url) ; also res.location(...)
-        re.compile(rf"\bres\s*\.\s*(?:redirect|location)\s*\([^)]*{_TAINTED}"),
+        re.compile(r"\bres\s*\.\s*(?:redirect|location)\s*\("),
+        gate="tainted",
+        legacy=re.compile(rf"\bres\s*\.\s*(?:redirect|location)\s*\([^)]*{_TAINTED}"),
+        args=None,
     ),
 )
 
@@ -390,19 +510,19 @@ _CAPABILITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-# --- Sanitizer / validator awareness (#137) --------------------------------
-# When a known neutralizer for a sink kind appears in the sink file, the
-# tainted value is likely escaped/validated/bound/allow-listed before the
-# sink — so the chain is marked `sanitized` and its confidence downgraded
-# (kept as evidence, not dropped). The import-graph walk is file-granular,
-# so detection is file-granular too: a sink-appropriate neutralizer anywhere
-# in the sink file counts. This trades a little recall for precision, which
-# is the whole point of the pass (precision-first).
+# --- Sanitizer / validator awareness (#137, #239) ---------------------------
+# Sanitizers are bound to the flow (#239): when the enclosing function can be
+# analyzed, a neutralizer counts only if the tainted value passes through it
+# (or a dominating guard checks it) on the way to the sink — see
+# `taint_flow` and the catalog in `taint_sources`. This file-granular table is
+# only the FALLBACK for sinks whose enclosing function can't be determined
+# (module-level code, unparseable files): a sink-appropriate neutralizer
+# anywhere in the file then marks the chain sanitized and downgrades it.
 #
-# To extend: add a `(label, regex)` entry under the relevant sink kind. Keep
-# patterns HIGH-SIGNAL and sink-appropriate — a vague `validate(` would hide
-# real bugs (a false negative is worse than a downgrade here), so only match
-# neutralizers whose presence genuinely implies the sink is defended.
+# Keep patterns HIGH-SIGNAL and sink-appropriate — a vague `validate(` would
+# hide real bugs. `re.escape`/`html.escape` don't neutralize SSTI, and a bare
+# `ipaddress.ip_address(` (often just logging) doesn't neutralize SSRF without
+# an address-class decision, so neither counts (#239).
 _SANITIZER_PATTERNS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
     "subprocess_shell": (
         ("shlex.quote", re.compile(r"\bshlex\.quote\s*\(")),
@@ -419,7 +539,7 @@ _SANITIZER_PATTERNS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
         ("path allow-list (realpath+startswith)", re.compile(r"\brealpath\s*\(")),
     ),
     "ssti": (
-        ("markupsafe.escape", re.compile(r"\b(?:markupsafe\.)?escape\s*\(")),
+        ("markupsafe.escape", re.compile(r"\b(?:markupsafe|Markup)\.escape\s*\(|(?<![\w.])escape\s*\(")),
         ("bleach.clean", re.compile(r"\bbleach\.clean\s*\(")),
     ),
     "open_redirect": (
@@ -427,7 +547,10 @@ _SANITIZER_PATTERNS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
         ("url_has_allowed_host_and_scheme", re.compile(r"\burl_has_allowed_host_and_scheme\s*\(")),
     ),
     "ssrf": (
-        ("ipaddress.ip_address guard", re.compile(r"\bipaddress\.ip_address\s*\(")),
+        (
+            "private/loopback/link-local address check",
+            re.compile(r"\.is_(?:private|loopback|link_local|reserved)\b"),
+        ),
         ("allow-list check", re.compile(r"\b(?:is_allowed_url|allowed_hosts|url_allowlist)\b")),
     ),
     "nosql_injection": (
@@ -438,7 +561,7 @@ _SANITIZER_PATTERNS: dict[str, tuple[tuple[str, re.Pattern[str]], ...]] = {
 
 def _find_sanitizer(kind: str, content: str) -> str | None:
     """Return a label for the first sink-appropriate neutralizer present in
-    `content`, or None. File-granular, matching the walk's granularity."""
+    `content`, or None. File-granular — the fallback when no flow is known."""
     for label, pattern in _SANITIZER_PATTERNS.get(kind, ()):
         if pattern.search(content):
             return label
@@ -471,6 +594,13 @@ def analyze_taint(
 
     graph = _build_import_graph(files, root_path)
     sinks_by_file = _find_sinks(files, root_path, recall)
+
+    # Route lines per file, so a same-file flow is attributed only to the
+    # route whose handler encloses the sink (#239).
+    route_lines: dict[str, list[int]] = {}
+    for r in scan.routes:
+        if r.line is not None:
+            route_lines.setdefault(_normalize_rel(r.file), []).append(r.line)
 
     seen: set[tuple[str, str, str, int | None]] = set()
     chains: list[TaintChain] = []
@@ -513,7 +643,9 @@ def analyze_taint(
                 seed_files = handler_seeds
 
         for seed in seed_files:
-            for chain in _walk_from_route(route, seed, graph, sinks_by_file, recall):
+            for chain in _walk_from_route(
+                route, seed, graph, sinks_by_file, recall, route_lines.get(route_file, [])
+            ):
                 key = (
                     f"{chain.route_method} {chain.route_path}",
                     chain.sink_file,
@@ -681,6 +813,8 @@ def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str
             graph[rel].update(_resolve_go_imports(content, go_module, go_dirs))
         elif abs_path.suffix in _PHP_SUFFIXES:
             graph[rel].update(_resolve_php_imports(content, rel, files, root, php_psr4))
+        elif abs_path.suffix in _JAVA_SUFFIXES:
+            continue  # same-file flows only (#239)
         else:  # JS/TS
             edges = _resolve_js_imports_named(content, rel, files, root)
             graph[rel].update(_prune_unused_edges(edges, content, ".js"))
@@ -855,7 +989,12 @@ def _named_import_modules(
     out: dict[str, str] = {}
     for regex in (_JS_NAMED_IMPORT_RE, _JS_REQUIRE_BIND_RE):
         for match in regex.finditer(content):
-            rel = _resolve_js_target((from_dir / match.group("path")).resolve(), files, root)
+            spec = match.group("path")
+            if not spec.startswith((".", "/")):
+                # Bare specifier (`require("path")`, `from "express"`) is a
+                # package, never a sibling file that happens to share its name.
+                continue
+            rel = _resolve_js_target((from_dir / spec).resolve(), files, root)
             if rel is None:
                 continue
             for name in _binding_names(match.group("clause")):
@@ -1024,33 +1163,66 @@ def _is_parameterized_sql(content: str, match: re.Match[str], suffix: str = "") 
     return _SQL_PLACEHOLDER_RE.search(args) is not None
 
 
+@dataclass
+class _SinkHit:
+    kind: str
+    line: int
+    snippet: str
+    # Neutralizer label: flow-bound when `flow` is known, else the file-level
+    # fallback (#137).
+    sanitizer: str | None
+    # Recall only: kept because a gate was lifted (#148a/b) → speculative.
+    relaxed: bool
+    # Intra-procedural verdict for this call (#239); None when the enclosing
+    # function couldn't be analyzed.
+    flow: SinkFlow | None = None
+    # The request gate was satisfied only by the traced flow (no same-call
+    # request token) — such a hit belongs to the handler that encloses it.
+    flow_only: bool = False
+
+
+def _call_paren(content: str, match: re.Match[str]) -> int:
+    """Offset of the sink call's opening paren."""
+    end = match.end()
+    if end > match.start() and content[end - 1] == "(":
+        return end - 1
+    return content.find("(", match.start())
+
+
 def _find_sinks(
     files: dict[str, Path], root: Path, recall: RecallConfig = DEFAULT_RECALL
-) -> dict[str, list[tuple[str, int, str, str | None, bool]]]:
-    """rel_path -> list of (sink_kind, line_number, evidence_snippet, sanitizer_label, relaxed).
+) -> dict[str, list[_SinkHit]]:
+    """rel_path -> sink hits.
 
-    `sanitizer_label` is set when a sink-appropriate neutralizer is present in
-    the same file (#137) — the walk uses it to mark the chain sanitized.
-    `relaxed` is True (recall only) when the hit was kept only because a gate was
-    lifted — the static-literal suppression (#148a) or the request-token gate a
-    capability-reach hit bypasses (#148b) — and the walk marks chains from such
-    hits speculative.
+    Request-gated sinks fire on the legacy same-call request token or on an
+    intra-procedural flow from a source into the dangerous argument (#239).
+    Each hit carries that flow (source kind/line, steps) and a flow-bound
+    sanitizer label; files whose functions can't be analyzed fall back to the
+    file-granular sanitizer table. ``relaxed`` is True (recall only) when the
+    hit was kept only because a gate was lifted — the static-literal
+    suppression (#148a) or the request-token gate a capability-reach hit
+    bypasses (#148b) — and the walk marks chains from such hits speculative.
     """
-    out: dict[str, list[tuple[str, int, str, str | None, bool]]] = {}
+    out: dict[str, list[_SinkHit]] = {}
     for rel, abs_path in files.items():
         try:
             content = abs_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        hits: list[tuple[str, int, str, str | None, bool]] = []
-        # Per-file sanitizer lookup is memoized per sink kind — the same file
-        # may hold several sinks of one kind.
+        suffix = abs_path.suffix
+        lang = lang_for_suffix(suffix)
+        flows = FileFlow(content, suffix)  # parsed lazily, once per file
+        hits: list[_SinkHit] = []
+        # Fallback per-file sanitizer lookup, memoized per sink kind.
         sanitizer_by_kind: dict[str, str | None] = {}
         # (kind, line) already emitted by the gated pass — so a capability-reach
         # hit never duplicates a request-derived sink at the same spot.
         emitted: set[tuple[str, int]] = set()
-        for kind, pattern in _SINK_PATTERNS:
-            for match in pattern.finditer(content):
+        for sink in _SINK_PATTERNS:
+            if lang not in (sink.langs if sink.langs is not None else _LEGACY_LANGS):
+                continue
+            kind = sink.kind
+            for match in sink.pattern.finditer(content):
                 # A "dangerous-regardless" sink whose argument is a static
                 # literal / local-file read (#88 follow-up): the default pass
                 # suppresses it; recall keeps it as a speculative lead.
@@ -1059,17 +1231,30 @@ def _find_sinks(
                     if not recall.include_static_args:
                         continue
                     relaxed = True
-                # Suppress parameterized SQL — bind params / builder / placeholders
-                # only — vs. raw string-built queries (#101). This is a
-                # correctness filter (bound params aren't injectable), not a
-                # conservatism knob, so it holds even under recall.
-                if kind == "sql_execute" and _is_parameterized_sql(content, match, abs_path.suffix):
-                    continue
-                line = line_number(content, match.start())
                 snippet = _line_snippet(content, match.start())
-                if kind not in sanitizer_by_kind:
-                    sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
-                hits.append((kind, line, snippet, sanitizer_by_kind[kind], relaxed))
+                flow = flows.sink_flow(kind, _call_paren(content, match), sink.args, snippet, match.start())
+                traced = flow is not None and (flow.tainted or flow.sanitized)
+                flow_only = False
+                if sink.gate == "tainted":
+                    legacy_ok = sink.legacy is not None and sink.legacy.match(content, match.start()) is not None
+                    if not legacy_ok:
+                        if not traced:
+                            continue
+                        flow_only = True
+                # Suppress parameterized SQL — bind params / builder / placeholders
+                # only — vs. raw string-built queries (#101). A traced flow into the
+                # query argument itself overrides it: `$db->query($sql)` with a
+                # request-built `$sql` is injectable whatever the call looks like.
+                if kind == "sql_execute" and not traced and _is_parameterized_sql(content, match, suffix):
+                    continue
+                if flow is not None:
+                    sanitizer = flow.sanitizer if flow.sanitized else None
+                else:
+                    if kind not in sanitizer_by_kind:
+                        sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
+                    sanitizer = sanitizer_by_kind[kind]
+                line = line_number(content, match.start())
+                hits.append(_SinkHit(kind, line, snippet, sanitizer, relaxed, flow, flow_only))
                 emitted.add((kind, line))
 
         # Capability-reach pass (#148b, recall only): the bare-call form of the
@@ -1080,14 +1265,14 @@ def _find_sinks(
         # a file-level sanitizer token must not mark it sanitized (which would
         # make generate_findings drop it and silently lose the capability
         # inventory this pass exists to produce).
-        if recall.capability_reach:
+        if recall.capability_reach and lang in _LEGACY_LANGS:
             for kind, pattern in _CAPABILITY_PATTERNS:
                 for match in pattern.finditer(content):
                     line = line_number(content, match.start())
                     if (kind, line) in emitted:
                         continue
                     snippet = _line_snippet(content, match.start())
-                    hits.append((kind, line, snippet, None, True))
+                    hits.append(_SinkHit(kind, line, snippet, None, True))
                     emitted.add((kind, line))
         if hits:
             out[rel] = hits
@@ -1109,8 +1294,9 @@ def _walk_from_route(
     route: Route,
     route_file: str,
     graph: dict[str, set[str]],
-    sinks_by_file: dict[str, list[tuple[str, int, str, str | None, bool]]],
+    sinks_by_file: dict[str, list[_SinkHit]],
     recall: RecallConfig = DEFAULT_RECALL,
+    route_lines: list[int] | None = None,
 ) -> list[TaintChain]:
     """BFS out from route_file, up to ``recall.max_hops``. Emit chains at each
     sink; tag as speculative any chain that only exists because a recall knob
@@ -1119,7 +1305,11 @@ def _walk_from_route(
     (#148a). Comparing against the default-reachable set covers both the deeper
     hops and the widened visit cap precisely — a fan-out-heavy graph can push a
     within-two-hops sink past the 40-file budget, and that reach is speculative
-    too."""
+    too.
+
+    Same-file flows are attributed to the route whose handler encloses the
+    sink (#239): when the sink sits in *another* route's handler, this route
+    gets no flow (and no chain at all if the flow was the only gate)."""
     # The set of files the conservative pass would actually process — computed
     # only when a knob is widened (otherwise nothing is speculative and the
     # traversals are identical).
@@ -1128,6 +1318,7 @@ def _walk_from_route(
         if recall.aggressive
         else None
     )
+    route_lines = route_lines or []
 
     visited: dict[str, int] = {route_file: 0}
     parents: dict[str, str] = {}
@@ -1138,35 +1329,58 @@ def _walk_from_route(
         current = queue.popleft()
         current_hops = visited[current]
 
-        for kind, line, snippet, sanitizer, relaxed in sinks_by_file.get(current, []):
+        for hit in sinks_by_file.get(current, []):
+            flow = hit.flow
+            if current_hops == 0 and flow is not None and flow.span is not None:
+                lo, hi = flow.span
+                in_handler = route.line is None or lo <= route.line <= hi
+                other_handler = any(lo <= ln <= hi for ln in route_lines if ln != route.line)
+                if not in_handler and other_handler:
+                    if hit.flow_only:
+                        continue  # another route's input, not this one's
+                    flow = None
             confidence = _confidence_for_hops(current_hops)
-            if sanitizer is not None:
+            if flow is not None and flow.tainted:
+                # A traced source→sink flow is stronger evidence than reach.
+                confidence = round(min(0.9, confidence + 0.15), 2)
+            if hit.sanitizer is not None:
                 # A neutralizer is present at the sink — likely defended.
                 # Downgrade well below the HIGH threshold, keep as evidence.
                 confidence = round(confidence * 0.4, 2)
             # A relaxed-gate hit, or a sink the conservative pass would never
             # have reached, is a discovery lead — mark it and dock confidence so
             # it can't clear the HIGH bar until the verifier confirms it.
-            speculative = relaxed or (
+            speculative = hit.relaxed or (
                 default_reachable is not None and current not in default_reachable
             )
             if speculative:
                 confidence = round(confidence * 0.5, 2)
+            traced = flow is not None and (flow.tainted or flow.sanitized)
             chains.append(
                 TaintChain(
                     route_path=route.path,
                     route_method=route.method,
                     route_file=route_file,
-                    sink_kind=kind,  # type: ignore[arg-type]
+                    sink_kind=hit.kind,  # type: ignore[arg-type]
                     sink_file=current,
-                    sink_line=line,
+                    sink_line=hit.line,
                     hops=current_hops,
                     files=_reconstruct_path(route_file, current, parents),
-                    evidence_text=snippet,
+                    evidence_text=hit.snippet,
                     confidence=confidence,
-                    sanitized=sanitizer is not None,
-                    sanitizer_evidence=sanitizer,
+                    sanitized=hit.sanitizer is not None,
+                    sanitizer_evidence=hit.sanitizer,
                     speculative=speculative,
+                    source_kind=flow.source_kind if traced and flow is not None else None,
+                    source_line=flow.source_line if traced and flow is not None else None,
+                    flow=(
+                        [
+                            TaintFlowStep(file=current, line=ln, kind=k, evidence_text=note)  # type: ignore[arg-type]
+                            for ln, k, note in flow.steps
+                        ]
+                        if traced and flow is not None
+                        else []
+                    ),
                 )
             )
 

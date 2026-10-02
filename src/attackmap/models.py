@@ -438,6 +438,18 @@ class BolaCandidate(_RedactedEvidence):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class TaintFlowStep(_RedactedEvidence):
+    """One step of an intra-procedural flow (#239): where the tainted value
+    came from, each assignment it passed through, any sanitizer/guard bound to
+    it, and the sink. Rendered as SARIF ``codeFlows``. ``evidence_text`` is
+    the code at that step (redacted like other evidence)."""
+
+    file: str
+    line: int | None = None
+    kind: Literal["source", "propagation", "sanitizer", "guard", "sink"]
+    evidence_text: str | None = None
+
+
 class TaintChain(_RedactedEvidence):
     """Cross-file data-flow evidence: a route reaches a sink via imports.
 
@@ -485,6 +497,15 @@ class TaintChain(_RedactedEvidence):
     # leads for the verifier to adjudicate, not asserted flows: they are kept
     # out of the `--fail-on-new-high` gate and clearly labelled in reports.
     speculative: bool = False
+    # Intra-procedural flow (#239). Set when a request-derived value is traced
+    # (through local assignments) into the sink's dangerous argument — or, for
+    # a sanitized chain, into the sanitizer/guard that neutralizes it.
+    # `source_kind` is the catalog kind (query, body, path_param, header,
+    # cookie, upload_filename, message); `source_line` is in `sink_file`.
+    # None when no flow was established (reachability-only chain).
+    source_kind: str | None = None
+    source_line: int | None = None
+    flow: list[TaintFlowStep] = Field(default_factory=list)
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
@@ -674,6 +695,9 @@ class Finding(_RedactedEvidence):
     # findings that sit on a route→sink path; `None` when not applicable.
     exploitability: int | None = None
     exploitability_tier: ExploitabilityTier | None = None
+    # Source→sink steps behind a taint finding (#239), one list per traced
+    # flow; emitted as SARIF `codeFlows` on the matching sink result.
+    code_flows: list[list[TaintFlowStep]] = Field(default_factory=list)
     # CWE / OWASP / ASVS / ATT&CK ids for `rule_id` (#250). Filled from the
     # registry on construction; `None` for rules it doesn't know.
     taxonomy: FindingTaxonomy | None = None

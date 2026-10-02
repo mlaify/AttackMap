@@ -126,6 +126,30 @@
           "note": "Internal state-changing route with no authentication."
         }
       ]
+    },
+    {
+      "id": "express-docs-demo",
+      "path": "evals/benchmark/cases/express-docs-demo",
+      "expected": [
+        {
+          "category": "injection",
+          "route": "/docs/raw",
+          "method": "GET",
+          "file": "server.js",
+          "line": 12,
+          "severity": "high",
+          "note": "Query value joined into a filesystem path with no basename/containment check (path traversal, two-line flow)."
+        },
+        {
+          "category": "injection",
+          "route": "/preview",
+          "method": "GET",
+          "file": "server.js",
+          "line": 26,
+          "severity": "medium",
+          "note": "Caller-chosen URL fetched server-side (SSRF, two-line flow). /status/:service is the clean twin (fixed host)."
+        }
+      ]
     }
   ]
 }
