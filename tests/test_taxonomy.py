@@ -233,3 +233,18 @@ def test_pr_comment_labels_new_findings_with_taxonomy() -> None:
 
     text = render_pr_comment([], _Diff())
     assert "SSRF (CWE-918 · A10:2021 · API7:2023)" in text
+
+
+def test_workflow_cwe_tags_come_from_the_registry_once() -> None:
+    from attackmap.models import ScanResult, WorkflowIssue
+    from attackmap.threat_model import generate_findings
+
+    scan = ScanResult(
+        root="/",
+        workflow_issues=[WorkflowIssue(kind="script_injection", file=".github/workflows/ci.yml", line=3, severity="high")],
+    )
+    finding = next(f for f in generate_findings(scan) if f.rule_id == "script-injection")
+    assert [t for t in finding.tags if t.startswith("external/cwe/")] == ["external/cwe/cwe-078", "external/cwe/cwe-094"]
+    rule = build_sarif([finding], [])["runs"][0]["tool"]["driver"]["rules"][0]
+    cwe_tags = [t for t in rule["properties"]["tags"] if t.startswith("external/cwe/")]
+    assert cwe_tags == ["external/cwe/cwe-078", "external/cwe/cwe-094"]

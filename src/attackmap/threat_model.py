@@ -16,6 +16,7 @@ from .models import (
 )
 from .srcpaths import evidence_locations
 from .route_auth_fusion import synthesize_unauthenticated_routes
+from .taxonomy import cwe_tag, taxonomy_for
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
@@ -872,12 +873,18 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
 _SEVERITY_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
+def _cwe_tags(kind: str) -> list[str]:
+    """`external/cwe/cwe-NNN` finding tags from the taxonomy registry."""
+    entry = taxonomy_for(_rule_slug_kind(kind))
+    return [cwe_tag(c) for c in entry.cwe] if entry else []
+
+
 # CI-workflow security (#142). Severity is taken from the emitted issues (some
 # kinds tier per instance — e.g. unpinned semver tag vs. branch ref), so the
-# spec carries only the taxonomy, title, remediation, and ATT&CK mapping.
+# spec carries only the title, remediation and ATT&CK mapping. CWE/OWASP ids
+# live in the taxonomy registry (`taxonomy.py`, #250).
 _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
     "script_injection": {
-        "cwe": "CWE-78",
         "title": "CI script injection via untrusted context in a run: step",
         "mitigation": "Never interpolate `${{ github.event.* }}` / `github.head_ref` directly into a run: script — a crafted issue/PR title or branch name runs arbitrary shell. Bind the value to an `env:` variable and reference it as `\"$ENVVAR\"` so it's passed as data, not expanded into the command.",
         "technique_id": "T1059",
@@ -885,7 +892,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Execution",
     },
     "pr_target_checkout": {
-        "cwe": "CWE-829",
         "title": "pull_request_target checks out untrusted PR code",
         "mitigation": "`pull_request_target` runs with the base repo's secrets in scope. Don't check out and build the PR head ref in that context. Use `pull_request` for untrusted code, or check out only the base ref and never run fork-supplied build/test scripts with secrets available.",
         "technique_id": "T1195",
@@ -893,7 +899,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Initial Access",
     },
     "unpinned_action": {
-        "cwe": "CWE-829",
         "title": "Unpinned GitHub Action (not pinned to a commit SHA)",
         "mitigation": "Pin third-party actions to a full 40-character commit SHA (`uses: org/action@<sha>`), not a moving tag or branch. A tag/branch lets the action owner — or anyone who compromises them — change what runs in your pipeline. Dependabot can keep the pinned SHAs updated.",
         "technique_id": "T1195.001",
@@ -901,7 +906,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Initial Access",
     },
     "secret_in_run": {
-        "cwe": "CWE-532",
         "title": "Secret interpolated into a run: shell step",
         "mitigation": "Don't expand `${{ secrets.* }}` directly into a run: script — it can leak via the command line (`ps`), step logs, or a child process. Pass the secret through the step's `env:` block and reference it as an environment variable.",
         "technique_id": "T1552",
@@ -909,7 +913,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Credential Access",
     },
     "broad_permissions": {
-        "cwe": "CWE-250",
         "title": "Over-broad GITHUB_TOKEN permissions (write-all)",
         "mitigation": "Set least-privilege `permissions:` per job (default to `contents: read` and grant only what a job needs). `write-all` gives a compromised step or action full write access to the repo, releases, packages, and more.",
         "technique_id": "T1078",
@@ -917,7 +920,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Privilege Escalation",
     },
     "self_hosted_pr": {
-        "cwe": "CWE-829",
         "title": "Self-hosted runner exposed to pull-request code",
         "mitigation": "Self-hosted runners on a `pull_request`/`pull_request_target` trigger let fork PRs run arbitrary code on your infrastructure (and persist between jobs). Use ephemeral GitHub-hosted runners for public-repo PR workflows, or gate self-hosted jobs behind an environment/approval and never on `pull_request_target`.",
         "technique_id": "T1584.004",
@@ -926,7 +928,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
     },
     # #246
     "workflow_run_artifact_poisoning": {
-        "cwe": "CWE-829",
         "title": "workflow_run consumes untrusted artifacts or code from the triggering run",
         "mitigation": "A `workflow_run` job runs with the base repo's token and secrets, but the triggering run's artifacts and head commit come from the (possibly forked) PR. Treat downloaded artifacts as untrusted data: extract them outside the workspace, never execute or `source` them, validate their contents, and don't check out `github.event.workflow_run.head_sha` in a privileged job.",
         "technique_id": "T1195.002",
@@ -934,7 +935,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Initial Access",
     },
     "issue_comment_pr_checkout": {
-        "cwe": "CWE-829",
         "title": "issue_comment workflow checks out and runs pull-request code",
         "mitigation": "`issue_comment` workflows (\"/ok-to-test\", \"/deploy\") run with the base repo's token and secrets. Checking out `refs/pull/N/head` or running `gh pr checkout` there executes fork code with those privileges — and the PR can change after the comment. Gate on `author_association`, pin the checkout to the commit SHA the maintainer reviewed, and run untrusted code in an unprivileged `pull_request` workflow instead.",
         "technique_id": "T1195.002",
@@ -942,7 +942,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Initial Access",
     },
     "github_script_injection": {
-        "cwe": "CWE-94",
         "title": "CI code injection via untrusted context in actions/github-script",
         "mitigation": "`actions/github-script`'s `script:` is JavaScript evaluated with the token in scope; `${{ github.event.* }}` inside it is spliced in before evaluation. Pass the value through `env:` and read it as `process.env.NAME`, or read it from `context.payload` inside the script.",
         "technique_id": "T1059.007",
@@ -950,7 +949,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Execution",
     },
     "github_env_injection": {
-        "cwe": "CWE-94",
         "title": "Untrusted value written to $GITHUB_ENV / $GITHUB_PATH",
         "mitigation": "A newline in an attacker-controlled value written to `$GITHUB_ENV` defines arbitrary variables (`LD_PRELOAD`, `NODE_OPTIONS`, `BASH_ENV`) for every later step; `$GITHUB_PATH` hijacks executables. Don't write untrusted input to these files; if you must, strip newlines and use a random heredoc delimiter, or pass it via `env:` on the step that needs it.",
         "technique_id": "T1574",
@@ -958,7 +956,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Persistence",
     },
     "default_token_permissions": {
-        "cwe": "CWE-250",
         "title": "Workflow relies on default GITHUB_TOKEN permissions",
         "mitigation": "Add a top-level `permissions:` block (e.g. `permissions: { contents: read }`) and grant extra scopes per job. Without it the token gets the repository/organization default, which is read/write on many older repositories and organizations.",
         "technique_id": "T1078",
@@ -966,7 +963,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Privilege Escalation",
     },
     "oidc_on_untrusted_trigger": {
-        "cwe": "CWE-250",
         "title": "OIDC token (id-token: write) available to pull-request-triggered workflow",
         "mitigation": "`id-token: write` lets any step mint an OIDC token your cloud trusts. Don't grant it on `pull_request_target`, `issue_comment` or `workflow_run` workflows that touch PR input; move deployment to a `push`/`release` workflow behind a protected environment, and scope the cloud trust policy to `ref:refs/heads/main`.",
         "technique_id": "T1078.004",
@@ -974,7 +970,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Privilege Escalation",
     },
     "secrets_inherit": {
-        "cwe": "CWE-250",
         "title": "Reusable workflow receives every secret (secrets: inherit)",
         "mitigation": "`secrets: inherit` passes all repository and organization secrets to the called workflow. List only the secrets it needs (`secrets: { NPM_TOKEN: ${{ secrets.NPM_TOKEN }} }`) and pin the reusable workflow to a commit SHA.",
         "technique_id": "T1552",
@@ -982,7 +977,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Credential Access",
     },
     "checkout_persist_credentials": {
-        "cwe": "CWE-522",
         "title": "actions/checkout leaves the token in .git/config for untrusted code",
         "mitigation": "`actions/checkout` persists the `GITHUB_TOKEN` in `.git/config` by default. On `pull_request_target` / `issue_comment` / `workflow_run` jobs that later run PR code or artifacts, set `persist-credentials: false` so that code can't read the write-capable token.",
         "technique_id": "T1552.001",
@@ -990,7 +984,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Credential Access",
     },
     "cache_poisoning_pr_target": {
-        "cwe": "CWE-349",
         "title": "Actions cache written from untrusted PR context (cache poisoning)",
         "mitigation": "Caches saved in a `pull_request_target` job land in the base branch's cache scope, so PR code (or a PR-chosen key) can poison what `push`/release builds restore. Don't use `actions/cache` or `setup-*` `cache:` in jobs that run PR code; use `actions/cache/restore` only, or run untrusted builds under `pull_request`.",
         "technique_id": "T1195.002",
@@ -998,7 +991,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Initial Access",
     },
     "docker_action_unpinned": {
-        "cwe": "CWE-829",
         "title": "Docker action image not pinned by digest",
         "mitigation": "`uses: docker://image:tag` (or a docker `action.yml` image) follows a mutable tag. Pin it by digest (`docker://image@sha256:<digest>`) so a re-pushed tag can't change what runs in the pipeline.",
         "technique_id": "T1195.001",
@@ -1006,7 +998,6 @@ _WORKFLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Initial Access",
     },
     "curl_pipe_shell": {
-        "cwe": "CWE-494",
         "title": "Remote script piped into a shell in CI (curl | sh)",
         "mitigation": "`curl … | sh` runs whatever the server returns at build time, with the job's token and secrets in scope. Download to a file, verify a pinned checksum or signature, then execute — or use a pinned action/package instead.",
         "technique_id": "T1105",
@@ -1715,7 +1706,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="high",
-                tags=["ci-security", "supply-chain", f"external/cwe/{spec['cwe'].lower()}"],
+                tags=["ci-security", "supply-chain", *_cwe_tags(kind)],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],

@@ -19,7 +19,7 @@ from typing import Any
 from .srcpaths import evidence_locations
 from .md import md_text
 from .models import AttackPath, Finding, finding_rule_id
-from .taxonomy import CWE_NAMES, cwe_url, taxonomy_for
+from .taxonomy import CWE_NAMES, cwe_tag, cwe_url, taxonomy_for
 
 
 SARIF_VERSION = "2.1.0"
@@ -141,11 +141,6 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
 CWE_TAXONOMY = "CWE"
 
 
-def _cwe_tag(cwe: int) -> str:
-    # CodeQL's convention, which GitHub Code Scanning renders as a CWE link.
-    return f"external/cwe/cwe-{cwe:03d}"
-
-
 def _add_rule_taxonomy(rule: dict[str, Any], rule_id: str) -> None:
     """CWE tags, helpUri, CWE relationships and the OWASP/ASVS/ATT&CK ids
     from the taxonomy registry (#250). Unregistered rules are left as is."""
@@ -153,7 +148,8 @@ def _add_rule_taxonomy(rule: dict[str, Any], rule_id: str) -> None:
     if entry is None:
         return
     props = rule["properties"]
-    props["tags"] = [*props["tags"], *(_cwe_tag(c) for c in entry.cwe)]
+    # Detectors may already tag the CWE (workflow findings do); keep one copy.
+    props["tags"] = list(dict.fromkeys([*props["tags"], *(cwe_tag(c) for c in entry.cwe)]))
     props["cwe"] = entry.cwe_ids
     props["owasp"] = list(entry.owasp)
     if entry.asvs:

@@ -57,6 +57,7 @@ class RuleTaxonomy:
 
 # CWE names (CWE view 1000, "Research Concepts").
 CWE_NAMES: dict[int, str] = {
+    15: "External Control of System or Configuration Setting",
     20: "Improper Input Validation",
     22: "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
     78: "Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')",
@@ -77,11 +78,14 @@ CWE_NAMES: dict[int, str] = {
     338: "Use of Cryptographically Weak Pseudo-Random Number Generator (PRNG)",
     345: "Insufficient Verification of Data Authenticity",
     347: "Improper Verification of Cryptographic Signature",
+    349: "Acceptance of Extraneous Untrusted Data With Trusted Data",
     352: "Cross-Site Request Forgery (CSRF)",
     434: "Unrestricted Upload of File with Dangerous Type",
     489: "Active Debug Code",
+    494: "Download of Code Without Integrity Check",
     501: "Trust Boundary Violation",
     502: "Deserialization of Untrusted Data",
+    522: "Insufficiently Protected Credentials",
     526: "Cleartext Storage of Sensitive Information in an Environment Variable",
     532: "Insertion of Sensitive Information into Log File",
     601: "URL Redirection to Untrusted Site ('Open Redirect')",
@@ -144,7 +148,9 @@ ATTACK_TECHNIQUES: dict[str, tuple[str, str]] = {
     "T1068": ("Exploitation for Privilege Escalation", "Privilege Escalation"),
     "T1071": ("Application Layer Protocol", "Command and Control"),
     "T1078": ("Valid Accounts", "Stealth / Persistence / Privilege Escalation / Initial Access"),
+    "T1078.004": ("Valid Accounts: Cloud Accounts", "Stealth / Persistence / Privilege Escalation / Initial Access"),
     "T1098": ("Account Manipulation", "Persistence / Privilege Escalation"),
+    "T1105": ("Ingress Tool Transfer", "Command and Control"),
     "T1110": ("Brute Force", "Credential Access"),
     "T1110.002": ("Brute Force: Password Cracking", "Credential Access"),
     "T1190": ("Exploit Public-Facing Application", "Initial Access"),
@@ -165,6 +171,7 @@ ATTACK_TECHNIQUES: dict[str, tuple[str, str]] = {
     "T1557": ("Adversary-in-the-Middle", "Credential Access / Collection"),
     "T1565": ("Data Manipulation", "Impact"),
     "T1566.002": ("Phishing: Spearphishing Link", "Initial Access"),
+    "T1574": ("Hijack Execution Flow", "Stealth / Execution"),
     "T1584.004": ("Compromise Infrastructure: Server", "Resource Development"),
     "T1600": ("Weaken Encryption", "Defense Impairment"),
     "T1606": ("Forge Web Credentials", "Credential Access"),
@@ -174,6 +181,12 @@ ATTACK_TECHNIQUES: dict[str, tuple[str, str]] = {
 
 def attack_url(technique_id: str) -> str:
     return f"https://attack.mitre.org/techniques/{technique_id.replace('.', '/')}/"
+
+
+def cwe_tag(cwe: int) -> str:
+    """CodeQL-style CWE tag (``external/cwe/cwe-078``) that GitHub Code
+    Scanning links to the CWE entry."""
+    return f"external/cwe/cwe-{cwe:03d}"
 
 
 def cwe_url(cwe: int) -> str:
@@ -232,12 +245,24 @@ RULE_TAXONOMY: dict[str, RuleTaxonomy] = {
     "graphql-exposure": RuleTaxonomy(cwe=(200,), owasp=("A05:2021", "API8:2023"), attack=("T1190",)),
     "prompt-injection-attempt": RuleTaxonomy(cwe=(1427,), owasp=("LLM01:2025",), attack=("T1027",)),
     # CI workflows (#142)
-    "script-injection": RuleTaxonomy(cwe=(94,), owasp=("A03:2021", "A08:2021"), attack=("T1059.004", "T1195.002")),
+    "script-injection": RuleTaxonomy(cwe=(78, 94), owasp=("A03:2021", "A08:2021"), attack=("T1059.004", "T1195.002")),
     "pr-target-checkout": RuleTaxonomy(cwe=(829,), owasp=("A08:2021",), asvs=("V12.3.6",), attack=("T1195.002",)),
     "unpinned-action": RuleTaxonomy(cwe=(829, 1357), owasp=("A08:2021",), asvs=("V14.2.4",), attack=("T1195.001",)),
     "secret-in-run": RuleTaxonomy(cwe=(532, 214), owasp=("A09:2021",), asvs=("V7.1.1",), attack=("T1552",)),
     "broad-permissions": RuleTaxonomy(cwe=(250,), owasp=("A01:2021",), attack=("T1078",)),
     "self-hosted-pr": RuleTaxonomy(cwe=(829,), owasp=("A08:2021",), attack=("T1195.002", "T1584.004")),
+    # CI workflows, round 2 (#246)
+    "workflow-run-artifact-poisoning": RuleTaxonomy(cwe=(829,), owasp=("A08:2021",), asvs=("V10.3.2", "V12.3.6"), attack=("T1195.002",)),
+    "issue-comment-pr-checkout": RuleTaxonomy(cwe=(829,), owasp=("A08:2021",), asvs=("V12.3.6",), attack=("T1195.002",)),
+    "github-script-injection": RuleTaxonomy(cwe=(94,), owasp=("A03:2021", "A08:2021"), asvs=("V5.2.4",), attack=("T1059.007", "T1195.002")),
+    "github-env-injection": RuleTaxonomy(cwe=(94, 15), owasp=("A03:2021", "A08:2021"), attack=("T1574", "T1195.002")),
+    "default-token-permissions": RuleTaxonomy(cwe=(250,), owasp=("A01:2021",), attack=("T1078",)),
+    "oidc-on-untrusted-trigger": RuleTaxonomy(cwe=(250,), owasp=("A01:2021",), attack=("T1078.004",)),
+    "secrets-inherit": RuleTaxonomy(cwe=(250,), owasp=("A01:2021",), attack=("T1552",)),
+    "checkout-persist-credentials": RuleTaxonomy(cwe=(522,), owasp=("A04:2021",), attack=("T1552.001",)),
+    "cache-poisoning-pr-target": RuleTaxonomy(cwe=(349,), owasp=("A08:2021",), attack=("T1195.002",)),
+    "docker-action-unpinned": RuleTaxonomy(cwe=(829, 1357), owasp=("A08:2021",), asvs=("V14.2.4",), attack=("T1195.001",)),
+    "curl-pipe-shell": RuleTaxonomy(cwe=(494,), owasp=("A08:2021",), asvs=("V10.3.2",), attack=("T1105", "T1195.002")),
     # Anomalies (#78)
     "auth-outlier": RuleTaxonomy(cwe=(862,), owasp=("A01:2021", "API5:2023"), asvs=("V4.1.3", "V13.1.4"), attack=("T1190",)),
     "validation-outlier": RuleTaxonomy(cwe=(20,), owasp=("A03:2021",), asvs=("V5.1.3",), attack=("T1190",)),
@@ -301,6 +326,7 @@ __all__ = [
     "RULE_TAXONOMY",
     "RuleTaxonomy",
     "attack_url",
+    "cwe_tag",
     "cwe_url",
     "register",
     "taxonomy_for",
