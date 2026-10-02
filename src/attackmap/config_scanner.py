@@ -19,6 +19,7 @@ import bisect
 import re
 from pathlib import Path
 
+from .srcpaths import SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .redact import mask_secret
 from .safe_fs import max_file_bytes, walk_repo
 from .models import DatabaseHint, ExternalCall, ScanResult, SecretHint
@@ -81,21 +82,7 @@ CONFIG_EXCLUDE_FILENAMES = frozenset({
     "package.json",  # noisy: `scripts:` values look like URLs and DB strings
 })
 
-_SKIP_DIRS = frozenset({
-    "node_modules",
-    ".git",
-    ".attackmap-gui",  # the macOS GUI's report output dir — never scan our own output
-    ".attackmap",      # CLI cache / output dir
-    ".venv",
-    "venv",
-    "dist",
-    "build",
-    ".next",
-    ".turbo",
-    "out",
-    "target",
-    ".tox",
-})
+_SKIP_DIRS = SKIP_DIRS  # shared set (#215)
 
 
 # --- DB URL extraction --------------------------------------------------------
@@ -214,8 +201,8 @@ def scan_config_repo(root: str | Path) -> ScanResult:
     if not repo.exists() or not repo.is_dir():
         return result
 
-    for path in walk_repo(repo):
-        if any(part in _SKIP_DIRS for part in path.parts):
+    for path in walk_repo(repo, prune=is_skipped_dir):
+        if in_skipped_dir(path.relative_to(repo)):
             continue
         if not should_scan_config_file(path):
             continue

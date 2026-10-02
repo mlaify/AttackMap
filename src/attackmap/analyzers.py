@@ -20,6 +20,7 @@ from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
+from .srcpaths import SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
 from .merge import MERGE_SCHEMA, initial_seen, merge_into
@@ -65,7 +66,7 @@ ANALYZER_ENTRYPOINT_GROUP = "attackmap.analyzers"
 # Mirrors the scanner's own scan-time filter — anything below these
 # paths is vendored / generated and shouldn't count toward "this repo
 # looks like JS/TS."
-_SKIP_DIRS = {"node_modules", ".git", ".venv", "dist", "build", ".next", ".turbo", "out"}
+_SKIP_DIRS = SKIP_DIRS  # shared set (#215)
 ANALYZER_ORG_PREFIX = "mlaify/"
 ANALYZER_ORG_BASE_URL = "https://github.com/mlaify"
 ANALYZER_ORG_API_URL = "https://api.github.com/orgs/mlaify/repos?per_page=100&type=public"
@@ -325,8 +326,8 @@ class BuiltinJavaScriptWebAnalyzer:
         if not repo.exists() or not repo.is_dir():
             return False
         try:
-            for candidate in walk_repo(repo):
-                if any(part in _SKIP_DIRS for part in candidate.parts):
+            for candidate in walk_repo(repo, prune=is_skipped_dir):
+                if in_skipped_dir(candidate.relative_to(repo)):
                     continue
                 if candidate.name == "package.json":
                     return True
@@ -376,8 +377,8 @@ class BuiltinConfigAnalyzer:
         if not repo.exists() or not repo.is_dir():
             return False
         try:
-            for candidate in walk_repo(repo):
-                if any(part in _SKIP_DIRS for part in candidate.parts):
+            for candidate in walk_repo(repo, prune=is_skipped_dir):
+                if in_skipped_dir(candidate.relative_to(repo)):
                     continue
                 if should_scan_config_file(candidate):
                     return True
