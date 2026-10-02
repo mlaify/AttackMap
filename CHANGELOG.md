@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `"unknown"` (the default) keeps the existing resolution, so older plugins are unaffected.
 
+### Changed
+
+- **`analyze` validates every option before scanning (#229).**
+  - Enum options are checked up front and the error lists the accepted values: `--progress-format` (now including `tty`), `--format`, `--llm-provider/-speed/-effort/-backend`. A typo in an LLM option used to surface only after the full scan and report writing. In the `--llm` and `--remediate` paths it could be swallowed by the broad error handling.
+  - **Behavior change:** these now fail with exit 2 instead of being silently ignored or clamped:
+    - `--verify`, `--verify-votes`, `--hunt-lenses`, `--hunt-rounds` or `--hunt-budget` without `--hunt`
+    - `--diff-output` without `--baseline`
+    - out-of-range values: `--verify-votes 0`, a `--hunt-lenses` value outside 1–6, `--hunt-rounds 0`, a negative `--hunt-budget`
+
 ## [0.5.0] - 2026-10-02
 
 Completes the v0.5.0 plan (#260): scanner robustness, an enforced plugin contract, false-positive fixes across 12 analyzer plugins, and macOS app and docs fixes. Install with `brew install mlaify/tap/attackmap` or the `[all]` extra.
