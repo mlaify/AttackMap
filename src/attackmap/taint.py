@@ -218,7 +218,9 @@ class _Sink(NamedTuple):
         the call (the pre-#239 same-call gate) **or** the intra-procedural flow
         traces a request source into the dangerous argument (#239).
     ``args`` — positional indexes of the dangerous argument(s) the flow checks
-    (``None`` = all arguments). ``langs`` — restrict to these languages.
+    (``None`` = all arguments). ``langs`` — the languages it applies to;
+    ``None`` means the pre-#239 set (Python, JS/TS, Go, PHP) so generic
+    signatures like ``exec(`` never fire on Java method declarations.
     """
 
     kind: str
@@ -229,6 +231,7 @@ class _Sink(NamedTuple):
     langs: frozenset[str] | None = None
 
 
+_LEGACY_LANGS = frozenset({PY, JS, GO, PHP})
 _ONLY_JS = frozenset({JS})
 _ONLY_GO = frozenset({GO})
 _ONLY_PHP = frozenset({PHP})
@@ -1216,7 +1219,7 @@ def _find_sinks(
         # hit never duplicates a request-derived sink at the same spot.
         emitted: set[tuple[str, int]] = set()
         for sink in _SINK_PATTERNS:
-            if sink.langs is not None and lang not in sink.langs:
+            if lang not in (sink.langs if sink.langs is not None else _LEGACY_LANGS):
                 continue
             kind = sink.kind
             for match in sink.pattern.finditer(content):
@@ -1262,7 +1265,7 @@ def _find_sinks(
         # a file-level sanitizer token must not mark it sanitized (which would
         # make generate_findings drop it and silently lose the capability
         # inventory this pass exists to produce).
-        if recall.capability_reach:
+        if recall.capability_reach and lang in _LEGACY_LANGS:
             for kind, pattern in _CAPABILITY_PATTERNS:
                 for match in pattern.finditer(content):
                     line = line_number(content, match.start())

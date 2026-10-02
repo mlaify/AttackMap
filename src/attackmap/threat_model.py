@@ -728,8 +728,10 @@ _FLOW_FINDING_SPEC: dict[str, dict[str, str]] = {
     },
 }
 
-# Cap on per-route flow lines cited in one aggregated taint finding.
+# Cap on per-route flow lines cited in one aggregated taint finding, and on
+# the SARIF codeFlows it carries.
 _MAX_FLOW_EVIDENCE = 10
+_MAX_CODE_FLOWS = 20
 
 
 def _flow_evidence(chains: list[TaintChain]) -> list[str]:
@@ -764,6 +766,8 @@ def _code_flows(chains: list[TaintChain]) -> list[list[TaintFlowStep]]:
             continue
         seen.add(key)
         out.append(list(c.flow))
+        if len(out) == _MAX_CODE_FLOWS:
+            break
     return out
 
 

@@ -390,3 +390,21 @@ def test_flow_pass_stays_linear_on_a_large_file(tmp_path: Path) -> None:
     chains = analyze_taint(scan, tmp_path)
     assert time.perf_counter() - start < 20
     assert any(c.source_kind for c in chains)
+
+
+def test_generic_signatures_do_not_fire_on_java_method_names(tmp_path: Path) -> None:
+    (tmp_path / "JobController.java").write_text(
+        "@RestController\n"
+        "public class JobController {\n"
+        '    @PostMapping("/jobs")\n'
+        "    public String run(@RequestParam String name) {\n"
+        "        return exec(name);\n"
+        "    }\n\n"
+        "    private String exec(String name) {\n"
+        '        return "queued " + name;\n'
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/jobs", method="POST", file="JobController.java", line=3)])
+    assert analyze_taint(scan, tmp_path) == []
