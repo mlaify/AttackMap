@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`attackmap.sdk.fs`: a shared repo walker for plugins (#253).**
+  - `iter_repo_files(root, suffixes=, names=, skip_dirs=DEFAULT_SKIP_DIRS, max_bytes=, include_tests=, on_skip=)` prunes skip dirs by *repo-relative* name, so a repo under `/build/...` is no longer silently empty. It never follows symlinks out of the repo, skips AttackMap output dirs, and caps file size.
+  - `read_source()` decodes UTF-8, then cp1252, then latin-1, returns None for unreadable or binary files, and never raises.
+  - Also added: `rel`, `line_of`, `line_snippet`. All are re-exported from `attackmap.sdk`.
+
 ### Changed
 
 - **Analyzer priority and opt-in are honored (#221).**
