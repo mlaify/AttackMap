@@ -45,7 +45,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -65,10 +65,21 @@ _OSV_ECOSYSTEM: dict[str, str] = {
     "go": "Go",
     "cargo": "crates.io",
     "composer": "Packagist",
-    # "swiftpm" is a valid SBOM ecosystem (the Swift analyzer inventories
-    # Package.resolved) but OSV.dev has no SwiftPM ecosystem, so it is
-    # intentionally omitted here — Swift deps are inventoried, not CVE-matched.
+    # #255 — names per the OSV schema's ecosystem table.
+    "maven": "Maven",  # name is groupId:artifactId
+    "nuget": "NuGet",
+    "gem": "RubyGems",
+    "hex": "Hex",
+    "pub": "Pub",
+    "conan": "ConanCenter",
+    "vcpkg": "vcpkg",
+    # OSV keys SwiftPM packages by source repository (`github.com/apple/swift-nio`),
+    # so the query name is the normalized repo URL, not the package identity.
+    "swiftpm": "SwiftURL",
 }
+# Ecosystems with no OSV.dev database: inventoried in the SBOM but never
+# CVE-matched. Reported as such so an empty result isn't read as "no vulns".
+INVENTORY_ONLY_ECOSYSTEMS: frozenset[str] = frozenset({"cocoapods"})
 
 _DEFAULT_TTL_HOURS = 24
 _REQUEST_TIMEOUT_S = 10
@@ -88,6 +99,8 @@ class LookupSummary:
     skipped_no_version: int = 0
     skipped_offline: int = 0
     network_errors: int = 0
+    # Dependencies in ecosystems OSV.dev doesn't cover, by ecosystem (#255).
+    inventory_only: dict[str, int] = field(default_factory=dict)
 
 
 # --- Public entrypoint -----------------------------------------------------
@@ -106,8 +119,9 @@ def query_vulnerabilities(
     Parameters
     ----------
     dependencies
-        The SBOM entries to look up. Ecosystems outside the five
-        AttackMap knows about are silently ignored.
+        The SBOM entries to look up. Ecosystems without an OSV mapping
+        are skipped; inventory-only ones (CocoaPods) are tallied in
+        ``LookupSummary.inventory_only``.
     cache_dir
         Overrides the default ``~/.attackmap/cache/osv`` — tests
         supply a per-test tmpdir here.
@@ -141,6 +155,12 @@ def query_vulnerabilities(
     for dep in dependencies:
         osv_eco = _OSV_ECOSYSTEM.get(dep.ecosystem)
         if osv_eco is None:
+            if dep.ecosystem in INVENTORY_ONLY_ECOSYSTEMS:
+                summary.inventory_only[dep.ecosystem] = summary.inventory_only.get(dep.ecosystem, 0) + 1
+            continue
+        osv_name = osv_package_name(dep)
+        if osv_name is None:
+            summary.skipped_no_version += 1
             continue
         if dep.resolved and dep.version:
             # Lockfile-resolved versions are already exact — query them
@@ -152,9 +172,9 @@ def query_vulnerabilities(
         if concrete is None:
             summary.skipped_no_version += 1
             continue
-        key = (dep.ecosystem, dep.name, concrete)
+        key = (dep.ecosystem, osv_name, concrete)
         entries.append((dep, key))
-        unique.setdefault(key, (osv_eco, dep.name, concrete))
+        unique.setdefault(key, (osv_eco, osv_name, concrete))
 
     if progress is not None:
         progress.begin(len(unique), label="Checking dependencies against OSV.dev")
@@ -224,7 +244,7 @@ def query_vulnerabilities(
         concrete = key[2]
 
         for entry in payload.get("vulns") or []:
-            vuln = _entry_to_vulnerability(entry, dep, concrete)
+            vuln = _entry_to_vulnerability(entry, dep, concrete, osv_name=key[1])
             if vuln is None:
                 continue
             fingerprint = (vuln.ecosystem, vuln.package_name, vuln.package_version, vuln.id)
@@ -247,6 +267,55 @@ def query_vulnerabilities(
         )
     )
     return vulns, summary
+
+
+# --- Package naming --------------------------------------------------------
+
+
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]{0,20}://")
+_SCP_LIKE_RE = re.compile(r"^[^@/\s]{1,100}@([^:/\s]{1,255}):")
+
+
+def normalize_swift_url(url: str) -> str | None:
+    """OSV ``SwiftURL`` package name for a SwiftPM source URL (#255).
+
+    OSV records SwiftPM packages as ``host/owner/repo`` (``github.com/apple/
+    swift-nio``): no scheme, no credentials, no ``.git``, no trailing slash.
+    Accepts ``https://…``, ``ssh://git@…`` and scp-style ``git@host:owner/repo``.
+    Returns ``None`` for something that isn't a remote URL (a local path).
+    """
+    text = (url or "").strip()
+    if not text:
+        return None
+    scp = _SCP_LIKE_RE.match(text)
+    if scp:
+        text = f"{scp.group(1)}/{text[scp.end():]}"
+    else:
+        scheme = _URL_SCHEME_RE.match(text)
+        if not scheme or scheme.group(0).lower() == "file://":
+            return None
+        text = text[scheme.end():]
+        text = text.rsplit("@", 1)[-1] if "@" in text.split("/", 1)[0] else text
+    host, _, path = text.partition("/")
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    if not host or not path:
+        return None
+    return f"{host.lower()}/{path}"
+
+
+def osv_package_name(dep: DependencyHint) -> str | None:
+    """The package name OSV indexes ``dep`` under. For SwiftPM that is the
+    source repository URL, which the Swift analyzer records in
+    ``evidence_text`` (falling back to ``name`` if it already is a URL)."""
+    if dep.ecosystem != "swiftpm":
+        return dep.name
+    for candidate in (dep.evidence_text or "", dep.name):
+        normalized = normalize_swift_url(candidate)
+        if normalized:
+            return normalized
+    return None
 
 
 # --- Version resolution ----------------------------------------------------
@@ -386,7 +455,7 @@ def _cvss_base_score(vector: str) -> float | None:
 
 
 def _entry_to_vulnerability(
-    entry: dict, dep: DependencyHint, concrete_version: str
+    entry: dict, dep: DependencyHint, concrete_version: str, *, osv_name: str | None = None
 ) -> Vulnerability | None:
     vuln_id = entry.get("id")
     if not isinstance(vuln_id, str) or not vuln_id:
@@ -399,7 +468,7 @@ def _entry_to_vulnerability(
         for r in (entry.get("references") or [])
         if isinstance(r, dict) and isinstance(r.get("url"), str)
     ]
-    affected_range = _first_affected_range(entry, dep)
+    affected_range = _first_affected_range(entry, osv_name or dep.name)
     return Vulnerability(
         id=vuln_id,
         aliases=aliases,
@@ -414,10 +483,10 @@ def _entry_to_vulnerability(
     )
 
 
-def _first_affected_range(entry: dict, dep: DependencyHint) -> str:
+def _first_affected_range(entry: dict, name: str) -> str:
     for affected in entry.get("affected") or []:
         pkg = affected.get("package") or {}
-        if str(pkg.get("name") or "").lower() != dep.name.lower():
+        if str(pkg.get("name") or "").lower() != name.lower():
             continue
         ranges = affected.get("ranges") or []
         for r in ranges:

@@ -207,6 +207,29 @@ generic's signal — design accordingly. If you want your signal to win, emit
 with a different `file` granularity (e.g. cite the framework config file, not
 the route file).
 
+## Dependencies (SBOM entries)
+
+Emit third-party dependencies as `DependencyHint`s in `result.dependencies`.
+`ecosystem` must be one of `attackmap.sdk.DEPENDENCY_ECOSYSTEMS` (the
+`DependencyEcosystem` literal). `--cve` maps each one to its OSV.dev ecosystem:
+
+| `ecosystem` | OSV ecosystem | `name` |
+|---|---|---|
+| `pypi` / `npm` / `go` / `cargo` / `composer` | PyPI / npm / Go / crates.io / Packagist | package name |
+| `maven` | Maven | `groupId:artifactId` |
+| `nuget` | NuGet | package id |
+| `gem` / `hex` / `pub` | RubyGems / Hex / Pub | package name |
+| `conan` / `vcpkg` | ConanCenter / vcpkg | recipe / port name |
+| `swiftpm` | SwiftURL | package identity; put the source **repository URL** in `evidence_text` (OSV keys Swift packages by URL) |
+| `cocoapods` | — | inventory only: no OSV database, reported as not CVE-checked |
+
+Set `resolved=True` when `version` is an exact pin (lockfile), and
+`direct` / `via` when you know the resolution path. Core already parses the
+`package.json`, `pyproject.toml`, `requirements.txt`, `go.mod`, `Cargo.toml`
+and `composer.json` manifests, and the `package-lock.json`, `pnpm-lock.yaml`,
+`poetry.lock`, `uv.lock`, `Cargo.lock`, `composer.lock`, `packages.lock.json`
+and `gradle.lockfile` lockfiles. Don't re-emit them.
+
 ## What analyzers may not do
 
 - **No subprocess calls** to other tools (linters, language servers, etc.).

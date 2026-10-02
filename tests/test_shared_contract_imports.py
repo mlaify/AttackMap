@@ -48,3 +48,19 @@ def test_legacy_analyzers_imports_remain_compatible() -> None:
 
     assert isinstance(result, ScanResult)
     assert metadata.name == "example"
+
+
+def test_sdk_exports_the_dependency_ecosystem_set() -> None:
+    # #255: plugins can emit Java/.NET/C++/Ruby/Swift deps.
+    from typing import get_args
+
+    from attackmap import sdk
+    from attackmap.cve import INVENTORY_ONLY_ECOSYSTEMS, _OSV_ECOSYSTEM
+
+    assert set(sdk.DEPENDENCY_ECOSYSTEMS) == set(get_args(sdk.DependencyEcosystem))
+    assert {"maven", "nuget", "conan", "vcpkg", "gem", "cocoapods", "hex", "pub", "swiftpm"} <= set(
+        sdk.DEPENDENCY_ECOSYSTEMS
+    )
+    # Every ecosystem is either OSV-mapped or explicitly inventory-only.
+    assert set(sdk.DEPENDENCY_ECOSYSTEMS) == set(_OSV_ECOSYSTEM) | INVENTORY_ONLY_ECOSYSTEMS
+    sdk.DependencyHint(name="g:a", version="1", ecosystem="maven", file="pom.xml")

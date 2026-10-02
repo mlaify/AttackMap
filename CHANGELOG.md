@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **More dependency ecosystems (#255).** `DependencyHint.ecosystem` and `Vulnerability.ecosystem` now accept `maven`, `nuget`, `conan`, `vcpkg`, `gem`, `cocoapods`, `hex` and `pub`. The set is exported from `attackmap.sdk` as `DependencyEcosystem` / `DEPENDENCY_ECOSYSTEMS`.
+  - `--cve` maps these ecosystems to OSV's Maven, NuGet, ConanCenter, vcpkg, RubyGems, Hex and Pub. `swiftpm` now maps to OSV `SwiftURL`, keyed by the normalized repository URL, so Swift deps are CVE-checked for the first time.
+  - CocoaPods has no OSV database. Those deps are inventory-only, and `--cve` says so instead of implying "no vulns".
+  - New lockfiles: `composer.lock` (supersedes the same-directory `composer.json`), NuGet `packages.lock.json` and `gradle.lockfile`.
 - **CI workflow scanner gaps (#246).** Eleven new workflow rules: `workflow_run_artifact_poisoning` (high, CWE-829, when the triggering run's artifacts or head are executed), `issue_comment_pr_checkout`, `github_script_injection`, `github_env_injection` (`$GITHUB_ENV`/`$GITHUB_PATH`/`$GITHUB_OUTPUT`, directly or via an `env:` binding), `default_token_permissions`, `oidc_on_untrusted_trigger`, `secrets_inherit`, `checkout_persist_credentials`, `cache_poisoning_pr_target`, `docker_action_unpinned` and `curl_pipe_shell`.
   - Trigger trust: on `pull_request_target`, `issue_comment` and `workflow_run`, `secret_in_run` and `broad_permissions` are raised to high. `git fetch … pull/N/head` and `gh pr checkout` in `run:` count as PR checkouts.
   - Free-text `inputs.*` of `workflow_call` (medium) and `workflow_dispatch` (low) workflows count as script injection. The new `workflow_run.head_branch`/`head_commit.*`/`display_title` contexts do too.
