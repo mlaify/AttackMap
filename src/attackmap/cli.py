@@ -215,87 +215,94 @@ def _run_fleet(
     for repo_id, repo_path in zip(repo_ids, repo_paths):
         typer.echo("")
         typer.echo(f"── {repo_id}  ({repo_path}) ──")
-        active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
-        scan_progress = create_progress(progress_format, no_progress=no_progress)
-        scan = analyze_repository(
-            repo_path, analyzers=active_analyzers, progress=scan_progress, recall=recall
-        )
-        if cve and scan.dependencies:
-            try:
-                vulns, _cve_summary = query_vulnerabilities(
-                    scan.dependencies, progress=scan_progress
-                )
-            finally:
-                scan_progress.done()
-            scan.vulnerabilities = vulns
-
-        graph = build_graph(scan)
-        analysis = translate_recon(scan)
-        attack_surfaces = analysis.attack_surfaces
-        findings = analysis.findings
-        attack_paths = analysis.attack_paths
-        architecture_md = summarize_architecture(scan, graph)
-        attack_surface_md = summarize_attack_surface(scan, attack_surfaces)
-
-        suppressed_findings: list = []
-        if not no_suppress:
-            explicit = Path(suppress_file) if suppress_file else None
-            if explicit is not None and not explicit.exists():
-                raise typer.BadParameter(f"Suppress file not found: {explicit}")
-            try:
-                suppset, sup_warnings = collect_suppressions(
-                    repo_path, findings, explicit_file=explicit, trusted_ref=suppress_from_ref
-                )
-            except GitRefError as exc:
-                raise typer.BadParameter(str(exc)) from exc
-            for warning in sup_warnings:
-                typer.echo(f"Suppression warning: {warning}", err=True)
-            outcome = apply_suppressions(findings, suppset)
-            for notice in outcome.notices:
-                typer.echo(f"Suppression warning: {notice}", err=True)
-            findings = outcome.active
-            suppressed_findings = outcome.suppressed
-
-        defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
-        repo_out = output_root / repo_id
         try:
-            write_reports(
-                repo_out,
-                scan,
-                architecture_md,
-                attack_surface_md,
-                defensive_review_md,
-                attack_surfaces,
-                findings,
-                attack_paths,
-                analyzer_metadata=[
-                    {
-                        "name": metadata.name,
-                        "description": metadata.description,
-                        "scope": metadata.scope,
-                        "ecosystems": list(metadata.ecosystems),
-                    }
-                    for metadata in (get_analyzer_metadata(a) for a in active_analyzers)
-                ],
-                suppressed=suppressed_findings,
-                output_format=output_format,
+            active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
+            scan_progress = create_progress(progress_format, no_progress=no_progress)
+            scan = analyze_repository(
+                repo_path, analyzers=active_analyzers, progress=scan_progress, recall=recall
             )
-        except UnsafePathError as exc:
-            typer.echo(f"Error: {exc}", err=True)
-            raise typer.Exit(2) from exc
-        typer.echo(render_console_summary(scan, findings, attack_paths))
-        _warn_if_nothing_scanned(scan)
-        fleet.results.append(
-            FleetRepoResult(
-                repo_id=repo_id,
-                root=str(repo_path),
-                report_dir=str(repo_out.resolve()),
-                scan=scan,
-                findings=findings,
-                attack_paths=attack_paths,
-                suppressed_count=len(suppressed_findings),
+            if cve and scan.dependencies:
+                try:
+                    vulns, _cve_summary = query_vulnerabilities(
+                        scan.dependencies, progress=scan_progress
+                    )
+                finally:
+                    scan_progress.done()
+                scan.vulnerabilities = vulns
+
+            graph = build_graph(scan)
+            analysis = translate_recon(scan)
+            attack_surfaces = analysis.attack_surfaces
+            findings = analysis.findings
+            attack_paths = analysis.attack_paths
+            architecture_md = summarize_architecture(scan, graph)
+            attack_surface_md = summarize_attack_surface(scan, attack_surfaces)
+
+            suppressed_findings: list = []
+            if not no_suppress:
+                explicit = Path(suppress_file) if suppress_file else None
+                if explicit is not None and not explicit.exists():
+                    raise typer.BadParameter(f"Suppress file not found: {explicit}")
+                try:
+                    suppset, sup_warnings = collect_suppressions(
+                        repo_path, findings, explicit_file=explicit, trusted_ref=suppress_from_ref
+                    )
+                except GitRefError as exc:
+                    raise typer.BadParameter(str(exc)) from exc
+                for warning in sup_warnings:
+                    typer.echo(f"Suppression warning: {warning}", err=True)
+                outcome = apply_suppressions(findings, suppset)
+                for notice in outcome.notices:
+                    typer.echo(f"Suppression warning: {notice}", err=True)
+                findings = outcome.active
+                suppressed_findings = outcome.suppressed
+
+            defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
+            repo_out = output_root / repo_id
+            try:
+                write_reports(
+                    repo_out,
+                    scan,
+                    architecture_md,
+                    attack_surface_md,
+                    defensive_review_md,
+                    attack_surfaces,
+                    findings,
+                    attack_paths,
+                    analyzer_metadata=[
+                        {
+                            "name": metadata.name,
+                            "description": metadata.description,
+                            "scope": metadata.scope,
+                            "ecosystems": list(metadata.ecosystems),
+                        }
+                        for metadata in (get_analyzer_metadata(a) for a in active_analyzers)
+                    ],
+                    suppressed=suppressed_findings,
+                    output_format=output_format,
+                )
+            except UnsafePathError as exc:
+                typer.echo(f"Error: {exc}", err=True)
+                raise typer.Exit(2) from exc
+            typer.echo(render_console_summary(scan, findings, attack_paths))
+            _warn_if_nothing_scanned(scan)
+            fleet.results.append(
+                FleetRepoResult(
+                    repo_id=repo_id,
+                    root=str(repo_path),
+                    report_dir=str(repo_out.resolve()),
+                    scan=scan,
+                    findings=findings,
+                    attack_paths=attack_paths,
+                    suppressed_count=len(suppressed_findings),
+                )
             )
-        )
+        except (typer.Exit, typer.Abort, typer.BadParameter):
+            raise  # usage / configuration errors stop the whole run
+        except Exception as exc:  # noqa: BLE001 — one bad repo must not sink the fleet (#217)
+            message = f"{type(exc).__name__}: {exc}"
+            typer.echo(f"Error: {repo_id} failed and was skipped — {message}", err=True)
+            fleet.failed.append({"repo_id": repo_id, "root": str(repo_path), "error": message})
 
     # Cross-repo contract linking (#146b): match one repo's outbound calls to
     # another repo's routes, over the assembled fleet.
@@ -328,6 +335,10 @@ def _run_fleet(
         f"{len(fleet.cross_repo_anomalies)} anomaly (all speculative). "
         f"Summary written to: {(output_root / summary_name).resolve()}"
     )
+    if fleet.failed:
+        typer.echo(f"{len(fleet.failed)} repository scan(s) failed: "
+                   f"{', '.join(f['repo_id'] for f in fleet.failed)}", err=True)
+        raise typer.Exit(1)
 
 
 @app.command()

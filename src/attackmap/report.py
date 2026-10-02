@@ -246,6 +246,22 @@ def render_pr_comment(
 
 
 def render_console_summary(scan: ScanResult, findings: list[Finding], attack_paths: list[AttackPath]) -> str:
+    return _render_console_summary(scan, findings, attack_paths) + _limitations_note(scan)
+
+
+def _limitations_note(scan: ScanResult) -> str:
+    """One line per kind of thing the scan skipped (#217): unreadable files,
+    oversized files, symlinks — so a partial scan doesn't look complete."""
+    if not scan.limitations:
+        return ""
+    kinds: dict[str, int] = {}
+    for item in scan.limitations:
+        kinds[item.split(":", 1)[0].split(" (", 1)[0]] = kinds.get(item.split(":", 1)[0].split(" (", 1)[0], 0) + 1
+    parts = ", ".join(f"{n} {kind}" for kind, n in sorted(kinds.items()))
+    return f"\n\nNot analyzed: {parts} (details under scan.limitations in attackmap-report.json)."
+
+
+def _render_console_summary(scan: ScanResult, findings: list[Finding], attack_paths: list[AttackPath]) -> str:
     ordered_findings = sorted(findings, key=lambda finding: (_severity_rank(finding.severity), finding.title))
     lines = [
         f"Scanned {scan.files_scanned} files",

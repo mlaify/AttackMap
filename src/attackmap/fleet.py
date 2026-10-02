@@ -96,6 +96,9 @@ class FleetScan:
     # Trust-assumption gaps + cross-repo anomalies (#146d / #149b).
     trust_gaps: list[TrustGap] = field(default_factory=list)
     cross_repo_anomalies: list[CrossRepoAnomaly] = field(default_factory=list)
+    # Repos whose analysis raised (#217): {repo_id, root, error}. The run keeps
+    # going without them and exits non-zero at the end.
+    failed: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def repo_count(self) -> int:
@@ -123,6 +126,12 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         f"{fleet.total_findings()} finding(s) total."
     )
     lines.append("")
+    if fleet.failed:
+        lines.append(f"**{len(fleet.failed)} repositor{'y' if len(fleet.failed) == 1 else 'ies'} failed and "
+                     "are not included below:**")
+        for f in fleet.failed:
+            lines.append(f"- `{f['repo_id']}` — {f['error']}")
+        lines.append("")
     lines.append("| Repository | HIGH | MED | LOW | Total | Report |")
     lines.append("|---|---:|---:|---:|---:|---|")
     for r in fleet.results:
@@ -269,6 +278,7 @@ def fleet_summary_json(fleet: FleetScan) -> dict:
     return {
         "repo_count": fleet.repo_count,
         "total_findings": fleet.total_findings(),
+        "failed": list(fleet.failed),
         "repos": [
             {
                 "repo_id": r.repo_id,
