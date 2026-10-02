@@ -189,3 +189,28 @@ def test_limitations_are_unioned_across_analyzer_results() -> None:
     b = ScanResult(root=".", limitations=["symlink not followed: a.py", "symlink not followed: b.py"])
     merged = merge_analyzer_results([a, b], root=".")
     assert merged.limitations == ["symlink not followed: a.py", "symlink not followed: b.py"]
+
+
+def test_ensure_output_dir_allows_system_symlinks_when_cwd_is_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # macOS: /var and /tmp are symlinks to /private/...; a GUI-launched or
+    # XCTest-spawned CLI runs with cwd "/" and must still write to the temp dir.
+    sys_dir = tmp_path / "private" / "var"
+    sys_dir.mkdir(parents=True)
+    (tmp_path / "var").symlink_to(sys_dir)
+    monkeypatch.chdir(tmp_path)
+    out = ensure_output_dir("var/folders/out")
+    assert (sys_dir / "folders" / "out").is_dir()
+    assert out == Path("var/folders/out")
+
+
+def test_ensure_output_dir_still_refuses_link_leaving_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout = tmp_path / "repo"
+    elsewhere = tmp_path / "elsewhere"
+    checkout.mkdir()
+    elsewhere.mkdir()
+    (checkout / "reports").symlink_to(elsewhere)
+    monkeypatch.chdir(checkout)
+    with pytest.raises(UnsafePathError):
+        ensure_output_dir("reports/sub")
