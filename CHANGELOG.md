@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Route-level auth in the plugin contract (#256).** `Route` gains `auth` (`"required"` / `"anonymous"` / `"unknown"`), `guards` and `guard_evidence`; the last is redacted like other evidence. When a plugin declares the state:
+  - the unauthenticated state-changing-route finding uses it;
+  - attack-surface `auth_signals` use it instead of the ±40-line file window, so a `[AllowAnonymous]` route no longer inherits its neighbour's `[Authorize]`;
+  - on duplicate route keys, a known state fills in an unknown one.
+
+  `"unknown"` (the default) keeps the existing resolution, so older plugins are unaffected.
+
 ## [0.5.0] - 2026-10-02
 
 Completes the v0.5.0 plan (#260): scanner robustness, an enforced plugin contract, false-positive fixes across 12 analyzer plugins, and macOS app and docs fixes. Install with `brew install mlaify/tap/attackmap` or the `[all]` extra.

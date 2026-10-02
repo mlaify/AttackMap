@@ -105,6 +105,13 @@ def synthesize_unauthenticated_routes(
         # closes the general "ordinary mutating endpoint" gap only.
         if surface.category != "public_api" or surface.exposure != "public":
             continue
+        # Trust a plugin-declared state (#256); resolve ourselves only when the
+        # plugin couldn't tell.
+        if route.auth == "required":
+            continue
+        if route.auth == "anonymous":
+            flagged.append((route, _declared_anonymous_evidence(route)))
+            continue
         content = _read(root, route.file, content_cache)
         if content is None:
             continue
@@ -145,6 +152,13 @@ def synthesize_unauthenticated_routes(
             ],
         )
     ]
+
+
+def _declared_anonymous_evidence(route: Route) -> str:
+    where = f"{route.file}:{route.line}" if route.line else route.file
+    source = f" by {route.source_analyzer}" if route.source_analyzer else ""
+    basis = f" ({route.guard_evidence})" if route.guard_evidence else ""
+    return f"{route.method} {route.path} ({where}) — declared anonymous{source}{basis}"
 
 
 def _read(root: Path, rel: str, cache: dict[str, str | None]) -> str | None:
