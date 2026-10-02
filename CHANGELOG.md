@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Whole-repo passes run once per scan (#219).** Taint, SBOM, workflow, authz and anomaly passes used to run inside each built-in analyzer, so a mixed Python/JS repo ran them up to three times, reported duplicated dependencies and workflow issues, and emitted several `done` progress events. They now run once in `analyze_repository`, over every analyzer's merged signals, so cross-language taint and authz see all routes. `scanner.scan_repo` keeps its behavior; the new `scan_files` and `run_repo_passes` split the per-file and whole-repo stages.
 - **Large files with many matches no longer scan in quadratic time (#218).**
   - Line numbers were computed with `content.count("\n", 0, offset)` once per match, across 6 detectors. They now come from a per-file line index with binary search (`srcpaths.line_number`). On a 1.9 MB file with 14k routes, `scan_repo` drops from 12.2 s to 3.1 s.
   - `analyze_authz` re-ran its query-parameter scan over the whole handler file once per route. It now runs once per file: 3,000 routes in one file went from 32.7 s to 0.5 s.
