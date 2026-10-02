@@ -7,6 +7,9 @@ beyond the taint / crypto / web-hardening families. Part 1 covers:
     mass_assignment      request object bound wholesale to a model
     jwt_weakness         alg=none / signature verification disabled
     xxe                  XML parser with external entities enabled
+    graphql_no_query_limits  a GraphQL server built with no depth/complexity
+                             limit anywhere in the same file (#244)
+    graphql_batching     Apollo/Yoga HTTP batching switched on (#244)
 
 Precision-first: everything anchors on a concrete risky construct (not
 absence), and request-object patterns name the request container
@@ -163,6 +166,57 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
 )
 
 
+# GraphQL server construction (#244). Limits are usually passed in the same
+# call (`validationRules`, `extensions=[...]`) or applied to the server object
+# in the same file (gqlgen `srv.Use(...)`); any limit marker in the file clears
+# the finding.
+_GRAPHQL_SERVER = _rx(
+    r"\bnew\s+ApolloServer\s*\("
+    r"|\bgraphqlHTTP\s*\("
+    r"|\bcreateYoga\s*\("
+    r"|\bmercurius\b"
+    r"|\bstrawberry\.Schema\s*\("
+    r"|\bGraphQLView\.as_view\s*\("
+    r"|\bhandler\.NewDefaultServer\s*\("
+)
+_GRAPHQL_LIMITS = _rx(
+    r"depthLimit|depth[_-]limit|QueryDepthLimiter|MaxTokensLimiter|MaxAliasesLimiter"
+    r"|ComplexityLimit|complexity[_-]?limit|createComplexityRule|queryComplexity|query[_-]complexity"
+    r"|graphql-armor|@escape\.tech|costLimit|cost[_-]?analysis|maxDepth|max_depth|maxAliases|maxTokens"
+    r"|validationRules|validation_rules|useDepthLimit|queryDepth|query_depth"
+)
+_GRAPHQL_BATCHING = _rx(r"\ballowBatchedHttpRequests\s*:\s*true\b|\bbatching\s*:\s*(?:true\b|\{)")
+
+
+def find_graphql_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
+    """Missing query limits and enabled batching on GraphQL servers built in
+    this file (#244)."""
+    server = _GRAPHQL_SERVER.search(content)
+    if server is None:
+        return []
+    out: list[CodeWeakness] = []
+
+    def _add(kind: str, severity: str, offset: int) -> None:
+        out.append(
+            CodeWeakness(
+                kind=kind,  # type: ignore[arg-type]
+                file=rel_file,
+                line=line_number(content, offset),
+                evidence_text=_snippet(content, offset),
+                severity=severity,  # type: ignore[arg-type]
+                source_analyzer="weaknesses",
+            )
+        )
+
+    if _GRAPHQL_LIMITS.search(content) is None:
+        _add("graphql_no_query_limits", "low", server.start())
+    for match in _GRAPHQL_BATCHING.finditer(content):
+        if not _in_line_comment(content, match.start()):
+            _add("graphql_batching", "medium", match.start())
+            break
+    return out
+
+
 # Text aimed at an automated reviewer (#233). Unlike the patterns above these
 # live in comments and strings by design, so they skip the comment filter.
 PROMPT_INJECTION_RE = re.compile(
@@ -236,6 +290,7 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
                     source_analyzer="weaknesses",
                 )
             )
+    out.extend(find_graphql_weaknesses(content, rel_file))
     out.extend(find_prompt_injection(content, rel_file))
     return out
 
@@ -257,4 +312,4 @@ def _snippet(content: str, offset: int, radius: int = 120) -> str:
     return line[:radius] + ("…" if len(line) > radius else "")
 
 
-__all__ = ["PROMPT_INJECTION_RE", "find_code_weaknesses", "find_prompt_injection"]
+__all__ = ["PROMPT_INJECTION_RE", "find_code_weaknesses", "find_graphql_weaknesses", "find_prompt_injection"]
