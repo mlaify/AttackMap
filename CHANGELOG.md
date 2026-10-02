@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `iter_repo_files(root, suffixes=, names=, skip_dirs=DEFAULT_SKIP_DIRS, max_bytes=, include_tests=, on_skip=)` prunes skip dirs by *repo-relative* name, so a repo under `/build/...` is no longer silently empty. It never follows symlinks out of the repo, skips AttackMap output dirs, and caps file size.
   - `read_source()` decodes UTF-8, then cp1252, then latin-1, returns None for unreadable or binary files, and never raises.
   - Also added: `rel`, `line_of`, `line_snippet`. All are re-exported from `attackmap.sdk`.
+  - All 15 official plugins now use it, and `plugins_lock.py` / the `[all]` extra pin those commits. That fixes a plugin silently reporting nothing for a repo checked out under a directory named `build`, `out`, `vendor`, `target` and so on. Plugin metadata also follows the #221 conventions: python 10, java-spring 60, php-laminas 70, atproto 90, omeka-s 160. The experimental c, cpp and swift analyzers are now opt-in (`-m`).
 
 ### Changed
 
