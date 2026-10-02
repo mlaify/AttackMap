@@ -20,7 +20,7 @@ from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
-from .srcpaths import SKIP_DIRS, in_skipped_dir, is_skipped_dir
+from .srcpaths import JS_TS_SUFFIXES, SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
 from .merge import MERGE_SCHEMA, initial_seen, merge_into
@@ -217,7 +217,7 @@ class DefaultAnalyzer:
 
     # Suffixes owned by specialized built-in analyzers. Kept in sync
     # with BuiltinPythonWebAnalyzer + BuiltinJavaScriptWebAnalyzer.
-    _CLAIMED_SUFFIXES = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+    _CLAIMED_SUFFIXES = {".py"} | JS_TS_SUFFIXES
 
     metadata = AnalyzerMetadata(
         name="default",
@@ -281,7 +281,7 @@ class BuiltinJavaScriptWebAnalyzer:
     plugin has room to grow without stomping on core.
     """
 
-    _JS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+    _JS_SUFFIXES = set(JS_TS_SUFFIXES)
     _WEB_DEPENDENCY_TOKENS = (
         "express",
         "fastify",

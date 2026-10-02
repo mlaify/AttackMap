@@ -36,7 +36,7 @@ from pathlib import Path
 
 from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain
-from .srcpaths import is_infra_route, is_test_file, is_vendored_file, line_number
+from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number
 
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
@@ -96,7 +96,7 @@ def recall_config() -> RecallConfig:
     )
 
 _PY_SUFFIXES = {".py"}
-_JS_TS_SUFFIXES = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
+_JS_TS_SUFFIXES = JS_TS_SUFFIXES
 _GO_SUFFIXES = {".go"}
 _PHP_SUFFIXES = {".php"}
 _SUPPORTED_SUFFIXES = _PY_SUFFIXES | _JS_TS_SUFFIXES | _GO_SUFFIXES | _PHP_SUFFIXES
