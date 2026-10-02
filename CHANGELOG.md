@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-02
+
+Completes the v0.5.0 plan (#260): scanner robustness, an enforced plugin contract, false-positive fixes across 12 analyzer plugins, and macOS app and docs fixes. Install with `brew install mlaify/tap/attackmap` or the `[all]` extra.
+
+**Upgrading from 0.4.x — behavior changes:**
+- **Opt-in analyzers (#221).** Plugins with `enabled_by_default=False` run only with `-m <name>`: node-service, php-web, php-laminas, omeka-s, atproto, c, cpp, swift. When one matches a repo, `analyze` says so on stderr.
+- **Run order (#221).** Analyzers run in `(priority, name)` order, and duplicate signals keep the lower-priority-number analyzer's version.
+- **Suppressions (#224, #238).** Inline `attackmap:ignore` is line-scoped (use `attackmap:ignore-file[rule]` for file-wide). `vendor/*` no longer matches nested files (use `vendor/**`). With `--suppress-from-ref`, suppressions added in a PR are pending, not applied.
+- **SARIF (#230).** One result per finding instance, with new `partialFingerprints`. Code Scanning will re-key existing alerts once.
+- **iac hint names.** `dockerfile_base_image_unpinned` and `compose_port_binding_all_interfaces` now carry `:<image>` / `:<binding>` suffixes.
+
 ### Added
 
 - **`attackmap capabilities`** prints a stable JSON description of the CLI: `version`, `commands`, every long option `analyze` accepts, whether `analyze` takes multiple repo paths, and the progress protocol version. GUIs and wrappers can feature-detect from it instead of scraping `analyze --help` (AttackMap-mac#4).
@@ -1110,7 +1121,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.4.31...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/mlaify/AttackMap/compare/v0.4.31...v0.5.0
 [0.4.31]: https://github.com/mlaify/AttackMap/compare/v0.4.30...v0.4.31
 [0.4.30]: https://github.com/mlaify/AttackMap/compare/v0.4.29...v0.4.30
 [0.2.0]: https://github.com/mlaify/AttackMap/compare/v0.1.1...v0.2.0
