@@ -123,3 +123,15 @@ def test_inline_ignore_works_in_tsx_files(tmp_path: Path) -> None:
     report = json.loads((out / "attackmap-report.json").read_text(encoding="utf-8"))
     assert not any("secret" in f["title"].lower() for f in report["findings"])
     assert any("secret" in f["title"].lower() for f in report["suppressed_findings"])
+
+
+def test_line_number_matches_naive_count() -> None:
+    import random
+
+    from attackmap.srcpaths import line_number
+
+    rng = random.Random(218)
+    text = "".join(rng.choice("ab\n") for _ in range(5000))
+    for offset in [0, 1, 2, 100, 2500, 4999, 5000, -3]:
+        expected = 1 if offset <= 0 else text.count("\n", 0, offset) + 1
+        assert line_number(text, offset) == expected

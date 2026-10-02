@@ -63,3 +63,20 @@ def test_max_file_bytes_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert any("app.py" in lim for lim in scan.limitations)
     monkeypatch.setenv("ATTACKMAP_MAX_FILE_BYTES", "not-a-number")
     assert max_file_bytes() == DEFAULT_MAX_FILE_BYTES
+
+
+def test_many_matches_in_a_large_file_scan_in_linear_time(tmp_path: Path) -> None:
+    """#218: line numbers used to cost O(offset) per match (quadratic overall)."""
+    chunk = (
+        '@app.route("/r{i}")\ndef h{i}():\n'
+        '    return requests.get("https://api{i}.example.com/x").text\n'
+    )
+    body = "from flask import Flask\nimport requests\napp = Flask(__name__)\n" + "".join(
+        chunk.format(i=i) for i in range(6000)
+    )
+    (tmp_path / "app.py").write_text(body, encoding="utf-8")
+    start = time.perf_counter()
+    scan = scan_repo(tmp_path)
+    assert len(scan.routes) == 6000
+    assert scan.routes[-1].line == body.count("\n", 0, body.index('"/r5999"')) + 1
+    assert time.perf_counter() - start < 10

@@ -36,7 +36,7 @@ from pathlib import Path
 
 from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain
-from .srcpaths import is_infra_route, is_test_file, is_vendored_file
+from .srcpaths import is_infra_route, is_test_file, is_vendored_file, line_number
 
 _MAX_HOPS = 2
 # Bound the sweep so a deeply-linked monorepo can't blow up the scan.
@@ -1065,7 +1065,7 @@ def _find_sinks(
                 # conservatism knob, so it holds even under recall.
                 if kind == "sql_execute" and _is_parameterized_sql(content, match, abs_path.suffix):
                     continue
-                line = content.count("\n", 0, match.start()) + 1
+                line = line_number(content, match.start())
                 snippet = _line_snippet(content, match.start())
                 if kind not in sanitizer_by_kind:
                     sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
@@ -1083,7 +1083,7 @@ def _find_sinks(
         if recall.capability_reach:
             for kind, pattern in _CAPABILITY_PATTERNS:
                 for match in pattern.finditer(content):
-                    line = content.count("\n", 0, match.start()) + 1
+                    line = line_number(content, match.start())
                     if (kind, line) in emitted:
                         continue
                     snippet = _line_snippet(content, match.start())
