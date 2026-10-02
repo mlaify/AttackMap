@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Exploitability scoring fixes (#226).**
+  - **Surfaces match by file.** When two services exposed the same `POST /run`, both taint chains took the first service's surface, so an unauthenticated RCE path was scored "auth present at entry" and ranked HIGH instead of CRITICAL. Chains now use the surface from their own route file, and fall back to a route- or file-only match only when it's unambiguous.
+  - **Python imports are line-scoped.** The import regex spanned newlines, so `import os` swallowed the next line and every later import was lost, which broke CVE-on-path fusion for nearly every Python file. `as` aliases are handled, and common import→PyPI name mismatches (`yaml`→PyYAML, `PIL`→Pillow, `bs4`→beautifulsoup4, …) are mapped.
 - **Routes from `.mjs`, `.cjs` and `.jsx` files (#227).** The JS route extractor only ran on `.js`/`.ts`/`.tsx`, so ES-module and CommonJS servers (`server.mjs`, `index.cjs`) had no routes, attack surfaces, auth analysis or taint seeds. One shared `JS_TS_SUFFIXES` constant now drives the scanner, analyzers, taint, authz (GraphQL) and fusion passes.
 - **Whole-repo passes run once per scan (#219).** Taint, SBOM, workflow, authz and anomaly passes used to run inside each built-in analyzer, so a mixed Python/JS repo ran them up to three times, reported duplicated dependencies and workflow issues, and emitted several `done` progress events. They now run once in `analyze_repository`, over every analyzer's merged signals, so cross-language taint and authz see all routes. `scanner.scan_repo` keeps its behavior; the new `scan_files` and `run_repo_passes` split the per-file and whole-repo stages.
 - **Large files with many matches no longer scan in quadratic time (#218).**
