@@ -35,13 +35,18 @@ _APP = (
     "    return {'id': user_id}\n"
 )
 
+# Every report directory also gets the #216 output marker.
+MARKER = ".attackmap-output"
+
 JSON_ARTIFACTS = {
+    MARKER,
     "attackmap-report.json",
     "attackmap-report.sarif",
     "defensive-review.json",
     "review-context-pack.json",
 }
 MARKDOWN_ARTIFACTS = {
+    MARKER,
     "architecture.md",
     "attack-surface.md",
     "defensive-review.md",

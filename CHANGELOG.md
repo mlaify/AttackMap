@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AttackMap no longer scans its own reports (#216).** With the default `-o reports` inside the repo, a second `attackmap analyze .` re-ingested the first run's JSON. Evidence such as DB URLs and secret names produced new findings, including a new HIGH hard-coded-secret.
+  - Every report directory now gets a `.attackmap-output` marker, and walks never descend into a directory containing one, whatever it's called (`-o .` is safe).
+  - AttackMap's report filenames are also excluded from config scanning, which covers report directories written by older versions.
 - **Repos inside a `build/` or `dist/` directory are scanned (#215).**
   - Skip directories were matched against the *absolute* path. A checkout under any `build`, `dist`, `out` or `.venv` directory, such as Bitbucket Pipelines' `/opt/atlassian/pipelines/agent/build`, therefore scanned 0 files, and the JS analyzer didn't even run.
   - Skip directories are now matched relative to the scanned root, using one shared set (`srcpaths.SKIP_DIRS`, which now includes `venv`, `target` and `.tox`). Skipped trees are pruned during the walk, so they aren't walked at all.

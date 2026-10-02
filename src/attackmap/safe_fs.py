@@ -26,6 +26,9 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 FOLLOW_SYMLINKS_ENV = "ATTACKMAP_FOLLOW_SYMLINKS"
+# Written into every report directory (#216); walk_repo never descends into a
+# directory that contains it, whatever the directory is called.
+OUTPUT_MARKER = ".attackmap-output"
 MAX_FILE_BYTES_ENV = "ATTACKMAP_MAX_FILE_BYTES"
 # Files larger than this are not read (#236): a hostile or generated multi-MB
 # file must not stall a CI scan. Real source files are far smaller.
@@ -166,6 +169,10 @@ def walk_repo(
             if prune is not None and prune(name):
                 continue
             child = current / name
+            # Our own report output, under any name (#216). Not checked for the
+            # root itself, so `-o .` can't make a repo unscannable.
+            if (child / OUTPUT_MARKER).is_file() and not (child / OUTPUT_MARKER).is_symlink():
+                continue
             if child.is_symlink() and not (follow and _resolved_within(root_path, child)):
                 if on_symlink is not None:
                     on_symlink(child)
@@ -185,7 +192,7 @@ def walk_repo(
                 continue
 
 
-def ensure_output_dir(out_dir: str | Path) -> Path:
+def ensure_output_dir(out_dir: str | Path, *, mark: bool = False) -> Path:
     """Create the report directory, refusing a symlinked one.
 
     The directory itself and any of its ancestors inside the current working
@@ -204,6 +211,14 @@ def ensure_output_dir(out_dir: str | Path) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     if out.is_symlink():
         raise UnsafePathError(f"refusing to write reports into a symlinked directory: {out}")
+    if mark:
+        marker = out / OUTPUT_MARKER
+        if not marker.exists() and not marker.is_symlink():
+            safe_write_text(
+                out,
+                marker,
+                "AttackMap report directory. AttackMap never scans a directory containing this file.\n",
+            )
     return out
 
 
