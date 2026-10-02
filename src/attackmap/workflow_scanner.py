@@ -470,7 +470,7 @@ def _scan_one(data: dict, rel: str, lines: list[str]) -> list[WorkflowIssue]:
                     "high" if untrusted else "medium",
                 )
             )
-        if oidc_triggers and isinstance(job.get("permissions"), dict) and _grants_id_token(job["permissions"]):
+        if oidc_triggers and _grants_id_token(job.get("permissions")):
             issues.append(_oidc_issue(ctx, f"job '{job_id}' permissions", oidc_triggers))
 
         # Reusable-workflow call: pinning and `secrets: inherit`.
