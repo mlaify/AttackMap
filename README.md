@@ -45,7 +45,7 @@ brew install --cask mlaify/tap/attackmap-app
 ## Quickstart
 
 ```bash
-brew install mlaify/tap/attackmap         # macOS/Linux: CLI + all 15 analyzer plugins
+brew install mlaify/tap/attackmap         # Homebrew: CLI + all 15 analyzer plugins
 # or: pip install "attackmap[all] @ git+https://github.com/mlaify/AttackMap.git"
 attackmap analyze /path/to/repo           # heuristic review → reports/
 attackmap analyze /path/to/repo --llm     # + AI-narrated review (Claude or OpenAI)
