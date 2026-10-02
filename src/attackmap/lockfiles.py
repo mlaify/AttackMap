@@ -14,6 +14,9 @@ Supported lockfiles:
     - poetry.lock          (Poetry)           → pypi
     - uv.lock              (uv)               → pypi
     - Cargo.lock           (Cargo)            → cargo
+    - composer.lock        (Composer)         → composer   (#255)
+    - packages.lock.json   (NuGet)            → nuget      (#255)
+    - gradle.lockfile      (Gradle)           → maven      (#255)
 
 Go is intentionally NOT resolved from ``go.sum``: that file is a checksum
 history and can retain modules absent from the current build list, so emitting
@@ -40,7 +43,7 @@ from .models import DependencyHint
 
 # Ecosystems whose manifests carry only ranges — a lockfile here supersedes
 # the same-directory manifest.
-SUPERSEDING_ECOSYSTEMS = frozenset({"npm", "pypi", "cargo"})
+SUPERSEDING_ECOSYSTEMS = frozenset({"npm", "pypi", "cargo", "composer"})
 
 _LOCKFILE_NAMES = {
     "package-lock.json",
@@ -48,6 +51,9 @@ _LOCKFILE_NAMES = {
     "poetry.lock",
     "uv.lock",
     "Cargo.lock",
+    "composer.lock",
+    "packages.lock.json",
+    "gradle.lockfile",
 }
 
 _MAX_DEPTH = 4  # slightly deeper than manifests — lockfiles can nest
@@ -135,6 +141,12 @@ def _parse_lockfile(path: Path) -> _Graph | None:
         return _parse_uv_lock(path)
     if name == "Cargo.lock":
         return _parse_cargo_lock(path)
+    if name == "composer.lock":
+        return _parse_composer_lock(path)
+    if name == "packages.lock.json":
+        return _parse_nuget_lock(path)
+    if name == "gradle.lockfile":
+        return _parse_gradle_lockfile(path)
     return None
 
 
@@ -407,3 +419,101 @@ def _parse_uv_lock(path: Path) -> _Graph:
 
 def _parse_cargo_lock(path: Path) -> _Graph:
     return _parse_toml_packages(path, "cargo")
+
+
+# --- composer: composer.lock (#255) ----------------------------------------
+
+
+def _composer_platform(name: str) -> bool:
+    lowered = name.lower()
+    return lowered == "php" or lowered.startswith(("ext-", "lib-", "composer-"))
+
+
+def _parse_composer_lock(path: Path) -> _Graph:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    graph = _Graph(ecosystem="composer")
+    if not isinstance(data, dict):
+        return graph
+    for section, dev in (("packages", False), ("packages-dev", True)):
+        packages = data.get(section)
+        if not isinstance(packages, list):
+            continue
+        for pkg in packages:
+            if not isinstance(pkg, dict):
+                continue
+            name, version = pkg.get("name"), pkg.get("version")
+            if not isinstance(name, str) or not isinstance(version, str):
+                continue
+            # Packagist advisories use bare versions; composer.lock keeps the
+            # tag's `v` (symfony's `v5.4.1`).
+            version = version[1:] if version[:1] in {"v", "V"} and version[1:2].isdigit() else version
+            graph.instances[(name, version)] = graph.instances.get((name, version), False) or dev
+            requires = pkg.get("require")
+            if isinstance(requires, dict):
+                children = {str(c) for c in requires if not _composer_platform(str(c))}
+                if children:
+                    graph.edges.setdefault(name, set()).update(children)
+    # Direct deps come from the sibling composer.json when present.
+    manifest = path.with_name("composer.json")
+    try:
+        manifest_data = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {}
+    except (OSError, UnicodeDecodeError, ValueError):
+        manifest_data = {}
+    if isinstance(manifest_data, dict):
+        for section in ("require", "require-dev"):
+            block = manifest_data.get(section)
+            if isinstance(block, dict):
+                graph.roots.update(str(n) for n in block if not _composer_platform(str(n)))
+    return graph
+
+
+# --- nuget: packages.lock.json (#255) --------------------------------------
+
+
+def _parse_nuget_lock(path: Path) -> _Graph:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    graph = _Graph(ecosystem="nuget")
+    frameworks = data.get("dependencies") if isinstance(data, dict) else None
+    if not isinstance(frameworks, dict):
+        return graph
+    for packages in frameworks.values():  # one block per target framework
+        if not isinstance(packages, dict):
+            continue
+        for name, pkg in packages.items():
+            if not isinstance(pkg, dict):
+                continue
+            kind = str(pkg.get("type", ""))
+            version = pkg.get("resolved")
+            if kind == "Project" or not isinstance(version, str) or not version:
+                continue  # a project reference is the repo's own code
+            graph.instances.setdefault((str(name), version), False)
+            if kind == "Direct":
+                graph.roots.add(str(name))
+            children = pkg.get("dependencies")
+            if isinstance(children, dict) and children:
+                graph.edges.setdefault(str(name), set()).update(str(c) for c in children)
+    return graph
+
+
+# --- maven: gradle.lockfile (#255) -----------------------------------------
+
+
+def _parse_gradle_lockfile(path: Path) -> _Graph:
+    """``group:artifact:version=conf1,conf2`` lines. Gradle's lockfile doesn't
+    record the graph, so every entry is treated as direct; one used only by
+    test configurations is marked dev."""
+    graph = _Graph(ecosystem="maven")
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("empty="):
+            continue
+        coord, _, confs = line.partition("=")
+        parts = coord.split(":")
+        if len(parts) != 3 or not all(parts):
+            continue
+        name, version = f"{parts[0]}:{parts[1]}", parts[2]
+        conf_list = [c.strip() for c in confs.split(",") if c.strip()]
+        dev = bool(conf_list) and all(c.lower().startswith("test") for c in conf_list)
+        graph.instances[(name, version)] = graph.instances.get((name, version), True) and dev
+        graph.roots.add(name)
+    return graph

@@ -737,6 +737,11 @@ def analyze(
             f"{cve_summary.skipped_no_version} skipped (no queryable version), "
             f"{cve_summary.network_errors} network error(s)."
         )
+        if cve_summary.inventory_only:
+            listed = ", ".join(f"{n} {eco}" for eco, n in sorted(cve_summary.inventory_only.items()))
+            typer.echo(
+                f"Not CVE-checked (no OSV.dev database for the ecosystem; inventory only): {listed}."
+            )
     graph = build_graph(scan)
     analysis = translate_recon(scan)
     attack_surfaces = analysis.attack_surfaces

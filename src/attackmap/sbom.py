@@ -48,7 +48,7 @@ def analyze_sbom(root: str | Path) -> list[DependencyHint]:
 
     Manifests contribute direct deps with verbatim version ranges. Lockfiles
     (#143) contribute exact resolved versions and the transitive tree; where a
-    lockfile supersedes a range-only manifest (npm/pypi/cargo) the manifest
+    lockfile supersedes a range-only manifest (npm/pypi/cargo/composer) the manifest
     hints for that ecosystem are dropped in favour of the exact resolution.
     """
     root_path = Path(root).resolve()

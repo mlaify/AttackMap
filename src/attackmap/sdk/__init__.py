@@ -82,8 +82,10 @@ from ..safe_fs import contained_file, is_contained, read_repo_text, walk_repo
 from . import fs
 from .fs import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, line_snippet, read_source, rel
 from .models import (
+    DEPENDENCY_ECOSYSTEMS,
     AuthHint,
     DatabaseHint,
+    DependencyEcosystem,
     DependencyHint,
     EdgeHint,
     EntrypointHint,
@@ -114,6 +116,9 @@ __all__ = [
     "SecretHint",
     "ScanResult",
     "DependencyHint",
+    # Package ecosystems a DependencyHint may carry (#255).
+    "DependencyEcosystem",
+    "DEPENDENCY_ECOSYSTEMS",
     # Repo-confined filesystem helpers (#234): walk and read the scanned repo
     # without following symlinks out of it. Plugins should use these instead
     # of Path.rglob / read_text.

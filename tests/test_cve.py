@@ -273,15 +273,110 @@ def test_query_uses_warm_cache_when_transport_offline(tmp_path: Path) -> None:
     assert summary.skipped_offline == 0
 
 
-def test_swiftpm_ecosystem_is_inventoried_but_skipped_by_cve(tmp_path: Path) -> None:
-    # swiftpm is a valid SBOM ecosystem (Swift analyzer emits it) but OSV has no
-    # SwiftPM ecosystem, so a --cve run inventories it without querying/erroring.
+def test_swiftpm_without_source_url_is_not_queried(tmp_path: Path) -> None:
+    # OSV keys SwiftPM by repository URL (#255); a pin with no location can't
+    # be looked up, so it is skipped rather than queried by bare identity.
     transport, calls = _stub_transport({"alamofire": {"vulns": [_osv_vuln()]}})
-    dep = DependencyHint.model_construct(
-        name="alamofire", version="5.8.1", ecosystem="swiftpm", file="Package.resolved")
+    dep = DependencyHint(name="alamofire", version="5.8.1", ecosystem="swiftpm", file="Package.resolved")
     vulns, summary = query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
-    assert vulns == []
-    assert not calls  # never queried — no OSV ecosystem mapping
+    assert vulns == [] and not calls
+    assert summary.skipped_no_version == 1
+
+
+def _batch_packages(calls: list[tuple[str, bytes]]) -> list[dict]:
+    return [
+        q["package"]
+        for url, body in calls
+        if url.endswith("/v1/querybatch")
+        for q in json.loads(body.decode("utf-8"))["queries"]
+    ]
+
+
+def _known(vid: str, name: str, eco: str, fixed: str) -> dict:
+    entry = _osv_vuln(vid)
+    entry["affected"] = [{
+        "package": {"name": name, "ecosystem": eco},
+        "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": fixed}]}],
+    }]
+    return entry
+
+
+@pytest.mark.parametrize(
+    ("dep", "osv_eco", "osv_name", "vuln"),
+    [
+        # Log4Shell (CVE-2021-44228) in log4j-core 2.14.1 — Maven groupId:artifactId.
+        (
+            DependencyHint(name="org.apache.logging.log4j:log4j-core", version="2.14.1",
+                           ecosystem="maven", file="gradle.lockfile", resolved=True),
+            "Maven", "org.apache.logging.log4j:log4j-core",
+            _known("GHSA-jfh8-c2jp-5v3q", "org.apache.logging.log4j:log4j-core", "Maven", "2.15.0"),
+        ),
+        # CVE-2021-26701 in System.Text.Encodings.Web 4.5.0 (NuGet).
+        (
+            DependencyHint(name="System.Text.Encodings.Web", version="4.5.0",
+                           ecosystem="nuget", file="packages.lock.json", resolved=True),
+            "NuGet", "System.Text.Encodings.Web",
+            _known("GHSA-ghhp-997w-qr28", "System.Text.Encodings.Web", "NuGet", "4.5.1"),
+        ),
+        # SwiftURL: the query name is the normalized repository URL from the
+        # Swift analyzer's evidence_text, not the package identity.
+        (
+            DependencyHint(name="swift-nio", version="2.29.0", ecosystem="swiftpm",
+                           file="Package.resolved", resolved=True,
+                           evidence_text="https://github.com/apple/swift-nio.git"),
+            "SwiftURL", "github.com/apple/swift-nio",
+            _known("GHSA-swifturl-fixture", "github.com/apple/swift-nio", "SwiftURL", "2.29.1"),
+        ),
+    ],
+    ids=["maven", "nuget", "swiftpm"],
+)
+def test_new_ecosystems_map_to_osv(tmp_path: Path, dep, osv_eco, osv_name, vuln) -> None:
+    transport, calls = _stub_transport({osv_name: {"vulns": [vuln]}})
+    vulns, summary = query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
+    assert _batch_packages(calls) == [{"name": osv_name, "ecosystem": osv_eco}]
+    assert [v.id for v in vulns] == [vuln["id"]]
+    assert vulns[0].ecosystem == dep.ecosystem
+    assert vulns[0].package_name == dep.name
+    assert "fixed in" in vulns[0].affected_range
+
+
+@pytest.mark.parametrize(
+    ("eco", "osv_eco"),
+    [("gem", "RubyGems"), ("hex", "Hex"), ("pub", "Pub"), ("conan", "ConanCenter"), ("vcpkg", "vcpkg")],
+)
+def test_other_new_ecosystems_are_queried(tmp_path: Path, eco: str, osv_eco: str) -> None:
+    transport, calls = _stub_transport({})
+    dep = DependencyHint(name="pkg", version="1.0.0", ecosystem=eco, file="x", resolved=True)
+    query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
+    assert _batch_packages(calls) == [{"name": "pkg", "ecosystem": osv_eco}]
+
+
+def test_cocoapods_is_inventory_only(tmp_path: Path) -> None:
+    transport, calls = _stub_transport({})
+    dep = DependencyHint(name="AFNetworking", version="4.0.1", ecosystem="cocoapods", file="Podfile.lock")
+    vulns, summary = query_vulnerabilities([dep, dep], cache_dir=tmp_path, transport=transport)
+    assert vulns == [] and not calls
+    assert summary.inventory_only == {"cocoapods": 2}
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://github.com/apple/swift-nio.git", "github.com/apple/swift-nio"),
+        ("https://GitHub.com/sparkle-project/Sparkle/", "github.com/sparkle-project/Sparkle"),
+        ("git@github.com:apple/swift-nio.git", "github.com/apple/swift-nio"),
+        ("ssh://git@github.com/apple/swift-nio", "github.com/apple/swift-nio"),
+        ("https://user@gitlab.example.com/team/pkg.git", "gitlab.example.com/team/pkg"),
+        ("/Users/me/LocalPackage", None),
+        ("file:///tmp/pkg", None),
+        ("swift-nio", None),
+        ("", None),
+    ],
+)
+def test_normalize_swift_url(url: str, expected) -> None:
+    from attackmap.cve import normalize_swift_url
+
+    assert normalize_swift_url(url) == expected
 
 
 def test_query_ignores_unknown_ecosystem(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -17,6 +17,28 @@ _PROVENANCE_FIELD = Field(default=None, exclude=True, repr=False)
 
 
 RouteAuth = Literal["required", "anonymous", "unknown"]
+
+
+# Package ecosystems a `DependencyHint` / `Vulnerability` may carry (#255).
+# Exported from `attackmap.sdk`; `cve.py` maps each to its OSV.dev ecosystem
+# (or marks it inventory-only when OSV has none).
+DependencyEcosystem = Literal[
+    "pypi",
+    "npm",
+    "go",
+    "cargo",
+    "composer",
+    "swiftpm",
+    "maven",
+    "nuget",
+    "conan",
+    "vcpkg",
+    "gem",
+    "cocoapods",
+    "hex",
+    "pub",
+]
+DEPENDENCY_ECOSYSTEMS: tuple[str, ...] = get_args(DependencyEcosystem)
 
 
 class Route(BaseModel):
@@ -172,7 +194,7 @@ class DependencyHint(_RedactedEvidence):
 
     name: str
     version: str
-    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer", "swiftpm"]
+    ecosystem: DependencyEcosystem
     file: str
     line: int | None = None
     # dev / build-only dependency (``devDependencies``, ``require-dev``,
@@ -439,7 +461,7 @@ class Vulnerability(BaseModel):
     affected_range: str = ""  # human-readable "affected [lower, upper)" text
     package_name: str
     package_version: str
-    ecosystem: Literal["pypi", "npm", "go", "cargo", "composer", "swiftpm"]
+    ecosystem: DependencyEcosystem
     # Lockfile provenance (#143): False when the vulnerable package is a
     # transitive dependency; ``resolution_path`` is its chain from a direct
     # dependency (``"express > body-parser > qs"``) so the finding can say how

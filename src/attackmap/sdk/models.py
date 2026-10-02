@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..models import DependencyHint
+from ..models import DEPENDENCY_ECOSYSTEMS, DependencyEcosystem, DependencyHint
 from ..recon_models import (
     AuthHint,
     DatabaseHint,
@@ -28,4 +28,6 @@ __all__ = [
     "SecretHint",
     "ScanResult",
     "DependencyHint",
+    "DependencyEcosystem",
+    "DEPENDENCY_ECOSYSTEMS",
 ]
