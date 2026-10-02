@@ -29,7 +29,12 @@ architecture & internals: **[wiki](https://github.com/mlaify/AttackMap/wiki)**.
 ### The macOS app
 
 Prefer a GUI? A native macOS front-end drives this CLI and renders every result
-view — build it from source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac).
+view. Install it with Homebrew (this also installs the CLI), or build it from
+source at [mlaify/AttackMap-mac](https://github.com/mlaify/AttackMap-mac):
+
+```bash
+brew install --cask mlaify/tap/attackmap-app
+```
 
 | Overview | Exploitability |
 |---|---|
@@ -40,7 +45,8 @@ view — build it from source at [mlaify/AttackMap-mac](https://github.com/mlaif
 ## Quickstart
 
 ```bash
-pip install "attackmap[all] @ git+https://github.com/mlaify/AttackMap.git"
+brew install mlaify/tap/attackmap         # macOS/Linux: CLI + all 15 analyzer plugins
+# or: pip install "attackmap[all] @ git+https://github.com/mlaify/AttackMap.git"
 attackmap analyze /path/to/repo           # heuristic review → reports/
 attackmap analyze /path/to/repo --llm     # + AI-narrated review (Claude or OpenAI)
 attackmap analyze ./svc-a ./svc-b ./gw    # cross-repo / fleet scan
@@ -86,7 +92,9 @@ Fourteen analyzer plugins (each installable on its own; `[all]` installs every o
 **Python**, **JavaScript/TypeScript** (Node services), **Go**, **Java/Kotlin**
 (Spring), **C#** (ASP.NET Core), **Rust**, **PHP** (web / Laminas / Omeka-S),
 **C**, **C++**, **Terraform**, **IaC** (Docker / compose / GitHub Actions),
-**AT Protocol**. Details: [analyzers reference](https://docs.mlaify.io/analyzers/).
+**AT Protocol**. Specialty and experimental analyzers are opt-in: when one
+matches a repo, `analyze` says so, and `-m <name>` runs it (`attackmap modules`
+shows which). Details: [analyzers reference](https://docs.mlaify.io/analyzers/).
 Write your own against the documented [analyzer SDK](docs/external-analyzers.md).
 
 ## CLI cheat-sheet
