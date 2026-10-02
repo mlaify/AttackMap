@@ -55,6 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`.env.example` variables are no longer "hard-coded secret literals".** Any `SecretHint` whose kind wasn't `env_reference` counted as a hard-coded literal, including the iac plugin's `env_template` hints, which are variable names declared in `.env.example`-style templates. That produced a HIGH `hardcoded-secret` finding for every templated `DATABASE_PASSWORD=`. `env_template` now joins the env-reference finding.
 - **Typed plugin signals and the `auth_hints` shim (#258).**
   - The official plugins now emit service, edge, entrypoint, protocol and framework metadata as typed hints, with `line` and `evidence_text`. They no longer put it in `auth_hints`.
   - `_auth_filtered_scan` is now a compatibility shim. It still drops such metadata from older or third-party plugins and logs a one-time deprecation warning per analyzer. It also keeps each auth hint's `line` and `evidence_text`, which it used to throw away.
