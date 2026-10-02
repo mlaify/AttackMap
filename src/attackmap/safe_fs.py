@@ -195,18 +195,21 @@ def walk_repo(
 def ensure_output_dir(out_dir: str | Path, *, mark: bool = False) -> Path:
     """Create the report directory, refusing a symlinked one.
 
-    The directory itself and any of its ancestors inside the current working
-    directory (usually the checkout being scanned) must be real directories —
-    otherwise a committed ``reports -> /somewhere`` link would redirect every
-    report write (#228).
+    No ancestor inside the current working directory (usually the checkout
+    being scanned) may be a symlink that leads outside it — otherwise a
+    committed ``reports -> /somewhere`` link would redirect every report write
+    (#228). Symlinks that stay inside the cwd are allowed, which also covers
+    system links such as macOS's ``/var`` and ``/tmp`` (→ ``/private/...``)
+    when the cwd is ``/``, as it is for a GUI-launched or test-runner process.
     """
     out = Path(out_dir)
     absolute = out.absolute()
     cwd = Path.cwd()
+    real_cwd = cwd.resolve()
     for candidate in (absolute, *absolute.parents):
         if candidate == cwd or not candidate.is_relative_to(cwd):
             continue
-        if candidate.is_symlink():
+        if candidate.is_symlink() and not candidate.resolve().is_relative_to(real_cwd):
             raise UnsafePathError(f"refusing to write reports through a symlink: {candidate}")
     out.mkdir(parents=True, exist_ok=True)
     if out.is_symlink():
