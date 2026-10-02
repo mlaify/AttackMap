@@ -307,6 +307,32 @@ class WebHardeningIssue(_RedactedEvidence):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class SupplyChainIssue(_RedactedEvidence):
+    """A dependency supply-chain risk beyond CVEs (#247).
+
+    Emitted by the built-in, offline ``supply_chain`` pass over manifests,
+    lockfiles and package-manager configs: dependency confusion, typosquat
+    candidates, mutable VCS/URL dependencies, install scripts, unlocked
+    manifests and insecure registries.
+    """
+
+    kind: Literal[
+        "dependency_confusion",
+        "typosquat_candidate",
+        "mutable_vcs_dependency",
+        "install_script",
+        "unlocked_manifest",
+        "insecure_registry",
+    ]
+    file: str
+    line: int | None = None
+    package: str | None = None
+    ecosystem: str | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class WorkflowIssue(_RedactedEvidence):
     """A CI-workflow security issue in a GitHub Actions file (#142).
 
@@ -800,6 +826,7 @@ class ScanResult(BaseModel):
     web_hardening_issues: list[WebHardeningIssue] = Field(default_factory=list)
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
+    supply_chain_issues: list[SupplyChainIssue] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
     # What the scan deliberately did not analyze (e.g. symlinks that point out
     # of the repo, #234) — so a clean report isn't mistaken for full coverage.

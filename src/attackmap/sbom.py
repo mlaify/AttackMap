@@ -230,6 +230,10 @@ def _parse_requirements(path: Path, rel: str) -> list[DependencyHint]:
         if line.startswith("-"):
             # -r / -e / -c / --index-url etc. — skip; not a dep declaration.
             continue
+        if "://" in line.split(" @ ", 1)[0]:
+            # A bare VCS/archive URL (`git+https://…`) isn't a `name spec`
+            # line; parsing it would invent a dependency called "git" (#247).
+            continue
         parsed = _parse_pep508(line)
         if parsed:
             name, version = parsed
