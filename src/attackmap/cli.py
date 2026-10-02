@@ -177,6 +177,73 @@ TRIAGE_BANNER = (
 )
 
 
+PROGRESS_FORMATS = ("auto", "tty", "json", "none")
+LLM_PROVIDERS = ("claude", "openai")
+LLM_SPEEDS = ("standard", "fast")
+LLM_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+LLM_BACKENDS = ("auto", "api", "cli")
+
+
+def _given(ctx: typer.Context, name: str) -> bool:
+    """True when the user passed the option (not just its default)."""
+    source = ctx.get_parameter_source(name)
+    return source is not None and source.name not in {"DEFAULT", "DEFAULT_MAP"}
+
+
+def _validate_analyze_options(
+    ctx: typer.Context,
+    *,
+    progress_format: str,
+    output_format: str,
+    llm_provider: str,
+    llm_speed: str,
+    llm_effort: str | None,
+    llm_backend: str,
+    hunt: bool,
+    verify: bool,
+    verify_votes: int,
+    hunt_lenses: int,
+    hunt_rounds: int,
+    hunt_budget: int,
+    baseline: str | None,
+    diff_output: str | None,
+) -> None:
+    """Reject bad values and orphaned flags before any scanning starts (#229).
+
+    A typo in an LLM option used to surface only after the full scan, CVE
+    lookup and report writing; flags whose parent option was missing were
+    silently ignored with exit 0.
+    """
+
+    def _choice(flag: str, value: str | None, allowed: tuple[str, ...]) -> None:
+        if value is not None and value not in allowed:
+            raise typer.BadParameter(f"{flag} must be one of: {', '.join(allowed)} (got {value!r}).")
+
+    _choice("--progress-format", progress_format, PROGRESS_FORMATS)
+    _choice("--format", output_format, tuple(OUTPUT_FORMATS))
+    _choice("--llm-provider", llm_provider, LLM_PROVIDERS)
+    _choice("--llm-speed", llm_speed, LLM_SPEEDS)
+    _choice("--llm-effort", llm_effort, LLM_EFFORTS)
+    _choice("--llm-backend", llm_backend, LLM_BACKENDS)
+
+    hunt_only = ("verify", "verify_votes", "hunt_lenses", "hunt_rounds", "hunt_budget")
+    orphaned = [f"--{name.replace('_', '-')}" for name in hunt_only if _given(ctx, name)]
+    if orphaned and not hunt:
+        verb = "only applies" if len(orphaned) == 1 else "only apply"
+        raise typer.BadParameter(f"{', '.join(orphaned)} {verb} with --hunt.")
+    if _given(ctx, "diff_output") and diff_output is not None and baseline is None:
+        raise typer.BadParameter("--diff-output requires --baseline to be set.")
+
+    if verify_votes < 1:
+        raise typer.BadParameter(f"--verify-votes must be at least 1 (got {verify_votes}).")
+    if not 1 <= hunt_lenses <= len(HUNT_LENSES):
+        raise typer.BadParameter(f"--hunt-lenses must be between 1 and {len(HUNT_LENSES)} (got {hunt_lenses}).")
+    if hunt_rounds < 1:
+        raise typer.BadParameter(f"--hunt-rounds must be at least 1 (got {hunt_rounds}).")
+    if hunt_budget < 0:
+        raise typer.BadParameter(f"--hunt-budget must be 0 (no cap) or more (got {hunt_budget}).")
+
+
 def _echo_opt_in_hint(names: list[str]) -> None:
     """Opt-in analyzers (enabled_by_default=False) that matched but didn't run
     (#221), so their absence is visible rather than silent."""
@@ -522,7 +589,7 @@ def analyze(
     progress_format: str = typer.Option(
         "auto",
         "--progress-format",
-        help="Progress reporting: 'auto' (TTY bar when stderr is a terminal), 'json' (newline-delimited JSON events on stderr, for GUI/tool front-ends), or 'none'. --no-progress is equivalent to 'none'.",
+        help="Progress reporting: 'auto' (TTY bar when stderr is a terminal), 'tty' (always the bar), 'json' (newline-delimited JSON events on stderr, for GUI/tool front-ends), or 'none'. --no-progress is equivalent to 'none'.",
     ),
     pr_comment: str | None = typer.Option(
         None,
@@ -558,10 +625,23 @@ def analyze(
                 os.environ[TRUSTED_ONLY_ENV] = previous
 
         ctx.call_on_close(_restore_trust_env)
-    if progress_format not in {"auto", "tty", "json", "none"}:
-        raise typer.BadParameter("--progress-format must be one of: auto, json, none.")
-    if format not in OUTPUT_FORMATS:
-        raise typer.BadParameter(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}.")
+    _validate_analyze_options(
+        ctx,
+        progress_format=progress_format,
+        output_format=format,
+        llm_provider=llm_provider,
+        llm_speed=llm_speed,
+        llm_effort=llm_effort,
+        llm_backend=llm_backend,
+        hunt=hunt,
+        verify=verify,
+        verify_votes=verify_votes,
+        hunt_lenses=hunt_lenses,
+        hunt_rounds=hunt_rounds,
+        hunt_budget=hunt_budget,
+        baseline=baseline,
+        diff_output=diff_output,
+    )
 
     # Multi-repo fleet mode (#146a): scan each repo independently and assemble a
     # fleet view. Dispatched here so the single-repo path below is untouched.
@@ -611,11 +691,7 @@ def analyze(
     if module:
         selected_analyzers = _select_modules(module, install_missing)
 
-    # (--progress-format is validated up-front, before the fleet dispatch.)
-    if llm_speed not in {"standard", "fast"}:
-        raise typer.BadParameter("--llm-speed must be one of: standard, fast.")
-    if llm_provider not in {"claude", "openai"}:
-        raise typer.BadParameter("--llm-provider must be one of: claude, openai.")
+    # (Enum/range/dependency options are validated up front, #229.)
     # Provider-aware label for the "via X" progress/echo strings.
     llm_display = "Codex" if llm_provider == "openai" else "Claude"
     if llm_provider == "openai" and llm_speed == "fast" and (llm or hunt or remediate):
@@ -817,18 +893,7 @@ def analyze(
 
     if llm:
         try:
-            effort_value = None
-            if llm_effort is not None:
-                if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
-                    raise typer.BadParameter(
-                        f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
-                    )
-                effort_value = llm_effort  # type: ignore[assignment]
-
-            if llm_backend not in {"auto", "api", "cli"}:
-                raise typer.BadParameter(
-                    f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
-                )
+            effort_value = llm_effort  # validated up front (#229)
 
             typer.echo("")
             typer.echo(
@@ -874,23 +939,14 @@ def analyze(
             typer.echo(f"LLM review written to: {llm_md_path.resolve()} (backend={result.backend})")
 
     if hunt:
-        hunt_effort_value = None
-        if llm_effort is not None:
-            if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
-                raise typer.BadParameter(
-                    f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
-                )
-            hunt_effort_value = llm_effort  # type: ignore[assignment]
-        if llm_backend not in {"auto", "api", "cli"}:
-            raise typer.BadParameter(
-                f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
-            )
+        hunt_effort_value = llm_effort  # validated up front (#229)
         typer.echo("")
         # Multi-pass hunt harness (#147a/#147b): opt in with --verify and either
         # --verify-votes > 1 (jury) or --hunt-lenses > 1 (multi-lens generation).
-        lens_count = max(1, min(hunt_lenses, len(HUNT_LENSES)))
-        jury_votes = max(1, verify_votes)
-        max_rounds = max(1, hunt_rounds)
+        # Ranges are validated up front (#229); no silent clamping.
+        lens_count = hunt_lenses
+        jury_votes = verify_votes
+        max_rounds = hunt_rounds
         token_budget = hunt_budget if hunt_budget > 0 else None
         use_jury = verify and (jury_votes > 1 or lens_count > 1 or max_rounds > 1)
         lens_names = [name for name, _ in HUNT_LENSES][:lens_count] if lens_count > 1 else None
@@ -993,17 +1049,7 @@ def analyze(
 
     if remediate:
         try:
-            rem_effort_value = None
-            if llm_effort is not None:
-                if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
-                    raise typer.BadParameter(
-                        f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
-                    )
-                rem_effort_value = llm_effort  # type: ignore[assignment]
-            if llm_backend not in {"auto", "api", "cli"}:
-                raise typer.BadParameter(
-                    f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
-                )
+            rem_effort_value = llm_effort  # validated up front (#229)
             typer.echo("")
             typer.echo(
                 f"Generating remediation suggestions via {llm_display} (backend={llm_backend}, may take a minute)..."
@@ -1052,17 +1098,7 @@ def analyze(
             )
 
     if triage:
-        if llm_backend not in {"auto", "api", "cli"}:
-            raise typer.BadParameter(
-                f"Invalid --llm-backend '{llm_backend}'. Use one of: auto, api, cli."
-            )
-        tri_effort_value = None
-        if llm_effort is not None:
-            if llm_effort not in {"low", "medium", "high", "xhigh", "max"}:
-                raise typer.BadParameter(
-                    f"Invalid --llm-effort '{llm_effort}'. Use one of: low, medium, high, xhigh, max."
-                )
-            tri_effort_value = llm_effort  # type: ignore[assignment]
+        tri_effort_value = llm_effort  # validated up front (#229)
         output_path = Path(output)
         tri_md_path = output_path / "triage.md"
         tri_meta_path = output_path / "triage.meta.json"
