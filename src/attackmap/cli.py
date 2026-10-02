@@ -50,7 +50,7 @@ from .hunt_harness import run_majority_verify
 from .llm_review import LlmReviewError, generate_llm_review
 from .review_prompts import HUNT_LENSES
 from .triage import render_triage_fallback
-from .progress import create_progress
+from .progress import PROGRESS_PROTOCOL_VERSION, create_progress
 from .recon_to_analysis import translate_recon
 from . import __version__
 from .md import sanitize_llm_markdown
@@ -1119,6 +1119,39 @@ def analyze(
 
     if diff_exit_code:
         raise typer.Exit(code=diff_exit_code)
+
+
+CAPABILITIES_SCHEMA_VERSION = 1
+
+
+@app.command("capabilities")
+def capabilities() -> None:
+    """Describe what this CLI supports, for GUIs and wrappers.
+
+    Front-ends (e.g. the macOS app) used to scrape `analyze --help`, which
+    breaks when help wording or terminal width changes. This prints a stable
+    JSON document instead: the version, the subcommands, every long option
+    `analyze` accepts, and whether `analyze` takes multiple repo paths.
+    """
+    root = typer.main.get_command(app)
+    commands = getattr(root, "commands", {})
+    analyze_cmd = commands.get("analyze")
+    options: set[str] = set()
+    multi_repo = False
+    for param in getattr(analyze_cmd, "params", []):
+        for opt in [*getattr(param, "opts", []), *getattr(param, "secondary_opts", [])]:
+            if opt.startswith("--"):
+                options.add(opt)
+        if getattr(param, "param_type_name", "") == "argument" and getattr(param, "nargs", 1) == -1:
+            multi_repo = True
+    payload = {
+        "schema": CAPABILITIES_SCHEMA_VERSION,
+        "version": __version__,
+        "commands": sorted(commands),
+        "analyze": {"options": sorted(options), "multi_repo": multi_repo},
+        "progress_protocol": PROGRESS_PROTOCOL_VERSION,
+    }
+    typer.echo(json.dumps(payload, indent=2))
 
 
 @app.command("modules")
