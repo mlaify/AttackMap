@@ -749,6 +749,13 @@ def scan_repo(
             content = file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
+        except OSError as exc:
+            # An unreadable file (permissions, vanished mid-scan, …) must not
+            # abort the whole scan (#217): skip it and say so in the report.
+            result.limitations.append(
+                f"unreadable file skipped ({type(exc).__name__}): {file_path.relative_to(root_path).as_posix()}"
+            )
+            continue
 
         relative = str(file_path.relative_to(root_path))
         # Routes declared in test/spec or vendored files aren't real attack

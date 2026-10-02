@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An unreadable file or a failing repo no longer aborts the run (#217).**
+  - One `chmod 000` file used to crash `scan_repo` with `PermissionError`. It is now skipped and recorded in `scan.limitations`.
+  - The console summary ends with a "Not analyzed: …" line covering unreadable, oversized and symlinked files.
+  - In fleet mode, a repo whose analysis raises is reported, listed under `failed` in `fleet-summary.json` and `fleet-summary.md`, and skipped. The run continues with the other repos and exits 1 at the end. Usage errors still stop the run.
 - **AttackMap no longer scans its own reports (#216).** With the default `-o reports` inside the repo, a second `attackmap analyze .` re-ingested the first run's JSON. Evidence such as DB URLs and secret names produced new findings, including a new HIGH hard-coded-secret.
   - Every report directory now gets a `.attackmap-output` marker, and walks never descend into a directory containing one, whatever it's called (`-o .` is safe).
   - AttackMap's report filenames are also excluded from config scanning, which covers report directories written by older versions.
