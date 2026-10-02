@@ -56,7 +56,7 @@ def write_reports(
     emit_json = output_format in {"all", "json"}
     emit_markdown = output_format in {"all", "markdown"}
 
-    out = ensure_output_dir(output_dir)
+    out = ensure_output_dir(output_dir, mark=True)
     suppressed = suppressed or []
 
     def write(name: str, text: str) -> None:

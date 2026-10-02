@@ -111,9 +111,9 @@ def _warn_if_nothing_scanned(scan) -> None:  # type: ignore[no-untyped-def]
         )
 
 
-def _ensure_output_dir(path: Path) -> Path:
+def _ensure_output_dir(path: Path, *, mark: bool = False) -> Path:
     try:
-        return ensure_output_dir(path)
+        return ensure_output_dir(path, mark=mark)
     except UnsafePathError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(2) from exc
@@ -309,7 +309,7 @@ def _run_fleet(
     fleet.trust_gaps = find_trust_gaps(fleet.links, repo_scans, auth_by_repo)
     fleet.cross_repo_anomalies = find_cross_repo_anomalies(repo_scans, auth_by_repo)
 
-    _ensure_output_dir(output_root)
+    _ensure_output_dir(output_root, mark=True)
     emit_markdown = output_format in {"all", "markdown"}
     if emit_markdown:
         _write_text(output_root / "fleet-summary.md", render_fleet_summary(fleet) + "\n")

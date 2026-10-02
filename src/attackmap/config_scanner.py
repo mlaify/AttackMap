@@ -68,6 +68,14 @@ _CONFIG_FILENAME_HINTS = ("env",)  # substring in stem for `.env`-family files
 # Filenames excluded even when they have a matching suffix. These carry
 # inventory / build state, not application config.
 CONFIG_EXCLUDE_FILENAMES = frozenset({
+    # AttackMap's own artifacts (#216) — never re-ingest a previous report,
+    # even from an output dir written before the output marker existed.
+    "attackmap-report.json",
+    "defensive-review.json",
+    "review-context-pack.json",
+    "fleet-summary.json",
+    "defensive-review-llm.meta.json",
+    "benchmark-results.json",
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
