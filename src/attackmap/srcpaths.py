@@ -201,7 +201,11 @@ def evidence_locations(evidence: list[str]) -> list[tuple[str, int | None]]:
             if item not in seen:
                 seen.add(item)
                 out.append(item)
-    return out
+    # Across evidence lines too: drop a line-less citation of a file that is
+    # also cited with a line (e.g. "import path: app.py" next to "sink at
+    # app.py:23"), so a finding never carries a redundant `line: null` location.
+    with_line = {path for path, line in out if line is not None}
+    return [(path, line) for path, line in out if line is not None or path not in with_line]
 
 
 # --- Directories never scanned (#215) ----------------------------------------

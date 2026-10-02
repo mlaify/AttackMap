@@ -135,3 +135,15 @@ def test_line_number_matches_naive_count() -> None:
     for offset in [0, 1, 2, 100, 2500, 4999, 5000, -3]:
         expected = 1 if offset <= 0 else text.count("\n", 0, offset) + 1
         assert line_number(text, offset) == expected
+
+
+def test_lineless_citation_dropped_when_file_cited_with_line_elsewhere() -> None:
+    from attackmap.srcpaths import evidence_locations
+
+    evidence = [
+        "route POST /orders in app.py",
+        "sink at app.py:23 (database (SQL execute))",
+        "import path: app.py (0 hop(s))",
+        "config in settings.py",
+    ]
+    assert evidence_locations(evidence) == [("app.py", 23), ("settings.py", None)]
