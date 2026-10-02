@@ -1841,7 +1841,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="medium" if kind == "typosquat_candidate" else "high",
-                tags=["supply-chain", "dependency-risk"],
+                tags=["supply-chain", "dependency-risk", *_cwe_tags(kind)],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],
