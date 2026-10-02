@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Analyzer priority and opt-in are honored (#221).**
+  - **Run order** is `(metadata.priority, name)` across built-ins and plugins, and merge is first-seen-wins in that order. A plugin with a lower priority than the built-in (e.g. the python plugin at 15 vs python-web at 20) now wins duplicate routes and hints, and its richer signal is kept. Before, built-ins always ran first.
+  - **`enabled_by_default=False` is opt-in.** Such analyzers run only when selected with `-m`. When one matches a repo but isn't selected, the CLI prints `Opt-in analyzers match this repo but were not run: … Enable with -m …`. **Behavior change:** node-service, php-web, php-laminas, omeka-s and atproto currently declare `enabled_by_default=False` and no longer run unless requested.
+  - `attackmap modules` lists analyzers in run order with their priority and opt-in status. `modules --json` adds `priority` and `experimental`.
 - **Suppression governance (#238).**
   - **Trusted suppressions only.** With `--suppress-from-ref <ref>`, only suppressions that already exist at that git ref apply. Suppress-file entries, and inline directives on lines added since the ref, are reported as **pending** in the CLI output and in a new PR-comment "Suppressions" section, and are not applied. `--allow-pr-suppressions` applies them anyway, still listed. On `pull_request` runs the GitHub Action fetches the base branch and passes it, so a PR can no longer silence its own findings.
   - **Expiry and ownership.** Suppress entries gain `expires:`, `owner:` and `ticket:`, and inline directives accept `until=YYYY-MM-DD`. An expired suppression is no longer applied and prints a warning; `--strict-suppressions` makes it exit 2.

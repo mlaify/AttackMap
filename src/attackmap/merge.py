@@ -13,7 +13,9 @@ merge / dedup behavior follows automatically.
 
 - **Deterministic ordering**: first-seen wins. The order signals appear
   in the merged result is the order they first appeared across the input
-  results, walked in input order. We do not reorder.
+  results, walked in input order. We do not reorder. Analyzers run in
+  ``(metadata.priority, name)`` order (#221), so on a duplicate key the
+  lower-priority-number analyzer's signal wins.
 - **Deduplication**: each list field has a stable key extracted from the
   signal itself (e.g. `(path, method, file)` for routes). Two signals
   that hash to the same key are treated as duplicates; only the first is

@@ -67,8 +67,9 @@ class AnalyzerMetadata(BaseModel):
     priority: int = Field(
         default=100,
         ge=0,
-        description="Discovery ordering hint. Lower runs first when multiple "
-        "analyzers match. Ties are broken by entry-point name. Convention: "
+        description="Run order across built-ins and plugins: lower runs first, "
+        "ties broken by analyzer name. Merge is first-seen-wins in that order, "
+        "so a lower value also wins a duplicate signal. Convention: "
         "0-49 is broad language analyzers (python, node-service); 50-149 is "
         "framework analyzers (spring, laminas); 150+ is app-specific "
         "analyzers (omeka-s).",
@@ -76,13 +77,16 @@ class AnalyzerMetadata(BaseModel):
     experimental: bool = Field(
         default=True,
         description="Whether this analyzer is still stabilizing. Doesn't "
-        "affect execution, just how core presents it in listings.",
+        "affect execution, just how core presents it in listings. "
+        "Experimental analyzers should normally leave enabled_by_default False.",
     )
     enabled_by_default: bool = Field(
         default=False,
         description="Whether to run this analyzer without an explicit "
-        "--module flag. Broad language analyzers set this True; specialty "
-        "framework/app analyzers usually leave it False.",
+        "--module flag. False makes it opt-in: it runs only when selected "
+        "with -m (detect() still gates it), and the CLI notes when an opt-in "
+        "analyzer matched but didn't run. Broad language analyzers set this "
+        "True; specialty framework/app analyzers usually leave it False.",
     )
 
     @field_validator("name")
