@@ -177,6 +177,17 @@ TRIAGE_BANNER = (
 )
 
 
+def _echo_opt_in_hint(names: list[str]) -> None:
+    """Opt-in analyzers (enabled_by_default=False) that matched but didn't run
+    (#221), so their absence is visible rather than silent."""
+    if names:
+        typer.echo(
+            f"Opt-in analyzers match this repo but were not run: {', '.join(names)}. "
+            f"Enable with {' '.join(f'-m {n}' for n in names)}.",
+            err=True,
+        )
+
+
 def _run_fleet(
     repo_paths: list[Path],
     *,
@@ -217,7 +228,11 @@ def _run_fleet(
         typer.echo("")
         typer.echo(f"── {repo_id}  ({repo_path}) ──")
         try:
-            active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
+            opt_in_matches: list[str] = []
+            active_analyzers = resolve_run_analyzers(
+                repo_path, analyzers=selected_analyzers, opt_in_matches=opt_in_matches
+            )
+            _echo_opt_in_hint(opt_in_matches)
             scan_progress = create_progress(progress_format, no_progress=no_progress)
             scan = analyze_repository(
                 repo_path,
@@ -608,7 +623,11 @@ def analyze(
             "Note: --llm-speed fast is Claude-only; ignoring it for the OpenAI provider.",
             err=True,
         )
-    active_analyzers = resolve_run_analyzers(repo_path, analyzers=selected_analyzers)
+    opt_in_matches: list[str] = []
+    active_analyzers = resolve_run_analyzers(
+        repo_path, analyzers=selected_analyzers, opt_in_matches=opt_in_matches
+    )
+    _echo_opt_in_hint(opt_in_matches)
     scan_progress = create_progress(progress_format, no_progress=no_progress)
     scan = analyze_repository(
         repo_path,
@@ -1123,6 +1142,8 @@ def modules(
                 "scope": meta.scope,
                 "ecosystems": list(meta.ecosystems),
                 "enabled_by_default": meta.enabled_by_default,
+                "priority": meta.priority,
+                "experimental": meta.experimental,
             }
             for meta in available_modules
         ]
@@ -1132,12 +1153,16 @@ def modules(
     if not available_modules:
         typer.echo("No analyzer modules are currently available.")
     else:
-        typer.echo("Available analyzer modules (installed):")
+        typer.echo("Available analyzer modules (installed, in run order):")
         for module_metadata in available_modules:
             ecosystems = ", ".join(module_metadata.ecosystems) if module_metadata.ecosystems else "none"
+            mode = "default" if module_metadata.enabled_by_default else f"opt-in (-m {module_metadata.name})"
             typer.echo(f"- {module_metadata.name}: {module_metadata.description}")
             typer.echo(f"  scope: {module_metadata.scope}")
             typer.echo(f"  ecosystems: {ecosystems}")
+            typer.echo(f"  priority: {module_metadata.priority}  runs: {mode}")
+            if module_metadata.experimental and module_metadata.enabled_by_default:
+                typer.echo("  note: experimental but enabled by default")
 
     typer.echo("")
     typer.echo("Available module repositories (mlaify GitHub org):")

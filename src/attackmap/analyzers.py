@@ -652,7 +652,23 @@ def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
 
 
 def get_available_modules() -> list[AnalyzerMetadata]:
-    return [get_analyzer_metadata(analyzer) for analyzer in get_registered_analyzers()]
+    """Installed analyzers' metadata, in run order (#221)."""
+    return [get_analyzer_metadata(analyzer) for analyzer in sorted(get_registered_analyzers(), key=_run_order_key)]
+
+
+def _run_order_key(analyzer: Analyzer) -> tuple[int, str]:
+    """Run (and merge-precedence) order: ``(metadata.priority, name)`` across
+    built-ins and plugins alike (#221). Merge is first-seen-wins, so a lower
+    priority also wins a duplicate signal."""
+    meta = getattr(analyzer, "metadata", None)
+    priority = getattr(meta, "priority", 100)
+    return (priority if isinstance(priority, int) else 100, analyzer.name)
+
+
+def is_opt_in(analyzer: Analyzer) -> bool:
+    """``enabled_by_default=False`` analyzers run only when selected (#221)."""
+    meta = getattr(analyzer, "metadata", None)
+    return meta is not None and getattr(meta, "enabled_by_default", True) is False
 
 
 def get_available_repository_modules(
@@ -794,10 +810,32 @@ def _stamp_provenance(result: AnalyzerResult, analyzer_name: str) -> None:
                 item.source_analyzer = analyzer_name
 
 
-def resolve_run_analyzers(root: str | Path, analyzers: Iterable[Analyzer] | None = None) -> list[Analyzer]:
+def resolve_run_analyzers(
+    root: str | Path,
+    analyzers: Iterable[Analyzer] | None = None,
+    opt_in_matches: list[str] | None = None,
+) -> list[Analyzer]:
+    """The analyzers to run on ``root``, in ``(priority, name)`` order (#221).
+
+    With ``analyzers=None`` (no ``--module``), every registered analyzer whose
+    ``detect()`` passes runs, except opt-in ones (``enabled_by_default=False``).
+    Those are skipped, and their names appended to ``opt_in_matches`` when
+    given, so the CLI can say they matched. An explicit ``analyzers`` list (the
+    ``--module`` selection) always runs, subject to ``detect()``.
+    """
     repo_root = Path(root).resolve()
-    registered = list(analyzers) if analyzers is not None else get_registered_analyzers()
-    return [analyzer for analyzer in registered if _should_run_analyzer(analyzer, repo_root)]
+    explicit = analyzers is not None
+    registered = sorted(list(analyzers) if explicit else get_registered_analyzers(), key=_run_order_key)
+    selected: list[Analyzer] = []
+    for analyzer in registered:
+        if not _should_run_analyzer(analyzer, repo_root):
+            continue
+        if not explicit and is_opt_in(analyzer):
+            if opt_in_matches is not None:
+                opt_in_matches.append(analyzer.name)
+            continue
+        selected.append(analyzer)
+    return selected
 
 
 def _should_run_analyzer(analyzer: Analyzer, repo_root: Path) -> bool:

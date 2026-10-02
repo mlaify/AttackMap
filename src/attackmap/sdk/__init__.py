@@ -44,9 +44,11 @@ When multiple analyzers run against the same repo, their results are
 merged by `attackmap.analyzers.merge_analyzer_results`. The schema is
 declared in `attackmap.merge.MERGE_SCHEMA`; the rules are:
 
-- **Order**: first-seen wins. Order across analyzers is the order
-  `entry_points()` returns them in (Python's discovery order, by entry
-  point name).
+- **Order**: first-seen wins. Analyzers (built-in and plugin alike) run
+  in ``(metadata.priority, name)`` order, so the lower priority value wins
+  a duplicate signal.
+- **Opt-in**: an analyzer with ``enabled_by_default=False`` runs only when
+  selected with ``--module``; ``detect()`` still gates it.
 - **Dedup**: each list field has a stable tuple key, e.g. routes are
   deduped by ``(path, method, file)`` and auth hints by ``(hint, file)``.
 - **Languages**: union, sorted for stable display.
