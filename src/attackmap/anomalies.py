@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .handler_span import span_bounds
 from .safe_fs import contained_file
 from .taint_sinks import kind_label
 from .models import Anomaly, Route, ScanResult
@@ -100,14 +101,6 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 # Path-parameter forms across frameworks (same as authz.py): {id} :id <id>.
 _PARAM_SEG_RE = re.compile(r"[{:<]|>$|}$")
-
-# A handler's signal span runs from its route declaration down to the next
-# route in the same file (its own body), so one handler's decorator/body
-# never bleeds into a sibling's window. Capped so a huge handler doesn't
-# swallow the file, and extended upward over contiguous `@decorator` lines
-# for the auth-decorator-above-`@route` idiom.
-_MAX_SPAN = 40
-_DECORATOR_LOOKUP = 6
 
 _MAX_FILE_BYTES = 1_000_000
 # A cohort must have at least this many routes to reason about a "norm".
@@ -494,7 +487,7 @@ def _guard_before_sink(
     if line is None:
         start, end = 0, len(lines)
     else:
-        start, end = _span_bounds(line, lines, ctx.file_route_lines.get(file, []))
+        start, end = span_bounds(line, lines, ctx.file_route_lines.get(file, []))
     # sink_line is 1-based; index sink_line-1 is the sink itself. Only tighten
     # the window to "before the sink" when the sink sits within this span.
     if sink_file == file and sink_line is not None and start < sink_line - 1 < end:
@@ -598,28 +591,8 @@ def _route_has_signal(route: Route, ctx: _SignalCtx, marker: re.Pattern[str]) ->
         return False
     if route.line is None:
         return marker.search("\n".join(lines)) is not None
-    start, end = _span_bounds(route.line, lines, ctx.file_route_lines.get(route.file, []))
+    start, end = span_bounds(route.line, lines, ctx.file_route_lines.get(route.file, []))
     return marker.search("\n".join(lines[start:end])) is not None
-
-
-def _span_bounds(line: int, lines: list[str], route_lines: list[int]) -> tuple[int, int]:
-    """Return the 0-based [start, end) slice of ``lines`` owned by the handler
-    declared at 1-based ``line``."""
-    idx = line - 1  # 0-based route declaration line
-    # End at the next route declaration in the file (its decorators/body
-    # belong to it), capped so a huge handler can't swallow the file.
-    next_line = next((ln for ln in route_lines if ln > line), None)
-    end = min(len(lines), line - 1 + _MAX_SPAN)
-    if next_line is not None:
-        end = min(end, next_line - 1)
-    # Extend upward over contiguous decorator lines (auth decorator placed
-    # above the @route decorator), but not past the previous route.
-    prev_line = next((ln for ln in reversed(route_lines) if ln < line), 0)
-    start = idx
-    limit = max(prev_line, idx - _DECORATOR_LOOKUP)
-    while start - 1 >= limit and lines[start - 1].lstrip().startswith("@"):
-        start -= 1
-    return max(0, start), max(start + 1, end)
 
 
 def _file_lines(rel_file: str, ctx: _SignalCtx) -> list[str]:
