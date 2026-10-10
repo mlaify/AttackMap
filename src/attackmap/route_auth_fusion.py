@@ -21,9 +21,11 @@ This module resolves the control on the route's *own* registration chain:
   `@RolesAllowed` on the method or controller, or a global security config that
   requires authentication for every request.
 
-Scope is deliberately the *general* case — public, state-changing
-(`POST/PUT/PATCH/DELETE`) `public_api` routes — because the sensitive
-categories (webhook, admin, upload, auth) already have their own dedicated
+Scope: public, state-changing (`POST/PUT/PATCH/DELETE`) `public_api` routes,
+plus privileged routes — `admin`, and `internal` routes whose own path says
+`/internal` or `/debug` (#242). The admin/internal category findings are
+file-windowed advisories; this pass gives those routes the same precise
+per-route answer. Webhook, upload and auth routes keep their dedicated
 findings. `auth_hints` emission is untouched; this only consumes them.
 """
 
@@ -37,6 +39,9 @@ from .srcpaths import JS_TS_SUFFIXES
 from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
 
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+# An `internal` surface counts only when the route's own path says so; one
+# classified internal from worker/event-handler metadata is not HTTP-reachable.
+_INTERNAL_PATH = re.compile(r"/(?:internal|debug)(?:/|$)", re.IGNORECASE)
 _JS_SUFFIXES = JS_TS_SUFFIXES
 _PY_SUFFIXES = {".py"}
 _JAVA_SUFFIXES = {".java", ".kt"}
@@ -74,11 +79,11 @@ _JAVA_GLOBAL_AUTH = re.compile(
 )
 
 
-def synthesize_unauthenticated_routes(
+def unauthenticated_routes(
     scan: ScanResult, surfaces: list[AttackSurface]
-) -> list[Finding]:
-    """Return at most one finding aggregating unauthenticated state-changing
-    public routes, with the resolved control chain per route as evidence."""
+) -> list[tuple[Route, str]]:
+    """The in-scope state-changing routes with no resolved authentication
+    control, each with its control-chain evidence."""
     root = Path(scan.root)
     surface_by_key: dict[tuple[str, str, str], AttackSurface] = {}
     for s in surfaces:
@@ -91,7 +96,7 @@ def synthesize_unauthenticated_routes(
         Path(r.file).suffix.lower() in _JAVA_SUFFIXES for r in scan.routes
     )
     java_global_auth = (
-        _repo_has_java_global_auth(scan, root, content_cache) if has_java_routes else False
+        repo_has_java_global_auth(scan, root, content_cache) if has_java_routes else False
     )
 
     flagged: list[tuple[Route, str]] = []
@@ -99,11 +104,7 @@ def synthesize_unauthenticated_routes(
         if route.method.upper() not in _MUTATING:
             continue
         surface = surface_by_key.get((route.method, route.path, route.file))
-        if surface is None:
-            continue
-        # The sensitive categories already have dedicated findings; this pass
-        # closes the general "ordinary mutating endpoint" gap only.
-        if surface.category != "public_api" or surface.exposure != "public":
+        if surface is None or not _in_scope(surface, route):
             continue
         # Trust a plugin-declared state (#256); resolve ourselves only when the
         # plugin couldn't tell.
@@ -115,11 +116,31 @@ def synthesize_unauthenticated_routes(
         content = _read(root, route.file, content_cache)
         if content is None:
             continue
-        control = _resolve_control(route, content, java_global_auth)
+        control = resolve_control(route, content, java_global_auth)
         if control is not None:
             continue  # guarded — not a finding
         flagged.append((route, _chain_evidence(route, content)))
+    return flagged
 
+
+def _in_scope(surface: AttackSurface, route: Route) -> bool:
+    if surface.category == "public_api":
+        return surface.exposure == "public"
+    if surface.category == "admin":
+        return True
+    return surface.category == "internal" and bool(_INTERNAL_PATH.search(route.path))
+
+
+def synthesize_unauthenticated_routes(
+    scan: ScanResult,
+    surfaces: list[AttackSurface],
+    flagged: list[tuple[Route, str]] | None = None,
+) -> list[Finding]:
+    """Return at most one finding aggregating unauthenticated state-changing
+    routes, with the resolved control chain per route as evidence. Pass
+    ``flagged`` (from :func:`unauthenticated_routes`) to reuse a resolution."""
+    if flagged is None:
+        flagged = unauthenticated_routes(scan, surfaces)
     if not flagged:
         return []
 
@@ -170,7 +191,7 @@ def _read(root: Path, rel: str, cache: dict[str, str | None]) -> str | None:
     return cache[rel]
 
 
-def _resolve_control(route: Route, content: str, java_global_auth: bool) -> str | None:
+def resolve_control(route: Route, content: str, java_global_auth: bool) -> str | None:
     """Return a short description of the control guarding `route`, or None."""
     suffix = Path(route.file).suffix.lower()
     lines = content.splitlines()
@@ -274,7 +295,7 @@ def _resolve_java(route: Route, lines: list[str], java_global_auth: bool) -> str
     return None
 
 
-def _repo_has_java_global_auth(
+def repo_has_java_global_auth(
     scan: ScanResult, root: Path, cache: dict[str, str | None]
 ) -> bool:
     """True when a Spring Security config requires auth for every request —

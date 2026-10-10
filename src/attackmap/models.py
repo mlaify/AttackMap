@@ -435,6 +435,10 @@ class BolaCandidate(_RedactedEvidence):
     reaches_db: bool = False
     db_evidence: str = ""  # how DB reachability was established
     has_ownership_check: bool = False  # True → suppressed (not a candidate)
+    # How the route is authenticated, "" when it isn't (#242). Authentication
+    # without an object check is the classic IDOR, so it raises confidence.
+    authn_evidence: str = ""
+    confidence: Literal["high", "medium", "low"] = "medium"
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 

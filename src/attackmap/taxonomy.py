@@ -228,6 +228,7 @@ RULE_TAXONOMY: dict[str, RuleTaxonomy] = {
     "bola-modify": RuleTaxonomy(cwe=(639,), owasp=("A01:2021", "API1:2023"), asvs=("V4.2.1",), attack=("T1190",)),
     "bola-read": RuleTaxonomy(cwe=(639,), owasp=("A01:2021", "API1:2023"), asvs=("V4.2.1",), attack=("T1190",)),
     "unauth-state-change": RuleTaxonomy(cwe=(306,), owasp=("A07:2021", "API2:2023"), asvs=("V1.2.2", "V3.7.1"), attack=("T1190",)),
+    "bfla-privileged-route": RuleTaxonomy(cwe=(285,), owasp=("A01:2021", "API5:2023"), asvs=("V4.1.3",), attack=("T1068",)),
     # Taint sinks (#68); speculative-<kind> inherits these
     "subprocess-shell": RuleTaxonomy(cwe=(78,), owasp=("A03:2021",), asvs=("V5.3.8",), attack=("T1059", "T1190")),
     "eval": RuleTaxonomy(cwe=(95, 94), owasp=("A03:2021",), asvs=("V5.2.4",), attack=("T1059", "T1190")),

@@ -76,6 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `graphql-no-query-limits` (low): an Apollo, express-graphql, Yoga, Mercurius, Strawberry, graphene `GraphQLView` or gqlgen server built in a file with no depth, complexity or cost limit.
   - `graphql-batching` (medium): `allowBatchedHttpRequests: true` or Yoga `batching`.
   - `csrf-unprotected-session` (medium): cookie-session auth (`express-session`, `cookie-session`, Django `SessionMiddleware`, Flask-Login) with state-changing routes and no CSRF defence anywhere in the repo. A CSRF-token middleware, `@csrf_protect`, `CSRFProtect`/`FlaskForm`, or a `SameSite=Strict`/`Lax` session cookie counts as a defence. A commented-out `CsrfViewMiddleware` does not.
+- **Function-level authorization (#242, OWASP API5).** New rule `bfla-privileged-route` (high, CWE-285, API5:2023): "Privileged route checks authentication but not role (BFLA)". It fires on an admin route that resolves an authentication control but has no role or permission check on the route, its router, or the function it calls (`requireRole`, `@roles_required`, `IsAdminUser`, `hasRole`, `@Secured`, `isAdmin`, …). A plugin-declared guard list counts. Routes with no authentication at all stay with `unauth-state-change`.
+- `BolaCandidate` carries `authn_evidence` and `confidence` (#242).
 
 ### Changed
 
@@ -88,6 +90,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - out-of-range values: `--verify-votes 0`, a `--hunt-lenses` value outside 1–6, `--hunt-rounds 0`, a negative `--hunt-budget`
 - **Sanitizers are bound to the flow (#239).** A sanitizer counts only when the tainted value passes through it (`u = secure_filename(u)`) or a dominating guard checks a value derived from it (`if ip.is_private: abort(400)`); it is no longer enough for one to appear anywhere in the file. `re.escape` / `html.escape` no longer neutralize SSTI, and `ipaddress.ip_address(` alone no longer neutralizes SSRF. The file-level table remains only as a fallback for sinks outside any analyzable function.
 - **JS bare import specifiers** (`require("path")`) no longer resolve to a same-named sibling file in the taint import graph.
+- **BOLA/IDOR separates authentication from authorization and checks the handler, not the file (#242).**
+  - Authentication (`@login_required`, `router.use(requireAuth)`, `Depends(get_current_user)`, a `req.user` reference) no longer suppresses a candidate. It raises it to high confidence instead, since that combination is the classic authenticated IDOR.
+  - Object-level checks (an ownership comparison, a caller-scoped query, a policy call, `@PreAuthorize` with an `#id` or `principal` expression) are looked for within the route's own handler span, plus one hop into a function it delegates to: a same-file helper, an imported service function, or a Django view named in the URLconf. A sibling handler's check no longer suppresses the route.
+  - Role-gated routes (admin tooling) are not reported as BOLA.
+  - Unauthenticated writes that `unauth-state-change` already reports are not repeated as BOLA.
+  - BOLA findings skip `tests/`, `fixtures/` and `examples/` paths like the other route findings.
+  - One BOLA attack path is emitted per affected file (up to 3), not only for the top candidate.
+  - `pk` counts as a resource-id parameter.
+  - Bench: bola recall 0.5 → 1.0 at precision 1.0.
+- **`unauth-state-change` covers privileged routes (#242).** Admin routes, and routes whose own path is `/internal/…` or `/debug/…`, now get the same per-route control-chain resolution as `public_api` routes. Bench: unauth_state_change recall 0.4 → 1.0 at precision 1.0.
+- `handler_span.span_bounds` / `span_text` accept a `max_span` cap. A span no longer includes the decorators stacked on the *next* route.
 
 ### Fixed
 
