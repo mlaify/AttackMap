@@ -1,0 +1,6 @@
+# AttackMap's fixtures, benchmark corpus and demo apps are deliberately
+# vulnerable inputs for the detectors, not shipped code.
+paths-ignore:
+  - tests/fixtures/**
+  - evals/**
+  - examples/**
