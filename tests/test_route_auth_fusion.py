@@ -208,14 +208,43 @@ public class AdminController {
 # ---------------------------------------------------------------------------
 
 
-def test_admin_route_not_double_reported(tmp_path: Path) -> None:
-    # /admin/* is category=admin — it has its own dedicated finding, so the
-    # general unauthenticated-route pass must not also flag it.
+def test_unauthenticated_admin_route_resolved_per_route(tmp_path: Path) -> None:
+    # /admin/* gets the precise per-route answer too (#242): the category-level
+    # admin finding is a file-windowed advisory, not a resolved control chain.
     scan = _write(
         tmp_path,
         "server.js",
         "const app = require('express')();\n"
-        "app.post('/admin/wipe', (req, res) => { db.wipe(); });\n",
+        "app.post('/admin/wipe', (req, res) => { db.wipe(); });\n"
+        "app.post('/admin/reset', requireAuth, (req, res) => { db.reset(); });\n",
+    )
+    findings = _unauth_findings(scan)
+    assert len(findings) == 1
+    assert any("/admin/wipe" in e for e in findings[0].evidence)
+    assert not any("/admin/reset" in e for e in findings[0].evidence)
+
+
+def test_internal_path_route_in_scope(tmp_path: Path) -> None:
+    scan = _write(
+        tmp_path,
+        "app.py",
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@app.post('/internal/reindex')\n"
+        "def reindex(payload: dict):\n"
+        "    db.execute('reindex')\n",
+    )
+    findings = _unauth_findings(scan)
+    assert findings and "/internal/reindex" in findings[0].evidence[0]
+
+
+def test_webhook_route_still_not_double_reported(tmp_path: Path) -> None:
+    # Webhooks keep their dedicated finding.
+    scan = _write(
+        tmp_path,
+        "server.js",
+        "const app = require('express')();\n"
+        "app.post('/webhook/stripe', (req, res) => { db.save(req.body); });\n",
     )
     assert _unauth_findings(scan) == []
 

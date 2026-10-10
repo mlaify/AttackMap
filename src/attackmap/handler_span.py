@@ -17,21 +17,27 @@ MAX_SPAN = 40
 DECORATOR_LOOKUP = 6
 
 
-def span_bounds(line: int, lines: list[str], route_lines: list[int]) -> tuple[int, int]:
+def span_bounds(
+    line: int, lines: list[str], route_lines: list[int], *, max_span: int = MAX_SPAN
+) -> tuple[int, int]:
     """Return the 0-based [start, end) slice of ``lines`` owned by the handler
     declared at 1-based ``line``.
 
     ``route_lines`` are the 1-based declaration lines of every route in the
-    same file (any order is fine).
+    same file (any order is fine). ``max_span`` caps the window; callers that
+    must see a whole handler body (authorization depth) pass a larger cap.
     """
     ordered = sorted(route_lines)
     idx = line - 1  # 0-based route declaration line
     # End at the next route declaration in the file (its decorators/body
     # belong to it), capped so a huge handler can't swallow the file.
     next_line = next((ln for ln in ordered if ln > line), None)
-    end = min(len(lines), line - 1 + MAX_SPAN)
+    end = min(len(lines), line - 1 + max_span)
     if next_line is not None:
         end = min(end, next_line - 1)
+        # The decorators stacked on the next route belong to it, not to us.
+        while end - 1 > idx and lines[end - 1].lstrip().startswith("@"):
+            end -= 1
     # Extend upward over contiguous decorator lines (auth decorator placed
     # above the @route decorator), but not past the previous route.
     prev_line = next((ln for ln in reversed(ordered) if ln < line), 0)
@@ -42,12 +48,14 @@ def span_bounds(line: int, lines: list[str], route_lines: list[int]) -> tuple[in
     return max(0, start), max(start + 1, end)
 
 
-def span_text(line: int | None, lines: list[str], route_lines: list[int]) -> str:
+def span_text(
+    line: int | None, lines: list[str], route_lines: list[int], *, max_span: int = MAX_SPAN
+) -> str:
     """The source text of the handler declared at ``line``; the whole file
     when the route has no line."""
     if line is None:
         return "\n".join(lines)
-    start, end = span_bounds(line, lines, route_lines)
+    start, end = span_bounds(line, lines, route_lines, max_span=max_span)
     return "\n".join(lines[start:end])
 
 

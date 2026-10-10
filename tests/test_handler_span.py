@@ -31,3 +31,23 @@ def test_span_is_capped():
     lines = ["@app.get('/x')"] + ["pass"] * (MAX_SPAN * 3)
     start, end = span_bounds(1, lines, [1])
     assert end - start <= MAX_SPAN
+
+
+def test_next_routes_decorators_are_not_ours():
+    lines = [
+        "@app.get('/a/<id>')",
+        "def a(id):",
+        "    return A.get(id)",
+        "@roles_required('admin')",
+        "@app.get('/b/<id>')",
+        "def b(id):",
+        "    return B.get(id)",
+    ]
+    assert "roles_required" not in span_text(1, lines, [1, 5])
+    assert "roles_required" in span_text(5, lines, [1, 5])
+
+
+def test_max_span_widens_the_cap():
+    lines = ["@app.get('/x')"] + ["pass"] * (MAX_SPAN * 3)
+    start, end = span_bounds(1, lines, [1], max_span=MAX_SPAN * 2)
+    assert end - start == MAX_SPAN * 2

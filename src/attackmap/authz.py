@@ -13,23 +13,30 @@ A route is a BOLA/IDOR candidate when ALL of:
    ``/orders/:orderId``, ``/docs/<int:doc_id>``), and
 2. It reaches a **datastore** — a DB hint in the same file/module, or a
    taint chain from this route to a ``sql_execute`` sink, and
-3. There is **no ownership/authorization check** visible near the
-   handler — no ``current_user`` / ``request.user`` / ``owner`` /
-   ``authorize`` / policy / guard / ``WHERE user_id``-style scoping in
-   the route's file.
+3. There is **no object-level authorization check in the handler** — no
+   ownership comparison, caller-scoped query, or policy call inside the
+   route's own handler span (``handler_span``), nor in a function the handler
+   delegates to (one hop: a same-file helper or an imported service function).
 
-Condition 3 is the main false-positive reducer: a well-scoped handler
-that filters by the caller's identity is not flagged. Import-edge and
-name heuristics are imprecise, so findings are evidence, not proof.
+Authentication is not authorization (#242): ``@login_required``,
+``requireAuth`` or a ``req.user`` reference prove the caller is *logged in*,
+not that they may touch *this* object, so they never suppress a candidate.
+They raise its confidence instead — an authenticated route that loads an
+object by a client-supplied id with no object check is the classic IDOR.
+Import-edge and name heuristics are imprecise, so findings are evidence, not
+proof.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
+from .handler_span import span_text
+from .models import AttackSurface, BolaCandidate, Route, ScanResult
+from .route_auth_fusion import repo_has_java_global_auth, resolve_control
 from .safe_fs import contained_file, is_unsafe_link
-from .models import BolaCandidate, Route, ScanResult
 from .srcpaths import JS_TS_SUFFIXES, is_test_file, is_vendored_file
 
 # Path parameter forms across frameworks:
@@ -40,9 +47,9 @@ _PATH_PARAM_RE = re.compile(r"\{([^{}]+)\}|:([A-Za-z_]\w*)|<(?:[^:<>]+:)?([^<>]+
 
 # Which extracted params look like a resource identifier an attacker
 # would enumerate. Matches `id`, `user_id`, `orderId`, `uuid`, `slug`,
-# `*_key`, `guid`, but not generic words like `format` or `lang`.
+# `*_key`, `guid`, Django's `pk`, but not generic words like `format` or `lang`.
 _ID_PARAM_RE = re.compile(
-    r"(?:^|_)id$|^id$|_id$|(?:^|[a-z])Id$|uuid|guid|slug|(?:^|_)key$|hash$|token$|ref$",
+    r"(?:^|_)id$|^id$|_id$|(?:^|[a-z])Id$|^pk$|uuid|guid|slug|(?:^|_)key$|hash$|token$|ref$",
     re.IGNORECASE,
 )
 
@@ -81,10 +88,182 @@ _QUERY_ACCESS_RES = (
     re.compile(r"""\b(\w+)\s*:\s*[\w\[\]|. ]+?=\s*Query\s*\("""),  # FastAPI `id: str = Query(...)`
 )
 
-# Ownership / authorization markers. If ANY appear in the route's file we
-# assume authorization is enforced and suppress the finding. Deliberately
-# broad — recall on the *suppression* side keeps false positives down.
-_OWNERSHIP_MARKERS = re.compile(
+# The caller's identity as handler code spells it (not `get_current_user`).
+_PRINCIPAL = (
+    r"(?<!\w)(?:current_user|currentUser|request\.user|req\.user|g\.user|ctx\.(?:state\.)?user"
+    r"|self\.request\.user|auth\.user|principal|session\[['\"]user\w*['\"]\]"
+    r"|session\.user\w*|user\.id\b|me\.id\b)"
+)
+
+# Authentication / identity markers (#242): evidence the caller is logged in.
+# They say nothing about whether this caller may touch *this* object, so they
+# never suppress a candidate; they raise its confidence.
+AUTHN_MARKERS = re.compile(
+    r"""
+    login_required | jwt_required | token_required | auth_required | requires?_auth\b
+    | requires?Auth\b | requireLogin | requireUser | isAuthenticated | is_authenticated
+    | ensureAuth\w* | ensureLoggedIn | @authenticated\b | passport\.authenticate
+    | authGuard | AuthGuard | @UseGuards | \bguard\b | verifyToken | verifyJwt | checkJwt
+    | get_current_user | get_current_active_user | Depends\(\s*\w*(?:auth|user)\w*
+    | current_user | currentUser | \brequest\.user\b | \breq\.user\b
+    | \bctx\.(?:state\.)?user\b | \bg\.user\b | \bself\.user\b
+    | @PreAuthorize | @Secured | @RolesAllowed | @Authenticated\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Object-level authorization markers (#242): the handler compares the record
+# with the caller, scopes the query by the caller, or asks a policy. Evaluated
+# within the handler span (plus one delegated hop), never the whole file.
+OBJECT_AUTHZ_MARKERS = re.compile(
+    rf"""
+    # a record field compared with / scoped to the caller
+    (?:owner|user|tenant|account|org|organization|created_by|author)(?:_?id|Id)?
+        \s*(?:===?|!==?|=|:|__exact\s*=)\s*[^,;\n)]{{0,40}}?{_PRINCIPAL}
+    | {_PRINCIPAL}[^\n]{{0,60}}?(?:===?|!==?)\s*[\w.\[\]'"]*(?:owner|user|author|tenant|account)(?:_?id|Id)\b
+    # an ownership field compared with anything
+    | \b(?:owner|author)(?:_?id|Id)?\s*(?:!==?|===?)
+    | \b(?:\w+\.)?user_?[iI]d\s*(?:!==?|===?)
+    # SQL scoping column in a WHERE / AND clause
+    | (?:WHERE|AND)\s+[\w.]*(?:owner|user|tenant|account|org)_id\s*=
+    # a datastore lookup that carries the caller's identity (a call, not the
+    # handler's own `def get_x(id, user=Depends(get_current_user))` signature)
+    | (?<!def\s)(?<!function\s)\b(?:find|get|fetch|load|query|select|filter|where|lookup)\w*\s*\([^)\n]*{_PRINCIPAL}
+    # relation-scoped access through the caller (current_user.orders.find(id))
+    | {_PRINCIPAL}\s*\.\s*\w+?(?:_set)?\s*\.\s*(?:find|get|filter|where|objects|query|first|all)\b
+    # explicit authorization / policy calls
+    | \bauthorize[!\w]*\s*\( | \bauthorize!?\s+@?\w | \$this->authorize\s*\(
+    | Gate::(?:allows|authorize|denies|check) | ->can\s*\( | \.can\s*\( | \bcan\?\s*\(
+    | \bcannot\?\s*\( | \bpolic(?:y|ies)\s*[.(] | policy_scope | accessible_by | visible_to
+    | owned_by | \bscope_to | scoped_to | for_user | belongs_to
+    | can_access | canAccess | has_access | hasAccess | check_access | checkAccess
+    | verify_?[oO]wner | assert_?[oO]wner | ensure_?[oO]wner | is_?[oO]wner | check_?[oO]wner\w*
+    | has_object_permission | check_object_permissions | require[s]?_permission
+    | permission_required | \bhas_perm\b | hasPermission
+    | @PreAuthorize\([^)]*(?:\#\w|returnObject|principal|authentication|@\w+)
+    | @PostAuthorize | @PostFilter | @PreFilter
+    | findBy\w*And(?:Owner|User|Tenant|Account)\w*
+    # (?<!\w) + possessive: start once per word, never re-scan it (#236)
+    | (?<!\w)\w++(?:(?<=ByOwner)|(?<=ByUser)|(?<=ByTenant)|(?<=ByAccount)
+        |(?<=ByOwnerId)|(?<=ByUserId)|(?<=ByTenantId)|(?<=ByAccountId))\s*\(
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Function-level authorization (#242, BFLA): a role / permission check, as
+# opposed to "is logged in". Evaluated within the handler span, the delegated
+# hop, and the route's own middleware chain.
+ROLE_MARKERS = re.compile(
+    r"""
+    \bis_?[aA]dmin\b | \bisSuper\w* | \bis_staff\b | \bis_superuser\b
+    | \bhas_?[rR]oles?\b | hasAnyRole | hasAuthority | hasAnyAuthority
+    | \brequires?_?[rR]oles?\b | \broles?_required\b | \badmin_required\b | \bsuperuser_required\b
+    | \brequires?_?[aA]dmin\w* | \badmin_?[oO]nly\b | \bonlyAdmin\b | \bensureAdmin\b
+    | \bcheckAdmin\b | \bverifyAdmin\b | \bisAdminMiddleware\b | \bRolesGuard\b | @Roles\s*\(
+    | \bIsAdminUser\b | @staff_member_required | \buser_passes_test\b
+    | permission_classes\s*=\s*[\[(][^\])]*(?:Admin|Staff|Superuser|Perm|Role)
+    | @Secured | @RolesAllowed
+    | @PreAuthorize\([^)]*(?:hasRole|hasAuthority|hasAnyRole|hasAnyAuthority|hasPermission)
+    | \bpermission_required\b | \bhas_perm\b | \bhasPermission\b | \brequires?_?[pP]ermissions?\b
+    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize[!\w]*\s*\(
+    | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
+    | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_JS_USE_RE = re.compile(r"\b(?:app|router|server|\w+Router)\s*\.\s*use\s*\(([^)]*)\)")
+_PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*\(([^)]*)\)", re.DOTALL)
+_CLASS_DECL_RE = re.compile(r"\b(?:class|interface)\s+\w+")
+
+
+def find_bfla_routes(
+    scan: ScanResult, surfaces: list[AttackSurface], root: str | Path | None = None
+) -> list[tuple[Route, str]]:
+    """Privileged (``admin``) routes that resolve an authentication control
+    but no role or permission check (#242, OWASP API5 BFLA), each with its
+    evidence line. Routes with no authentication at all are left to the
+    unauthenticated-route findings."""
+    root_path = Path(root or scan.root).resolve()
+    admin_keys = {(s.method, s.route, s.file) for s in surfaces if s.category == "admin"}
+    if not admin_keys:
+        return []
+    content_cache: dict[str, str | None] = {}
+    hop = _HopResolver(root_path, content_cache)
+    route_lines: dict[str, list[int]] = {}
+    for r in scan.routes:
+        if r.line is not None:
+            route_lines.setdefault(r.file, []).append(r.line)
+    java_global_auth: bool | None = None
+    lines_cache: dict[str, list[str]] = {}
+    chain_role_cache: dict[str, bool] = {}
+    out: list[tuple[Route, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for route in scan.routes:
+        key = (route.method, route.path, route.file)
+        if key not in admin_keys or key in seen:
+            continue
+        seen.add(key)
+        if route.auth == "anonymous":
+            continue
+        content = _read_file_content(route.file, root_path, content_cache)
+        if not content:
+            continue
+        if (
+            java_global_auth is None
+            and route.auth != "required"
+            and Path(route.file).suffix.lower() in _JAVA_SUFFIXES
+        ):
+            java_global_auth = repo_has_java_global_auth(scan, root_path, content_cache)
+        if route.auth == "required":
+            authn = "authentication declared" + (f" by {route.source_analyzer}" if route.source_analyzer else "")
+        else:
+            authn = resolve_control(route, content, bool(java_global_auth)) or ""
+        if not authn:
+            continue
+        guards = " ".join(route.guards) + " " + (route.guard_evidence or "")
+        if route.file not in lines_cache:
+            lines_cache[route.file] = content.splitlines()
+            chain_role_cache[route.file] = _chain_role_check(route, content)
+        handler = span_text(
+            route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
+        )
+        if (
+            chain_role_cache[route.file]
+            or ROLE_MARKERS.search(guards)
+            or ROLE_MARKERS.search(handler)
+            or ROLE_MARKERS.search(hop.delegated_text(route.file, content, handler))
+        ):
+            continue
+        where = f"{route.file}:{route.line}" if route.line else route.file
+        out.append(
+            (route, f"{route.method} {route.path} in {where} — {authn}, but no role or permission check")
+        )
+    return out
+
+
+def _chain_role_check(route: Route, content: str) -> bool:
+    """A role check on the route's router/controller rather than the handler:
+    a JS ``router.use(requireRole(...))``, a FastAPI router dependency, or a
+    Java class-level annotation."""
+    suffix = Path(route.file).suffix.lower()
+    if suffix in JS_TS_SUFFIXES:
+        return any(ROLE_MARKERS.search(m.group(1)) for m in _JS_USE_RE.finditer(content))
+    if suffix == ".py":
+        return any(
+            "dependencies" in m.group(1) and ROLE_MARKERS.search(m.group(1))
+            for m in _PY_ROUTER_DEPS_RE.finditer(content)
+        )
+    if suffix in _JAVA_SUFFIXES:
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            if _CLASS_DECL_RE.search(line):
+                return bool(ROLE_MARKERS.search("\n".join(lines[max(0, i - 6) : i])))
+    return False
+
+
+# GraphQL resolver files keep the original whole-file marker set (#139):
+# fields aren't routes, so there is no handler span to scope to yet.
+_GRAPHQL_RESOLVER_AUTH = re.compile(
     r"""
     current_user | currentUser | \brequest\.user\b | \breq\.user\b | \bctx\.user\b
     | \bowner\b | owner_id | ownerId | user_id\s*(?:==|===|=|:) | userId
@@ -100,6 +279,15 @@ _OWNERSHIP_MARKERS = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# A handler span long enough to hold a whole handler body; the anomaly
+# detector's 40-line default would miss a check deep in a long handler and
+# turn it into a false positive.
+_AUTHZ_SPAN = 150
+# One-hop delegation budget per route (#242).
+_MAX_HOPS = 6
+_MAX_HOP_LINES = 80
+_MAX_IMPORTS = 40
+
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 _MAX_FILE_BYTES = 1_000_000  # skip absurdly large files
@@ -109,8 +297,9 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
     """Return BOLA/IDOR candidates for routes in ``scan``.
 
     Only genuine candidates are returned: routes with an ID param that
-    reach a datastore AND lack an ownership check. Routes that HAVE an
-    ownership check, or don't reach a datastore, are dropped.
+    reach a datastore AND lack an object-level authorization check in their
+    handler. Routes that HAVE one, or don't reach a datastore, are dropped.
+    Candidates on authenticated routes are ``high`` confidence (#242).
     """
     root_path = Path(root or scan.root).resolve()
 
@@ -131,6 +320,16 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
     # per route made a many-route file quadratic (#218).
     content_cache: dict[str, str | None] = {}
     query_param_cache: dict[str, str | None] = {}
+    lines_cache: dict[str, list[str]] = {}
+    chain_role_cache: dict[str, bool] = {}
+    hop = _HopResolver(root_path, content_cache)
+
+    # Handler spans end at the next route declared in the same file.
+    route_lines: dict[str, list[int]] = {}
+    for r in scan.routes:
+        if r.line is not None:
+            route_lines.setdefault(r.file, []).append(r.line)
+    java_global_auth: bool | None = None  # resolved lazily: it walks the repo
 
     seen: set[tuple[str, str, str, str]] = set()
     candidates: list[BolaCandidate] = []
@@ -164,16 +363,36 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         if not reaches_db:
             continue
 
-        has_check = bool(content and _OWNERSHIP_MARKERS.search(content))
-
         key = (route.method, route.path, route.file, id_param)
         if key in seen:
             continue
         seen.add(key)
 
-        if has_check:
-            # Authorization is (probably) enforced — not a candidate.
+        handler = ""
+        if content:
+            if route.file not in lines_cache:
+                lines_cache[route.file] = content.splitlines()
+            handler = span_text(
+                route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
+            )
+        delegated = hop.delegated_text(route.file, content, handler) if handler else ""
+        scope = handler + "\n" + delegated
+        if OBJECT_AUTHZ_MARKERS.search(scope):
+            # Object-level authorization is (probably) enforced — not a candidate.
             continue
+        if content and route.file not in chain_role_cache:
+            chain_role_cache[route.file] = _chain_role_check(route, content)
+        if ROLE_MARKERS.search(scope) or chain_role_cache.get(route.file, False):
+            # A role-gated route (admin tooling) reaches any object by design.
+            continue
+
+        if (
+            java_global_auth is None
+            and route.auth != "required"
+            and Path(route.file).suffix.lower() in _JAVA_SUFFIXES
+        ):
+            java_global_auth = repo_has_java_global_auth(scan, root_path, content_cache)
+        authn = _authn_evidence(route, content, handler, bool(java_global_auth))
 
         candidates.append(
             BolaCandidate(
@@ -186,6 +405,8 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
                 reaches_db=True,
                 db_evidence=db_evidence,
                 has_ownership_check=False,
+                authn_evidence=authn,
+                confidence="high" if authn else "medium",
                 source_analyzer="authz",
             )
         )
@@ -200,6 +421,24 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
 
 
 # --- Internals -------------------------------------------------------------
+
+_JAVA_SUFFIXES = {".java", ".kt"}
+
+
+def _authn_evidence(route: Route, content: str | None, handler: str, java_global_auth: bool) -> str:
+    """How the route is known to be authenticated, or "" when it isn't."""
+    if route.auth == "required":
+        return "authentication declared" + (f" by {route.source_analyzer}" if route.source_analyzer else "")
+    if route.auth == "anonymous":
+        return ""
+    if content:
+        control = resolve_control(route, content, java_global_auth)
+        if control:
+            return control
+    match = AUTHN_MARKERS.search(handler)
+    if match:
+        return f"authenticated handler (`{match.group(0).strip()}`)"
+    return ""
 
 
 def _resource_id_param(path: str) -> str | None:
@@ -288,6 +527,217 @@ def _db_reachability(
     return False, ""
 
 
+# --- One-hop delegation (#242) ---------------------------------------------
+
+_IDENT_RE = re.compile(r"\b([A-Za-z_$][\w$]*)\b")
+# Names never worth resolving as a delegated function.
+_HOP_SKIP = frozenset(
+    {
+        "if", "for", "while", "return", "await", "async", "def", "function", "const", "let",
+        "var", "new", "class", "self", "this", "req", "res", "request", "response", "ctx",
+        "next", "print", "len", "str", "int", "dict", "list", "json", "app", "router",
+        "get", "post", "put", "patch", "delete", "route", "db", "jsonify", "abort",
+    }
+)
+_PY_FROM_IMPORT_RE = re.compile(
+    r"^[ \t]*from\s+(?P<mod>\.*[\w.]*)\s+import\s+(?P<names>\([^)]*\)|[^\n#]+)", re.MULTILINE
+)
+_PY_IMPORT_RE = re.compile(r"^[ \t]*import\s+(?P<mod>[\w.]+)(?:\s+as\s+(?P<alias>\w+))?", re.MULTILINE)
+_JS_IMPORT_FROM_RE = re.compile(r"""import\s+(?P<clause>[^;'"]+?)\s+from\s+["'](?P<spec>\.[^"']*)["']""")
+_JS_REQUIRE_RE = re.compile(
+    r"""(?:const|let|var)\s+(?P<clause>\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*require\(\s*["'](?P<spec>\.[^"']*)["']\s*\)"""
+)
+_JS_PROBE_SUFFIXES = (".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx")
+_CALL_OR_REF_RE = re.compile(r"(?<!\s)\s*[(,)]")  # anchored: linear under search() (#236)
+_ARROW_EXPR_RE = re.compile(r"=>\s*[^\s{]")
+
+
+# A function, method or class definition; whichever group matched names it.
+_DEF_RE = re.compile(
+    r"^[ \t]*(?:async\s+)?def\s+(?P<a>\w+)\s*\("
+    r"|^[ \t]*class\s+(?P<b>[A-Za-z_$][\w$]*)"
+    r"|^[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*(?P<c>[A-Za-z_$][\w$]*)\s*\("
+    r"|^[ \t]*(?:export\s+)?(?:const|let|var)\s+(?P<d>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)"
+    r"|^[ \t]*(?:exports|module\.exports)\.(?P<e>[A-Za-z_$][\w$]*)\s*="
+    r"|^[ \t]*(?:(?:public|private|protected|static|async)\s+)*(?P<f>[A-Za-z_$][\w$]*)\s*\([^)\n]*\)\s*(?::\s*[^{\n]+)?\{"
+    r"|^[ \t]*(?:public|private|protected)\s+[\w<>\[\], ?]+\s+(?P<g>\w+)\s*\(",
+    re.MULTILINE,
+)
+_NOT_DEFS = frozenset({"if", "for", "while", "switch", "catch", "function", "return", "with"})
+
+
+def _definition_index(text: str) -> dict[str, int]:
+    """Defined name → 0-based line of its first definition in ``text``."""
+    index: dict[str, int] = {}
+    for m in _DEF_RE.finditer(text):
+        name = next(g for g in m.groups() if g)
+        if name not in _NOT_DEFS and name not in index:
+            index[name] = text.count("\n", 0, m.start())
+    return index
+
+
+def _block_from(lines: list[str], start: int) -> str:
+    """The definition starting at ``lines[start]``: an indented Python block,
+    or a brace-balanced block, capped at ``_MAX_HOP_LINES``."""
+    head = lines[start]
+    end = min(len(lines), start + _MAX_HOP_LINES)
+    if head.rstrip().endswith(":") or re.match(r"\s*(?:async\s+)?def\b|\s*class\b", head):
+        indent = len(head) - len(head.lstrip())
+        out = [head]
+        for line in lines[start + 1 : end]:
+            if line.strip() and len(line) - len(line.lstrip()) <= indent and not line.lstrip().startswith(")"):
+                break
+            out.append(line)
+        return "\n".join(out)
+    if "{" not in head and (_ARROW_EXPR_RE.search(head) or head.rstrip().endswith(";")):
+        return head  # `const f = (id) => Doc.findById(id);` — a one-line definition
+    depth = 0
+    opened = False
+    out = []
+    for i, line in enumerate(lines[start:end]):
+        out.append(line)
+        depth += line.count("{") - line.count("}")
+        opened = opened or "{" in line
+        if opened and depth <= 0:
+            break
+        if not opened and i >= 3:
+            return head  # never found a body; don't swallow what follows
+    return "\n".join(out)
+
+
+class _HopResolver:
+    """Resolve the functions a handler delegates to — a same-file helper or a
+    function in a module the route file imports — and return their bodies.
+
+    Bounded: one hop, ``_MAX_HOPS`` definitions per handler, ``_MAX_HOP_LINES``
+    lines each, and only intra-repo modules reached through ``contained_file``.
+    """
+
+    def __init__(self, root: Path, cache: dict[str, str | None]):
+        self.root = root
+        self.cache = cache
+        self._imports: dict[str, dict[str, str]] = {}
+        self._defs: dict[str, tuple[list[str], dict[str, int]]] = {}
+
+    def delegated_text(self, rel_file: str, content: str | None, handler: str) -> str:
+        if not content:
+            return ""
+        imports = self._import_map(rel_file, content)
+        bodies: list[str] = []
+        tried: set[tuple[str, str]] = set()
+        for match in _IDENT_RE.finditer(handler):
+            if len(bodies) >= _MAX_HOPS:
+                break
+            name = match.group(1)
+            if name in _HOP_SKIP:
+                continue
+            # `svc.get_invoice(…)` → look `get_invoice` up in whatever `svc` names.
+            after = handler[match.end() : match.end() + 64]
+            member = re.match(r"\s*\.\s*([A-Za-z_$][\w$]*)", after)
+            if name in imports and member is not None:
+                target, func = imports[name], member.group(1)
+            elif member is None and _CALL_OR_REF_RE.match(after):
+                # A call, or a handler passed by reference (`router.get(p, getDoc)`);
+                # a bare mention (`Order.query…`, a variable) is not delegation.
+                target, func = imports.get(name, rel_file), name
+            else:
+                continue
+            if (target, func) in tried:
+                continue
+            tried.add((target, func))
+            body = self._definition(target, func)
+            if body:
+                bodies.append(body)
+        return "\n".join(bodies)
+
+    def _definition(self, rel_file: str, name: str) -> str:
+        if rel_file not in self._defs:
+            text = _read_file_content(rel_file, self.root, self.cache) or ""
+            self._defs[rel_file] = (text.splitlines(), _definition_index(text))
+        lines, index = self._defs[rel_file]
+        start = index.get(name)
+        return _block_from(lines, start) if start is not None else ""
+
+    def _import_map(self, rel_file: str, content: str) -> dict[str, str]:
+        """Binding name → intra-repo module (rel path) for the route file."""
+        if rel_file in self._imports:
+            return self._imports[rel_file]
+        out: dict[str, str] = {}
+        base = Path(_norm(rel_file)).parent
+        if Path(rel_file).suffix == ".py":
+            for m in _PY_FROM_IMPORT_RE.finditer(content):
+                mod = m.group("mod")
+                names = m.group("names").strip().strip("()").replace("\n", " ")
+                for part in names.split(","):
+                    bits = part.strip().split(" as ")
+                    real, alias = bits[0].strip(), bits[-1].strip()
+                    if not alias.isidentifier():
+                        continue
+                    # `from pkg import module` binds a module; `from mod import func` a symbol.
+                    target = self._py_module(base, f"{mod}.{real}" if not mod.endswith(".") else f"{mod}{real}")
+                    target = target or self._py_module(base, mod)
+                    if target:
+                        out.setdefault(alias, target)
+                    if len(out) >= _MAX_IMPORTS:
+                        break
+            for m in _PY_IMPORT_RE.finditer(content):
+                target = self._py_module(base, m.group("mod"))
+                if target:
+                    out.setdefault(m.group("alias") or m.group("mod").split(".")[0], target)
+        else:
+            for regex in (_JS_IMPORT_FROM_RE, _JS_REQUIRE_RE):
+                for m in regex.finditer(content):
+                    target = self._js_module(base, m.group("spec"))
+                    if target is None:
+                        continue
+                    clause = m.group("clause")
+                    for name in re.findall(r"[A-Za-z_$][\w$]*", clause.replace(" as ", " ")):
+                        if name not in {"as", "type"}:
+                            out.setdefault(name, target)
+                    if len(out) >= _MAX_IMPORTS:
+                        break
+        self._imports[rel_file] = out
+        return out
+
+    def _py_module(self, base: Path, module: str) -> str | None:
+        dots = len(module) - len(module.lstrip("."))
+        parts = [p for p in module.lstrip(".").split(".") if p]
+        if not parts:
+            return None
+        if dots:
+            anchors = [base.joinpath(*([".."] * (dots - 1)))]
+        else:
+            anchors = [Path(""), base]
+        for anchor in anchors:
+            for cand in (anchor.joinpath(*parts).with_suffix(".py"), anchor.joinpath(*parts, "__init__.py")):
+                rel = self._existing(cand)
+                if rel:
+                    return rel
+        return None
+
+    def _js_module(self, base: Path, spec: str) -> str | None:
+        target = base / spec
+        cands = [target] if target.suffix in _JS_PROBE_SUFFIXES else []
+        cands += [target.parent / (target.name + sfx) for sfx in _JS_PROBE_SUFFIXES]
+        cands += [target / f"index{sfx}" for sfx in _JS_PROBE_SUFFIXES]
+        for cand in cands:
+            rel = self._existing(cand)
+            if rel:
+                return rel
+        return None
+
+    def _existing(self, rel: Path) -> str | None:
+        norm = os.path.normpath(str(rel)).replace("\\", "/")
+        if norm.startswith("../") or norm == "..":
+            return None
+        try:
+            if contained_file(self.root, norm) is None:
+                return None
+        except (OSError, ValueError):
+            return None
+        return norm
+
+
 # --- GraphQL SDL scoping (#139) --------------------------------------------
 
 _GRAPHQL_EXTS = {".graphql", ".gql"}
@@ -317,7 +767,7 @@ def _graphql_bola_candidates(root: Path, seen: set) -> list[BolaCandidate]:
     # Resolver-side auth: files carrying an ownership marker (`current_user`,
     # `authorize`, …). A field defined as a resolver in such a file is treated
     # as authorized even without an SDL directive.
-    auth_resolver_texts = [text for _rel, text in files if _OWNERSHIP_MARKERS.search(text)]
+    auth_resolver_texts = [text for _rel, text in files if _GRAPHQL_RESOLVER_AUTH.search(text)]
 
     candidates: list[BolaCandidate] = []
     for rel, text in files:
@@ -438,7 +888,7 @@ def _iter_graphql_files(root: Path):
                 continue
             count += 1
             if suffix in _GRAPHQL_CODE_EXTS and not (
-                _GRAPHQL_SDL_MARKER_RE.search(text) or _OWNERSHIP_MARKERS.search(text)
+                _GRAPHQL_SDL_MARKER_RE.search(text) or _GRAPHQL_RESOLVER_AUTH.search(text)
             ):
                 continue
             yield rel, text
@@ -456,4 +906,4 @@ def _module_key(rel: str) -> str:
     return norm.rsplit("/", 1)[0] if "/" in norm else ""
 
 
-__all__ = ["analyze_authz"]
+__all__ = ["AUTHN_MARKERS", "OBJECT_AUTHZ_MARKERS", "ROLE_MARKERS", "analyze_authz", "find_bfla_routes"]

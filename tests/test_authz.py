@@ -28,6 +28,7 @@ from attackmap.threat_model import generate_attack_paths, generate_findings
         ("/things/{uuid}", "uuid"),
         ("/posts/{slug}", "slug"),
         ("/api/{account_id}/settings", "account_id"),
+        ("/orders/<int:pk>/", "pk"),
     ],
 )
 def test_resource_id_param_detected(path: str, expected: str) -> None:
@@ -470,3 +471,304 @@ def test_graphql_mutation_narrated_as_write_in_attack_path(tmp_path: Path) -> No
     paths = [p for p in generate_attack_paths(scan) if "BOLA" in p.name or "IDOR" in p.name]
     assert paths
     assert "modify" in " ".join(paths[0].steps).lower()
+
+
+# ---------------------------------------------------------------------------
+# Authorization depth (#242): authn ≠ authz, handler scope, one hop, BFLA
+# ---------------------------------------------------------------------------
+
+FIXTURES = Path(__file__).parent / "fixtures" / "authz"
+
+
+def _bola_findings(scan: ScanResult):
+    return [f for f in generate_findings(scan) if "broken-authorization" in f.tags]
+
+
+def _bfla_findings(scan: ScanResult):
+    return [f for f in generate_findings(scan) if f.rule_id == "bfla-privileged-route"]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "route"),
+    [
+        ("express_router_use_auth_idor", "/invoices/:id"),
+        ("flask_login_required_idor", "/orders/<int:order_id>"),
+    ],
+)
+def test_authenticated_idor_fixture_flagged_high(fixture: str, route: str) -> None:
+    # Authentication (router.use(requireAuth), @login_required, req.user /
+    # current_user references) no longer hides the missing object check.
+    scan = scan_repo(FIXTURES / fixture)
+    cands = [c for c in scan.authz_candidates if c.route_path == route]
+    assert len(cands) == 1
+    assert cands[0].confidence == "high"
+    assert cands[0].authn_evidence
+    findings = _bola_findings(scan)
+    assert findings and findings[0].confidence == "high"
+    assert "no object-level check" in findings[0].evidence[0]
+
+
+def test_mixed_file_flags_only_the_unscoped_handler() -> None:
+    scan = scan_repo(FIXTURES / "mixed_scoped_unscoped")
+    assert [c.route_path for c in scan.authz_candidates] == ["/receipts/:id"]
+
+
+def _plugin_shaped_scan(root: Path, route: Route) -> ScanResult:
+    # Django / Spring routes come from the plugins; reproduce the shape they
+    # emit (file + declaration line) with a datastore hint in that file.
+    return ScanResult(
+        root=str(root), routes=[route], databases=[DatabaseHint(kind="sql", file=route.file)]
+    )
+
+
+def test_django_scoped_view_is_clean_one_hop_from_urlconf() -> None:
+    root = FIXTURES / "django_scoped_ok"
+    route = Route(path="/orders/<int:pk>/", method="ANY", file="orders/urls.py", line=6)
+    assert analyze_authz(_plugin_shaped_scan(root, route), root) == []
+
+
+def test_django_unscoped_view_flagged_through_the_hop(tmp_path: Path) -> None:
+    # Negative control for the fixture above: same URLconf, unscoped view.
+    pkg = tmp_path / "orders"
+    pkg.mkdir()
+    (pkg / "urls.py").write_text((FIXTURES / "django_scoped_ok/orders/urls.py").read_text())
+    (pkg / "views.py").write_text(
+        "from django.contrib.auth.decorators import login_required\n"
+        "@login_required\n"
+        "def order_detail(request, pk):\n"
+        "    return JsonResponse({'id': Order.objects.get(pk=pk).pk})\n"
+    )
+    route = Route(path="/orders/<int:pk>/", method="ANY", file="orders/urls.py", line=6)
+    cands = analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path)
+    assert [c.id_param for c in cands] == ["pk"]
+
+
+def test_spring_preauthorize_owner_expression_is_clean() -> None:
+    root = FIXTURES / "spring_preauthorize_ok"
+    route = Route(
+        path="/api/orders/{id}",
+        method="GET",
+        file="src/main/java/com/example/orders/OrderController.java",
+        line=20,
+    )
+    assert analyze_authz(_plugin_shaped_scan(root, route), root) == []
+
+
+def test_spring_without_preauthorize_flagged(tmp_path: Path) -> None:
+    src = (FIXTURES / "spring_preauthorize_ok/src/main/java/com/example/orders/OrderController.java").read_text()
+    stripped = "\n".join(line for line in src.splitlines() if "@PreAuthorize(" not in line)
+    (tmp_path / "OrderController.java").write_text(stripped)
+    line = next(i for i, ln in enumerate(stripped.splitlines(), 1) if "@GetMapping" in ln)
+    route = Route(path="/api/orders/{id}", method="GET", file="OrderController.java", line=line)
+    assert len(analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path)) == 1
+
+
+def test_sibling_handler_markers_do_not_suppress(tmp_path: Path) -> None:
+    # The flask-admin-demo shape: a `user_id: str` annotation in a *different*
+    # handler used to suppress the whole file.
+    (tmp_path / "app.py").write_text(
+        "import sqlite3\n"
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/orders/<order_id>')\n"
+        "def get_order(order_id):\n"
+        "    sqlite3.connect('o.db').execute('select * from orders where id = ?', (order_id,))\n"
+        "@app.route('/users/<user_id>')\n"
+        "def get_user(user_id: str):\n"
+        "    if user.owner_id != current_user.id: abort(403)\n"
+        "    sqlite3.connect('o.db').execute('select * from users where id = ?', (user_id,))\n"
+    )
+    scan = scan_repo(tmp_path)
+    assert [c.route_path for c in scan.authz_candidates] == ["/orders/<order_id>"]
+    assert scan.authz_candidates[0].confidence == "medium"  # no authentication either
+
+
+def test_ownership_check_in_imported_service_is_followed(tmp_path: Path) -> None:
+    (tmp_path / "services").mkdir()
+    (tmp_path / "services" / "invoices.py").write_text(
+        "def load_invoice(invoice_id, user):\n"
+        "    return Invoice.query.filter_by(id=invoice_id, owner_id=user.id).first()\n"
+    )
+    (tmp_path / "app.py").write_text(
+        "from services import invoices as svc\n"
+        "@app.get('/invoices/{invoice_id}')\n"
+        "def get_invoice(invoice_id, user=Depends(get_current_user)):\n"
+        "    return svc.load_invoice(invoice_id, user)\n"
+    )
+    route = Route(path="/invoices/{invoice_id}", method="GET", file="app.py", line=2)
+    assert analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path) == []
+
+
+def test_js_handler_reference_resolved_in_controller_module(tmp_path: Path) -> None:
+    (tmp_path / "controllers").mkdir()
+    (tmp_path / "controllers" / "docs.js").write_text(
+        "exports.getDoc = async (req, res) => {\n"
+        "  const doc = await Doc.findOne({ _id: req.params.id, ownerId: req.user.id });\n"
+        "  res.json(doc);\n"
+        "};\n"
+        "exports.getNote = async (req, res) => {\n"
+        "  res.json(await Note.findById(req.params.id));\n"
+        "};\n"
+    )
+    (tmp_path / "routes.js").write_text(
+        "const ctrl = require('./controllers/docs');\n"
+        "router.get('/docs/:id', requireAuth, ctrl.getDoc);\n"
+        "router.get('/notes/:id', requireAuth, ctrl.getNote);\n"
+    )
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[
+            Route(path="/docs/:id", method="GET", file="routes.js", line=2),
+            Route(path="/notes/:id", method="GET", file="routes.js", line=3),
+        ],
+        databases=[DatabaseHint(kind="mongodb", file="routes.js")],
+    )
+    cands = analyze_authz(scan, tmp_path)
+    assert [c.route_path for c in cands] == ["/notes/:id"]
+    assert cands[0].confidence == "high"
+
+
+def test_hop_never_leaves_the_repo(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.py"
+    outside.write_text("def load(i):\n    return X.filter_by(owner_id=current_user.id)\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text(
+        "from ..outside import load\n"
+        "@app.get('/things/{thing_id}')\n"
+        "def get_thing(thing_id):\n"
+        "    return load(thing_id)\n"
+    )
+    route = Route(path="/things/{thing_id}", method="GET", file="app.py", line=2)
+    assert len(analyze_authz(_plugin_shaped_scan(repo, route), repo)) == 1
+
+
+def test_fastapi_current_user_dependency_is_authn_not_authz(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "@app.get('/orders/{order_id}')\n"
+        "def get_order(order_id: int, user=Depends(get_current_user)):\n"
+        "    return db.execute('select * from orders where id = %s', (order_id,))\n"
+    )
+    route = Route(path="/orders/{order_id}", method="GET", file="app.py", line=1)
+    cands = analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path)
+    assert len(cands) == 1 and cands[0].confidence == "high"
+
+
+def test_role_gated_route_is_not_bola(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "@app.route('/admin/users/<user_id>', methods=['DELETE'])\n"
+        "@roles_required('admin')\n"
+        "def delete_user(user_id):\n"
+        "    db.execute('delete from users where id = ?', (user_id,))\n"
+    )
+    route = Route(path="/admin/users/<user_id>", method="DELETE", file="app.py", line=1)
+    assert analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path) == []
+
+
+def test_bfla_fixture_flags_only_the_route_without_role_check() -> None:
+    scan = scan_repo(FIXTURES / "bfla_require_auth")
+    findings = _bfla_findings(scan)
+    assert len(findings) == 1
+    assert len(findings[0].evidence) == 1
+    assert "DELETE /admin/users/:id" in findings[0].evidence[0]
+    assert findings[0].taxonomy is not None and "CWE-285" in findings[0].taxonomy.cwe
+
+
+def test_bfla_needs_authentication(tmp_path: Path) -> None:
+    # No authn at all is the unauthenticated-route finding's job, not BFLA.
+    (tmp_path / "server.js").write_text(
+        "const app = require('express')();\n"
+        "app.delete('/admin/users/:id', async (req, res) => { await User.remove(req.params.id); });\n"
+    )
+    scan = scan_repo(tmp_path)
+    assert _bfla_findings(scan) == []
+    assert any(f.rule_id == "unauth-state-change" for f in generate_findings(scan))
+
+
+def test_bfla_respects_declared_role_guard(tmp_path: Path) -> None:
+    (tmp_path / "Admin.cs").write_text("// handled by a plugin\n")
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[
+            Route(
+                path="/admin/users/{id}", method="DELETE", file="Admin.cs", line=1,
+                auth="required", guards=["[Authorize(Roles = \"Admin\")]", "hasRole('ADMIN')"],
+            )
+        ],
+    )
+    assert _bfla_findings(scan) == []
+
+
+def test_unauthenticated_write_reported_once_not_as_bola(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text(
+        "import sqlite3\n"
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/orders/<order_id>/cancel', methods=['POST'])\n"
+        "def cancel(order_id):\n"
+        "    sqlite3.connect('o.db').execute('update orders set s = 1 where id = ?', (order_id,))\n"
+    )
+    scan = scan_repo(tmp_path)
+    assert scan.authz_candidates  # still recorded for downstream consumers
+    assert _bola_findings(scan) == []
+    assert any(f.rule_id == "unauth-state-change" for f in generate_findings(scan))
+
+
+def test_one_bola_attack_path_per_file_bounded() -> None:
+    cands = [
+        BolaCandidate(
+            route_path=f"/things/{{thing_id}}/{i}", route_method="GET", route_file=f"svc{i}.py",
+            id_param="thing_id", reaches_db=True, db_evidence="datastore hint in the route's file",
+        )
+        for i in range(6)
+    ]
+    cands.append(cands[0].model_copy(update={"route_path": "/other/{thing_id}"}))
+    paths = [p for p in generate_attack_paths(ScanResult(root="/", authz_candidates=cands)) if "BOLA" in p.name]
+    files = [next(f"svc{i}.py" for i in range(6) if f"svc{i}.py" in " ".join(p.steps)) for p in paths]
+    assert len(paths) == 3
+    assert len(set(files)) == 3
+
+
+def test_hop_ignores_a_bare_model_mention(tmp_path: Path) -> None:
+    # `Order.query…` mentions the model; it doesn't delegate to it, so an
+    # `is_owner` helper on the model (never called here) must not suppress.
+    (tmp_path / "app.py").write_text(
+        "class Order(db.Model):\n"
+        "    def is_owner(self, user):\n"
+        "        return self.owner_id == user.id\n"
+        "\n"
+        "@app.get('/orders/{order_id}')\n"
+        "def get_order(order_id):\n"
+        "    return Order.query.get(order_id)\n"
+    )
+    route = Route(path="/orders/{order_id}", method="GET", file="app.py", line=5)
+    assert len(analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path)) == 1
+
+
+def test_braceless_arrow_definition_is_one_line(tmp_path: Path) -> None:
+    (tmp_path / "routes.js").write_text(
+        "const load = (id) => Doc.findById(id);\n"
+        "const unrelated = 1;\n"
+        "function other(req) { return Doc.findOne({ ownerId: req.user.id }); }\n"
+        "router.get('/docs/:id', requireAuth, async (req, res) => res.json(await load(req.params.id)));\n"
+    )
+    route = Route(path="/docs/:id", method="GET", file="routes.js", line=4)
+    assert len(analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path)) == 1
+
+
+def test_bola_attack_path_wording_follows_authn() -> None:
+    anon = _bola("GET")
+    authed = _bola("GET", "/x/{order_id}").model_copy(
+        update={"route_file": "other.py", "authn_evidence": "auth decorator", "confidence": "high"}
+    )
+    paths = [p for p in generate_attack_paths(ScanResult(root="/", authz_candidates=[anon, authed])) if "BOLA" in p.name]
+    entries = sorted(p.steps[0] for p in paths)
+    assert any("An authenticated attacker" in e for e in entries)
+    assert any("An attacker calls" in e for e in entries)
+
+
+def test_bola_in_example_or_fixture_paths_not_reported() -> None:
+    cand = _bola("GET").model_copy(update={"route_file": "examples/demo/app.py"})
+    scan = ScanResult(root="/", authz_candidates=[cand])
+    assert _bola_findings(scan) == []
+    assert not [p for p in generate_attack_paths(scan) if "BOLA" in p.name]

@@ -8,6 +8,7 @@ from .models import (
     AttackPath,
     AttackSurface,
     AttackTechnique,
+    BolaCandidate,
     Finding,
     FindingLocation,
     Route,
@@ -17,7 +18,8 @@ from .models import (
 )
 from .srcpaths import evidence_locations
 from .taint_sinks import SINK_KINDS, canonical_kind, kind_label
-from .route_auth_fusion import synthesize_unauthenticated_routes
+from .authz import find_bfla_routes
+from .route_auth_fusion import synthesize_unauthenticated_routes, unauthenticated_routes
 from .taxonomy import cwe_tag, taxonomy_for
 
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
@@ -28,6 +30,7 @@ LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/exa
 # surface. Chain-archetype paths (atproto / service / framework) emit
 # alone and don't count toward this cap.
 MAX_ATTACK_PATHS = 5
+_MAX_BOLA_PATHS = 3
 
 # Per-archetype fan-out cap (#5). When multiple distinct files satisfy
 # an archetype (e.g. three different public-data routes each writing
@@ -1561,9 +1564,46 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
 
     # Fuse per-route middleware/guard chains + auth_hints into precise
     # "unauthenticated state-changing route" findings (#140). Complements the
-    # category-specific findings above (webhook/admin/upload/auth) by covering
-    # the general public_api mutating-route case with per-route chain resolution.
-    findings.extend(synthesize_unauthenticated_routes(scan, runtime_surfaces))
+    # category-specific findings above (webhook/upload/auth) by covering
+    # public_api and privileged (admin/internal, #242) mutating routes with
+    # per-route chain resolution.
+    unauth_routes = unauthenticated_routes(scan, runtime_surfaces)
+    findings.extend(synthesize_unauthenticated_routes(scan, runtime_surfaces, unauth_routes))
+    unauth_keys = {(r.method, r.path, r.file) for r, _ in unauth_routes}
+
+    # Function-level authorization (#242, OWASP API5): privileged routes that
+    # check authentication but never a role or permission.
+    bfla = find_bfla_routes(scan, runtime_surfaces)
+    if bfla:
+        evidence = [line for _, line in bfla[:10]]
+        if len(bfla) > 10:
+            evidence.append(f"+{len(bfla) - 10} more privileged route(s) with no role check")
+        findings.append(
+            Finding(
+                title="Privileged route checks authentication but not role (BFLA)",
+                rule_id="bfla-privileged-route",
+                severity="high",
+                evidence=evidence,
+                locations=[FindingLocation(file=r.file, line=r.line) for r, _ in bfla],
+                mitigation=(
+                    "Authenticate AND authorize privileged actions: require an explicit role or "
+                    "permission check (`requireRole('admin')`, `@roles_required`, "
+                    "`permission_classes=[IsAdminUser]`, `@PreAuthorize(\"hasRole('ADMIN')\")`) on "
+                    "the route, its router, or the service it calls, so any logged-in user cannot "
+                    "invoke admin functions."
+                ),
+                confidence="medium",
+                tags=["exposed-endpoint", "privileged", "function-level-authz"],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id="T1068",
+                        name="Exploitation for Privilege Escalation",
+                        tactic="Privilege Escalation",
+                        url="https://attack.mitre.org/techniques/T1068/",
+                    )
+                ],
+            )
+        )
 
     if public_integration_surfaces and not any(h.hint in {"jwt", "oauth", "bearer", "token"} for h in scan.auth_hints):
         findings.append(
@@ -1778,7 +1818,15 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     # resource-id param that reach a datastore with no ownership check
     # nearby. Split into a HIGH finding for write methods and a MEDIUM
     # finding for reads, per the OWASP API #1 severity shape.
-    bola = scan.authz_candidates
+    # An unauthenticated write is already reported (with its missing control)
+    # by the unauthenticated-route finding; BOLA is about *which* object an
+    # identified caller may touch (#242). Test/fixture/example routes are
+    # skipped like every other route finding's.
+    bola = [
+        c for c in scan.authz_candidates
+        if (c.route_method, c.route_path, c.route_file) not in unauth_keys
+        and not _is_low_quality_source(c.route_file)
+    ]
     if bola:
         # Object identifiers arrive via path params, query params, RPC methods
         # (XRPC/tRPC), or GraphQL fields (#139). A write is any mutating HTTP
@@ -1798,10 +1846,13 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         ):
             if not group:
                 continue
+            # Authenticated-but-unscoped routes (the classic IDOR) lead.
+            group = sorted(group, key=lambda c: c.confidence != "high")
             evidence = [
                 f"{c.route_method} {c.route_path} "
                 f"({_surface_label.get(c.surface, 'id')} `{c.id_param}`) "
                 f"in {c.route_file} — {c.db_evidence}"
+                + (f"; {c.authn_evidence}, but no object-level check in the handler" if c.authn_evidence else "")
                 for c in group[:10]
             ]
             if len(group) > 10:
@@ -1820,7 +1871,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                         "— before reading or modifying the record. Never trust the id from the "
                         "request alone."
                     ),
-                    confidence="medium",
+                    confidence="high" if any(c.confidence == "high" for c in group) else "medium",
                     tags=["broken-authorization", "exposed-endpoint", "data-risk"],
                     attack_techniques=[
                         AttackTechnique(
@@ -2574,38 +2625,43 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
     # BOLA/IDOR archetype (#69): an id-bearing route reaching data with no
     # ownership check. Independent of the surface-claim machinery above —
     # it keys off scan.authz_candidates.
-    bola = scan.authz_candidates
+    bola = [c for c in scan.authz_candidates if not _is_low_quality_source(c.route_file)]
     if bola:
         _bola_write_methods = {"POST", "PUT", "PATCH", "DELETE", "MUTATION"}
-        top = min(
+        # One path per distinct candidate file (#242), writes and authenticated
+        # routes first, bounded so a sprawling app can't crowd out other paths.
+        by_file: dict[str, BolaCandidate] = {}
+        for cand in sorted(
             bola,
-            key=lambda c: (c.route_method not in _bola_write_methods, c.route_file),
-        )
-        action = "modify" if top.route_method in _bola_write_methods else "read"
-        paths.append(
-            AttackPath(
-                name="Object-level authorization bypass (BOLA/IDOR)",
-                steps=[
-                    _action_step(
-                        "Entry",
-                        f"An authenticated attacker calls {top.route_method} {top.route_path} in {top.route_file}, which takes a resource id (`{top.id_param}`)",
-                    ),
-                    _action_step(
-                        "Weak point",
-                        "No ownership or authorization check is visible near the handler — the resource id from the request is trusted directly",
-                    ),
-                    _action_step(
-                        "Propagation",
-                        f"The attacker enumerates or substitutes `{top.id_param}` values; {top.db_evidence}, so the query returns another principal's record",
-                    ),
-                    _action_step(
-                        "Impact",
-                        f"Cross-tenant / cross-user ability to {action} records that should be out of scope for the caller",
-                    ),
-                ],
-                impact=f"Horizontal privilege escalation — attackers {action} other users' objects by changing an id in the request.",
+            key=lambda c: (c.route_method not in _bola_write_methods, c.confidence != "high", c.route_file),
+        ):
+            by_file.setdefault(cand.route_file, cand)
+        for top in list(by_file.values())[:_MAX_BOLA_PATHS]:
+            action = "modify" if top.route_method in _bola_write_methods else "read"
+            paths.append(
+                AttackPath(
+                    name="Object-level authorization bypass (BOLA/IDOR)",
+                    steps=[
+                        _action_step(
+                            "Entry",
+                            f"{'An authenticated' if top.authn_evidence else 'An'} attacker calls {top.route_method} {top.route_path} in {top.route_file}, which takes a resource id (`{top.id_param}`)",
+                        ),
+                        _action_step(
+                            "Weak point",
+                            "No ownership or authorization check is visible in the handler — the resource id from the request is trusted directly",
+                        ),
+                        _action_step(
+                            "Propagation",
+                            f"The attacker enumerates or substitutes `{top.id_param}` values; {top.db_evidence}, so the query returns another principal's record",
+                        ),
+                        _action_step(
+                            "Impact",
+                            f"Cross-tenant / cross-user ability to {action} records that should be out of scope for the caller",
+                        ),
+                    ],
+                    impact=f"Horizontal privilege escalation — attackers {action} other users' objects by changing an id in the request.",
+                )
             )
-        )
 
     # Cap to keep report output focused; if more than this fires, the
     # extras are usually redundant noise that downstream review surfaces
@@ -2634,6 +2690,7 @@ def rule_catalog() -> list[tuple[str, str, str]]:
         ("bola-modify", "Possible broken object-level authorization (BOLA/IDOR) on modify routes", "high"),
         ("bola-read", "Possible broken object-level authorization (BOLA/IDOR) on read routes", "medium"),
         ("unauth-state-change", "State-changing routes are reachable without an authentication control", "high"),
+        ("bfla-privileged-route", "Privileged route checks authentication but not role (BFLA)", "high"),
     ]
     for spec_table in (
         _TAINT_FINDING_SPEC, _CRYPTO_FINDING_SPEC, _WEB_HARDENING_FINDING_SPEC,
