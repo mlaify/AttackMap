@@ -276,3 +276,20 @@ def test_finding_carries_technique_and_evidence(tmp_path: Path) -> None:
     assert findings[0].attack_techniques
     assert findings[0].attack_techniques[0].technique_id == "T1190"
     assert "chain" in " ".join(findings[0].evidence).lower()
+
+
+def test_path_literal_strip_is_linear_on_unterminated_backslashes(tmp_path: Path) -> None:
+    # CodeQL py/redos: `"` followed by a run of backslashes used to backtrack
+    # exponentially while stripping the path literal from the middleware list.
+    import time
+
+    scan = _write(
+        tmp_path,
+        "server.js",
+        "const app = require('express')();\n"
+        "app.post(\"" + "\\" * 5000 + "\n"
+        "app.post('/x', (req, res) => { db.save(req.body); });\n",
+    )
+    start = time.perf_counter()
+    _unauth_findings(scan)
+    assert time.perf_counter() - start < 2.0

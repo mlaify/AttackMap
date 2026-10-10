@@ -73,6 +73,10 @@ _JAVA_AUTH_ANNOTATION = re.compile(
     r"@(?:PreAuthorize|PostAuthorize|Secured|RolesAllowed|RoleAllowed|"
     r"Authenticated|HasRole|HasAuthority)\b"
 )
+# A quoted string literal. A backslash is consumed only by the escape branch,
+# so an unterminated quote followed by many backslashes can't backtrack
+# exponentially (CodeQL py/redos).
+_STRING_LITERAL_RE = re.compile(r"""(['"`])(?:\\.|(?!\1)[^\\])*\1""")
 _JAVA_GLOBAL_AUTH = re.compile(
     r"\.(?:anyRequest|anyExchange)\s*\(\s*\)\s*\.(?:authenticated|hasRole|hasAuthority|hasAnyRole)"
     r"|\.authorize(?:HttpRequests|Requests|Exchange)\b",
@@ -223,7 +227,7 @@ def _resolve_js(route: Route, content: str, lines: list[str]) -> str | None:
     handler_start = re.search(r"=>|function\b|\(\s*req\b|\(\s*request\b", region)
     mw_region = region[: handler_start.start()] if handler_start else region
     # Drop the path string literal so a path like '/authenticate' can't match.
-    mw_region = re.sub(r"""(['"`])(?:\\.|(?!\1).)*\1""", "", mw_region, count=1)
+    mw_region = _STRING_LITERAL_RE.sub("", mw_region, count=1)
     if _JS_AUTH_TOKEN.search(mw_region):
         return f"route middleware on {route.path}"
     return None
