@@ -6,7 +6,8 @@
     "bola",
     "unauth_state_change",
     "webhook_exposure",
-    "crypto"
+    "crypto",
+    "token_auth"
   ],
   "line_window": 4,
   "cases": [
@@ -148,6 +149,40 @@
           "line": 26,
           "severity": "medium",
           "note": "Caller-chosen URL fetched server-side (SSRF, two-line flow). /status/:service is the clean twin (fixed host)."
+        }
+      ]
+    },
+    {
+      "id": "express-jwt-demo",
+      "path": "evals/benchmark/cases/express-jwt-demo",
+      "expected": [
+        {
+          "category": "token_auth",
+          "file": "session.js",
+          "line": 5,
+          "severity": "high",
+          "note": "Tokens signed with a 12-character hard-coded HMAC secret; brute-forceable offline from one token."
+        },
+        {
+          "category": "token_auth",
+          "file": "partner.js",
+          "line": 8,
+          "severity": "high",
+          "note": "jsonwebtoken verify with a public key and no algorithms list (RS256 -> HS256 confusion on jsonwebtoken < 9)."
+        },
+        {
+          "category": "token_auth",
+          "file": "profile.js",
+          "line": 5,
+          "severity": "high",
+          "note": "Caller identity read from jwt.decode, which does not check the signature. admin.js decodes too, but only to read the header before a pinned verify."
+        },
+        {
+          "category": "token_auth",
+          "file": "keys.js",
+          "line": 5,
+          "severity": "high",
+          "note": "Key file path built from the unverified header kid. adminKey (same file) is the clean twin: a fixed key map."
         }
       ]
     }

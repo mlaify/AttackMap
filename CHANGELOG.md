@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **JWT verification checks (#243, part 1).** A new per-file pass (`auth_protocol.py`) judges JWT calls with the semantics of the library the name is bound to (jsonwebtoken, jose, PyJWT, python-jose, authlib, golang-jwt/jwt-go). Five new rule ids:
+  - `jwt-alg-confusion` (high): verification with no pinned algorithm list. Covers jsonwebtoken `verify` without `algorithms` (key not an HMAC secret), PyJWT `decode` without `algorithms=`, and a golang-jwt keyfunc that never checks `token.Method` (no `WithValidMethods`).
+  - `jwt-unverified-decode` (high): identity claims (`sub`, `role`, `user`…) read from jsonwebtoken `decode`, jose `decodeJwt`, python-jose `get_unverified_claims` or golang-jwt `ParseUnverified`, in a file that never verifies a token.
+  - `jwt-claims-unchecked` (medium): `ignoreExpiration: true`, `verify_exp: False`, `WithoutClaimsValidation()`, or authlib claims never `validate()`d.
+  - `jwt-header-trust` (high): the unverified header's `kid` in a file path or an interpolated SQL string, or its `jku`/`x5u` URL fetched.
+  - `jwt-weak-secret` (high): a hard-coded HMAC secret shorter than 32 characters at the sign/verify call (jose `TextEncoder().encode('…')`, Go `[]byte("…")`).
+
+  These and `jwt-weakness` carry a new `token-auth` tag, scored by the benchmark as the `token_auth` class (new case `express-jwt-demo`).
+  - Behavior change: the "JWT verification" control is now credited only by a verifying call with a pinned algorithm (or jose `jwtVerify`), reported as a `jwt_verified` auth hint. Before, a `jsonwebtoken` mention, `jwt.decode`/`jwt.sign`, or a `/jwt/...` route path was enough, so a repo that only decoded tokens looked protected.
 - **More dependency ecosystems (#255).** `DependencyHint.ecosystem` and `Vulnerability.ecosystem` now accept `maven`, `nuget`, `conan`, `vcpkg`, `gem`, `cocoapods`, `hex` and `pub`. The set is exported from `attackmap.sdk` as `DependencyEcosystem` / `DEPENDENCY_ECOSYSTEMS`.
   - `--cve` maps these ecosystems to OSV's Maven, NuGet, ConanCenter, vcpkg, RubyGems, Hex and Pub. `swiftpm` now maps to OSV `SwiftURL`, keyed by the normalized repository URL, so Swift deps are CVE-checked for the first time.
   - CocoaPods has no OSV database. Those deps are inventory-only, and `--cve` says so instead of implying "no vulns".

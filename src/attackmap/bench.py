@@ -12,7 +12,7 @@ vulnerabilities, and reports precision/recall/F1 **per detector class**.
   score isn't circular). Each label carries a canonical `category`, the
   `file`/`line`/`route`/`method`, and a note.
 - Only **scored categories** (precise detector classes — injection, BOLA,
-  unauth-state-change, webhook-exposure, crypto, CVE) are held to
+  unauth-state-change, webhook-exposure, crypto, token-auth, CVE) are held to
   precision/recall. Architectural / advisory findings (e.g. "public routes sit
   near sensitive data") make no precise claim and are *out of scope* — they never
   count as false positives.
@@ -49,6 +49,7 @@ SCORED_CATEGORIES: tuple[str, ...] = (
     "unauth_state_change",
     "webhook_exposure",
     "crypto",
+    "token_auth",
 )
 
 _INJECTION_MARKERS = (
@@ -80,6 +81,8 @@ def canonical_category(finding: dict[str, Any]) -> str:
         return "cve"
     if any(m in tags for m in ("crypto", "weak-crypto", "insecure-crypto")) or "weak random" in title:
         return "crypto"
+    if "token-auth" in tags:
+        return "token_auth"
     if any(m in title or m in tags for m in _INJECTION_MARKERS):
         return "injection"
     if "broken-authorization" in tags or "bola" in title or "idor" in title:

@@ -13,6 +13,9 @@ class _ControlPattern:
     strength: ControlStrength
     pattern: re.Pattern[str]
     notes: str | None = None
+    # Match only auth-hint labels (not route paths or other hint text), for
+    # controls credited by a specific analyzer signal.
+    auth_hints_only: bool = False
 
 
 _CONTROL_PATTERNS: tuple[_ControlPattern, ...] = (
@@ -27,8 +30,12 @@ _CONTROL_PATTERNS: tuple[_ControlPattern, ...] = (
         kind="authentication",
         name="JWT verification",
         strength="moderate",
-        pattern=re.compile(r"jwt[._-]?(verify|decode|sign)|jsonwebtoken", re.IGNORECASE),
-        notes="JWT signature verification implies token-based auth.",
+        # Credited only by `jwt_verified` (#243): a verifying call with a pinned
+        # algorithm. `jwt.decode` (jsonwebtoken), `sign`, a library import or
+        # a `/jwt/...` route path is not verification.
+        pattern=re.compile(r"^jwt_verified$"),
+        notes="Tokens verified with a pinned algorithm list.",
+        auth_hints_only=True,
     ),
     _ControlPattern(
         kind="authentication",
@@ -175,12 +182,13 @@ def _format_loc(file_path: str, line: int | None) -> str:
 
 def _detect_present_controls(scan: ScanResult) -> list[Control]:
     blobs = _all_signal_text(scan)
+    auth_blobs = [(hint.hint, hint.file, hint.line) for hint in scan.auth_hints]
     controls_by_id: dict[str, Control] = {}
     placements_by_id: dict[str, set[str]] = {}
     evidence_by_id: dict[str, set[str]] = {}
 
     for cp in _CONTROL_PATTERNS:
-        for text, file_path, line in blobs:
+        for text, file_path, line in auth_blobs if cp.auth_hints_only else blobs:
             if cp.pattern.search(text):
                 control_id = f"control:{cp.kind}:{cp.name.lower().replace(' ', '_').replace('/', '_')}"
                 placements_by_id.setdefault(control_id, set()).add(file_path)
