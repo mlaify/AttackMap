@@ -31,6 +31,13 @@ def _rx(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE | re.MULTILINE)
 
 
+_JS_BODY_BIND = _rx(
+    rf"(?:\.(?:create|update|updateOne|updateMany|insert|save|build)|Object\.assign\s*\([^,]+,)\s*\(?\s*{_REQ}\.body\b"
+)
+# A Sequelize field allow-list in the same call: `.update(req.body, { fields: [...] })`.
+_FIELD_ALLOWLIST = _rx(r"\bfields\s*:\s*\[")
+_CALL_SCAN_LIMIT = 2000
+
 _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     # --- prototype pollution (JS/TS) ------------------------------------
     (
@@ -73,8 +80,19 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "mass_assignment",
         "high",
         # JS: ORM-style bind of the whole body — .create(req.body) /
-        # .update(req.body) / Object.assign(model, req.body).
-        _rx(rf"(?:\.(?:create|update|updateOne|updateMany|insert|save|build)|Object\.assign\s*\([^,]+,)\s*\(?\s*{_REQ}\.body\b"),
+        # .update(req.body) / Object.assign(model, req.body). A Sequelize
+        # `{ fields: [...] }` allow-list clears it (see find_code_weaknesses).
+        _JS_BODY_BIND,
+    ),
+    (
+        "mass_assignment",
+        "high",
+        # Mongoose: the body as the *update document* —
+        # findByIdAndUpdate(id, req.body) / updateOne(filter, { $set: req.body }).
+        _rx(
+            r"\.(?:findByIdAndUpdate|findOneAndUpdate|findOneAndReplace|updateOne|updateMany|replaceOne)"
+            rf"\s*\([^(),;\n]*(?:\([^()\n]*\)[^(),;\n]*)?,\s*(?:\{{\s*\$set\s*:\s*)?{_REQ}\.body\b"
+        ),
     ),
     (
         "mass_assignment",
@@ -275,6 +293,8 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
         for match in pattern.finditer(content):
             if _in_line_comment(content, match.start()):
                 continue  # a pattern inside a `//` comment isn't real code (#94)
+            if pattern is _JS_BODY_BIND and _FIELD_ALLOWLIST.search(_rest_of_call(content, match.end())):
+                continue
             line = line_number(content, match.start())
             key = (kind, line)
             if key in seen:
@@ -293,6 +313,22 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
     out.extend(find_graphql_weaknesses(content, rel_file))
     out.extend(find_prompt_injection(content, rel_file))
     return out
+
+
+def _rest_of_call(content: str, offset: int) -> str:
+    """The rest of the call ``offset`` sits inside, up to its closing paren
+    (bounded, so a hostile file with no closing paren stays cheap)."""
+    depth = 1
+    end = min(len(content), offset + _CALL_SCAN_LIMIT)
+    for i in range(offset, end):
+        ch = content[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth == 0:
+                return content[offset:i]
+    return content[offset:end]
 
 
 def _in_line_comment(content: str, offset: int) -> bool:
