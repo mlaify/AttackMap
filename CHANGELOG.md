@@ -78,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `csrf-unprotected-session` (medium): cookie-session auth (`express-session`, `cookie-session`, Django `SessionMiddleware`, Flask-Login) with state-changing routes and no CSRF defence anywhere in the repo. A CSRF-token middleware, `@csrf_protect`, `CSRFProtect`/`FlaskForm`, or a `SameSite=Strict`/`Lax` session cookie counts as a defence. A commented-out `CsrfViewMiddleware` does not.
 - **Function-level authorization (#242, OWASP API5).** New rule `bfla-privileged-route` (high, CWE-285, API5:2023): "Privileged route checks authentication but not role (BFLA)". It fires on an admin route that resolves an authentication control but has no role or permission check on the route, its router, or the function it calls (`requireRole`, `@roles_required`, `IsAdminUser`, `hasRole`, `@Secured`, `isAdmin`, …). A plugin-declared guard list counts. Routes with no authentication at all stay with `unauth-state-change`.
 - `BolaCandidate` carries `authn_evidence` and `confidence` (#242).
+- **Field-level mass assignment (#242, OWASP API3).** A new whole-repo pass (`mass_assignment.py`) reports `mass-assignment` when a bind that looks scoped still lets a client set a privileged model field (`is_staff`, `is_admin`, `is_superuser`, `role`, `permissions`, `balance`, `verified`, `tenant_id`, …; camelCase too). The model is resolved across files.
+  - Django REST Framework serializers and `ModelForm`s with `fields = "__all__"` or an `exclude` denylist, and `CreateView`/`UpdateView` with `fields = "__all__"`. `read_only_fields`, `extra_kwargs` `read_only`, read-only declared fields and `exclude` are subtracted. Django's `User` (imported or via `get_user_model()`) and `AbstractUser`/`PermissionsMixin` subclasses carry `is_staff`/`is_superuser`/`groups`/`user_permissions`. A form wired into a `ModelAdmin` is skipped (staff-only).
+  - A SQLModel `table=True` model taken as a FastAPI POST/PUT/PATCH body. `Depends()`/`Security()` parameters and plain pydantic DTOs aren't.
+  - A Spring `@Entity` (Java or Kotlin) bound by `@ModelAttribute` or `@RequestBody` on a write mapping. `@JsonIgnore`/`READ_ONLY` fields (for JSON bodies), an `@InitBinder` `setAllowedFields` and `setDisallowedFields` are honoured.
+  - Mongoose: the request body as the update document, as in `findByIdAndUpdate(id, req.body)`, `updateOne(filter, { $set: req.body })`, `findOneAndUpdate`, `replaceOne`.
 
 ### Changed
 
@@ -104,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sequelize field allow-lists clear `mass-assignment` (#242).** `Model.update(req.body, { fields: [...] })` and `create(req.body, { fields: [...] })` were flagged as wholesale binds; the `fields` option is the allow-list, so they no longer are.
 - **No redundant `line: null` finding locations.** A file cited with a line in one evidence entry (`sink at app.py:23`) and without one in another (`import path: app.py`) produced an extra line-less location, which showed up in SARIF and changed the finding's fingerprint set. The line-less citation is now dropped whenever the same file is cited with a line anywhere in the finding.
 - **Workflow findings point at the right step.** Line numbers came from the first matching line in the file, so identical steps in different jobs (two `uses: actions/checkout@v4`) all pointed at the first job. Lines are now looked up within the current job's and step's span, found from the YAML text. Flow-style YAML falls back to the old file-wide search.
 - `defensive-review.schema.json` now allows `weaknesses[].locations[].fingerprint`, which the report has emitted since #222.

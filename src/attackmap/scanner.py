@@ -20,6 +20,7 @@ from .sbom import analyze_sbom
 from .supply_chain import scan_supply_chain
 from .workflow_scanner import scan_workflows
 from .srcpaths import is_test_file, is_vendored_file
+from .mass_assignment import analyze_mass_assignment
 from .weaknesses import find_code_weaknesses
 from .webhardening import find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
@@ -901,6 +902,9 @@ def run_repo_passes(
     if progress is not None:
         progress.stage("Authorization (BOLA/IDOR)")
     result.authz_candidates = result.authz_candidates + analyze_authz(result, root_path)
+    # Field-level mass assignment (#242): binders and models live in
+    # different files, so this can't ride the per-file weakness pass.
+    result.code_weaknesses = result.code_weaknesses + analyze_mass_assignment(root_path)
     # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
     # Runs last so the full route list is assembled into cohorts. It drives its
     # own determinate per-cohort progress (the slow tail on big route surfaces).
