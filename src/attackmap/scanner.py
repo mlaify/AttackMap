@@ -207,9 +207,9 @@ DB_PATTERNS = [
 # `token`, `mfa`, `bearer`) were dropped in #2. They fired across
 # unrelated code and turned the file-level auth-signal set into
 # indistinguishable noise (see Bluesky FINDINGS.md §55). Specific
-# compound patterns in AUTH_PATTERNS below carry the real signal.
+# compound patterns in AUTH_PATTERNS below carry the real signal. `jwt` went
+# the same way in #325: an import, a comment or a `jwtSecret` name isn't a check.
 AUTH_KEYWORDS = [
-    "jwt",
     "oauth",
     "auth0",
     "apikey",
@@ -221,10 +221,20 @@ AUTH_PATTERNS = [
     (re.compile(r"@login_required\b", re.IGNORECASE), "login_required"),
     (re.compile(r"@jwt_required\b", re.IGNORECASE), "jwt"),
     (re.compile(r"@UseGuards\("), "auth_guard"),
-    # JWT library calls — jwt.decode / encode / verify / sign
-    (re.compile(r"\bjwt\.(?:decode|encode|verify|sign)\(", re.IGNORECASE), "jwt"),
-    (re.compile(r"\bjsonwebtoken\b", re.IGNORECASE), "jwt"),
-    (re.compile(r"\bPyJWT\b"), "jwt"),
+    # JWT verification only (#325). `jwt.decode` (jsonwebtoken), `jwt.sign` /
+    # `encode` and the library name don't authenticate a caller. An unpinned
+    # `jwt.verify(` still checks a signature (its missing `algorithms` is
+    # `jwt-alg-confusion`); a pinned one, jose `jwtVerify`, golang-jwt and
+    # PyJWT `decode(..., algorithms=…)` come from auth_protocol as `jwt_verified`.
+    (re.compile(r"\bjwt\.verify\(", re.IGNORECASE), "jwt"),
+    # Calls and middleware that verify: jose / @fastify/jwt `jwtVerify()`,
+    # firebase/php-jwt `JWT::decode` (it always checks the signature),
+    # golang-jwt `Parse`/`ParseWithClaims` (not `ParseUnverified`), express-jwt /
+    # koa-jwt, flask-jwt-extended, Tuupola JwtAuthentication, NestJS
+    # JwtAuthGuard, passport-jwt JwtStrategy.
+    (re.compile(r"\bjwtVerify\s*\(|\bJWT::decode\s*\(|\bjwt\.Parse(?:WithClaims)?\s*\("), "jwt"),
+    (re.compile(r"\b(?:express|koa)jwt\s*\(|\bverify_jwt_in_request\s*\(", re.IGNORECASE), "jwt"),
+    (re.compile(r"\bJwt(?:Authentication|AuthGuard|Strategy)\b"), "jwt"),
     # OAuth / OIDC library forms
     (re.compile(r"OAuth2PasswordBearer\(", re.IGNORECASE), "oauth"),
     (re.compile(r"\bauthlib\.\w+", re.IGNORECASE), "oauth"),
