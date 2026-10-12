@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OAuth client and session checks (#243, part 2).** `auth_protocol.py` gains six rules:
+  - `oauth-missing-state` (medium): a hand-built authorization request (`response_type` in a URL, object, dict, PHP array or Go `url.Values`, with a `client_id` nearby) that sends no `state`, and passport OAuth2 strategies without `state: true` or a state store.
+  - `oauth-implicit-flow` (medium): `response_type=token` (including `id_token token`).
+  - `oauth-redirect-uri-loose` (high): prefix, suffix or substring checks on a redirect URI (`startsWith`, `in`, `strings.HasPrefix`, `str_starts_with`…) and wildcard `redirect_uris`. Exact membership in an allow-list (`ALLOWED_REDIRECT_URIS.includes(uri)`) is not flagged.
+  - `oauth-missing-pkce` (medium): a code-flow request from a public client (client-side code with no client secret) without `code_challenge`, plus `usePKCE: false`, `pkce: false` and the `plain` method.
+  - `session-fixation` (medium): a user identity stored in the session without `req.session.regenerate()` (Express, only when the repo uses a server-side store such as express-session) or `session_regenerate_id()` (PHP).
+  - `session-weak-secret` (high): a session secret under 32 characters hard-coded in express-session, cookie-session or @fastify/session options, a Flask `secret_key`/`SECRET_KEY` (including an env fallback like `environ.get("SECRET_KEY", "dev")`), or a gorilla/sessions store key.
+
+  OAuth rules join the `token_auth` benchmark class. Session rules are a new `session_auth` class. New case: `express-oauth-session-demo`.
+  - Fix: the #243 line-comment check treated `//` inside a URL (`https://…`) as a comment and skipped the rest of the line.
 - **JWT verification checks (#243, part 1).** A new per-file pass (`auth_protocol.py`) judges JWT calls with the semantics of the library the name is bound to (jsonwebtoken, jose, PyJWT, python-jose, authlib, golang-jwt/jwt-go). Five new rule ids:
   - `jwt-alg-confusion` (high): verification with no pinned algorithm list. Covers jsonwebtoken `verify` without `algorithms` (key not an HMAC secret), PyJWT `decode` without `algorithms=`, and a golang-jwt keyfunc that never checks `token.Method` (no `WithValidMethods`).
   - `jwt-unverified-decode` (high): identity claims (`sub`, `role`, `user`…) read from jsonwebtoken `decode`, jose `decodeJwt`, python-jose `get_unverified_claims` or golang-jwt `ParseUnverified`, in a file that never verifies a token.

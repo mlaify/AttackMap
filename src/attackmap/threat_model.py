@@ -1039,6 +1039,55 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Forge Web Credentials",
         "tactic": "Credential Access",
     },
+    # OAuth clients and sessions (#243, part 2)
+    "oauth_missing_state": {
+        "severity": "medium",
+        "title": "OAuth authorization request without `state` (login CSRF)",
+        "mitigation": "Send an unguessable `state` bound to the user's session on every authorization request and reject callbacks whose `state` doesn't match (passport: `state: true`). Without it an attacker can complete the flow with their own code and log the victim into the attacker's account.",
+        "technique_id": "T1528",
+        "technique_name": "Steal Application Access Token",
+        "tactic": "Credential Access",
+    },
+    "oauth_implicit_flow": {
+        "severity": "medium",
+        "title": "OAuth implicit flow (`response_type=token`)",
+        "mitigation": "Use the authorization code flow with PKCE (`response_type=code`). The implicit flow returns the access token in the redirect URL, where history, referrers and injected scripts can read it; OAuth 2.1 removes it.",
+        "technique_id": "T1528",
+        "technique_name": "Steal Application Access Token",
+        "tactic": "Credential Access",
+    },
+    "oauth_redirect_uri_loose": {
+        "severity": "high",
+        "title": "OAuth redirect URI matched by prefix, suffix, substring or wildcard",
+        "mitigation": "Compare the redirect URI against an allow-list by exact string match (RFC 9700 §4.1.3). Prefix, suffix, substring and wildcard checks let `https://app.example.com.evil.net` or `https://evil.net/?x=app.example.com` through, and the authorization code or token is delivered to the attacker.",
+        "technique_id": "T1528",
+        "technique_name": "Steal Application Access Token",
+        "tactic": "Credential Access",
+    },
+    "oauth_missing_pkce": {
+        "severity": "medium",
+        "title": "Public OAuth client without PKCE",
+        "mitigation": "Browser and mobile clients can't keep a client secret, so send a `code_challenge` with `code_challenge_method=S256` and the matching `code_verifier` at the token exchange. Never disable PKCE or use `plain`. Without it an intercepted authorization code can be redeemed by anyone.",
+        "technique_id": "T1528",
+        "technique_name": "Steal Application Access Token",
+        "tactic": "Credential Access",
+    },
+    "session_fixation": {
+        "severity": "medium",
+        "title": "Session not regenerated at login (session fixation)",
+        "mitigation": "Issue a new session id when the user authenticates: `req.session.regenerate()` before storing the user (express-session), `session_regenerate_id(true)` in PHP. Otherwise a session id planted before login becomes an authenticated session for the attacker.",
+        "technique_id": "T1539",
+        "technique_name": "Steal Web Session Cookie",
+        "tactic": "Credential Access",
+    },
+    "session_weak_secret": {
+        "severity": "high",
+        "title": "Short session signing secret hard-coded in source",
+        "mitigation": "Load the session secret from a secret manager or the environment (no hard-coded fallback such as `'dev'`) and make it at least 256 bits of randomness. A known or brute-forced secret lets anyone sign session cookies; for Flask and cookie-session that is the whole session, including the user id.",
+        "technique_id": "T1606",
+        "technique_name": "Forge Web Credentials",
+        "tactic": "Credential Access",
+    },
     "xxe": {
         "severity": "high",
         "title": "XML external entity (XXE) processing enabled",
@@ -1098,8 +1147,8 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
 }
 
 
-# Token-authentication kinds (#243), tagged `token-auth` so the benchmark
-# scores them as one class.
+# Token-authentication kinds (#243: JWT and OAuth), tagged `token-auth` so
+# the benchmark scores them as one class.
 _TOKEN_AUTH_KINDS = frozenset(
     {
         "jwt_weakness",
@@ -1108,8 +1157,22 @@ _TOKEN_AUTH_KINDS = frozenset(
         "jwt_claims_unchecked",
         "jwt_header_trust",
         "jwt_weak_secret",
+        "oauth_missing_state",
+        "oauth_implicit_flow",
+        "oauth_redirect_uri_loose",
+        "oauth_missing_pkce",
     }
 )
+# Session kinds (#243, part 2): the benchmark's `session_auth` class.
+_SESSION_AUTH_KINDS = frozenset({"session_fixation", "session_weak_secret"})
+
+
+def _auth_class_tag(kind: str) -> list[str]:
+    if kind in _TOKEN_AUTH_KINDS:
+        return ["token-auth"]
+    if kind in _SESSION_AUTH_KINDS:
+        return ["session-auth"]
+    return []
 
 
 # Rank for picking the most severe issue in an aggregated group.
@@ -2038,7 +2101,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="medium",
-                tags=["novel-vuln", "token-auth"] if kind in _TOKEN_AUTH_KINDS else ["novel-vuln"],
+                tags=["novel-vuln", *_auth_class_tag(kind)],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],

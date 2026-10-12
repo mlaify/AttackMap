@@ -126,6 +126,9 @@ _PY_STRING = re.compile(r"^[rRbBuU]{0,2}(['\"])(.*)\1$", re.DOTALL)
 _JS_STRING = re.compile(r"^(['\"`])(.*)\1$", re.DOTALL)
 
 
+_LINE_COMMENT = re.compile(r"(?<!:)//")
+
+
 class _Collector:
     def __init__(self, content: str, rel_file: str, comment: str) -> None:
         self.content = content
@@ -136,8 +139,13 @@ class _Collector:
         self._seen: set[tuple[str, int]] = set()
 
     def commented(self, offset: int) -> bool:
+        """True if ``offset`` follows a line comment marker on its line. A
+        ``//`` right after ``:`` is a URL scheme (``https://``), not a comment."""
         line_start = self.content.rfind("\n", 0, offset) + 1
-        return self.comment in self.content[line_start:offset]
+        prefix = self.content[line_start:offset]
+        if self.comment == "//":
+            return _LINE_COMMENT.search(prefix) is not None
+        return self.comment in prefix
 
     def weakness(self, kind: str, severity: str, offset: int, note: str | None = None) -> None:
         line = line_number(self.content, offset)
@@ -401,6 +409,202 @@ def _check_go(c: _Collector) -> None:
     c.header_trust()
 
 
+# --- OAuth clients (#243, part 2) ---------------------------------------------
+
+# A hand-built authorization request: `response_type=` in a URL, or a
+# `response_type` key in an object / dict / PHP array / Go url.Values. A
+# keyword argument (`response_type="code"`, a library call that manages state
+# itself) and a read (`args.get("response_type")`) are not constructions.
+_AUTHZ_REQUEST = _rx(
+    r"[?&]response_type=(?P<url>[\w%+]+)"
+    r"|\bresponse_type['\"]?\s*:\s*(?P<q1>['\"`])(?P<obj>[^'\"`\n]*)(?P=q1)"
+    r"|['\"]response_type['\"]\s*=>\s*(?P<q2>['\"])(?P<php>[^'\"\n]*)(?P=q2)"
+    r"|\b(?:Set|Add)\(\s*\"response_type\"\s*,\s*\"(?P<go>[^\"\n]*)\""
+)
+_CLIENT_ID = re.compile(r"client_id|clientId|client-id|ClientID", re.IGNORECASE)
+# `state` as a request parameter, not React's useState / this.state.
+_STATE_PARAM = re.compile(r"['\"]state['\"]|[?&]state=|\bstate\s*[:=](?!=)|[{,]\s*state\s*[,}]")
+_CODE_CHALLENGE = re.compile(r"code_challenge|codeChallenge", re.IGNORECASE)
+_CLIENT_SECRET = re.compile(r"client_secret|clientSecret|ClientSecret", re.IGNORECASE)
+_BROWSER_CLIENT = re.compile(
+    r"\bwindow\.location|\blocation\.(?:href|assign|replace)\b|\bLinking\.openURL|openAuthSessionAsync"
+    r"|\bchrome\.identity|\bwindow\.open\s*\("
+)
+_PKCE_DISABLED = _rx(
+    r"\busePKCE\s*:\s*false\b|\bpkce\s*:\s*false\b"
+    r"|code_challenge_method['\"]?\s*[:=]\s*['\"]plain['\"]|code_challenge_method=plain(?=[&'\"`#\s]|$)",
+    re.IGNORECASE,
+)
+_REQUEST_WINDOW_LINES = 8
+
+# passport OAuth2 strategies take `state: true` (or a state store); without it
+# passport-oauth2 sends no state. OAuth1 strategies use consumerKey, not
+# clientID, and OIDC/SAML strategies manage state themselves.
+_PASSPORT_STRATEGY = _rx(r"\bnew\s+(\w*Strategy)\s*\(\s*\{")
+_PASSPORT_IMPORT = _rx(r"['\"]passport-[\w-]+['\"]")
+_PASSPORT_SKIP = re.compile(r"openid|oidc|saml|local|jwt|bearer|anonymous|headerapikey", re.IGNORECASE)
+
+# Prefix / suffix / substring checks on a redirect URI, and wildcard
+# registrations. Matching must be exact (RFC 9700 §4.1.3).
+_REDIRECT_VAR = r"(?<![\w.$])[\w.$]*?redirect_?ur[il]\w*"
+_REDIRECT_LOOSE = (
+    _rx(_REDIRECT_VAR + r"\s*\.\s*(?:startsWith|startswith|endsWith|endswith|includes|indexOf|contains)\s*\(", re.IGNORECASE),
+    _rx(r"['\"][^'\"\n]*['\"]\s+in\s+" + _REDIRECT_VAR + r"\b", re.IGNORECASE),
+    _rx(r"\bstrings\.(?:HasPrefix|HasSuffix|Contains)\s*\(\s*" + _REDIRECT_VAR, re.IGNORECASE),
+    _rx(r"\b(?:str_starts_with|str_ends_with|str_contains|strpos|stripos)\s*\(\s*" + _REDIRECT_VAR, re.IGNORECASE),
+    _rx(r"\bredirect_?uris?['\"]?\s*[:=]\s*\[?\s*['\"][^'\"\n]*\*", re.IGNORECASE),
+)
+
+# `ALLOWED_REDIRECT_URIS.includes(uri)` / `'x' in REGISTERED_REDIRECT_URIS` is
+# exact membership in a collection, the correct check.
+_MEMBERSHIP_IN_COLLECTION = re.compile(
+    r"(?:ur[il]s|list|set|allowed\w*|registered\w*|allowlist|whitelist)\b\s*(?:\.\s*(?:includes|indexOf|contains)\s*\(|$)",
+    re.IGNORECASE,
+)
+
+def find_oauth_session_issues(content: str, rel_file: str) -> tuple[list[CodeWeakness], bool]:
+    """OAuth client and session weaknesses in one file, plus whether the file
+    sets up a server-side session store (``session_fixation`` in JS only
+    applies when one exists somewhere in the repo; the scanner filters)."""
+    suffix = PurePosixPath(rel_file).suffix.lower()
+    comment = "#" if suffix == ".py" else "//"
+    c = _Collector(content, rel_file, comment)
+    if suffix in JS_TS_SUFFIXES | {".py", ".go", ".php"}:
+        _check_oauth(c, suffix)
+    server_store = False
+    if suffix in JS_TS_SUFFIXES:
+        server_store = _check_js_session(c)
+    elif suffix == ".py":
+        _check_flask_session(c)
+    elif suffix == ".go":
+        _check_gorilla_session(c)
+    elif suffix == ".php":
+        _check_php_session(c)
+    return c.weaknesses, server_store
+
+
+def _check_oauth(c: _Collector, suffix: str) -> None:
+    content = c.content
+    lines: list[str] | None = None
+    public_client = _CLIENT_SECRET.search(content) is None and (
+        suffix in {".jsx", ".tsx"} or _BROWSER_CLIENT.search(content) is not None
+    )
+    for m in _AUTHZ_REQUEST.finditer(content):
+        if c.commented(m.start()):
+            continue
+        if lines is None:
+            lines = content.split("\n")
+        line = content.count("\n", 0, m.start())
+        window = "\n".join(lines[max(0, line - _REQUEST_WINDOW_LINES) : line + _REQUEST_WINDOW_LINES + 1])
+        if not _CLIENT_ID.search(window):
+            continue  # `response_type` outside an OAuth client request
+        value = m.group("url") or m.group("obj") or m.group("php") or m.group("go") or ""
+        words = set(re.split(r"%20|\+|\s+", value.lower()))
+        if not _STATE_PARAM.search(window):
+            c.weakness("oauth_missing_state", "medium", m.start(), "authorization request without `state`")
+        if "token" in words:
+            c.weakness("oauth_implicit_flow", "medium", m.start(), "access token returned in the redirect")
+        elif "code" in words and public_client and not _CODE_CHALLENGE.search(window):
+            c.weakness("oauth_missing_pkce", "medium", m.start(), "public client without `code_challenge`")
+    for m in _PKCE_DISABLED.finditer(content):
+        if not c.commented(m.start()):
+            c.weakness("oauth_missing_pkce", "medium", m.start(), "PKCE disabled or `plain`")
+    if suffix in JS_TS_SUFFIXES and _PASSPORT_IMPORT.search(content):
+        for m in _PASSPORT_STRATEGY.finditer(content):
+            if c.commented(m.start()) or _PASSPORT_SKIP.search(m.group(1)):
+                continue
+            options = (_call_args(content, m.end() - 1) or [""])[0]
+            if (
+                re.search(r"\bclientID\s*:", options)
+                and not re.search(r"\bstate\s*:\s*true\b|\bstore\s*:|\bpkce\s*:\s*true\b", options)
+            ):
+                c.weakness("oauth_missing_state", "medium", m.start(), f"{m.group(1)} without `state: true`")
+    for pattern in _REDIRECT_LOOSE:
+        for m in pattern.finditer(content):
+            if c.commented(m.start()) or _MEMBERSHIP_IN_COLLECTION.search(m.group(0)):
+                continue
+            c.weakness("oauth_redirect_uri_loose", "high", m.start(), "redirect URI not matched exactly")
+
+
+# --- sessions (#243, part 2) ----------------------------------------------------
+
+_JS_SESSION_LIB = r"(?:express-session|cookie-session|@fastify/session|@fastify/secure-session|@fastify/cookie|koa-session|koa-generic-session)"
+_JS_SESSION_IMPORT = _rx(
+    r"(?:const|let|var)\s+(\w+)\s*=\s*require\(\s*['\"](?P<lib1>" + _JS_SESSION_LIB + r")['\"]\s*\)"
+    r"|import\s+(\w+)\s+from\s+['\"](?P<lib2>" + _JS_SESSION_LIB + r")['\"]"
+)
+_JS_SERVER_STORE = _rx(r"['\"](?:express-session|@fastify/session|koa-generic-session)['\"]")
+_JS_SESSION_SECRET = _rx(r"\b(?:secret|keys)\s*:\s*\[?\s*(['\"`])([^'\"`$\n]*)\1")
+_JS_SESSION_LOGIN = _rx(
+    r"\breq\.session\.(?:user|userId|user_id|uid|account|accountId|authenticated|loggedIn|logged_in"
+    r"|isAuthenticated|isLoggedIn|username|email)\s*=(?!=)(?!\s*(?:null\b|undefined\b|false\b|''|\"\"))"
+)
+_PHP_SESSION_LOGIN = _rx(
+    r"\$_SESSION\s*\[\s*['\"](?:user|user_id|userid|uid|username|logged_in|loggedin|is_logged_in|auth"
+    r"|authenticated|account_id|email)['\"]\s*\]\s*=(?!=)(?!\s*(?:null\b|false\b|''|\"\"))",
+    re.IGNORECASE,
+)
+_FLASK = _rx(r"^\s*(?:from\s+flask\b|import\s+flask\b)")
+_FLASK_SECRET = _rx(
+    r"\.secret_key\s*=\s*[rb]?(['\"])([^'\"\n]*)\1"
+    r"|\bSECRET_KEY['\"]?\s*[:=]\s*[rb]?(['\"])([^'\"\n]*)\3"
+    r"|environ\.get\(\s*['\"](?:FLASK_)?SECRET_KEY['\"]\s*,\s*[rb]?(['\"])([^'\"\n]*)\5"
+    r"|getenv\(\s*['\"](?:FLASK_)?SECRET_KEY['\"]\s*,\s*[rb]?(['\"])([^'\"\n]*)\7"
+)
+_GORILLA = _rx(r"\"github\.com/gorilla/sessions\"")
+_GORILLA_SECRET = _rx(r"\bsessions\.New(?:Cookie|Filesystem)Store\s*\(\s*\[\]byte\(\s*\"([^\"\n]*)\"")
+
+
+def _check_js_session(c: _Collector) -> bool:
+    content = c.content
+    imports = list(_JS_SESSION_IMPORT.finditer(content))
+    calls: list[int] = []
+    if imports:
+        names = sorted({m.group(1) or m.group(3) for m in imports})
+        for m in _rx(r"(?<![\w.])(?:" + "|".join(map(re.escape, names)) + r")\s*\(").finditer(content):
+            calls.append(m.end())
+    for m in _rx(r"\bregister\s*\(\s*(?:require\(\s*)?['\"]?@fastify/(?:secure-)?session").finditer(content):
+        calls.append(content.find(",", m.end()) + 1)
+    for offset in calls:
+        if offset <= 0 or c.commented(offset - 1):
+            continue
+        options = ", ".join(_call_args(content, offset))
+        for s in _JS_SESSION_SECRET.finditer(options):
+            if len(s.group(2)) < _MIN_SECRET_LEN:
+                c.weakness("session_weak_secret", "high", offset - 1, f"hard-coded session secret under {_MIN_SECRET_LEN} chars")
+                break
+    if not re.search(r"\.regenerate\s*\(", content):
+        for m in _JS_SESSION_LOGIN.finditer(content):
+            if not c.commented(m.start()):
+                c.weakness("session_fixation", "medium", m.start(), "login stored in the session without `regenerate()`")
+    return _JS_SERVER_STORE.search(content) is not None
+
+
+def _check_flask_session(c: _Collector) -> None:
+    if not _FLASK.search(c.content):
+        return
+    for m in _FLASK_SECRET.finditer(c.content):
+        value = next(g for g in (m.group(2), m.group(4), m.group(6), m.group(8)) if g is not None)
+        if len(value) < _MIN_SECRET_LEN and not c.commented(m.start()):
+            c.weakness("session_weak_secret", "high", m.start(), f"Flask secret key under {_MIN_SECRET_LEN} chars")
+
+
+def _check_gorilla_session(c: _Collector) -> None:
+    if not _GORILLA.search(c.content):
+        return
+    for m in _GORILLA_SECRET.finditer(c.content):
+        if len(m.group(1)) < _MIN_SECRET_LEN and not c.commented(m.start()):
+            c.weakness("session_weak_secret", "high", m.start(), f"session key under {_MIN_SECRET_LEN} chars")
+
+
+def _check_php_session(c: _Collector) -> None:
+    if re.search(r"\bsession_regenerate_id\s*\(", c.content):
+        return
+    for m in _PHP_SESSION_LOGIN.finditer(c.content):
+        if not c.commented(m.start()):
+            c.weakness("session_fixation", "medium", m.start(), "login stored in $_SESSION without session_regenerate_id()")
+
+
 # --- helpers ------------------------------------------------------------------
 
 
@@ -495,4 +699,4 @@ def _snippet(content: str, offset: int, radius: int = 120) -> str:
     return line[:radius] + ("…" if len(line) > radius else "")
 
 
-__all__ = ["find_jwt_issues"]
+__all__ = ["find_jwt_issues", "find_oauth_session_issues"]

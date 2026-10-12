@@ -197,6 +197,12 @@ def test_decode_without_identity_use_is_not_flagged() -> None:
     assert _kinds(content.replace(".iat", ".role"), "authenticatedUsers.ts") == {"jwt_unverified_decode"}
 
 
+def test_a_url_earlier_on_the_line_is_not_a_comment() -> None:
+    content = "const jwt = require('jsonwebtoken')\nconst u = 'https://id.example.com'; jwt.verify(token, publicKey)\n"
+    assert _kinds(content, "a.js") == {"jwt_alg_confusion"}
+    assert not _kinds("const jwt = require('jsonwebtoken')\n// see https://x; jwt.verify(token, publicKey)\n", "a.js")
+
+
 def test_unrelated_languages_are_ignored() -> None:
     assert find_jwt_issues("jwt.decode(token)\n", "a.php") == ([], [])
 
@@ -232,7 +238,8 @@ def test_route_paths_and_sign_no_longer_credit_the_jwt_control(tmp_path: Path) -
                 "const express = require('express')\n"
                 "const jwt = require('jsonwebtoken')\n"
                 "const app = express()\n"
-                "app.post('/jwt/verify', (req, res) => res.json({ t: jwt.sign({}, process.env.K) }))\n"
+                "app.post('/jwt/sign', (req, res) => res.json({ t: jwt.sign({}, process.env.K) }))\n"
+                "app.post('/jwt/verify', (req, res) => res.json({ ok: true }))\n"
             )
         },
     )

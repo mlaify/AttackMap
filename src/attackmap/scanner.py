@@ -4,7 +4,7 @@ import base64
 import binascii
 import math
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,7 +22,7 @@ from .workflow_scanner import scan_workflows
 from .srcpaths import is_test_file, is_vendored_file
 from .mass_assignment import analyze_mass_assignment
 from .weaknesses import find_code_weaknesses
-from .auth_protocol import find_jwt_issues
+from .auth_protocol import find_jwt_issues, find_oauth_session_issues
 from .webhardening import find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import DEFAULT_RECALL, analyze_taint, recall_config
@@ -776,6 +776,7 @@ def scan_files(
         progress.begin(len(scan_files))
 
     csrf_protected = False
+    server_session_store = False
     for file_path in scan_files:
         if progress is not None:
             progress.advance(str(file_path.relative_to(root_path)))
@@ -857,7 +858,19 @@ def scan_files(
             jwt_weaknesses, jwt_verified = find_jwt_issues(content, relative)
             result.code_weaknesses.extend(jwt_weaknesses)
             result.auth_hints.extend(jwt_verified)
+            # OAuth clients and sessions (#243, part 2).
+            oauth_session, file_server_store = find_oauth_session_issues(content, relative)
+            result.code_weaknesses.extend(oauth_session)
+            server_session_store = server_session_store or file_server_store
 
+    if not server_session_store:
+        # Session fixation needs a server-side session id; with cookie
+        # sessions (cookie-session) there is none to fix. PHP's $_SESSION is
+        # always server-side.
+        result.code_weaknesses = [
+            w for w in result.code_weaknesses
+            if not (w.kind == "session_fixation" and PurePosixPath(w.file).suffix.lower() in JS_TS_SUFFIXES)
+        ]
     if csrf_protected:
         # A CSRF defence anywhere in the repo (#244) — session config and CSRF
         # middleware often live in different files — clears the inference.

@@ -4,6 +4,27 @@ Before/after `attackmap bench` results for detector changes, newest first.
 Each row is scored against the corpus in `benchmark.json` as of that change, so
 "before" and "after" use the same labels.
 
+## #243 (part 2): OAuth client and session checks (v0.6.0)
+
+Corpus change: new scored class `session_auth` (findings tagged
+`session-auth`) and case `express-oauth-session-demo` with 4 labels: the
+express-session example secret (`server.js:6`), login without
+`regenerate()` (`routes/login.js:9`), an authorization request without
+`state` (`routes/sso.js:8`) and a callback that accepts a redirect URI by
+prefix (`routes/sso.js:17`). `routes/staff-login.js` and
+`routes/partner-sso.js` are the clean twins and must stay unflagged.
+
+| Detector class | Precision before | Precision after | Recall before | Recall after | TP / FP / expected after |
+|---|---|---|---|---|---|
+| `session_auth` | — | 100% | 0% | 100% | 2 / 0 / 2 |
+| `token_auth` | 100% | 100% | 67% | 100% | 6 / 0 / 6 |
+| `injection` | 100% | 100% | 100% | 100% | 3 / 0 / 5 |
+| `bola` | 100% | 100% | 100% | 100% | 2 / 0 / 2 |
+| `unauth_state_change` | 100% | 100% | 100% | 100% | 3 / 0 / 5 |
+| `webhook_exposure` | 100% | 100% | 100% | 100% | 1 / 0 / 1 |
+
+Before: `main` cc151e4 scored against the same corpus.
+
 ## #243 (part 1): JWT verification checks (v0.6.0)
 
 Corpus change: new scored class `token_auth` (findings tagged `token-auth`)
