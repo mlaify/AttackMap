@@ -2095,14 +2095,17 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
-    if auth_surfaces and not any(surface.auth_signals for surface in auth_surfaces):
+    # Per surface (#340): one guarded auth-category route used to suppress
+    # the finding for all of them, including the real login endpoint.
+    weak_auth_surfaces = [surface for surface in auth_surfaces if not surface.auth_signals]
+    if weak_auth_surfaces:
         findings.append(
             Finding(
                 title="Authentication routes were detected without strong nearby auth controls",
                 rule_id="weak-auth-route",
                 severity="medium",
-                evidence=[_finding_evidence(surface) for surface in auth_surfaces[:10]],
-                locations=_locs(auth_surfaces),
+                evidence=[_finding_evidence(surface) for surface in weak_auth_surfaces[:10]],
+                locations=_locs(weak_auth_surfaces),
                 mitigation="Review these routes for rate limiting, credential validation, token or session handling, and the exact point where trust is established server-side.",
                 confidence="medium",
                 tags=["exposed-endpoint", "auth-missing"],
