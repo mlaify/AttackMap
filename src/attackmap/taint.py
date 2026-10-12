@@ -38,7 +38,7 @@ from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain, TaintFlowStep
 from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number
 from .taint_flow import REST, FileFlow, SinkFlow
-from .taint_sinks import SINKS, all_sinks
+from .taint_sinks import SINKS, all_sinks, call_receiver
 from .taint_sources import GO, JS, PHP, PY, lang_for_suffix
 
 _MAX_HOPS = 2
@@ -997,6 +997,8 @@ def _find_sinks(
                 if sink.when is not None and sink.when.search(arg_text) is None:
                     continue
                 if sink.unless is not None and sink.unless.search(arg_text) is not None:
+                    continue
+                if sink.receiver_unless is not None and sink.receiver_unless.search(call_receiver(content, match.start())):
                     continue
                 snippet = _line_snippet(content, match.start())
                 flow = flows.sink_flow(kind, paren, sink.args, snippet, match.start(), match.end())

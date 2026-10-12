@@ -40,7 +40,9 @@ _ARG_WORDS: dict[str, tuple[int, ...] | None] = {"all": None, "receiver": RECEIV
 _FLAGS = {"ignorecase": re.IGNORECASE, "dotall": re.DOTALL}
 
 _REQUIRED = ("id", "kind", "langs", "regex", "cwe")
-_OPTIONAL = ("gate", "args", "when", "unless", "requires", "flags", "token_gate", "base_score", "note")
+_OPTIONAL = (
+    "gate", "args", "when", "unless", "receiver_unless", "requires", "flags", "token_gate", "base_score", "note",
+)
 _ID_RE = re.compile(r"[a-z0-9]+(?:[-_.][a-z0-9]+)*")
 
 
@@ -69,6 +71,7 @@ class SinkSpec(NamedTuple):
     token_gate: bool = True
     base_score: int | None = None
     source: str = "core"
+    receiver_unless: re.Pattern[str] | None = None
 
 
 def _compile(value: Any, field: str, where: str, flags: int = 0) -> re.Pattern[str]:
@@ -156,7 +159,167 @@ def validate_sink_entry(
         token_gate=token_gate,
         base_score=base,
         source=source,
+        receiver_unless=(
+            _compile(entry["receiver_unless"], "receiver_unless", where) if entry.get("receiver_unless") else None
+        ),
     )
+
+
+_RECEIVER_SCAN_LIMIT = 400
+_ASSIGN_SCAN_LIMIT = 64
+# How far back from the call `_assigned_value` looks for the receiver's
+# assignment. A fixed window keeps a file with many calls linear.
+_ASSIGN_WINDOW = 4000
+_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]{0,63}")
+_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+_CLOSERS = {"(": ")", "[": "]", "{": "}"}
+_QUOTES = frozenset("'\"`")
+
+
+def call_receiver(content: str, dot: int) -> str:
+    """The receiver of the method call whose `.` is at ``dot``, with every
+    call's or subscript's arguments elided and whitespace dropped:
+    `crypto.createHmac()` for `crypto.createHmac('sha256', k).update(x)`,
+    across line breaks in a chain. Elision keeps a pattern anchored at the end
+    (`…createHmac()$`) to the receiver's own calls, never to a call nested in
+    an argument (`db.doc(crypto.createHash(…).digest())`). When the receiver
+    is a bare name, the right-hand side of its nearest earlier declarator is
+    appended (`h=crypto.createHash()`), so a pattern can see what the variable
+    holds. Bounded: ``_RECEIVER_SCAN_LIMIT`` characters back for the receiver,
+    ``_ASSIGN_WINDOW`` characters and ``_ASSIGN_SCAN_LIMIT`` mentions for the
+    assignment."""
+    lo = max(0, dot - _RECEIVER_SCAN_LIMIT)
+    i = dot
+    while i > lo and content[i - 1] in " \t\r\n":
+        i -= 1
+    end = i
+    while i > lo:
+        c = content[i - 1]
+        if c in ")]":
+            opener = "(" if c == ")" else "["
+            depth = 0
+            j = i - 1
+            while j >= lo:
+                if content[j] == c:
+                    depth += 1
+                elif content[j] == opener:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j -= 1
+            if j < lo:
+                break
+            i = j
+        elif c in _IDENT_CHARS or c == ".":
+            i -= 1
+        elif c in " \t\r\n":
+            # Whitespace inside a chain only before a `.`: `crypto\n  .createHmac(…)`.
+            k = i
+            while k > lo and content[k - 1] in " \t\r\n":
+                k -= 1
+            if content[i] != "." and (k == 0 or content[k - 1] != "."):
+                break
+            i = k
+        else:
+            break
+    receiver = content[i:end].strip()
+    if _IDENT_RE.fullmatch(receiver):
+        rhs = _assigned_value(content, receiver, i)
+        if rhs:
+            return f"{receiver}={_elide(rhs)}"
+    return _elide(receiver)
+
+
+def _elide(text: str) -> str:
+    """``text`` with the contents of every top-level (), [] and {} group
+    dropped (quotes respected) and whitespace removed."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in _CLOSERS:
+            j = _group_end(text, i)
+            out.append(c + _CLOSERS[c])
+            i = j + 1
+            continue
+        if not c.isspace():
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _group_end(text: str, start: int) -> int:
+    """Index of the bracket closing the one at ``start`` (or the last index)."""
+    depth = 0
+    quote = ""
+    i = start
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = ""
+        elif c in _QUOTES:
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return len(text) - 1
+
+
+def _assigned_value(content: str, name: str, before: int) -> str:
+    """The right-hand side of the nearest `name = …` declarator before
+    ``before``: up to a top-level `,` or `;` or the end of the line, so
+    `const User = require('m'), sig = crypto.createHmac(…)` gives `require('m')`
+    for `User`."""
+    floor = max(0, before - _ASSIGN_WINDOW)
+    pos = before
+    for _ in range(_ASSIGN_SCAN_LIMIT):
+        pos = content.rfind(name, floor, pos)
+        if pos < 0:
+            return ""
+        after = pos + len(name)
+        if (pos > 0 and (content[pos - 1] in _IDENT_CHARS or content[pos - 1] == ".")) or (
+            after < len(content) and content[after] in _IDENT_CHARS
+        ):
+            continue
+        k = after
+        while k < len(content) and content[k] in " \t":
+            k += 1
+        if content.startswith("=", k) and not content.startswith(("==", "=>"), k):
+            return _declarator(content, k + 1)
+    return ""
+
+
+def _declarator(content: str, start: int) -> str:
+    depth = 0
+    quote = ""
+    i = start
+    stop = min(len(content), start + _RECEIVER_SCAN_LIMIT)
+    while i < stop:
+        c = content[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = ""
+            elif c == "\n":
+                break
+        elif c in _QUOTES:
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth <= 0 and c in ",;\n":
+            break
+        i += 1
+    return content[start:i].strip()
 
 
 def _load_kinds(data: dict) -> dict[str, KindMeta]:
