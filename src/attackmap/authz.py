@@ -168,12 +168,57 @@ ROLE_MARKERS = re.compile(
     | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
     | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
+    | ->userIsAllowed\s*\( | ->isAllowed\s*\(
+    | \b(?:IsGranted|denyAccessUnlessGranted)\s*\(\s*(?!['"]?(?:[\w\\]{1,100}::)?(?:IS_AUTHENTICATED\w*|PUBLIC_ACCESS|ROLE_USER)\b)
+    | (?-i:\bROLE_(?!USER\b)[A-Z][A-Z0-9_]*)
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 _JS_USE_RE = re.compile(r"\b(?:app|router|server|\w+Router)\s*\.\s*use\s*\(([^)]*)\)")
 _PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*\(([^)]*)\)", re.DOTALL)
 _CLASS_DECL_RE = re.compile(r"\b(?:class|interface)\s+\w+")
+# Route declarations that live in configuration rather than code (#343):
+# data formats, and PHP files that are a returned config array (Laminas /
+# Omeka `routes.config.php`, Mezzio `routes.php`). The handler (a
+# controller) is elsewhere, so the route's span there is not its handler.
+_CONFIG_ROUTE_SUFFIXES = frozenset({".yaml", ".yml", ".xml", ".json", ".ini", ".neon", ".toml"})
+_PHP_OPEN_RE = re.compile(r"<\?php\b")
+_PHP_PREAMBLE_RE = re.compile(
+    r"\s+|//[^\n]*|#(?!\[)[^\n]*|/\*|declare\s*\([^)]{0,200}\)\s*;|namespace\s+[\w\\]+\s*;|use\s+[^;]{1,500};"
+)
+_PHP_RETURN_ARRAY_RE = re.compile(r"return\s*(?:\[|array\s*\()", re.IGNORECASE)
+# A handler written inline in the config (a closure) is visible after all.
+_INLINE_HANDLER_RE = re.compile(r"\bfunction\s*\(|\bfn\s*\(")
+
+
+def is_config_route_file(file: str, content: str) -> bool:
+    """True when ``file`` declares routes as configuration: a data format,
+    or a PHP file whose first statement is ``return [...]`` /
+    ``return array(...)`` (after ``namespace`` / ``use`` / ``declare`` and
+    comments)."""
+    suffix = Path(file).suffix.lower()
+    if suffix in _CONFIG_ROUTE_SUFFIXES:
+        return True
+    if suffix != ".php":
+        return False
+    opener = _PHP_OPEN_RE.match(content.lstrip("\ufeff"))
+    if not opener:
+        return False
+    text = content.lstrip("\ufeff")
+    pos = opener.end()
+    # Each step consumes at least one character, so this is linear.
+    for _ in range(10_000):
+        match = _PHP_PREAMBLE_RE.match(text, pos)
+        if not match:
+            break
+        if match.group() == "/*":
+            end = text.find("*/", match.end())
+            if end < 0:
+                return False
+            pos = end + 2
+        else:
+            pos = match.end()
+    return _PHP_RETURN_ARRAY_RE.match(text, pos) is not None
 
 
 def find_bfla_routes(
@@ -196,6 +241,7 @@ def find_bfla_routes(
     java_global_auth: bool | None = None
     lines_cache: dict[str, list[str]] = {}
     chain_role_cache: dict[str, bool] = {}
+    config_cache: dict[str, bool] = {}
     out: list[tuple[Route, str]] = []
     seen: set[tuple[str, str, str]] = set()
     for route in scan.routes:
@@ -227,6 +273,14 @@ def find_bfla_routes(
         handler = span_text(
             route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
         )
+        if route.file not in config_cache:
+            config_cache[route.file] = is_config_route_file(route.file, content)
+        if config_cache[route.file] and not _INLINE_HANDLER_RE.search(handler):
+            # Declared in config: the controller that handles the route
+            # isn't in this file, so finding no role check here says
+            # nothing about the handler (#343). A plugin that resolves the
+            # controller declares its role checks in `Route.guards`.
+            continue
         if (
             chain_role_cache[route.file]
             or ROLE_MARKERS.search(guards)

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from attackmap.authz import analyze_authz, _resource_id_param
+from attackmap.authz import analyze_authz, _resource_id_param, is_config_route_file
 from attackmap.models import BolaCandidate, DatabaseHint, Route, ScanResult, TaintChain
 from attackmap.scanner import scan_repo
 from attackmap.threat_model import generate_attack_paths, generate_findings
@@ -697,6 +697,137 @@ def test_bfla_respects_declared_role_guard(tmp_path: Path) -> None:
         ],
     )
     assert _bfla_findings(scan) == []
+
+
+_OMEKA_ROUTES = (
+    "<?php\n"
+    "// Routes are configuration; controllers live in application/src.\n"
+    "namespace Omeka;\n\n"
+    "use Laminas\\Router\\Http\\Literal;\n\n"
+    "return [\n"
+    "    'router' => ['routes' => ['admin' => ['child_routes' => [\n"
+    "        'site' => [\n"
+    "            'type' => Literal::class,\n"
+    "            'options' => [\n"
+    "                'route' => '/site',\n"
+    "                'defaults' => ['__ADMIN__' => true, 'controller' => 'Index', 'action' => 'index'],\n"
+    "            ],\n"
+    "        ],\n"
+    "    ]]]],\n"
+    "];\n"
+)
+
+
+def _admin_route(file: str, line: int, guards: list[str] | None = None) -> Route:
+    return Route(
+        path="/admin/site", method="ANY", file=file, line=line, auth="required",
+        guards=guards if guards is not None else ["omeka:admin_login"], source_analyzer="omeka-s",
+    )
+
+
+def test_bfla_does_not_judge_a_config_declared_route_by_its_config(tmp_path: Path) -> None:
+    # #343: Omeka's /admin/site routes are declared in routes.config.php; the
+    # controller (and its userIsAllowed checks) isn't in that file.
+    (tmp_path / "routes.config.php").write_text(_OMEKA_ROUTES)
+    scan = ScanResult(root=str(tmp_path), routes=[_admin_route("routes.config.php", 10)])
+    assert _bfla_findings(scan) == []
+    # Same for a data-format route file.
+    (tmp_path / "routes.yaml").write_text("admin_users:\n    path: /admin/users\n    controller: App\\Admin::delete\n")
+    scan = ScanResult(root=str(tmp_path), routes=[_admin_route("routes.yaml", 2)])
+    assert _bfla_findings(scan) == []
+
+
+def test_bfla_still_judges_a_closure_handler_inside_config(tmp_path: Path) -> None:
+    (tmp_path / "routes.php").write_text(
+        "<?php\nreturn [\n    'routes' => [\n"
+        "        ['path' => '/admin/purge', 'middleware' => function ($request) {\n"
+        "            return purge_everything();\n        }],\n    ],\n];\n"
+    )
+    route = Route(path="/admin/purge", method="POST", file="routes.php", line=4, auth="required", guards=["session"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+def test_bfla_code_routes_file_is_still_judged(tmp_path: Path) -> None:
+    # A Laravel routes file is code, not a config array.
+    (tmp_path / "web.php").write_text(
+        "<?php\nuse Illuminate\\Support\\Facades\\Route;\n"
+        "Route::delete('/admin/users/{id}', function ($id) { User::destroy($id); });\n"
+    )
+    route = Route(path="/admin/users/{id}", method="DELETE", file="web.php", line=3, auth="required", guards=["auth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+@pytest.mark.parametrize("check", ["$site->userIsAllowed('update')", "$acl->isAllowed($role, 'Omeka\\Site', 'update')"])
+def test_bfla_accepts_laminas_and_omeka_acl_checks(tmp_path: Path, check: str) -> None:
+    (tmp_path / "web.php").write_text(
+        "<?php\n"
+        "Route::post('/admin/sites/{id}', function ($id) {\n"
+        f"    if (!{check}) {{ abort(403); }}\n"
+        "    Site::find($id)->update(request()->all());\n"
+        "});\n"
+    )
+    route = Route(path="/admin/sites/{id}", method="POST", file="web.php", line=2, auth="required", guards=["auth"])
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+@pytest.mark.parametrize(
+    ("guards", "flagged"),
+    [
+        (["IsGranted(User::ROLE_ADMIN)"], False),
+        (["IsGranted('edit', subject: 'post')"], False),  # a voter permission
+        (["access_control ^/admin: ROLE_ADMIN"], False),
+        (["IsGranted('IS_AUTHENTICATED')"], True),  # authentication only
+        (["IsGranted('ROLE_USER')"], True),  # every logged-in user has it
+        (["IsGranted(User::ROLE_USER)"], True),
+        (["access_control ^/admin: ROLE_USER"], True),
+    ],
+)
+def test_bfla_reads_symfony_role_guards(tmp_path: Path, guards: list[str], flagged: bool) -> None:
+    (tmp_path / "AdminController.php").write_text(
+        "<?php\nclass AdminController {\n    #[Route('/admin/purge', methods: ['POST'])]\n"
+        "    public function purge(): void { $this->repo->purgeAll(); }\n}\n"
+    )
+    route = Route(
+        path="/admin/purge", method="POST", file="AdminController.php", line=3, auth="required", guards=guards
+    )
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == (1 if flagged else 0)
+
+
+def test_bfla_handler_role_id_column_is_not_a_role_check(tmp_path: Path) -> None:
+    # ROLE_ constants are matched case-sensitively: a `role_id` column isn't one.
+    (tmp_path / "web.php").write_text(
+        "<?php\nRoute::delete('/admin/users/{id}', function ($id) {\n"
+        "    DB::table('users')->where('role_id', 2)->where('id', $id)->delete();\n});\n"
+    )
+    route = Route(path="/admin/users/{id}", method="DELETE", file="web.php", line=2, auth="required", guards=["auth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+@pytest.mark.parametrize(
+    ("file", "content", "expected"),
+    [
+        ("config/routes.yaml", "x:\n  path: /x\n", True),
+        ("routes.xml", "<routes/>", True),
+        ("a.config.php", "<?php\nreturn [];\n", True),
+        ("a.php", "\ufeff<?php\n/* doc\n */\ndeclare(strict_types=1);\nnamespace A\\B;\nuse C\\D;\n# c\nreturn array(\n);\n", True),
+        ("a.php", "<?php\nnamespace A;\nclass RoutesConfig { public function get() { return []; } }\n", False),
+        ("a.php", "<?php\n$x = 1;\nreturn [];\n", False),
+        ("a.php", "<?php\n/* unclosed", False),
+        ("a.php", "", False),
+        ("urls.py", "urlpatterns = []\n", False),
+    ],
+)
+def test_is_config_route_file(file: str, content: str, expected: bool) -> None:
+    assert is_config_route_file(file, content) is expected
+
+
+def test_is_config_route_file_is_linear_on_hostile_input() -> None:
+    import time
+
+    for content in ("<?php" + " //\n" * 200_000, "<?php" + "/**/" * 200_000, "<?php" + "use a;" * 100_000):
+        start = time.perf_counter()
+        is_config_route_file("a.php", content)
+        assert time.perf_counter() - start < 2.0
 
 
 def test_unauthenticated_write_reported_once_not_as_bola(tmp_path: Path) -> None:
