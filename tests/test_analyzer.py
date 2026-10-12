@@ -235,7 +235,7 @@ def test_auth_hint_without_line_still_attaches_to_same_file_routes() -> None:
         "/admin/forgot-password",
         "/admin/password/reset",
         "/admin/password/email",
-        "/manage/account/login",
+        "/manage/login",
     ],
 )
 def test_auth_entry_points_under_an_admin_prefix(path: str) -> None:
@@ -260,6 +260,14 @@ def test_auth_entry_points_under_an_admin_prefix(path: str) -> None:
         "/admin/email",
         "/admin/auth/:provider/callback",
         "/admin/loginhistory",
+        "/admin/accounts/reset-password",
+        "/admin/account/login",
+        "/admin/staff/password/email",
+        "/admin/administrators/reset-password",
+        "/admin/admin-users/logout",
+        "/admin/manage-users/reset-password",
+        "/admin/sessions/logout",
+        "/admin/session/logout",
     ],
 )
 def test_admin_actions_are_not_auth_entry_points(path: str) -> None:

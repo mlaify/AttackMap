@@ -38,9 +38,11 @@ _TOKEN_SEGMENTS = frozenset({"token", "refresh", "refresh-token", "refresh_token
 _AUTH_SEGMENTS = frozenset({
     "auth", "authentication", "oauth", "oauth2", "oidc", "openid", "sso", "saml", "jwt", "token",
 })
+# Exact words only: `administrators`, `admin-users`, `accounts`, `staff` or
+# `sessions` name a resource an admin acts on (`/admin/accounts/reset-password`
+# resets someone else's password).
 _ADMIN_PREFIX_SEGMENTS = frozenset({
-    "root", "api", "dashboard", "backend", "backoffice", "panel", "console", "staff",
-    "session", "sessions", "account", "accounts", "password",
+    "admin", "manage", "root", "api", "dashboard", "backend", "backoffice", "panel", "console", "password",
 })
 _VERSION_SEGMENT_RE = re.compile(r"v\d{1,3}")
 _PLAIN_SEGMENT_RE = re.compile(r"[a-z0-9_-]{1,40}")
@@ -49,8 +51,7 @@ _ENTRY_SUFFIXES = (".php", ".aspx", ".asp", ".jsp", ".html", ".htm", ".do")
 
 def _prefix_segment(segment: str) -> bool:
     return (
-        segment.startswith(("admin", "manage"))
-        or segment in _ADMIN_PREFIX_SEGMENTS
+        segment in _ADMIN_PREFIX_SEGMENTS
         or segment in _AUTH_SEGMENTS
         or _VERSION_SEGMENT_RE.fullmatch(segment) is not None
     )
