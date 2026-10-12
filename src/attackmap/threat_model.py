@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from .analyzer import identify_attack_surfaces
 from .webhook_verification import describe as describe_webhook
@@ -1555,6 +1557,9 @@ _CLOUD_MISCONFIG_FINDING_SPEC: dict[str, dict[str, str]] = {
     },
 }
 
+# Spec tables whose findings are split by severity tier (see `tiered_findings`).
+_TIERED_SPEC_TABLES: tuple[dict[str, dict[str, str]], ...] = (_CLOUD_MISCONFIG_FINDING_SPEC,)
+
 _ANOMALY_FINDING_SPEC: dict[str, dict[str, str]] = {
     "auth_outlier": {
         "severity": "high",
@@ -1600,13 +1605,67 @@ def _numeric_to_confidence(value: float) -> str:
     return "low"
 
 
-def cloud_rule_defaults(rule_id: str) -> tuple[str, str, str] | None:
-    """``(title, usual severity, mitigation)`` of a CloudMisconfig rule, so
-    SARIF rule metadata doesn't depend on which severity tier comes first."""
-    spec = _CLOUD_MISCONFIG_FINDING_SPEC.get(rule_id.replace("-", "_"))
-    if spec is None:
-        return None
-    return spec["title"], spec["tier"], spec["mitigation"]
+# ---- Severity-tiered findings (shared) -------------------------------------
+# A detector family whose records carry their own severity emits one finding
+# per (kind, severity tier), so each instance keeps its severity in SARIF, the
+# --fail-on-new-high gate and the report. Its spec table gives every kind a
+# `tier` (the kind's usual severity) and is listed in `_TIERED_SPEC_TABLES`, so
+# SARIF rule metadata comes from that default tier, not from whichever tier
+# happens to come first.
+_SEVERITY_TIERS = ("high", "medium", "low")
+
+
+def tier_title(title: str, tier: str, default_tier: str) -> str:
+    """The kind's usual tier keeps the plain title; other tiers get a suffix.
+    Depends only on the tier, so adding a low instance never renames (re-ids)
+    the high finding, and each tier has its own finding id."""
+    return title if tier == default_tier else f"{title} ({tier}-severity instances)"
+
+
+def tiered_findings(
+    kind: str,
+    spec: dict[str, str],
+    items: list,
+    *,
+    evidence: Callable[[Any], str],
+    locations: Callable[[list], list[FindingLocation]],
+    tags: list[str],
+) -> list[Finding]:
+    """One finding per severity tier of ``items`` (records with `severity`
+    and a numeric `confidence`). Confidence is the max over the tier's
+    records; evidence lists the most confident first, capped at 10."""
+    out: list[Finding] = []
+    for tier in _SEVERITY_TIERS:
+        tier_items = sorted((i for i in items if i.severity == tier), key=lambda i: -i.confidence)
+        if not tier_items:
+            continue
+        lines = [evidence(i) for i in tier_items[:10]]
+        if len(tier_items) > 10:
+            lines.append(f"+{len(tier_items) - 10} more occurrence(s)")
+        out.append(
+            Finding(
+                title=tier_title(spec["title"], tier, spec["tier"]),
+                rule_id=_rule_slug_kind(kind),
+                severity=tier,  # type: ignore[arg-type]
+                evidence=lines,
+                locations=locations(tier_items),
+                mitigation=spec["mitigation"],
+                confidence=_numeric_to_confidence(tier_items[0].confidence),  # type: ignore[arg-type]
+                tags=list(tags),
+            )
+        )
+    return out
+
+
+def tiered_rule_defaults(rule_id: str) -> tuple[str, str, str] | None:
+    """``(title, default tier, mitigation)`` of a severity-tiered rule, for
+    SARIF rule metadata; None for other rules."""
+    kind = rule_id.replace("-", "_")
+    for table in _TIERED_SPEC_TABLES:
+        spec = table.get(kind)
+        if spec is not None:
+            return spec["title"], spec["tier"], spec["mitigation"]
+    return None
 
 
 def _cloud_locs(items: list[CloudMisconfig]) -> list[FindingLocation]:
@@ -2460,27 +2519,13 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     for issue in scan.cloud_misconfigs:
         cloud_by_kind.setdefault(issue.kind, []).append(issue)
     for kind, spec in _CLOUD_MISCONFIG_FINDING_SPEC.items():
-        for tier in ("high", "medium", "low"):
-            items = [i for i in cloud_by_kind.get(kind, ()) if i.severity == tier]
-            if not items:
-                continue
-            items.sort(key=lambda i: -i.confidence)
-            evidence = [_cloud_misconfig_evidence(i) for i in items[:10]]
-            if len(items) > 10:
-                evidence.append(f"+{len(items) - 10} more occurrence(s)")
-            title = spec["title"] if tier == spec["tier"] else f"{spec['title']} ({tier}-severity instances)"
-            findings.append(
-                Finding(
-                    title=title,
-                    rule_id=_rule_slug_kind(kind),
-                    severity=tier,  # type: ignore[arg-type]
-                    evidence=evidence,
-                    locations=_cloud_locs(items),
-                    mitigation=spec["mitigation"],
-                    confidence=_numeric_to_confidence(items[0].confidence),  # type: ignore[arg-type]
-                    tags=["cloud-misconfig", *_cwe_tags(kind)],
-                )
+        findings.extend(
+            tiered_findings(
+                kind, spec, cloud_by_kind.get(kind, []),
+                evidence=_cloud_misconfig_evidence, locations=_cloud_locs,
+                tags=["cloud-misconfig", *_cwe_tags(kind)],
             )
+        )
 
     # Anomaly / outlier findings (#78). One aggregated finding per kind,
     # each evidence line naming the peer group and the deviation. The

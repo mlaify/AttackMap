@@ -126,15 +126,14 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
         if rule_id in rules_by_id:
             continue
         title, severity, confidence, mitigation = finding.title, finding.severity, finding.confidence, finding.mitigation
-        if "cloud-misconfig" in finding.tags:
-            # One rule can have a finding per severity tier: describe the
-            # rule by its spec, not by whichever tier came first.
-            from .threat_model import cloud_rule_defaults
+        # A severity-tiered rule has a finding per tier: describe the rule by
+        # its spec's default tier, not by whichever tier came first.
+        from .threat_model import tiered_rule_defaults
 
-            defaults = cloud_rule_defaults(rule_id)
-            if defaults is not None:
-                title, severity, mitigation = defaults
-                confidence = "high"
+        defaults = tiered_rule_defaults(rule_id)
+        if defaults is not None:
+            title, severity, mitigation = defaults
+            confidence = "high"
         rules_by_id[rule_id] = {
             "id": rule_id,
             "name": title,
