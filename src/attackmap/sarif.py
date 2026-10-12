@@ -83,13 +83,16 @@ def _instances(finding: Finding) -> list[tuple[str, int | None, str | None]]:
         pairs = [(loc.file, loc.line, loc.fingerprint) for loc in finding.locations]
     else:
         pairs = [(f, l, None) for f, l in evidence_locations(finding.evidence)]
-    seen: set[tuple[str, int | None]] = set()
+    # A fingerprint makes an instance distinct even at a repeated (file, line):
+    # two resources without a line in one file are two results.
+    seen: set[tuple[str, int | None, str | None]] = set()
     out: list[tuple[str, int | None, str | None]] = []
     for file, line, fp in pairs:
-        key = (file.replace("\\", "/"), line)
+        norm = file.replace("\\", "/")
+        key = (norm, line, fp)
         if key not in seen:
             seen.add(key)
-            out.append((key[0], line, fp))
+            out.append((norm, line, fp))
     return out
 
 
@@ -122,16 +125,25 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
         rule_id = finding_rule_id(finding)
         if rule_id in rules_by_id:
             continue
+        title, severity, confidence, mitigation = finding.title, finding.severity, finding.confidence, finding.mitigation
+        # A severity-tiered rule has a finding per tier: describe the rule by
+        # its spec's default tier, not by whichever tier came first.
+        from .threat_model import tiered_rule_defaults
+
+        defaults = tiered_rule_defaults(rule_id)
+        if defaults is not None:
+            title, severity, mitigation = defaults
+            confidence = "high"
         rules_by_id[rule_id] = {
             "id": rule_id,
-            "name": finding.title,
-            "shortDescription": {"text": finding.title},
-            "fullDescription": {"text": finding.title},
-            "help": {"text": finding.mitigation, "markdown": finding.mitigation},
-            "defaultConfiguration": {"level": _sarif_level(finding.severity)},
+            "name": title,
+            "shortDescription": {"text": title},
+            "fullDescription": {"text": title},
+            "help": {"text": mitigation, "markdown": mitigation},
+            "defaultConfiguration": {"level": _sarif_level(severity)},
             "properties": {
                 "tags": list(finding.tags),
-                "security-severity": _security_severity(finding.severity, finding.confidence),
+                "security-severity": _security_severity(severity, confidence),
             },
         }
         _add_rule_taxonomy(rules_by_id[rule_id], rule_id)

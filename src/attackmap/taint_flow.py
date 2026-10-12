@@ -249,6 +249,20 @@ class _PyFlow:
                 start = min([d.lineno for d in node.decorator_list] + [node.lineno])
                 self.funcs.append((start, node.end_lineno or node.lineno, node))
         self._fn: dict[int, tuple[list, dict]] = {}
+        # Functions by start line (walk order breaks ties), each with the index
+        # of the function that encloses it, so `_enclosing` climbs the nesting
+        # instead of scanning every function per sink (quadratic on a file
+        # with thousands of handlers).
+        order = sorted(range(len(self.funcs)), key=lambda i: (self.funcs[i][0], i))
+        self._by_start = [self.funcs[i] for i in order]
+        self._starts = [start for start, _, _ in self._by_start]
+        self._parent: list[int] = []
+        stack: list[int] = []
+        for index, (start, end, _) in enumerate(self._by_start):
+            while stack and self._by_start[stack[-1]][1] < start:
+                stack.pop()
+            self._parent.append(stack[-1] if stack else -1)
+            stack.append(index)
 
     # -- text helpers --
     def seg(self, node: ast.AST, cap: int = 2000) -> str:
@@ -267,12 +281,18 @@ class _PyFlow:
         return b[:cap].decode("utf-8", "replace")
 
     def _enclosing(self, line: int) -> ast.AST | None:
-        best = None
-        best_start = -1
-        for start, end, node in self.funcs:
-            if start <= line <= end and start > best_start:
-                best, best_start = node, start
-        return best
+        """The innermost function containing ``line`` (the first in walk
+        order among functions starting on the same line)."""
+        index = bisect.bisect_right(self._starts, line) - 1
+        while index >= 0:
+            start, end, _ = self._by_start[index]
+            if line <= end:
+                while index > 0 and self._starts[index - 1] == start and self._by_start[index - 1][1] >= line:
+                    index -= 1
+                return self._by_start[index][2]
+            # Closed before `line`: only a function enclosing it can contain it.
+            index = self._parent[index]
+        return None
 
     # -- sources --
     def _source(self, text: str) -> tuple[str, str] | None:
