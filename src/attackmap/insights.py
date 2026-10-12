@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from .analyzer import is_auth_entry_point
 from .models import (
     Asset,
     AttackPath,
@@ -429,7 +430,7 @@ def _detect_admin_action_without_auth(ctx: _DetectorContext) -> list[Insight]:
             continue
         path_lower = surface.route.lower()
         is_admin_route = surface.category == "admin" or any(token in path_lower for token in _ADMIN_ROUTE_TOKENS)
-        if not is_admin_route:
+        if not is_admin_route or is_auth_entry_point(path_lower):
             continue
         risky_surfaces.append(surface)
 
