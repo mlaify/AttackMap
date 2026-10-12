@@ -1,0 +1,45 @@
+# Webhook signature rules (#251, extends the #243 opportunity). A genuine
+# provider delivery always carries its signature header; a POST to the
+# webhook route without one is a forging attempt (or a misrouted client).
+# Access logs only carry a request header when you add it as a custom field;
+# the rule uses the W3C/IIS custom-field name `cs(<Header>)`. Map it to
+# whatever your log pipeline calls the field.
+
+templates:
+  webhook-signature-missing:
+    date: "2026-10-12"
+    title: "Webhook delivery without a signature header"
+    description: >-
+      POST requests to ${routes_text} that carry no ${provider_text}
+      signature header. AttackMap found ${state_text} on these routes
+      (rules ${rule_ids_text}), so a forged event would be processed. Also
+      alert on requests whose signature fails verification, on stale
+      timestamps and on replayed delivery ids from your application log.
+    logsource:
+      category: webserver
+    fields_required: "${fields}"
+    detection: "${detection}"
+    falsepositives:
+      - Provider connectivity checks that send no signature (some providers ping the endpoint when it is configured)
+      - A provider that signs with a header not listed here; add it to the rule
+    level: medium
+    test_events:
+      positive:
+        - cs-method: POST
+          cs-uri-stem: "${route_example}"
+          sc-status: 200
+      negative:
+        - "${signed_event}"
+        - cs-method: GET
+          cs-uri-stem: "${route_example}"
+          sc-status: 200
+
+data:
+  # Provider -> the header(s) that carry its signature.
+  headers:
+    github: [X-Hub-Signature-256, X-Hub-Signature]
+    stripe: [Stripe-Signature]
+    slack: [X-Slack-Signature]
+    shopify: [X-Shopify-Hmac-Sha256]
+    svix: [svix-signature, webhook-signature]
+    twilio: [X-Twilio-Signature]

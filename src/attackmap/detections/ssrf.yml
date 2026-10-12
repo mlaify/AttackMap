@@ -1,0 +1,90 @@
+# SSRF follow-on rules (#251), one each per scan with an `ssrf` finding.
+# The route-scoped request rule lives in injection.yml (payload `ssrf`);
+# these catch what a successful SSRF does next: reach the cloud metadata
+# service, then use the instance role's credentials from somewhere else.
+
+templates:
+  ssrf-metadata-egress:
+    date: "2026-10-12"
+    title: "Application workload connects to a cloud instance metadata endpoint"
+    description: >-
+      A connection from the application to the instance metadata service
+      (AWS/GCP/Azure/Alibaba). AttackMap found a request-reachable SSRF sink
+      (rule ssrf, ${location}); fetching role credentials from the metadata
+      service is the usual next step. Scope the rule to the application's
+      hosts or containers.
+    logsource:
+      category: network_connection
+    fields_required: [DestinationIp, DestinationHostname, Image, Initiated]
+    detection:
+      selection_ip:
+        Initiated: "true"
+        DestinationIp: ["169.254.169.254", "169.254.170.2", "fd00:ec2::254", "100.100.100.200"]
+      selection_host:
+        Initiated: "true"
+        DestinationHostname: ["metadata.google.internal", "metadata.azure.com"]
+      condition: 1 of selection_*
+    falsepositives:
+      - Cloud SDKs on the same host fetch their own credentials from the metadata service; restrict the rule to the application process (Image) or to containers that should never call it
+      - Instance bootstrap agents (cloud-init, the SSM agent)
+    level: medium
+    test_events:
+      positive:
+        - Image: /usr/local/bin/app
+          Initiated: "true"
+          DestinationIp: 169.254.169.254
+          DestinationPort: 80
+      negative:
+        - Image: /usr/local/bin/app
+          Initiated: "true"
+          DestinationIp: 198.51.100.40
+          DestinationPort: 443
+
+  ssrf-instance-credentials-cloudtrail:
+    date: "2026-10-12"
+    title: "EC2 instance-role credentials used from outside the instance"
+    description: >-
+      CloudTrail shows an API call made with an EC2 instance role's session
+      (the session name is the instance id) from a source IP that is neither
+      an AWS service nor a private address, the pattern GuardDuty reports as
+      InstanceCredentialExfiltration. AttackMap found a request-reachable SSRF
+      sink (rule ssrf, ${location}) that could leak those credentials. Add
+      your NAT gateway and VPC egress IPs to the filter.
+    logsource:
+      product: aws
+      service: cloudtrail
+    fields_required: [userIdentity.type, userIdentity.arn, sourceIPAddress, eventName, eventSource]
+    detection:
+      selection:
+        userIdentity.type: AssumedRole
+        userIdentity.arn|re: ":assumed-role/[^/]+/i-[0-9a-f]{8,17}$"
+      filter_aws_service:
+        sourceIPAddress|endswith: ".amazonaws.com"
+      filter_private:
+        sourceIPAddress|cidr: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+      condition: selection and not 1 of filter_*
+    falsepositives:
+      - Calls through a NAT gateway or proxy with a public IP; add its addresses to filter_private
+      - Calls routed through VPC endpoints report private source addresses and are already excluded
+    level: high
+    test_events:
+      positive:
+        - eventSource: s3.amazonaws.com
+          eventName: ListBuckets
+          sourceIPAddress: 203.0.113.77
+          userIdentity:
+            type: AssumedRole
+            arn: arn:aws:sts::123456789012:assumed-role/app-instance-role/i-0abc123def4567890
+      negative:
+        - eventSource: s3.amazonaws.com
+          eventName: ListBuckets
+          sourceIPAddress: 10.0.12.34
+          userIdentity:
+            type: AssumedRole
+            arn: arn:aws:sts::123456789012:assumed-role/app-instance-role/i-0abc123def4567890
+        - eventSource: s3.amazonaws.com
+          eventName: ListBuckets
+          sourceIPAddress: 203.0.113.77
+          userIdentity:
+            type: AssumedRole
+            arn: arn:aws:sts::123456789012:assumed-role/deploy-role/ci-session

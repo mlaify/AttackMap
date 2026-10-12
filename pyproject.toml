@@ -82,6 +82,8 @@ dev = [
   "pytest>=8.0.0",
   "build>=1.2.0",
   "jsonschema>=4.0",
+  # Validates the generated Sigma rules in tests (#251); not a runtime dependency.
+  "pysigma>=2.0",
 ]
 
 [project.urls]
@@ -103,6 +105,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 # Declarative taint sink registry (#240).
 attackmap = ["taint_sinks.yaml"]
+# Sigma rule templates for detection opportunities (#251).
+"attackmap.detections" = ["*.yml"]
 
 [tool.setuptools.dynamic]
 version = {attr = "attackmap.__version__"}

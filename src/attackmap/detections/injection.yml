@@ -1,0 +1,163 @@
+# Route-scoped request-payload rules (#251) for taint findings: injection
+# sinks, path traversal, SSRF, open redirect. One Sigma rule per
+# (rule id, method, route), on the web server access log.
+#
+# Placeholders are `${name}`; the generator fills them (route glob, method,
+# the payload field and values, the sample events). A key whose value
+# renders to null is dropped (e.g. `cs-method` when the route accepts any
+# verb). Payload strings are matched case-insensitively with `contains`, or
+# folded into one regex anchored on the parameter when AttackMap knows which
+# query parameter carries the input. Keep them free of Sigma wildcard and
+# escape characters (`*`, `?`, `\`): a test enforces it.
+
+templates:
+  injection-route:
+    date: "2026-10-12"
+    title: "${label} attempt against ${method_route}"
+    description: >-
+      Requests to ${method_route} whose ${payload_where} carries ${label} syntax.
+      AttackMap traced request input (${source}) at ${location} into a ${label}
+      sink (rule ${rule_id}). Until the code is fixed, these requests are the
+      exploitation attempts; after the fix they stay a useful probe signal.${blind_spot}
+    logsource:
+      category: webserver
+    fields_required: [cs-method, cs-uri-stem, cs-uri-query, sc-status, c-ip]
+    detection:
+      selection_route:
+        "${route_field}": "${route_value}"
+        cs-method: "${method}"
+      selection_payload:
+        "${payload_field}": "${payload_values}"
+      condition: selection_route and selection_payload
+    falsepositives:
+      - Security scanners and penetration tests you run yourself (allow-list their source IPs)
+      - Legitimate values that happen to contain the matched characters; check the full request before acting
+    level: "${level}"
+    test_events:
+      positive:
+        - cs-method: "${method_example}"
+          cs-uri-stem: "${positive_stem}"
+          cs-uri-query: "${positive_query}"
+          sc-status: 500
+          c-ip: 203.0.113.10
+      negative:
+        - cs-method: "${method_example}"
+          cs-uri-stem: "${route_example}"
+          cs-uri-query: "${negative_query}"
+          sc-status: 200
+          c-ip: 198.51.100.20
+
+data:
+  # Per rule id: the label, the level, the payload markers (URL-encoded and
+  # raw forms, since access logs keep the query string as sent), a sample
+  # attack value for the positive test event, and a benign value for the
+  # negative one. `anchor: prefix` matches the marker at the start of the
+  # parameter value instead of anywhere in it. `query`, when set, is the
+  # whole positive query string (for payloads that live in the parameter
+  # name, like NoSQL operators).
+  payloads:
+    sql-injection:
+      label: SQL injection
+      level: high
+      contains: ["'", "%27", "--", "%2D%2D", "/*", "%2F%2A", "union select", "union+select", "union%20select", "sleep(", "sleep%28", "waitfor delay", "waitfor+delay", "waitfor%20delay", "benchmark(", "benchmark%28"]
+      sample: "1%27%20OR%201%3D1--"
+      benign: "shoes"
+      falsepositives:
+        - Names or text with apostrophes (O'Brien) in search parameters
+    subprocess-shell:
+      label: OS command injection
+      level: high
+      contains: [";", "%3B", "|", "%7C", "`", "%60", "$(", "%24%28", "&&", "%26%26", "%0A"]
+      sample: "127.0.0.1%3Bid"
+      benign: "example.com"
+    ssti:
+      label: Server-side template injection
+      level: high
+      contains: ["{{", "%7B%7B", "{%", "%7B%25", "${", "%24%7B", "#{", "%23%7B", "<%=", "%3C%25%3D"]
+      sample: "%7B%7B7%2A7%7D%7D"
+      benign: "Hello"
+    eval:
+      label: Code injection (eval)
+      level: high
+      contains: &code_markers ["__import__", "eval(", "eval%28", "exec(", "exec%28", "require(", "require%28", "child_process", "os.system", "os.popen", "process.mainmodule", "function(", "function%28"]
+      sample: "__import__%28%27os%27%29"
+      benign: "total"
+    exec:
+      label: Code injection (exec)
+      level: high
+      contains: *code_markers
+      sample: "__import__%28%27os%27%29"
+      benign: "total"
+    code-injection:
+      label: Code injection
+      level: high
+      contains: *code_markers
+      sample: "require%28%27child_process%27%29"
+      benign: "total"
+    expression-injection:
+      label: Expression language injection
+      level: high
+      contains: ["${", "%24%7B", "#{", "%23%7B", "t(java", "t%28java", "getruntime", "@java.lang", "%40java.lang", "new java.", "new+java.", "new%20java."]
+      sample: "%24%7BT%28java.lang.Runtime%29%7D"
+      benign: "price"
+    jndi-injection:
+      label: JNDI injection
+      level: high
+      contains: ["${jndi", "%24%7Bjndi", "jndi:", "jndi%3A", "ldap://", "ldap%3A%2F%2F", "rmi://", "rmi%3A%2F%2F", "dns://", "dns%3A%2F%2F"]
+      sample: "ldap%3A%2F%2Fattacker.example%2Fa"
+      benign: "java:comp/env/jdbc/orders"
+    unsafe-deserialization:
+      label: Unsafe deserialization
+      level: high
+      contains: ["rO0AB", "aced0005", "gASV", "gAN9", "gAJ9", ":{s:", "%3A%7Bs%3A"]
+      sample: "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA"
+      benign: "eyJjYXJ0IjpbXX0"
+    path-traversal:
+      label: Path traversal
+      level: high
+      contains: ["../", "..%2F", "%2E%2E", "..%5C", "%252E%252E", "/etc/passwd", "%2Fetc%2Fpasswd", "win.ini", "%00"]
+      sample: "..%2F..%2F..%2Fetc%2Fpasswd"
+      benign: "report-2026.pdf"
+    nosql-injection:
+      label: NoSQL operator injection
+      level: medium
+      regex: false
+      contains: ["[$ne]", "%5B%24ne%5D", "[$gt]", "%5B%24gt%5D", "[$regex]", "%5B%24regex%5D", "[$where]", "%5B%24where%5D", "[$exists]", "%5B%24exists%5D", "$where", "%24where"]
+      sample: "x"
+      query: "${param}%5B%24ne%5D=x"
+      benign: "alice"
+    ldap-injection:
+      label: LDAP injection
+      level: medium
+      contains: [")(|", ")(&", ")(!", "%29%28", "%2A%29", "%00"]
+      sample: "x%29%28%7C%28uid%3Dadmin"
+      benign: "alice"
+    xpath-injection:
+      label: XPath injection
+      level: medium
+      contains: ["' or ", "'+or+", "%27+or+", "%27%20or%20", "' and ", "%27%20and%20", "']", "%27%5D", "count(/", "count%28%2F"]
+      sample: "x%27%20or%20%271%27%3D%271"
+      benign: "SKU-1001"
+    header-injection:
+      label: HTTP header injection (CRLF)
+      level: low
+      contains: ["%0D", "%0A"]
+      sample: "report%0D%0ASet-Cookie%3Asid%3Dx"
+      benign: "report"
+    open-redirect:
+      label: Open redirect
+      level: medium
+      anchor: prefix
+      contains: ["http:", "https:", "http%3A", "https%3A", "//", "%2F%2F", "/%5C", "%2F%5C"]
+      sample: "https%3A%2F%2Fphish.example%2F"
+      benign: "%2Faccount"
+      falsepositives:
+        - Redirects to your own absolute URLs; add your hosts as an exclusion
+    ssrf:
+      label: Server-side request forgery
+      level: medium
+      contains: ["169.254.169.254", "169.254.170.2", "metadata.google.internal", "100.100.100.200", "fd00:ec2::254", "fd00%3Aec2%3A%3A254", "localhost", "127.0.0.1", "0.0.0.0", "[::1]", "%5B%3A%3A1%5D", "2852039166", "0xa9fea9fe", "file:", "file%3A", "gopher:", "gopher%3A", "dict:", "dict%3A"]
+      sample: "http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2Fiam%2F"
+      benign: "https%3A%2F%2Fpartner.example%2Ffeed"
+      falsepositives:
+        - Health checks or internal tooling that legitimately pass loopback URLs
