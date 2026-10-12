@@ -1023,3 +1023,48 @@ def test_php_route_extraction(tmp_path: Path) -> None:
     assert ("ANY", "/api/foo") in got
     assert not any(r.path == "some-key" for r in scan.routes)
     assert "php" in scan.languages
+
+
+def test_scan_repo_reads_verb_first_route_decorator(tmp_path: Path) -> None:
+    """aiohttp `@routes.route("PATCH", "/x")` puts the verb first; it must not
+    become a Flask-style `GET /PATCH` route (#342)."""
+    (tmp_path / "app.py").write_text(
+        '''
+from aiohttp import web
+routes = web.RouteTableDef()
+
+@routes.route("PATCH", "/users/{id}")
+async def patch_user(request): ...
+
+@routes.route('*', '/any')
+async def any_verb(request): ...
+
+@routes.route(
+    "delete",
+    "/users/{id}",
+)
+async def delete_user(request): ...
+''',
+        encoding="utf-8",
+    )
+    (tmp_path / "flask_app.py").write_text(
+        '''
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("/get", methods=["POST"])
+def get_view(): ...
+
+@app.route("GET")
+def odd(): ...
+''',
+        encoding="utf-8",
+    )
+    pairs = {(r.path, r.method, r.file) for r in scan_repo(tmp_path).routes}
+    assert ("/users/{id}", "PATCH", "app.py") in pairs
+    assert ("/any", "ANY", "app.py") in pairs
+    assert ("/users/{id}", "DELETE", "app.py") in pairs
+    assert not any(p in {"/PATCH", "/*", "/delete"} for p, _m, f in pairs if f == "app.py")
+    # Flask's path-first form is unchanged, including a path that spells a verb.
+    assert ("/get", "POST", "flask_app.py") in pairs
+    assert ("/GET", "GET", "flask_app.py") in pairs

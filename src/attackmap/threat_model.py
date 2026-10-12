@@ -1423,6 +1423,94 @@ _SUPPLY_CHAIN_FINDING_SPEC: dict[str, dict[str, str]] = {
     },
 }
 
+# App attack surface reported by platform plugins (#188, #190): the Apple
+# analyzers (Swift, Objective-C). Severity is per instance (a global ATS
+# exception outranks a per-domain one), so the finding takes the max; the spec
+# severity is the catalog's default. CWE/OWASP ids live in `taxonomy.py`.
+_APP_SURFACE_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "apple_ats_insecure_loads": {
+        "severity": "medium",
+        "confidence": "high",
+        "title": "App Transport Security exceptions allow cleartext HTTP",
+        "mitigation": "Remove `NSAllowsArbitraryLoads` and serve every endpoint over HTTPS (TLS 1.2+). If one legacy host truly needs HTTP, scope an `NSExceptionDomains` entry to that host and document why; for devices on the local network use `NSAllowsLocalNetworking` instead of disabling ATS.",
+        "technique_id": "T1557",
+        "technique_name": "Adversary-in-the-Middle",
+        "tactic": "Credential Access / Collection",
+    },
+    "apple_custom_url_scheme": {
+        "severity": "low",
+        "confidence": "high",
+        "title": "Custom URL scheme handler accepts links from any app or web page",
+        "mitigation": "Treat every incoming URL as untrusted input: allow-list the hosts, paths and parameters the handler acts on, and ask the user before any state-changing action. Any app can register the same scheme, so never deliver tokens or OAuth codes through it; use universal links (associated domains) or `ASWebAuthenticationSession` for auth callbacks.",
+        "technique_id": "T1204.001",
+        "technique_name": "User Execution: Malicious Link",
+        "tactic": "Execution",
+    },
+    "apple_webview_js_injection": {
+        "severity": "medium",
+        "confidence": "medium",
+        "title": "WKWebView JavaScript is built by string interpolation (script injection risk)",
+        "mitigation": "Don't splice values into JavaScript source. Pass them as arguments with `callAsyncJavaScript(_:arguments:in:in:)`, or JSON-encode them (`JSONEncoder`/`JSONSerialization`) before embedding, so page content, URL fragments or user input can't break out of the string literal.",
+        "technique_id": "T1059.007",
+        "technique_name": "Command and Scripting Interpreter: JavaScript",
+        "tactic": "Execution",
+    },
+    "apple_insecure_secret_storage": {
+        "severity": "medium",
+        "confidence": "medium",
+        "title": "Secrets are stored in UserDefaults instead of the Keychain",
+        "mitigation": "UserDefaults is an unencrypted plist in the app container and lands in backups. Store tokens, passwords and keys in the Keychain (`SecItemAdd` with a `kSecAttrAccessible...ThisDeviceOnly` class) and delete the old UserDefaults value on upgrade.",
+        "technique_id": "T1552.001",
+        "technique_name": "Unsecured Credentials: Credentials In Files",
+        "tactic": "Credential Access",
+    },
+    "apple_pasteboard_secret": {
+        "severity": "low",
+        "confidence": "medium",
+        "title": "Secret values are copied to the general pasteboard",
+        "mitigation": "Any app (and Universal Clipboard on nearby devices) can read the general pasteboard. Don't copy secrets; if the user must, set `localOnly` and an `expirationDate` with `UIPasteboard.setItems(_:options:)`.",
+        "technique_id": "T1115",
+        "technique_name": "Clipboard Data",
+        "tactic": "Collection",
+    },
+    "apple_hardened_runtime_exception": {
+        "severity": "medium",
+        "confidence": "high",
+        "title": "Entitlements weaken the hardened runtime (library validation, DYLD variables or executable memory)",
+        "mitigation": "Drop `com.apple.security.cs.disable-library-validation`, `allow-dyld-environment-variables`, `allow-unsigned-executable-memory` and `disable-executable-page-protection` unless a plug-in model or JIT truly needs them. They let an attacker inject code into the signed process; if one is required, confine the code that needs it to a separate helper.",
+        "technique_id": "T1574",
+        "technique_name": "Hijack Execution Flow",
+        "tactic": "Stealth / Execution",
+    },
+    "apple_debuggable_entitlement": {
+        "severity": "low",
+        "confidence": "high",
+        "title": "Entitlements allow debugger attachment (get-task-allow)",
+        "mitigation": "`get-task-allow` lets other processes attach to the app and read or patch its memory. Keep it out of committed entitlements and let Xcode add it to Debug builds only; release and notarized builds must not carry it.",
+        "technique_id": "T1055",
+        "technique_name": "Process Injection",
+        "tactic": "Stealth / Privilege Escalation",
+    },
+    "apple_xpc_unvalidated_peer": {
+        "severity": "high",
+        "confidence": "medium",
+        "title": "XPC listener accepts connections without validating the peer",
+        "mitigation": "In `listener(_:shouldAcceptNewConnection:)` verify the client before accepting: set `setCodeSigningRequirement(_:)` (macOS 13+) or check the connection's audit token against a code-signing requirement with `SecCodeCopyGuestWithAttributes` + `SecCodeCheckValidity`. Never authorize by PID alone.",
+        "technique_id": "T1068",
+        "technique_name": "Exploitation for Privilege Escalation",
+        "tactic": "Privilege Escalation",
+    },
+    "apple_dynamic_dispatch": {
+        "severity": "medium",
+        "confidence": "medium",
+        "title": "Classes, selectors or libraries are resolved from strings built at runtime",
+        "mitigation": "Map external values to an allow-list of known classes/selectors instead of building names with string formatting, and load libraries only from fixed paths inside the signed bundle. A name or path an attacker can influence selects arbitrary code.",
+        "technique_id": "T1129",
+        "technique_name": "Shared Modules",
+        "tactic": "Execution",
+    },
+}
+
 _ANOMALY_FINDING_SPEC: dict[str, dict[str, str]] = {
     "auth_outlier": {
         "severity": "high",
@@ -2285,6 +2373,43 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    # App attack surface from platform plugins (#188, #190). One aggregated
+    # finding per kind, at its most severe instance.
+    app_by_kind: dict[str, list] = {}
+    for issue in scan.app_surface_issues:
+        app_by_kind.setdefault(issue.kind, []).append(issue)
+    for kind, spec in _APP_SURFACE_FINDING_SPEC.items():
+        items = app_by_kind.get(kind)
+        if not items:
+            continue
+        items.sort(key=lambda i: -_SEVERITY_ORDER[i.severity])
+        evidence = []
+        for i in items[:10]:
+            loc = f"{i.file}:{i.line}" if i.line else i.file
+            evidence.append(f"{loc} — {i.evidence_text}" if i.evidence_text else loc)
+        if len(items) > 10:
+            evidence.append(f"+{len(items) - 10} more occurrence(s)")
+        findings.append(
+            Finding(
+                title=spec["title"],
+                rule_id=_rule_slug_kind(kind),
+                severity=items[0].severity,
+                evidence=evidence,
+                locations=_locs(items),
+                mitigation=spec["mitigation"],
+                confidence=spec["confidence"],  # type: ignore[arg-type]
+                tags=["app-surface", *_cwe_tags(kind)],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
+
     # Anomaly / outlier findings (#78). One aggregated finding per kind,
     # each evidence line naming the peer group and the deviation. The
     # finding's confidence tracks the strongest (most consistent) cohort.
@@ -2913,7 +3038,7 @@ def rule_catalog() -> list[tuple[str, str, str]]:
     for spec_table in (
         _TAINT_FINDING_SPEC, _CRYPTO_FINDING_SPEC, _WEB_HARDENING_FINDING_SPEC,
         _CODE_WEAKNESS_FINDING_SPEC, _WORKFLOW_FINDING_SPEC, _ANOMALY_FINDING_SPEC,
-        _SUPPLY_CHAIN_FINDING_SPEC,
+        _SUPPLY_CHAIN_FINDING_SPEC, _APP_SURFACE_FINDING_SPEC,
     ):
         for kind, spec in spec_table.items():
             rules.append((_rule_slug_kind(kind), spec["title"], spec.get("severity", "varies")))

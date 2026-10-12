@@ -327,8 +327,16 @@ def _known(vid: str, name: str, eco: str, fixed: str) -> dict:
             "SwiftURL", "github.com/apple/swift-nio",
             _known("GHSA-swifturl-fixture", "github.com/apple/swift-nio", "SwiftURL", "2.29.1"),
         ),
+        # Carthage pins a git repository (#188): same SwiftURL name.
+        (
+            DependencyHint(name="Alamofire/Alamofire", version="5.4.0", ecosystem="carthage",
+                           file="Cartfile.resolved", resolved=True,
+                           evidence_text="https://github.com/Alamofire/Alamofire"),
+            "SwiftURL", "github.com/Alamofire/Alamofire",
+            _known("GHSA-carthage-fixture", "github.com/Alamofire/Alamofire", "SwiftURL", "5.4.1"),
+        ),
     ],
-    ids=["maven", "nuget", "swiftpm"],
+    ids=["maven", "nuget", "swiftpm", "carthage"],
 )
 def test_new_ecosystems_map_to_osv(tmp_path: Path, dep, osv_eco, osv_name, vuln) -> None:
     transport, calls = _stub_transport({osv_name: {"vulns": [vuln]}})
