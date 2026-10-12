@@ -1,23 +1,48 @@
 """Generate detection-engineering hints from insights and findings.
 
 For each notable observation, suggest a runtime signal a defender could
-add to catch the same condition in production. Output is intentionally
-generic (rule sketches, not fully-formed Sigma/KQL/Splunk yet) so it
-slots into whatever SIEM the user already runs.
+add to catch the same condition in production. Insight-level opportunities
+are prose rule sketches. Opportunities generated per finding class (#251:
+taint/injection routes, SSRF, BOLA, webhook signatures) also carry a
+deployable Sigma rule with its log source, required fields, false-positive
+notes and sample events, rendered from the templates in
+:mod:`attackmap.detections`.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from .attack_taxonomy import techniques_for_finding, techniques_for_insight
-from .taxonomy import taxonomy_for
+from .detections import (
+    RenderedRule,
+    has_path_params,
+    regex_literal,
+    render_rule,
+    route_example,
+    route_scopable,
+    route_selector,
+    rule_uuid,
+    sigma_method,
+    stem_selector,
+    template_data,
+)
+from .detections.sigma import correlation_problems, sigma_matches, sigma_problems
+from .taint_sinks import canonical_kind
+from .taxonomy import ATTACK_TECHNIQUES, INFORMATIONAL_RULES, attack_url, taxonomy_for
 from .models import (
+    AttackSurface,
     AttackTechnique,
+    BolaCandidate,
+    DetectionLogsource,
     DetectionOpportunity,
+    DetectionTestEvents,
     Finding,
     Insight,
     InsightKind,
+    ScanResult,
+    TaintChain,
 )
 
 
@@ -283,8 +308,11 @@ _INSIGHT_GENERATORS: dict[InsightKind, Callable[[Insight], DetectionOpportunity]
 def generate_detection_opportunities(
     insights: list[Insight],
     findings: list[Finding],
+    scan: ScanResult | None = None,
+    attack_surfaces: list[AttackSurface] | None = None,
 ) -> list[DetectionOpportunity]:
-    """Produce one DetectionOpportunity per insight kind observed.
+    """Produce one DetectionOpportunity per insight kind observed, plus
+    deployable per-finding-class rules (#251) when ``scan`` is given.
 
     Findings are folded into existing opportunities by their rule id's
     ATT&CK techniques so we don't double-count (e.g., a heuristic finding about webhook auth and the
@@ -348,9 +376,12 @@ def generate_detection_opportunities(
                 )
             )
 
-    webhook = _opp_for_webhook_signatures(findings)
+    webhook = _opp_for_webhook_signatures(findings, attack_surfaces or [])
     if webhook is not None:
         opportunities.append(webhook)
+
+    if scan is not None:
+        opportunities.extend(_finding_class_opportunities(findings, scan))
 
     return opportunities
 
@@ -358,8 +389,11 @@ def generate_detection_opportunities(
 _WEBHOOK_RULES = ("public-webhook", "webhook-weak-verification")
 
 
-def _opp_for_webhook_signatures(findings: list[Finding]) -> DetectionOpportunity | None:
-    """Webhooks with absent or weak signature verification (#243, part B)."""
+def _opp_for_webhook_signatures(
+    findings: list[Finding], surfaces: list[AttackSurface]
+) -> DetectionOpportunity | None:
+    """Webhooks with absent or weak signature verification (#243, part B),
+    with a Sigma rule for deliveries that lack the signature header (#251)."""
     related = [f for f in findings if f.rule_id in _WEBHOOK_RULES]
     if not related:
         return None
@@ -375,7 +409,7 @@ def _opp_for_webhook_signatures(findings: list[Finding]) -> DetectionOpportunity
         for tech in techniques_for_finding(finding):
             if tech.technique_id not in {t.technique_id for t in techniques}:
                 techniques.append(tech)
-    return _opportunity(
+    opportunity = _opportunity(
         opportunity_id="detect:webhook-signature",
         title="Alert on webhook requests with missing or invalid signature headers",
         rationale=(
@@ -394,6 +428,513 @@ def _opp_for_webhook_signatures(findings: list[Finding]) -> DetectionOpportunity
         related_rule_ids=[f.rule_id for f in related if f.rule_id],
         attack_techniques=techniques,
     )
+    rendered = _webhook_rule(routes, opportunity.related_rule_ids, surfaces)
+    if rendered is not None:
+        _attach(opportunity, rendered)
+    return opportunity
+
+
+# ---------- Deployable rules per finding class (#251) ----------
+
+# Caps: one rule per (rule id, method, route), at most this many routes per
+# rule id, and a ceiling on per-route rules, shared fairly across rule ids,
+# so a huge repo can't flood the report. The two SSRF follow-ups (metadata
+# egress, CloudTrail) are per repository and sit outside the cap. The
+# finding itself still lists every route; the rules cover the first ones.
+_MAX_ROUTES_PER_RULE = 5
+_MAX_RULE_OPPORTUNITIES = 60
+
+# Taint sink kind (canonical) -> finding rule id, where it isn't the dashed kind.
+_FLOW_RULE_IDS = {"sql_execute": "sql-injection", "path_traversal": "path-traversal"}
+# Sinks only flow-confirmed chains count for (#239), as in `generate_findings`.
+_FLOW_ONLY_SINKS = frozenset({"sql_execute", "dynamic_open"})
+_BODY_SOURCES = frozenset({"body", "header", "cookie", "upload_filename", "message"})
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE", "MUTATION"})
+
+# A quoted parameter name in the traced source expression
+# (`request.args.get("q")`, `r.URL.Query().Get("q")`, `$_GET['q']`) or a
+# dotted one (`req.query.q`).
+_QUOTED_PARAM = re.compile(r"""["']([A-Za-z0-9_][A-Za-z0-9_.\-]{0,63})["']""")
+_DOTTED_PARAM = re.compile(r"\.(?:query|params|args|form|GET)\.([A-Za-z_$][A-Za-z0-9_$]{0,63})")
+
+
+# `suggested_rule` prefix of opportunities whose prose is their Sigma rule.
+SIGMA_POINTER = "Deploy Sigma rule "
+
+_BOLA_THRESHOLD = 50
+_BOLA_TIMESPAN = "10m"
+
+
+def _taint_rule_id(chain: TaintChain) -> str:
+    kind = canonical_kind(chain.sink_kind)
+    return _FLOW_RULE_IDS.get(kind, kind.replace("_", "-"))
+
+
+def _location_keys(finding: Finding) -> set[tuple[str, int | None]]:
+    return {(loc.file, loc.line) for loc in finding.locations}
+
+
+def _source_param(chain: TaintChain) -> str | None:
+    """The query parameter carrying the tainted value, when the traced source
+    expression names one."""
+    if chain.source_kind != "query":
+        return None
+    for step in chain.flow:
+        if step.kind != "source" or not step.evidence_text:
+            continue
+        text = step.evidence_text.split(":", 1)[-1]
+        match = _QUOTED_PARAM.search(text) or _DOTTED_PARAM.search(text)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _short(text: str, limit: int = 120) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _checked(rendered: RenderedRule) -> RenderedRule | None:
+    """Keep a rendered rule only if it is valid Sigma and its sample events
+    behave: every positive matches, no negative does. A template filled with
+    unusual repo text (a route containing a payload marker) is dropped rather
+    than shipped broken."""
+    if sigma_problems(rendered.sigma):
+        return None
+    if rendered.correlation is not None and correlation_problems(rendered.correlation, [rendered.sigma]):
+        return None
+    positives = rendered.test_events["positive"]
+    if not positives or not all(sigma_matches(rendered.sigma, e) for e in positives):
+        return None
+    if any(sigma_matches(rendered.sigma, e) for e in rendered.test_events["negative"]):
+        return None
+    return rendered
+
+
+def _attach(opportunity: DetectionOpportunity, rendered: RenderedRule) -> None:
+    opportunity.sigma = rendered.sigma
+    opportunity.sigma_correlation = rendered.correlation
+    opportunity.logsource = DetectionLogsource(**rendered.logsource)
+    opportunity.fields_required = rendered.fields_required
+    opportunity.false_positive_notes = rendered.false_positive_notes
+    opportunity.test_events = DetectionTestEvents(**rendered.test_events)
+
+
+def _techniques(rule_id: str) -> list[AttackTechnique]:
+    entry = taxonomy_for(rule_id)
+    if entry is None:
+        return []
+    return [
+        AttackTechnique(technique_id=tid, name=name, tactic=tactic, url=attack_url(tid))
+        for tid in entry.attack
+        for name, tactic in [ATTACK_TECHNIQUES[tid]]
+    ]
+
+
+def _rule_opportunity(
+    *,
+    opportunity_id: str,
+    finding: Finding,
+    rendered: RenderedRule,
+    rationale: str,
+    signal_kind: str = "log",
+) -> DetectionOpportunity:
+    sigma = rendered.sigma
+    opportunity = _opportunity(
+        opportunity_id=opportunity_id,
+        title=sigma["title"],
+        rationale=rationale,
+        signal_kind=signal_kind,
+        suggested_rule=(
+            f"{SIGMA_POINTER}{sigma['id']} ({DetectionLogsource(**rendered.logsource).label()} logs). "
+            + sigma["description"]
+        ),
+        related_finding_titles=[finding.title],
+        related_rule_ids=[finding.rule_id] if finding.rule_id else [],
+        attack_techniques=_techniques(finding.rule_id or ""),
+    )
+    _attach(opportunity, rendered)
+    return opportunity
+
+
+def _sigma_escape(text: str) -> str:
+    """Escape Sigma's wildcard characters so a marker matches literally."""
+    return text.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
+
+
+def _regex_escape(text: str) -> str:
+    return regex_literal(text)
+
+
+def _payload_selector(
+    payload: dict, param: str | None, source_kind: str | None, path_has_params: bool
+) -> tuple[dict | list[dict], str, bool]:
+    """The payload selection (a field map, or a list of maps = any of them),
+    where it looks (for the description), and whether the positive sample
+    belongs in the request path rather than the query string."""
+    raw = [str(m) for m in payload["contains"]]
+    markers = [_sigma_escape(m) for m in raw]
+    prefix = payload.get("anchor") == "prefix"
+    if source_kind == "path_param" and path_has_params:
+        return {"cs-uri-stem|contains": markers}, "path", True
+    if param and payload.get("regex", True) and source_kind in (None, "query"):
+        alternatives = "|".join(_regex_escape(m) for m in raw)
+        regex = f"(?:^|&){_regex_escape(param)}=" + ("" if prefix else "[^&]*") + f"(?:{alternatives})"
+        return {"cs-uri-query|re|i": regex}, f"`{param}` query parameter", False
+    query = {"cs-uri-query|contains": [f"={m}" for m in markers] if prefix else markers}
+    if source_kind is None and path_has_params:
+        # Reachability-only chain: the input may be the path parameter or a
+        # query parameter, so look in both.
+        return [query, {"cs-uri-stem|contains": markers}], "query string or path", False
+    return query, "query string", False
+
+
+def _route_params(path: str) -> dict[str, str] | None:
+    """Route selection params, or ``None`` when the route is too broad or
+    too long to scope a rule to (see `detections.route_scopable`)."""
+    selector = route_selector(path)
+    if selector is None:
+        return None
+    return {"route_field": selector[0], "route_value": selector[1]}
+
+
+def _taint_rule(rule_id: str, chain: TaintChain, payload: dict) -> RenderedRule | None:
+    route = _route_params(chain.route_path)
+    if route is None:
+        return None
+    method = sigma_method(chain.route_method)
+    method_route = _short(f"{chain.route_method} {chain.route_path}")
+    param = _source_param(chain)
+    in_path = has_path_params(chain.route_path)
+    selection, where, in_stem = _payload_selector(payload, param, chain.source_kind, in_path)
+    name = param or "q"
+    sample, benign = str(payload["sample"]), str(payload["benign"])
+    if in_stem:
+        positive_stem, positive_query = route_example(chain.route_path, sample), ""
+    else:
+        positive_stem = route_example(chain.route_path)
+        positive_query = str(payload.get("query", "${param}=${sample}")).replace("${param}", name).replace(
+            "${sample}", sample
+        )
+    blind = ""
+    if chain.source_kind in _BODY_SOURCES:
+        blind = (
+            f" Blind spot: the traced input arrives in the request {chain.source_kind}, which access logs "
+            "don't record; feed request bodies from a WAF or application log into cs-uri-query, or adapt the field."
+        )
+    source = f"{chain.source_kind} parameter {param}" if param else (chain.source_kind or "a request value")
+    rendered = render_rule(
+        "injection-route",
+        rule_ids=[rule_id],
+        key=f"{chain.route_method} {chain.route_path} {chain.route_file}",
+        params={
+            "label": payload["label"],
+            "level": payload["level"],
+            "method_route": method_route,
+            "method": method,
+            "method_example": method or "GET",
+            **route,
+            "route_example": route_example(chain.route_path),
+            "payload_selection": selection,
+            "payload_where": where,
+            "positive_stem": positive_stem,
+            "positive_query": positive_query,
+            "negative_query": f"{name}={benign}",
+            "source": source,
+            "location": f"{chain.sink_file}:{chain.sink_line}" if chain.sink_line else chain.sink_file,
+            "rule_id": rule_id,
+            "blind_spot": blind,
+        },
+        extra_falsepositives=list(payload.get("falsepositives") or []),
+    )
+    return _checked(rendered)
+
+
+def _taint_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[DetectionOpportunity]:
+    payloads = template_data("injection").get("payloads", {})
+    covered = {rule_id: _location_keys(finding) for rule_id, finding in by_rule.items()}
+    out: list[DetectionOpportunity] = []
+    seen: set[tuple[str, str, str]] = set()
+    per_rule: dict[str, int] = {}
+    for chain in scan.taint_chains:
+        if chain.sanitized or chain.speculative:
+            continue
+        if chain.sink_kind in _FLOW_ONLY_SINKS and not chain.source_kind:
+            continue
+        rule_id = _taint_rule_id(chain)
+        finding = by_rule.get(rule_id)
+        payload = payloads.get(rule_id)
+        if finding is None or payload is None:
+            continue
+        # The chain must be one the (possibly partially suppressed) finding covers.
+        if (chain.sink_file, chain.sink_line) not in covered[rule_id]:
+            continue
+        key = (rule_id, chain.route_method.upper(), chain.route_path)
+        if key in seen or per_rule.get(rule_id, 0) >= _MAX_ROUTES_PER_RULE:
+            continue
+        rendered = _taint_rule(rule_id, chain, payload)
+        if rendered is None:
+            continue
+        seen.add(key)
+        per_rule[rule_id] = per_rule.get(rule_id, 0) + 1
+        out.append(
+            _rule_opportunity(
+                opportunity_id=f"detect:{rule_id}:{chain.route_method.upper()}:{chain.route_path}",
+                finding=finding,
+                rendered=rendered,
+                rationale=(
+                    f"Request input reaches a {payload['label'].lower()} sink from "
+                    f"{_short(chain.route_method + ' ' + chain.route_path)}. Requests carrying "
+                    f"{payload['label'].lower()} syntax to that route are the exploitation attempts."
+                ),
+            )
+        )
+    return out
+
+
+def _ssrf_followups(
+    ssrf_opps: list[DetectionOpportunity], finding: Finding, scan: ScanResult
+) -> list[DetectionOpportunity]:
+    """Metadata-service egress and instance-credential reuse, once per scan."""
+    covered = _location_keys(finding)
+    chain = next(
+        (
+            c
+            for c in scan.taint_chains
+            if _taint_rule_id(c) == "ssrf" and not c.sanitized and not c.speculative
+            and (c.sink_file, c.sink_line) in covered
+        ),
+        None,
+    )
+    if chain is None or not ssrf_opps:
+        return []
+    location = f"{chain.sink_file}:{chain.sink_line}" if chain.sink_line else chain.sink_file
+    out: list[DetectionOpportunity] = []
+    for template_id, signal_kind, rationale in (
+        (
+            "ssrf-metadata-egress",
+            "network",
+            "A working SSRF is usually pointed at the cloud metadata service first; the connection itself is "
+            "visible in host or VPC network telemetry regardless of which route carried the request.",
+        ),
+        (
+            "ssrf-instance-credentials-cloudtrail",
+            "log",
+            "Credentials stolen from the metadata service through SSRF are then used from the attacker's "
+            "infrastructure; CloudTrail shows the instance role's session calling AWS from a foreign IP.",
+        ),
+    ):
+        rendered = _checked(
+            render_rule(template_id, rule_ids=["ssrf"], key=chain.sink_file, params={"location": location})
+        )
+        if rendered is not None:
+            out.append(
+                _rule_opportunity(
+                    opportunity_id=f"detect:ssrf:{template_id}",
+                    finding=finding,
+                    rendered=rendered,
+                    rationale=rationale,
+                    signal_kind=signal_kind,
+                )
+            )
+    return out
+
+
+def _bola_rule(rule_id: str, cand: BolaCandidate) -> RenderedRule | None:
+    route = _route_params(cand.route_path)
+    if route is None:
+        return None
+    method = sigma_method(cand.route_method)
+    in_path = cand.surface == "path_param" and has_path_params(cand.route_path)
+    value_field = "cs-uri-stem" if in_path else "cs-uri-query"
+    principal = "cs-username" if cand.authn_evidence else "c-ip"
+    key = f"{cand.route_method} {cand.route_path}"
+    rendered = render_rule(
+        "bola-cardinality",
+        rule_ids=[rule_id],
+        key=f"{key} {cand.route_file}",
+        params={
+            "rule_name": "attackmap_bola_"
+            + rule_uuid("bola-cardinality", rule_id, f"{key} {cand.route_file}").replace("-", "")[:12],
+            "method_route": _short(key),
+            "method": method,
+            "method_example": method or "GET",
+            **route,
+            "positive_stem": route_example(cand.route_path),
+            "positive_query": "" if in_path else f"{cand.id_param}=1001",
+            "id_param": cand.id_param,
+            "rule_id": rule_id,
+            "location": f"{cand.route_file}:{cand.route_line}" if cand.route_line else cand.route_file,
+            "principal_field": principal,
+            "principal_value": "alice" if principal == "cs-username" else "203.0.113.10",
+            "value_field": value_field,
+            "threshold": _BOLA_THRESHOLD,
+            "timespan": _BOLA_TIMESPAN,
+            "level": "high" if rule_id == "bola-modify" else "medium",
+        },
+    )
+    return _checked(rendered)
+
+
+def _bola_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[DetectionOpportunity]:
+    covered = {r: _location_keys(f) for r, f in by_rule.items() if r in ("bola-read", "bola-modify")}
+    out: list[DetectionOpportunity] = []
+    seen: set[tuple[str, str, str]] = set()
+    per_rule: dict[str, int] = {}
+    for cand in scan.authz_candidates:
+        if cand.has_ownership_check or cand.surface == "graphql_field":
+            continue
+        rule_id = "bola-modify" if cand.route_method.upper() in _WRITE_METHODS else "bola-read"
+        finding = by_rule.get(rule_id)
+        if finding is None or (cand.route_file, cand.route_line) not in covered[rule_id]:
+            continue
+        key = (rule_id, cand.route_method.upper(), cand.route_path)
+        if key in seen or per_rule.get(rule_id, 0) >= _MAX_ROUTES_PER_RULE:
+            continue
+        rendered = _bola_rule(rule_id, cand)
+        if rendered is None:
+            continue
+        seen.add(key)
+        per_rule[rule_id] = per_rule.get(rule_id, 0) + 1
+        out.append(
+            _rule_opportunity(
+                opportunity_id=f"detect:{rule_id}:{cand.route_method.upper()}:{cand.route_path}",
+                finding=finding,
+                rendered=rendered,
+                rationale=(
+                    f"{_short(cand.route_method + ' ' + cand.route_path)} takes the object id `{cand.id_param}` "
+                    "without an object-level check. Enumeration shows up as one principal touching far more "
+                    "distinct objects than normal use does."
+                ),
+            )
+        )
+    return out
+
+
+def _webhook_rule(
+    routes: list[str], rule_ids: list[str], surfaces: list[AttackSurface]
+) -> RenderedRule | None:
+    """Sigma rule for POSTs to the webhook routes without the provider's
+    signature header. Routes whose provider is unknown are checked against
+    every known signature header."""
+    headers: dict[str, list[str]] = template_data("webhook").get("headers", {})
+    providers: dict[str, str] = {}
+    for surface in surfaces:
+        verification = surface.webhook_verification
+        if verification is not None and verification.provider in headers:
+            providers.setdefault(surface.route, verification.provider)
+    # Sorted, so the rule (and its id) doesn't depend on evidence order;
+    # catch-all routes (`/:hook`, `*`) are left out rather than widening the
+    # rule to every POST on the site.
+    scoped = sorted({r.split(" ", 1)[-1] for r in routes if route_scopable(r.split(" ", 1)[-1])})[:10]
+    groups: dict[str, list[str]] = {}
+    for path in scoped:
+        groups.setdefault(providers.get(path, "unknown"), []).append(path)
+    if not groups:
+        return None
+    all_headers = [h for hs in headers.values() for h in hs]
+    detection: dict[str, object] = {}
+    used: list[str] = []
+    for provider, paths in sorted(groups.items()):
+        names = headers.get(provider, all_headers)
+        stem = stem_selector(paths)
+        if stem is None:
+            continue
+        selection: dict[str, object] = {"cs-method": "POST", stem[0]: stem[1]}
+        for header in names:
+            selection[f"cs({header})"] = None
+            if header not in used:
+                used.append(header)
+        detection[f"selection_{provider}"] = selection
+    detection["condition"] = "1 of selection_*"
+    first_provider, first_paths = next(iter(sorted(groups.items())))
+    example = route_example(first_paths[0])
+    signed = headers.get(first_provider, all_headers)
+    known = sorted(p for p in groups if p != "unknown")
+    paths = scoped
+    rendered = render_rule(
+        "webhook-signature-missing",
+        rule_ids=rule_ids or ["public-webhook"],
+        key="|".join(scoped),
+        params={
+            "routes_text": ", ".join(_short(p, 80) for p in paths[:3]) + (" and more" if len(paths) > 3 else ""),
+            "provider_text": "/".join(known) if known else "known provider",
+            "state_text": "absent or weak signature verification",
+            "rule_ids_text": ", ".join(rule_ids) or "public-webhook",
+            "fields": ["cs-method", "cs-uri-stem", "sc-status", *[f"cs({h})" for h in used]],
+            "detection": detection,
+            "route_example": example,
+            "signed_event": {
+                "cs-method": "POST",
+                "cs-uri-stem": example,
+                "sc-status": 200,
+                **{f"cs({h})": "t=1700000000,v1=5257a869e7" for h in signed},
+            },
+        },
+    )
+    return _checked(rendered)
+
+
+def _finding_class_opportunities(findings: list[Finding], scan: ScanResult) -> list[DetectionOpportunity]:
+    by_rule: dict[str, Finding] = {}
+    for finding in findings:
+        if finding.rule_id and finding.rule_id not in by_rule:
+            by_rule[finding.rule_id] = finding
+    routes = _fair_cap(_taint_opportunities(scan, by_rule) + _bola_opportunities(scan, by_rule))
+    out = [o for o in routes if not o.id.startswith("detect:bola-")]
+    ssrf_finding = by_rule.get("ssrf")
+    if ssrf_finding is not None:
+        out += _ssrf_followups([o for o in out if "ssrf" in o.related_rule_ids], ssrf_finding, scan)
+    return out + [o for o in routes if o.id.startswith("detect:bola-")]
+
+
+def _fair_cap(opportunities: list[DetectionOpportunity], limit: int = _MAX_RULE_OPPORTUNITIES) -> list[DetectionOpportunity]:
+    """At most ``limit`` per-route rules, taken round-robin across rule ids
+    so no class (often BOLA, generated last) is the one always dropped.
+    Kept rules stay in their original order."""
+    if len(opportunities) <= limit:
+        return opportunities
+    by_rule: dict[str, list[int]] = {}
+    for index, opp in enumerate(opportunities):
+        by_rule.setdefault(opp.related_rule_ids[0] if opp.related_rule_ids else "", []).append(index)
+    keep: set[int] = set()
+    queues = list(by_rule.values())
+    depth = 0
+    while len(keep) < limit and any(depth < len(q) for q in queues):
+        for queue in queues:
+            if depth < len(queue) and len(keep) < limit:
+                keep.add(queue[depth])
+        depth += 1
+    return [opp for index, opp in enumerate(opportunities) if index in keep]
+
+
+def detection_coverage(
+    findings: list[Finding], opportunities: list[DetectionOpportunity]
+) -> list[dict[str, object]]:
+    """Per finding class (rule id) in this report: how many deployable rules
+    cover it and from which log sources (#251)."""
+    rows: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for finding in findings:
+        rule_id = finding.rule_id
+        if not rule_id or rule_id in seen or rule_id in INFORMATIONAL_RULES:
+            continue
+        seen.add(rule_id)
+        covering = [o for o in opportunities if o.sigma is not None and rule_id in o.related_rule_ids]
+        sources: list[str] = []
+        for opp in covering:
+            label = opp.logsource.label() if opp.logsource else "unknown"
+            if label not in sources:
+                sources.append(label)
+        rows.append(
+            {
+                "rule_id": rule_id,
+                "title": finding.title,
+                "sigma_rules": len(covering),
+                "correlation_rules": sum(1 for o in covering if o.sigma_correlation is not None),
+                "logsources": sources,
+            }
+        )
+    return rows
 
 
 _UBIQUITOUS = frozenset({"T1190"})
@@ -403,4 +944,4 @@ def _parent(technique_id: str) -> str:
     return technique_id.split(".", 1)[0]
 
 
-__all__ = ["generate_detection_opportunities"]
+__all__ = ["SIGMA_POINTER", "detection_coverage", "generate_detection_opportunities"]
