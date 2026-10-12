@@ -317,21 +317,24 @@ class _Blocks:
             elif ch == "}" and stack:
                 self.closes[stack.pop()] = k + 1
 
-    def innermost(self, offset: int) -> int:
-        """Index of the innermost block containing ``offset``, or -1."""
-        index = bisect.bisect_left(self.opens, offset) - 1
-        while index >= 0 and self.closes[index] <= offset:
-            index = self.parents[index]
-        return index
-
-    def inside_http(self, offset: int) -> bool:
-        index = self.innermost(offset)
-        return index >= 0 and self.under_http[index]
-
-    def span(self, offset: int, length: int) -> tuple[int, int]:
-        """The innermost block's span (the whole text when there is none)."""
-        index = self.innermost(offset)
-        return (0, length) if index < 0 else (self.opens[index], self.closes[index])
+    def innermost_each(self, offsets: list[int]) -> list[int]:
+        """Innermost block index (or -1) for each of ``offsets`` (ascending),
+        in one sweep with a stack of open blocks: O(blocks + offsets) however
+        deep the nesting or many the matches."""
+        out: list[int] = []
+        stack: list[int] = []
+        next_open = 0
+        total = len(self.opens)
+        for offset in offsets:
+            while next_open < total and self.opens[next_open] < offset:
+                while stack and self.closes[stack[-1]] <= self.opens[next_open]:
+                    stack.pop()
+                stack.append(next_open)
+                next_open += 1
+            while stack and self.closes[stack[-1]] <= offset:
+                stack.pop()
+            out.append(stack[-1] if stack else -1)
+        return out
 
 
 def find_jvm_csrf_disabled(root: str | Path) -> list[WebHardeningIssue]:
@@ -361,20 +364,24 @@ def find_jvm_csrf_disabled(root: str | Path) -> list[WebHardeningIssue]:
 def _jvm_csrf_issues(content: str, rel: str) -> list[WebHardeningIssue]:
     masked = mask_jvm_comments_and_strings(content, nested_comments=rel.endswith(".kt"))
     blocks = _Blocks(masked)
-    offsets = [m.start() for m in _SPRING_CSRF_BUILDER.finditer(masked)]
-    offsets += [m.start() for m in _KOTLIN_CSRF_DSL.finditer(masked) if blocks.inside_http(m.start())]
-    stateless_offsets = [m.start() for m in _STATELESS_SESSION.finditer(masked)]
+    builder = [m.start() for m in _SPRING_CSRF_BUILDER.finditer(masked)]
+    dsl = [m.start() for m in _KOTLIN_CSRF_DSL.finditer(masked)]
+    dsl_blocks = blocks.innermost_each(dsl)
+    offsets = sorted(builder + [o for o, b in zip(dsl, dsl_blocks) if b >= 0 and blocks.under_http[b]])
+    enclosing = blocks.innermost_each(offsets)
+    stateless_offsets = [m.start() for m in _STATELESS_SESSION.finditer(masked)]  # ascending
     out: list[WebHardeningIssue] = []
     seen: set[int] = set()
-    for offset in sorted(offsets):
+    for offset, block in zip(offsets, enclosing):
         line = line_number(content, offset)
         if line in seen:
             continue
         seen.add(line)
         # A stateless session policy in the same config block (method body or
-        # DSL block), not merely somewhere in the file.
-        lo, hi = blocks.span(offset, len(masked)) if stateless_offsets else (0, 0)
-        stateless = any(lo <= other < hi for other in stateless_offsets)
+        # DSL block), not merely somewhere in the file: one bisect.
+        lo, hi = (0, len(masked)) if block < 0 else (blocks.opens[block], blocks.closes[block])
+        first = bisect.bisect_left(stateless_offsets, lo)
+        stateless = first < len(stateless_offsets) and stateless_offsets[first] < hi
         out.append(
             WebHardeningIssue(
                 kind="csrf_disabled",

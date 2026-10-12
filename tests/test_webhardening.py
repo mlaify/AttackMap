@@ -383,13 +383,21 @@ def test_masking_keeps_offsets_and_never_raises() -> None:
     assert len(masked) == len(text) and masked.count("\n") == text.count("\n")
     from attackmap.webhardening import _Blocks
 
-    for sample in ("", "}", "{", "{{}}}", "a { b { c } d", "}{}{{}"):
-        blocks = _Blocks(sample)
-        for offset in range(len(sample) + 1):
-            lo, hi = blocks.span(offset, len(sample))
-            assert 0 <= lo <= hi <= len(sample)
+    def naive(text: str, offset: int) -> int:
+        # Reference: innermost block whose span contains the offset.
+        blocks = _Blocks(text)
+        inside = [i for i in range(len(blocks.opens)) if blocks.opens[i] < offset < blocks.closes[i]]
+        return max(inside, key=lambda i: blocks.opens[i]) if inside else -1
+
+    samples = ["", "}", "{", "{{}}}", "a { b { c } d", "}{}{{}", "a { b { c } d } e"]
+    rng = random.Random(360)
+    samples += ["".join(rng.choice("{}ab") for _ in range(rng.randint(0, 25))) for _ in range(300)]
+    for sample in samples:
+        offsets = list(range(len(sample) + 1))
+        got = _Blocks(sample).innermost_each(offsets)
+        assert got == [naive(sample, o) for o in offsets], sample
     blocks = _Blocks("a { b { c } d } e")
-    assert blocks.span(8, 17) == (6, 11) and blocks.span(12, 17) == (2, 15) and blocks.span(16, 17) == (0, 17)
+    assert blocks.innermost_each([8, 12, 16]) == [1, 0, -1]
     assert masked.split() == ["a", "d", "k"]
     rng = random.Random(341)
     alphabet = "/*\"'\\\n ab{}"
@@ -432,6 +440,25 @@ def test_jvm_csrf_pass_is_linear_on_large_files() -> None:
     start = time.perf_counter()
     assert len(_jvm_csrf_issues(body, "Big.kt")) == 28_000
     assert time.perf_counter() - start < 5.0
+    # Deep nesting closed just before many matches (and a stateless policy
+    # in the method, so each match needs its block): walking the parents
+    # per match was quadratic.
+    deep = "class C {\n  void f(HttpSecurity h) {\n    " + "{" * 20_000 + "}" * 20_000 + "\n"
+    deep += "    h.csrf().disable();\n" * 20_000
+    deep += "    h.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n  }\n}\n"
+    start = time.perf_counter()
+    issues = _jvm_csrf_issues(deep, "Deep.java")
+    assert len(issues) == 20_000 and all(i.severity == "low" for i in issues)
+    assert time.perf_counter() - start < 3.0
+    # Many stateless policies and many matches: checking every policy per
+    # match was quadratic.
+    many = "class C {\n" + (
+        "  void f(HttpSecurity h) { h.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS)); }\n"
+    ) * 16_000 + "  void g(HttpSecurity h) {\n" + "    h.csrf().disable();\n" * 30_000 + "  }\n}\n"
+    start = time.perf_counter()
+    issues = _jvm_csrf_issues(many, "Many.java")
+    assert len(issues) == 30_000 and all(i.severity == "medium" for i in issues)
+    assert time.perf_counter() - start < 3.0
     java = "class C {\n  void f(HttpSecurity h) {\n" + "    h.csrf().disable();\n" * 30_000
     java += "    h.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n  }\n}\n"
     start = time.perf_counter()
