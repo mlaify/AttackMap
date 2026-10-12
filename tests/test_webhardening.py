@@ -299,3 +299,98 @@ def test_scan_repo_clean_config_no_web_findings(tmp_path: Path) -> None:
     )
     scan = scan_repo(tmp_path)
     assert scan.web_hardening_issues == []
+
+
+# ---------------------------------------------------------------------------
+# #341 review: comments, strings and context
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("block.java", "class C {\n  /*\n   * http.csrf().disable();\n   */\n  void f() {}\n}\n"),
+        ("trailing.java", "class C {\n  void f(HttpSecurity http) { http.cors(); // was: .csrf().disable()\n  }\n}\n"),
+        ("string.java", 'class C {\n  String doc = "call http.csrf().disable() to turn it off";\n}\n'),
+        ("textblock.kt", 'val doc = """\n  http { csrf { disable() } }\n"""\n'),
+        ("nested.kt", "/* outer /* inner */ http { csrf { disable() } } */\nval x = 1\n"),
+        ("unrelated.kt", "fun build() {\n    myDsl {\n        csrf { disable() }\n    }\n}\n"),
+        ("toplevel.kt", "fun f() = csrf { disable() }\n"),
+    ],
+)
+def test_jvm_csrf_ignores_comments_strings_and_unrelated_dsls(tmp_path: Path, name: str, text: str) -> None:
+    (tmp_path / name).write_text(text, encoding="utf-8")
+    assert _csrf_issues(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("@Bean\nfun chain(http: HttpSecurity): SecurityFilterChain {\n    http.csrf { it.disable() }\n    return http.build()\n}\n", 3),
+        ("fun chain(http: HttpSecurity) {\n    http.csrf { c -> c.disable() }\n}\n", 2),
+        (
+            "fun chain(http: ServerHttpSecurity) = http {\n"
+            "    authorizeExchange { authorize(anyExchange, authenticated) }\n"
+            "    csrf { disable() }\n"
+            "}\n",
+            3,
+        ),
+        ("fun chain(http: HttpSecurity) {\n    http.invoke {\n        csrf { disable() }\n    }\n}\n", 3),
+    ],
+)
+def test_kotlin_forms_in_a_security_context(tmp_path: Path, text: str, line: int) -> None:
+    (tmp_path / "Security.kt").write_text(text, encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == line
+
+
+def test_stateless_policy_elsewhere_in_the_file_does_not_downgrade(tmp_path: Path) -> None:
+    far = "\n" * 40
+    (tmp_path / "SecurityConfig.java").write_text(
+        _JAVA_CONFIG + far + "class Other { void f(HttpSecurity h) { h.sessionManagement(s -> "
+        "s.sessionCreationPolicy(SessionCreationPolicy.STATELESS)); } }\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "medium"
+
+
+def test_stateless_policy_in_the_same_chain_far_below_still_downgrades(tmp_path: Path) -> None:
+    chain = "    http.csrf(csrf -> csrf.disable())\n" + "      .cors(c -> {})\n" * 40
+    chain += "      .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n"
+    (tmp_path / "Sec.java").write_text("class Sec {\n  void f(HttpSecurity http) {\n" + chain + "  }\n}\n", encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "low"
+
+
+def test_kotlin_dsl_stateless_in_the_same_block(tmp_path: Path) -> None:
+    (tmp_path / "Sec.kt").write_text(
+        "fun f(http: HttpSecurity) {\n    http {\n        csrf { disable() }\n"
+        "        sessionManagement { sessionCreationPolicy = SessionCreationPolicy.STATELESS }\n    }\n}\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "low"
+
+
+def test_masking_keeps_offsets_and_never_raises() -> None:
+    import random
+
+    from attackmap.webhardening import mask_jvm_comments_and_strings
+
+    text = 'a /* b "c" */ d // e\n"f\\"g" \'h\' """i\nj""" k'
+    masked = mask_jvm_comments_and_strings(text)
+    assert len(masked) == len(text) and masked.count("\n") == text.count("\n")
+    from attackmap.webhardening import _enclosing_block
+
+    for sample in ("", "}", "{", "{{}}}", "a { b { c } d"):
+        for offset in range(len(sample) + 1):
+            lo, hi = _enclosing_block(sample, offset)
+            assert 0 <= lo <= hi <= len(sample)
+    assert masked.split() == ["a", "d", "k"]
+    rng = random.Random(341)
+    alphabet = "/*\"'\\\n ab{}"
+    for _ in range(2000):
+        sample = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 30)))
+        out = mask_jvm_comments_and_strings(sample)
+        assert len(out) == len(sample)

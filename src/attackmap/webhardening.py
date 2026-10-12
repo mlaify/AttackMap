@@ -115,18 +115,23 @@ def has_csrf_protection(content: str) -> bool:
     return False
 
 
-# Spring Security turning CSRF protection off: the Java builder
-# (`csrf().disable()`, `csrf(c -> c.disable())`, `csrf(AbstractHttpConfigurer::disable)`)
-# and the Kotlin DSL (`csrf { disable() }`, #341). Core's per-file pass
-# doesn't read .java/.kt files, so `find_jvm_csrf_disabled` runs it over them.
-_SPRING_CSRF_DISABLED = _rx(
+# Spring Security turning CSRF protection off. The builder forms are method
+# calls on the security config (`csrf().disable()`, `csrf(c -> c.disable())`,
+# `csrf(AbstractHttpConfigurer::disable)`, Kotlin `.csrf { it.disable() }`);
+# the Kotlin DSL `csrf { disable() }` (#341) only counts inside an `http { }`
+# block. Core's per-file pass doesn't read .java/.kt files, so
+# `find_jvm_csrf_disabled` runs these over them.
+_SPRING_CSRF_BUILDER = _rx(
     r"\.csrf\s*\(\s*\)\s*\.\s*disable\s*\("
     r"|csrf\s*\(\s*(?:[\w.]+\s*->\s*[\w.]+\s*\.\s*disable\s*\(\)|[\w.:]+::disable)\s*\)"
-    r"|\bcsrf\s*\{\s*disable\s*\(\s*\)\s*\}"
+    r"|\.\s*csrf\s*\{\s*(?:it|\w+\s*->\s*\w+)\s*\.\s*disable\s*\(\s*\)\s*\}"
 )
+_KOTLIN_CSRF_DSL = _rx(r"\bcsrf\s*\{\s*disable\s*\(\s*\)\s*\}")
+_SPRING_CSRF_DISABLED = _rx(_SPRING_CSRF_BUILDER.pattern + "|" + _KOTLIN_CSRF_DSL.pattern)
+# The opener of a Kotlin security DSL block: `http {` (HttpSecurity and
+# ServerHttpSecurity both use it) or `http.invoke {`.
+_HTTP_DSL_OPENER = re.compile(r"\bhttp\s*(?:\.\s*invoke\s*)?\Z")
 _JVM_SUFFIXES = frozenset({".java", ".kt"})
-# A stateless session policy in the same config: the usual bearer-token API,
-# where disabling CSRF is the documented setup. Reported, but at low severity.
 _STATELESS_SESSION = _rx(r"SessionCreationPolicy\s*\.\s*STATELESS\b")
 
 
@@ -233,11 +238,107 @@ def find_web_hardening_issues(content: str, rel_file: str) -> list[WebHardeningI
     return out
 
 
+def mask_jvm_comments_and_strings(text: str) -> str:
+    """``text`` with Java/Kotlin comments, string and char literals replaced
+    by spaces (newlines kept), so offsets and line numbers are unchanged.
+    Handles `//`, nested `/* */` (Kotlin nests them; Java code doesn't), `"…"`
+    with escapes, `\"\"\"…\"\"\"` text blocks and `'c'`. Never raises; an
+    unterminated construct masks to the end of the text."""
+    out = list(text)
+    n = len(text)
+    i = 0
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if ch == "/" and nxt == "/":
+            end = text.find("\n", i)
+            end = n if end == -1 else end
+            blank(i, end)
+            i = end
+        elif ch == "/" and nxt == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(i, j)
+            i = j
+        elif text.startswith('"""', i):
+            end = text.find('"""', i + 3)
+            end = n if end == -1 else end + 3
+            blank(i, end)
+            i = end
+        elif ch in "\"'":
+            j = i + 1
+            while j < n and text[j] != ch and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            end = min(j + 1, n)
+            blank(i, end)
+            i = end
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _inside_http_dsl(masked: str, offset: int, limit: int = 20_000) -> bool:
+    """Whether ``offset`` sits inside a block opened by `http {` (walking
+    out through enclosing braces, at most ``limit`` characters back)."""
+    depth = 0
+    floor = max(0, offset - limit)
+    for k in range(offset - 1, floor - 1, -1):
+        ch = masked[k]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            if depth:
+                depth -= 1
+            elif _HTTP_DSL_OPENER.search(masked, max(floor, k - 40), k):
+                return True
+    return False
+
+
+def _enclosing_block(masked: str, offset: int, limit: int = 20_000) -> tuple[int, int]:
+    """Span of the innermost `{ … }` block around ``offset`` (the method
+    body or DSL block holding the CSRF call); the whole text if none is found
+    within ``limit`` characters."""
+    depth = 0
+    start = -1
+    for k in range(offset - 1, max(0, offset - limit) - 1, -1):
+        if masked[k] == "}":
+            depth += 1
+        elif masked[k] == "{":
+            if not depth:
+                start = k
+                break
+            depth -= 1
+    if start < 0:
+        return 0, len(masked)
+    depth = 0
+    for k in range(start, min(len(masked), start + 2 * limit)):
+        if masked[k] == "{":
+            depth += 1
+        elif masked[k] == "}":
+            depth -= 1
+            if not depth:
+                return start, k + 1
+    return start, len(masked)
+
+
 def find_jvm_csrf_disabled(root: str | Path) -> list[WebHardeningIssue]:
     """`csrf_disabled` in Spring Security config written in Java or Kotlin
     (#341). Whole-repo pass: core's per-file scan covers Python/JS/TS/Go/PHP
     only, so without it the Spring forms above were never checked. Test and
-    vendored files are skipped, and so are matches on comment lines."""
+    vendored files are skipped; comments and string literals are masked
+    before matching; the Kotlin DSL form needs an enclosing `http { }`."""
     root_path = Path(root)
     out: list[WebHardeningIssue] = []
     for path in walk_repo(root_path, prune=is_skipped_dir):
@@ -252,28 +353,37 @@ def find_jvm_csrf_disabled(root: str | Path) -> list[WebHardeningIssue]:
             continue
         if "csrf" not in content:
             continue
-        stateless = _STATELESS_SESSION.search(content) is not None
-        seen: set[int] = set()
-        for match in _SPRING_CSRF_DISABLED.finditer(content):
-            start = content.rfind("\n", 0, match.start()) + 1
-            prefix = content[start:match.start()].lstrip()
-            if prefix.startswith(("//", "/*", "*")):
-                continue
-            line = line_number(content, match.start())
-            if line in seen:
-                continue
-            seen.add(line)
-            out.append(
-                WebHardeningIssue(
-                    kind="csrf_disabled",
-                    file=rel,
-                    line=line,
-                    evidence_text=_snippet(content, match.start())
-                    + (" [stateless session policy in this config]" if stateless else ""),
-                    severity="low" if stateless else "medium",
-                    source_analyzer="webhardening",
-                )
+        out.extend(_jvm_csrf_issues(content, rel))
+    return out
+
+
+def _jvm_csrf_issues(content: str, rel: str) -> list[WebHardeningIssue]:
+    masked = mask_jvm_comments_and_strings(content)
+    offsets = [m.start() for m in _SPRING_CSRF_BUILDER.finditer(masked)]
+    offsets += [m.start() for m in _KOTLIN_CSRF_DSL.finditer(masked) if _inside_http_dsl(masked, m.start())]
+    stateless_offsets = [m.start() for m in _STATELESS_SESSION.finditer(masked)]
+    out: list[WebHardeningIssue] = []
+    seen: set[int] = set()
+    for offset in sorted(offsets):
+        line = line_number(content, offset)
+        if line in seen:
+            continue
+        seen.add(line)
+        # A stateless session policy in the same config block (method body or
+        # DSL block), not merely somewhere in the file.
+        lo, hi = _enclosing_block(masked, offset) if stateless_offsets else (0, 0)
+        stateless = any(lo <= other < hi for other in stateless_offsets)
+        out.append(
+            WebHardeningIssue(
+                kind="csrf_disabled",
+                file=rel,
+                line=line,
+                evidence_text=_snippet(content, offset)
+                + (" [stateless session policy in this config]" if stateless else ""),
+                severity="low" if stateless else "medium",
+                source_analyzer="webhardening",
             )
+        )
     return out
 
 
@@ -352,4 +462,9 @@ def _snippet(content: str, offset: int, radius: int = 120) -> str:
     return line[:radius] + ("…" if len(line) > radius else "")
 
 
-__all__ = ["find_jvm_csrf_disabled", "find_web_hardening_issues", "has_csrf_protection"]
+__all__ = [
+    "find_jvm_csrf_disabled",
+    "find_web_hardening_issues",
+    "has_csrf_protection",
+    "mask_jvm_comments_and_strings",
+]
