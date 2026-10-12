@@ -1,1 +1,10 @@
-* @mlaifyxyz
+# .github/CODEOWNERS for the repos where mlaify-agent merges its own pull requests
+# (operator decision 2026-10-12, AI-AGENTS-CVP.md "Agent self-merge").
+# Only these paths need the operator's approval. Everything else has no owner, so the
+# agent may merge once the required checks pass and it has posted its self-review.
+/.github/               @mlaifyxyz
+/CODEOWNERS             @mlaifyxyz
+/docs/CODEOWNERS        @mlaifyxyz
+*.entitlements          @mlaifyxyz
+*.xcconfig              @mlaifyxyz
+ExportOptions*.plist    @mlaifyxyz
