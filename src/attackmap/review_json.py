@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from .detection_opportunities import detection_coverage
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .security_overlay import build_security_overlay
 
-SCHEMA_VERSION = "1.4.0"  # 1.3.0: weaknesses[].locations (#214); 1.4.0: weaknesses[].rule_id/taxonomy (#250)
+# 1.3.0: weaknesses[].locations (#214); 1.4.0: weaknesses[].rule_id/taxonomy
+# (#250); 1.5.0: detection_opportunities[].sigma/... and detection_coverage (#251)
+SCHEMA_VERSION = "1.5.0"
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
 
@@ -259,6 +262,7 @@ def build_defensive_review_json(
         "controls": [control.model_dump() for control in overlay.controls],
         "notable_observations": [insight.model_dump() for insight in overlay.insights],
         "detection_opportunities": [opp.model_dump() for opp in overlay.detection_opportunities],
+        "detection_coverage": detection_coverage(overlay.findings, overlay.detection_opportunities),
         "attack_techniques_observed": _flatten_attack_techniques(overlay),
         "strengths": _strengths(scan, attack_surfaces),
         "weaknesses_risk_hotspots": {
@@ -285,7 +289,8 @@ def build_defensive_review_json(
                 "Low-quality paths (tests/fixtures/mocks/examples) are retained in raw signals but separated in evidence class counts.",
                 "Use this artifact as a triage source-of-truth; validate high-priority items with repository context and runtime controls.",
                 "Assets, controls, and notable observations are heuristic overlays; absent-control entries indicate scanner did not find evidence, not necessarily that the control is missing in production.",
-                "ATT&CK technique mappings and detection opportunities are derived from insight kinds and finding-title keywords; treat them as triage hooks for SIEM/detection-engineering work, not authoritative MITRE mappings.",
+                "ATT&CK technique mappings and detection opportunities are derived from insight kinds and finding rule ids; treat them as triage hooks for SIEM/detection-engineering work, not authoritative MITRE mappings.",
+                "Generated Sigma rules are status experimental: map their log-source fields to your pipeline and tune them on your own traffic before alerting on them.",
             ],
         },
     }

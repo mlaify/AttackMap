@@ -224,6 +224,66 @@ def test_unauthenticated_admin_route_resolved_per_route(tmp_path: Path) -> None:
     assert not any("/admin/reset" in e for e in findings[0].evidence)
 
 
+# Authentication entry points under an admin prefix (#328): the login step
+# can't require authentication, so it is an `auth` surface, not an admin action.
+
+_ADMIN_LOGIN_APP = (
+    "const express = require('express');\n"
+    "const app = express();\n"
+    "app.use(express.json());\n"
+    "app.post('/admin/login', async (req, res) => { res.json(await Admin.check(req.body)); });\n"
+    "app.post('/admin/auth/token', async (req, res) => { res.json(await issue(req.body)); });\n"
+    "app.post('/admin/logout', (req, res) => { res.clearCookie('sid').end(); });\n"
+    "app.post('/admin/password/reset', (req, res) => { mailer.reset(req.body.email); res.end(); });\n"
+    "app.post('/admin/oauth/google/callback', (req, res) => { res.end(); });\n"
+    "app.post('/admin/users', (req, res) => { db.users.insert(req.body); res.end(); });\n"
+    "app.post('/admin/login-as/:id', (req, res) => { res.cookie('as', req.params.id).end(); });\n"
+    "app.post('/admin/users/:id/logout', (req, res) => { db.sessions.drop(req.params.id); res.end(); });\n"
+    "app.post('/admin/api/token', (req, res) => { res.json(db.tokens.mint(req.body)); });\n"
+)
+_ADMIN_ENTRY_POINTS = {"/admin/login", "/admin/auth/token", "/admin/logout", "/admin/password/reset", "/admin/oauth/google/callback"}
+_ADMIN_ACTIONS = {"/admin/users", "/admin/login-as/:id", "/admin/users/:id/logout", "/admin/api/token"}
+
+
+def _routes_in(finding) -> set[str]:
+    return {e.split(" ", 2)[1] for e in finding.evidence if e.startswith(("POST ", "GET "))}
+
+
+def test_admin_login_is_not_an_unauthenticated_admin_action(tmp_path: Path) -> None:
+    scan = _write(tmp_path, "server.js", _ADMIN_LOGIN_APP)
+    findings = generate_findings(scan)
+    unauth = [f for f in findings if f.rule_id == "unauth-state-change"]
+    exposed = [f for f in findings if f.rule_id == "exposed-admin-route"]
+    assert len(unauth) == 1 and len(exposed) == 1
+    assert _routes_in(unauth[0]) == _ADMIN_ACTIONS
+    assert _routes_in(exposed[0]) == _ADMIN_ACTIONS
+    categories = {s.route: s.category for s in identify_attack_surfaces(scan)}
+    assert {categories[r] for r in _ADMIN_ENTRY_POINTS} == {"auth"}
+    assert {categories[r] for r in _ADMIN_ACTIONS} == {"admin"}
+
+
+def test_admin_login_alone_raises_no_admin_findings(tmp_path: Path) -> None:
+    scan = _write(
+        tmp_path,
+        "server.js",
+        "const app = require('express')();\n"
+        "app.post('/admin/login', async (req, res) => { res.json(await Admin.check(req.body)); });\n",
+    )
+    rules = {f.rule_id for f in generate_findings(scan)}
+    assert not rules & {"unauth-state-change", "exposed-admin-route"}
+
+
+def test_admin_login_is_not_an_admin_action_insight() -> None:
+    from attackmap.security_overlay import build_security_overlay
+
+    routes = [Route(path=p, method="POST", file="server.js", line=i + 1) for i, p in enumerate(["/admin/login", "/admin/users"])]
+    scan = ScanResult(root=".", routes=routes)
+    overlay = build_security_overlay(scan, identify_attack_surfaces(scan), [], [])
+    flagged = [i for i in overlay.insights if i.kind == "admin_action_without_auth"]
+    assert flagged and all("/admin/login " not in e for i in flagged for e in i.evidence)
+    assert any("/admin/users" in e for i in flagged for e in i.evidence)
+
+
 def test_internal_path_route_in_scope(tmp_path: Path) -> None:
     scan = _write(
         tmp_path,

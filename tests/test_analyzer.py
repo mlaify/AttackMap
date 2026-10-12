@@ -1,4 +1,13 @@
-from attackmap.analyzer import identify_attack_surfaces, summarize_architecture, summarize_attack_surface
+import random
+
+import pytest
+
+from attackmap.analyzer import (
+    identify_attack_surfaces,
+    is_auth_entry_point,
+    summarize_architecture,
+    summarize_attack_surface,
+)
 from attackmap.graph import build_graph
 from attackmap.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult
 
@@ -205,3 +214,84 @@ def test_auth_hint_without_line_still_attaches_to_same_file_routes() -> None:
     )
     surfaces = identify_attack_surfaces(scan)
     assert "jwt" in surfaces[0].auth_signals
+
+
+# Authentication entry points under an admin prefix (#328).
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/login",
+        "/admin/login/",
+        "/Admin/Sign-In",
+        "/admin/login.php",
+        "/admin/api/v2/auth/login",
+        "/admin/logout",
+        "/admin/auth/token",
+        "/admin/oauth/token",
+        "/admin/auth/token/refresh",
+        "/admin/oauth/callback",
+        "/admin/auth/google/callback",
+        "/admin/forgot-password",
+        "/admin/password/reset",
+        "/admin/password/email",
+        "/manage/login",
+    ],
+)
+def test_auth_entry_points_under_an_admin_prefix(path: str) -> None:
+    assert is_auth_entry_point(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin",
+        "/admin/users",
+        "/admin/login-as/:id",
+        "/admin/impersonate/login",
+        "/admin/users/:id/logout",
+        "/admin/users/{id}/reset-password",
+        "/admin/users/login",
+        "/admin/sessions/<sid>/logout",
+        "/admin/token",
+        "/admin/api/token",
+        "/admin/callback",
+        "/admin/reset",
+        "/admin/email",
+        "/admin/auth/:provider/callback",
+        "/admin/loginhistory",
+        "/admin/accounts/reset-password",
+        "/admin/account/login",
+        "/admin/staff/password/email",
+        "/admin/administrators/reset-password",
+        "/admin/admin-users/logout",
+        "/admin/manage-users/reset-password",
+        "/admin/sessions/logout",
+        "/admin/session/logout",
+    ],
+)
+def test_admin_actions_are_not_auth_entry_points(path: str) -> None:
+    assert not is_auth_entry_point(path)
+
+
+def test_auth_entry_point_never_raises_on_garbage() -> None:
+    rng = random.Random(328)
+    alphabet = "/:{}<>.?#*-_ aAzZ09\\\x00é"
+    for _ in range(2000):
+        path = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 60)))
+        assert is_auth_entry_point(path) in (True, False)
+    assert is_auth_entry_point("/" * 10_000 + "login") is True
+    assert is_auth_entry_point("/admin/" * 5_000 + "login") is False
+
+
+def test_admin_login_surface_is_auth_not_admin() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[
+            Route(path="/admin/login", method="POST", file="api.py"),
+            Route(path="/admin/users", method="POST", file="api.py"),
+            Route(path="/logout", method="POST", file="api.py"),
+        ],
+    )
+    categories = {s.route: s.category for s in identify_attack_surfaces(scan)}
+    assert categories == {"/admin/login": "auth", "/admin/users": "admin", "/logout": "public_api"}

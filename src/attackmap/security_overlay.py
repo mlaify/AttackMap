@@ -59,7 +59,9 @@ def build_security_overlay(
     )
     insights = annotate_insights(raw_insights)
     annotated_findings = annotate_findings(findings)
-    detection_opportunities = generate_detection_opportunities(insights, annotated_findings)
+    detection_opportunities = generate_detection_opportunities(
+        insights, annotated_findings, scan, attack_surfaces
+    )
     return SecurityOverlay(
         assets=assets,
         controls=controls,
