@@ -189,6 +189,94 @@ def test_tainted_host_in_url_is_ssrf(tmp_path: Path) -> None:
     assert ssrf and ssrf[0].source_line == 8
 
 
+# Redirect targets (#327): a literal that pins scheme + host and closes the
+# authority leaves request data only in the path/query/fragment, which can't
+# send the user to another site.
+
+_REDIRECT_ROUTES_JS = [
+    # (route, redirect argument, expected open redirect)
+    ("/sso/start", "`https://sso.example.com/authorize?${new URLSearchParams({ login_hint: req.query.email })}`", False),
+    ("/sso/query", "'https://sso.example.com?next=' + req.query.next", False),
+    ("/sso/fragment", "`https://app.example.com#${req.query.tab}`", False),
+    ("/sso/path", "'https://docs.example.com/' + req.query.page", False),
+    ("/local", "`/orders/${req.query.id}`", False),
+    ("/bad/host", "`https://${req.query.host}/welcome`", True),
+    ("/bad/suffix", "`https://sso.example.com${req.query.p}`", True),
+    ("/bad/userinfo", "'https://sso.example.com' + req.query.p", True),
+    ("/bad/scheme", "`${req.query.scheme}://sso.example.com/`", True),
+    ("/bad/start", "req.query.next", True),
+    ("/bad/protocol-relative", "'//' + req.query.host", True),
+    ("/bad/script", "'javascript://example.com/' + req.query.code", True),
+]
+
+
+def _tainted_redirects(chains: list[TaintChain]) -> set[tuple[str, int]]:
+    return {
+        (c.route_path, c.sink_line)
+        for c in chains
+        if c.sink_kind == "open_redirect" and c.source_kind and not c.sanitized
+    }
+
+
+def test_redirect_to_a_fixed_host_is_not_an_open_redirect_js(tmp_path: Path) -> None:
+    lines = ["const express = require('express');", "const app = express();"]
+    routes: list[Route] = []
+    sinks: dict[str, int] = {}
+    for path, target, _ in _REDIRECT_ROUTES_JS:
+        lines.append(f"app.get('{path}', (req, res) => {{")
+        routes.append(Route(path=path, method="GET", file="server.js", line=len(lines)))
+        lines.append(f"  res.redirect({target});")
+        sinks[path] = len(lines)
+        lines.append("});")
+    (tmp_path / "server.js").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    scan = ScanResult(root=str(tmp_path), routes=routes)
+    found = _tainted_redirects(analyze_taint(scan, tmp_path))
+    expected = {(path, sinks[path]) for path, _, vuln in _REDIRECT_ROUTES_JS if vuln}
+    assert found == expected
+
+
+@pytest.mark.parametrize(
+    "target, vulnerable",
+    [
+        ('f"https://sso.example.com/authorize?{urlencode(dict(hint=q))}"', False),
+        ('f"https://sso.example.com/?next={q}"', False),
+        ('"https://sso.example.com?next=%s" % q', False),
+        ('"https://sso.example.com/{}".format(q)', False),
+        ('f"https://{q}/welcome"', True),
+        ('f"https://sso.example.com{q}"', True),
+        ('f"//{q}"', True),
+        ("q", True),
+    ],
+)
+def test_redirect_to_a_fixed_host_is_not_an_open_redirect_py(tmp_path: Path, target: str, vulnerable: bool) -> None:
+    chains = _flask(tmp_path, f'    q = request.args["next"]\n    return redirect({target})')
+    assert bool(_tainted_redirects(chains)) is vulnerable
+
+
+def test_fixed_host_redirect_raises_no_finding_but_a_tainted_host_does(tmp_path: Path) -> None:
+    (tmp_path / "server.js").write_text(
+        "const express = require('express');\n"
+        "const app = express();\n"
+        "app.get('/sso/start', (req, res) => {\n"
+        "  const params = new URLSearchParams({ client_id: 'web', login_hint: req.query.email });\n"
+        "  res.redirect(`https://sso.example.com/authorize?${params}`);\n"
+        "});\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert not [f for f in generate_findings(scan) if f.rule_id == "open-redirect"]
+    (tmp_path / "server.js").write_text(
+        "const express = require('express');\n"
+        "const app = express();\n"
+        "app.get('/sso/start', (req, res) => {\n"
+        "  res.redirect(`https://${req.query.idp}/authorize`);\n"
+        "});\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert [f for f in generate_findings(scan) if f.rule_id == "open-redirect"]
+
+
 def test_ip_address_used_only_for_logging_does_not_sanitize_ssrf(tmp_path: Path) -> None:
     chains = _flask(
         tmp_path,
