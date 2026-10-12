@@ -169,7 +169,7 @@
           "file": "partner.js",
           "line": 8,
           "severity": "high",
-          "note": "jsonwebtoken verify with a public key and no algorithms list (RS256 -> HS256 confusion on jsonwebtoken < 9)."
+          "note": "jsonwebtoken verify with a public key and no algorithms list. Rated high whatever the library version, because the code relies on the library default instead of pinning RS256: jsonwebtoken < 9 accepts an HS256 token signed with the public key; the 9.x pinned in package.json blocks that swap with a key-type check."
         },
         {
           "category": "token_auth",
