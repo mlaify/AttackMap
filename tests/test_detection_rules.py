@@ -429,7 +429,12 @@ def test_review_json_validates_against_the_schema() -> None:
         ("/blog/[slug]", "/blog/hello", ["/blog/a/b"]),
         ("/files/*", "/files/a/b.txt", ["/other/a"]),
         ("/api/:id/*", "/api/7/x/y", ["/api/x"]),
-        ("/a.b/<id>", "/a.b/1", ["/aXb/1"]),
+        ("/api.v2/<id>", "/api.v2/1", ["/apiXv2/1"]),
+        ("/users/:id?", "/users", ["/users/1/x", "/usersX"]),
+        ("/badge/<int:s>/<uuid:k>.<slug:f>", "/badge/1/abc.svg", ["/badge/1/abc", "/badge/1/a/b.svg"]),
+        ("/v1/things:batchGet", "/v1/things:batchGet", ["/v1/things:other", "/v1/x:batchGet"]),
+        ("/hooks/~#&@<>\"", "/hooks/~#&@<>\"", ["/hooks/x"]),
+        ("/x/<id>/~raw#&", "/x/1/~raw#&", ["/x/1/raw"]),
         ("/a?b", "/a?b", ["/ab"]),
         ("/static", "/static", ["/static/x", "/STATICX"]),
     ],
@@ -443,10 +448,85 @@ def test_route_selector_scopes_parameters_to_one_segment(route: str, inside: str
         assert not sigma_matches(rule, {"cs-uri-stem": path}), path
 
 
-@pytest.mark.parametrize("route", ["/", "*", "", "/:id", "/<path:p>", "/*/*", "/**", "/:a/:b", "/{x}", "/" + "a" * 200])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/", "*", "", "/:id", "/<path:p>", "/*/*", "/**", "/:a/:b", "/{x}", "/" + "a" * 200,
+        # Near site-wide: one literal character isn't a scope.
+        "/:a.:b", "*.*", "/<p>.<ext>", "/a/:id",
+        # Too many wildcards / optional segments, non-ASCII, control characters.
+        "/api" + "/:p" * 9, "/api/:a?/:b?/:c?", "/caf\u00e9/:id", "/api/:id\n",
+    ],
+)
 def test_site_wide_and_overlong_routes_are_not_scoped(route: str) -> None:
     assert route_scopable(route) is False
     assert route_selector(route) is None
+
+
+_HOSTILE_PATHS = [
+    "/" * 5000,
+    "/x" + "/" * 5000,
+    "/x" + "/a" * 3000,
+    "a" * 10000,
+    "." * 10000,
+    "/api/" + "a." * 4000,
+    "/api/" + "~#&@" * 2000,
+    "/x" + "/" + "a" * 8000 + "/y",
+]
+
+
+def _assert_linear(regex: str) -> None:
+    import time
+
+    compiled = re.compile(regex)
+    for path in _HOSTILE_PATHS:
+        start = time.perf_counter()
+        compiled.search(path)
+        compiled.search(path + "!")
+        assert time.perf_counter() - start < 0.05, (regex, path[:20])
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/x" + "/*" * 50 + "/y",  # the round-2 ReDoS: many mid-route wildcards
+        "/x/*/*/*/y/*",
+        "/api/{a}{b}{c}{d}/data",  # adjacent parameters
+        "/api/<a>.<b>.<c>/data",
+        "/api/:id/*",
+        "/files/*",
+        "/b/<s>/<k>.<f>",
+        "/api/:a?/:b?",
+    ],
+)
+def test_route_regexes_are_linear_on_hostile_paths(route: str) -> None:
+    selector = route_selector(route)
+    if selector is not None and selector[0].endswith("|re"):
+        _assert_linear(selector[1])
+
+
+def test_every_generated_regex_passes_the_worst_case_check() -> None:
+    checked = 0
+    for root in ALL_FIXTURES:
+        for opp in _rules(root):
+            for selection in opp.sigma["detection"].values():
+                maps = selection if isinstance(selection, list) else [selection]
+                for field_map in maps:
+                    if not isinstance(field_map, dict):
+                        continue
+                    for key, value in field_map.items():
+                        if "|re" in key:
+                            _assert_linear(value)
+                            checked += 1
+    assert checked > 10
+
+
+def test_regex_literals_escape_operator_characters() -> None:
+    from attackmap.detections import regex_literal
+
+    assert regex_literal("a-b_c/d") == "a-b_c/d"
+    assert regex_literal('~#&@<>". ') == '\\~\\#\\&\\@\\<\\>\\"\\.\\ '
+    assert re.fullmatch(regex_literal("x~#&@<>\"(.)*+?[]{}|^$\\"), "x~#&@<>\"(.)*+?[]{}|^$\\")
 
 
 def test_catch_all_routes_get_no_rule(tmp_path: Path) -> None:

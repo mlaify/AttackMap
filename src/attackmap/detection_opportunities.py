@@ -18,6 +18,7 @@ from .attack_taxonomy import techniques_for_finding, techniques_for_insight
 from .detections import (
     RenderedRule,
     has_path_params,
+    regex_literal,
     render_rule,
     route_example,
     route_scopable,
@@ -437,8 +438,9 @@ def _opp_for_webhook_signatures(
 
 # Caps: one rule per (rule id, method, route), at most this many routes per
 # rule id, and a ceiling on per-route rules, shared fairly across rule ids,
-# so a huge repo can't flood the report. The finding itself still lists
-# every route; the rules cover the first ones.
+# so a huge repo can't flood the report. The two SSRF follow-ups (metadata
+# egress, CloudTrail) are per repository and sit outside the cap. The
+# finding itself still lists every route; the rules cover the first ones.
 _MAX_ROUTES_PER_RULE = 5
 _MAX_RULE_OPPORTUNITIES = 60
 
@@ -455,10 +457,6 @@ _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE", "MUTATION"})
 _QUOTED_PARAM = re.compile(r"""["']([A-Za-z0-9_][A-Za-z0-9_.\-]{0,63})["']""")
 _DOTTED_PARAM = re.compile(r"\.(?:query|params|args|form|GET)\.([A-Za-z_$][A-Za-z0-9_$]{0,63})")
 
-# Regex metacharacters to escape when folding payload markers into one
-# Sigma `re` value (narrower than `re.escape`, which also escapes `-`, `&`,
-# spaces and `#` and makes the rule harder to read).
-_REGEX_META = re.compile(r"([.^$*+?()\[\]{}|\\])")
 
 # `suggested_rule` prefix of opportunities whose prose is their Sigma rule.
 SIGMA_POINTER = "Deploy Sigma rule "
@@ -564,7 +562,7 @@ def _sigma_escape(text: str) -> str:
 
 
 def _regex_escape(text: str) -> str:
-    return _REGEX_META.sub(r"\\\1", text)
+    return regex_literal(text)
 
 
 def _payload_selector(

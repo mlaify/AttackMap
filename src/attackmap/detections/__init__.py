@@ -227,59 +227,132 @@ def _correlation(template_id: str, rule_id: str, key: str, base: dict, spec: dic
 
 # ---------------------------------------------------------------- routes
 
-_ANGLE_PARAM = re.compile(r"<[^<>/]{1,80}>")
-_COLON_PARAM = re.compile(r":[A-Za-z_][A-Za-z0-9_]{0,63}(?:\([^()/]{0,80}\))?\??")
-_BRACE_PARAM = re.compile(r"\{[^{}/]{1,80}\}")
-_BRACKET_PARAM = re.compile(r"\[{1,2}[^\[\]/]{1,80}\]{1,2}")
-_PARAM_TOKEN = "\x00"
-_PARAM_RUN = re.compile("\x00{2,}")
-_STAR_RUN = re.compile(r"\*{2,}")
-# A parameter token, a `*`, or a run of literal characters.
-_ROUTE_PARTS = re.compile("\x00|\\*|[^\x00*]+")
-_REGEX_META = re.compile(r"([.^$*+?()\[\]{}|\\])")
+# In-segment parameter syntaxes: <id>, {id}, [id] / [[...path]], and `*`.
+# `:name` counts only at the start of a segment (`/v1/things:batchGet` is a
+# literal), optionally with a `(regex)` constraint and an optional-marker `?`.
+_INLINE_PARAM = re.compile(r"<[^<>/]{1,80}>|\{[^{}/]{1,80}\}|\[{1,2}[^\[\]/]{1,80}\]{1,2}|\*+")
+_COLON_HEAD = re.compile(r"\A:[A-Za-z_][A-Za-z0-9_]{0,63}(?:\([^()/]{0,80}\))?(\?)?")
+_WORD = re.compile(r"[A-Za-z0-9]{2}")
 _HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 MAX_ROUTE_CHARS = 160
+# Limits that keep generated regexes small and rules narrow.
+MAX_ROUTE_PARAMS = 8
+MAX_OPTIONAL_SEGMENTS = 2
+
+_PARAM = "\x00"  # a parameter part inside a segment
+_REST = "\x01"  # a final catch-all `*`
 
 
-def _tokenize_params(path: str) -> str:
-    for pattern in (_ANGLE_PARAM, _BRACE_PARAM, _BRACKET_PARAM, _COLON_PARAM):
-        path = pattern.sub(_PARAM_TOKEN, path)
-    # A catch-all `*` is a parameter too; adjacent ones are one wildcard.
-    path = path.replace("*", _PARAM_TOKEN)
-    return _PARAM_RUN.sub(_PARAM_TOKEN, path)
+@dataclass(frozen=True)
+class _Segment:
+    parts: tuple[str, ...]  # literal strings and _PARAM / _REST markers
+    optional: bool = False
+
+
+@functools.lru_cache(maxsize=4096)
+def _parse(path: str) -> tuple[_Segment, ...]:
+    """Split a route template into segments of literal and parameter parts.
+    Adjacent parameters merge into one; a `*` that ends the route is a
+    catch-all (`_REST`), anywhere else it is one parameter."""
+    raw = (path or "/").lstrip("/").split("/")
+    segments: list[_Segment] = []
+    for index, text in enumerate(raw):
+        parts: list[str] = []
+        optional = False
+        head = _COLON_HEAD.match(text)
+        if head:
+            parts.append(_PARAM)
+            optional = bool(head.group(1)) and head.end() == len(text)
+            text = text[head.end():]
+        pos = 0
+        for match in _INLINE_PARAM.finditer(text):
+            if match.start() > pos:
+                parts.append(text[pos:match.start()])
+            parts.append(_PARAM)
+            pos = match.end()
+        if pos < len(text):
+            parts.append(text[pos:])
+        merged: list[str] = []
+        for part in parts:
+            if part == _PARAM and merged and merged[-1] == _PARAM:
+                continue
+            merged.append(part)
+        if index == len(raw) - 1 and merged and merged[-1] == _PARAM and text.endswith("*"):
+            merged[-1] = _REST
+        segments.append(_Segment(tuple(merged), optional))
+    return tuple(segments)
+
+
+def _is_marker(part: str) -> bool:
+    return part in (_PARAM, _REST)
+
+
+def _param_count(segments: tuple[_Segment, ...]) -> int:
+    return sum(1 for seg in segments for part in seg.parts if _is_marker(part))
+
+
+def has_path_params(path: str) -> bool:
+    return _param_count(_parse(path or "")) > 0
 
 
 def route_scopable(path: str) -> bool:
-    """Whether a rule can be scoped to this route. Refused: routes longer
-    than ``MAX_ROUTE_CHARS`` (never truncated: a cut-off route would be a
-    dead exact match), and routes with no literal text besides slashes and
-    parameters (``/``, ``*``, ``/:id``, ``/*/*``), whose rule would be
-    site-wide."""
-    if not path or len(path) > MAX_ROUTE_CHARS:
+    """Whether a rule can be scoped to this route. Refused:
+
+    - routes longer than ``MAX_ROUTE_CHARS`` (never truncated into a dead
+      exact match) or with non-printable / non-ASCII characters;
+    - parameterized routes without a literal word of at least two letters or
+      digits (``/``, ``*``, ``/:id``, ``/:a.:b``, ``*.*``), whose rule would
+      match nearly any request; an exact route needs one letter or digit;
+    - routes with more than ``MAX_ROUTE_PARAMS`` parameters or
+      ``MAX_OPTIONAL_SEGMENTS`` optional segments.
+    """
+    if not path or len(path) > MAX_ROUTE_CHARS or not path.isascii() or not path.isprintable():
         return False
-    literal = _tokenize_params(path).replace(_PARAM_TOKEN, "").replace("/", "")
-    return bool(literal.strip())
+    segments = _parse(path)
+    literal = "".join(part for seg in segments for part in seg.parts if not _is_marker(part))
+    params = _param_count(segments)
+    if params == 0:
+        return any(ch.isalnum() for ch in literal)
+    return (
+        _WORD.search(literal) is not None
+        and params <= MAX_ROUTE_PARAMS
+        and sum(seg.optional for seg in segments) <= MAX_OPTIONAL_SEGMENTS
+    )
 
 
-def _segment_regex(path: str) -> str:
-    """``^...$`` regex for a route: a named parameter matches exactly one
-    path segment (``[^/]+``), a catch-all ``*`` matches the rest (``.*``)."""
-    named = path
-    for pattern in (_ANGLE_PARAM, _BRACE_PARAM, _BRACKET_PARAM, _COLON_PARAM):
-        named = pattern.sub(_PARAM_TOKEN, named)
-    named = _STAR_RUN.sub("*", named)
+def regex_literal(text: str) -> str:
+    """Escape every character outside ``[A-Za-z0-9_/-]``: safe in PCRE,
+    Python, RE2 and Lucene-style regex dialects (which treat ``~ # & @ <
+    > "`` as operators)."""
+    return "".join(ch if (ch.isascii() and ch.isalnum()) or ch in "_/-" else "\\" + ch for ch in text)
+
+
+def _segment_body(seg: _Segment) -> str:
+    r"""One segment's regex. A parameter excludes `/` and the first character
+    of the literal that follows it (`<a>.<b>` -> `[^/.]+\.[^/]+`), so no two
+    pieces can match the same characters and matching stays linear. Only a
+    final catch-all is `.*`."""
     out: list[str] = []
-    for char_run in _ROUTE_PARTS.findall(named):
-        if char_run == _PARAM_TOKEN:
-            out.append("[^/]+")
-        elif char_run == "*":
+    for i, part in enumerate(seg.parts):
+        if part == _REST:
             out.append(".*")
+        elif part == _PARAM:
+            nxt = seg.parts[i + 1] if i + 1 < len(seg.parts) else None
+            stop = regex_literal(nxt[0]) if nxt and not _is_marker(nxt) else ""
+            out.append(f"[^/{stop}]+")
         else:
-            out.append(_REGEX_META.sub(r"\\\1", char_run))
-    regex = "".join(out)
-    if not regex.startswith("/"):
-        regex = "/" + regex
-    return f"^{regex}$"
+            out.append(regex_literal(part))
+    return "".join(out)
+
+
+def _route_regex(path: str) -> str:
+    """Unanchored regex body for a route (see `_segment_body`); optional
+    segments become `(?:/...)?`."""
+    out: list[str] = []
+    for seg in _parse(path):
+        body = "/" + _segment_body(seg)
+        out.append(f"(?:{body})?" if seg.optional else body)
+    return "".join(out)
 
 
 def _sigma_literal(text: str) -> str:
@@ -287,22 +360,23 @@ def _sigma_literal(text: str) -> str:
 
 
 def route_glob(path: str) -> str:
-    """Display/wildcard form of a route: parameters become ``*``."""
-    glob = _tokenize_params(path or "/").replace(_PARAM_TOKEN, "*")
-    return glob if glob.startswith(("/", "*")) else f"/{glob}"
+    """Display form of a route: parameters become ``*``."""
+    segs = ["".join("*" if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
+    return "/" + "/".join(segs)
 
 
 def route_selector(path: str) -> tuple[str, str] | None:
     """``(field, value)`` matching the request path of a route on
     ``cs-uri-stem``: the exact path when it has no parameters, otherwise a
-    ``|re`` anchored at both ends in which each parameter matches one
-    segment. ``None`` when the route can't be scoped (:func:`route_scopable`)."""
+    ``|re`` anchored at both ends in which each parameter matches within one
+    segment and only a final ``*`` spans segments. ``None`` when the route
+    can't be scoped (:func:`route_scopable`)."""
     if not route_scopable(path):
         return None
     if not has_path_params(path):
         value = path if path.startswith("/") else f"/{path}"
         return "cs-uri-stem", _sigma_literal(value)
-    return "cs-uri-stem|re", _segment_regex(path)
+    return "cs-uri-stem|re", f"^{_route_regex(path)}$"
 
 
 def stem_selector(paths: list[str]) -> tuple[str, object] | None:
@@ -314,18 +388,14 @@ def stem_selector(paths: list[str]) -> tuple[str, object] | None:
         return None
     if not any(has_path_params(p) for p in kept):
         return "cs-uri-stem", [_sigma_literal(p if p.startswith("/") else f"/{p}") for p in kept]
-    return "cs-uri-stem|re", "^(?:" + "|".join(_segment_regex(p)[1:-1] for p in kept) + ")$"
+    return "cs-uri-stem|re", "^(?:" + "|".join(_route_regex(p) for p in kept) + ")$"
 
 
 def route_example(path: str, value: str = "1001") -> str:
     """A concrete URI path that matches :func:`route_selector` (parameters
-    and wildcards filled with ``value``)."""
-    example = _tokenize_params(path or "/").replace(_PARAM_TOKEN, value)
-    return example if example.startswith("/") else f"/{example}"
-
-
-def has_path_params(path: str) -> bool:
-    return _PARAM_TOKEN in _tokenize_params(path or "")
+    and wildcards filled with ``value``, optional segments included)."""
+    segs = ["".join(value if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
+    return "/" + "/".join(segs)
 
 
 def sigma_method(method: str | None) -> str | None:
@@ -340,6 +410,7 @@ __all__ = [
     "has_path_params",
     "render_rule",
     "route_example",
+    "regex_literal",
     "route_glob",
     "route_scopable",
     "route_selector",
