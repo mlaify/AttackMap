@@ -29,7 +29,7 @@ templates:
     correlation:
       title: "One principal accesses many distinct objects through ${method_route}"
       description: >-
-        More than ${threshold} distinct ${value_field} values for
+        At least ${threshold} distinct ${value_field} values for
         ${method_route} from one ${principal_field} within ${timespan}: the
         shape of object-id enumeration against a route without an
         object-level authorization check.

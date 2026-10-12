@@ -30,7 +30,7 @@ from typing import Any
 
 STATUSES = ("stable", "test", "experimental", "deprecated", "unsupported")
 LEVELS = ("informational", "low", "medium", "high", "critical")
-MODIFIERS = frozenset({"contains", "startswith", "endswith", "all", "re", "cidr", "i", "exists"})
+MODIFIERS = frozenset({"contains", "startswith", "endswith", "all", "re", "cidr", "i", "m", "s", "exists"})
 CORRELATION_TYPES = ("event_count", "value_count", "temporal", "temporal_ordered")
 
 # Used with fullmatch only; the \A anchors keep a stray search() linear.
@@ -361,8 +361,10 @@ def _value_matches(actual: Any, expected: Any, mods: list[str]) -> bool:
         except ValueError:
             return False
     if "re" in mods:
+        flags = (re.IGNORECASE if "i" in mods else 0) | (re.MULTILINE if "m" in mods else 0)
+        flags |= re.DOTALL if "s" in mods else 0
         try:
-            return re.search(str(expected), str(actual)) is not None
+            return re.search(str(expected), str(actual), flags) is not None
         except re.error:
             return False
     if isinstance(expected, bool) or isinstance(actual, bool):

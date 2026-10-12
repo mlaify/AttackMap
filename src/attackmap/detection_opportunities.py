@@ -20,10 +20,11 @@ from .detections import (
     has_path_params,
     render_rule,
     route_example,
-    route_glob,
+    route_scopable,
     route_selector,
     rule_uuid,
     sigma_method,
+    stem_selector,
     template_data,
 )
 from .detections.sigma import correlation_problems, sigma_matches, sigma_problems
@@ -435,8 +436,9 @@ def _opp_for_webhook_signatures(
 # ---------- Deployable rules per finding class (#251) ----------
 
 # Caps: one rule per (rule id, method, route), at most this many routes per
-# rule id, and an overall ceiling so a huge repo can't flood the report. The
-# finding itself still lists every route; the rules cover the first ones.
+# rule id, and a ceiling on per-route rules, shared fairly across rule ids,
+# so a huge repo can't flood the report. The finding itself still lists
+# every route; the rules cover the first ones.
 _MAX_ROUTES_PER_RULE = 5
 _MAX_RULE_OPPORTUNITIES = 60
 
@@ -578,8 +580,8 @@ def _payload_selector(
         return {"cs-uri-stem|contains": markers}, "path", True
     if param and payload.get("regex", True) and source_kind in (None, "query"):
         alternatives = "|".join(_regex_escape(m) for m in raw)
-        regex = f"(?i)(?:^|&){_regex_escape(param)}=" + ("" if prefix else "[^&]*") + f"(?:{alternatives})"
-        return {"cs-uri-query|re": regex}, f"`{param}` query parameter", False
+        regex = f"(?:^|&){_regex_escape(param)}=" + ("" if prefix else "[^&]*") + f"(?:{alternatives})"
+        return {"cs-uri-query|re|i": regex}, f"`{param}` query parameter", False
     query = {"cs-uri-query|contains": [f"={m}" for m in markers] if prefix else markers}
     if source_kind is None and path_has_params:
         # Reachability-only chain: the input may be the path parameter or a
@@ -588,12 +590,19 @@ def _payload_selector(
     return query, "query string", False
 
 
-def _route_params(path: str) -> dict[str, str]:
-    field, value = route_selector(path)
-    return {"route_field": field, "route_value": value}
+def _route_params(path: str) -> dict[str, str] | None:
+    """Route selection params, or ``None`` when the route is too broad or
+    too long to scope a rule to (see `detections.route_scopable`)."""
+    selector = route_selector(path)
+    if selector is None:
+        return None
+    return {"route_field": selector[0], "route_value": selector[1]}
 
 
 def _taint_rule(rule_id: str, chain: TaintChain, payload: dict) -> RenderedRule | None:
+    route = _route_params(chain.route_path)
+    if route is None:
+        return None
     method = sigma_method(chain.route_method)
     method_route = _short(f"{chain.route_method} {chain.route_path}")
     param = _source_param(chain)
@@ -625,7 +634,7 @@ def _taint_rule(rule_id: str, chain: TaintChain, payload: dict) -> RenderedRule 
             "method_route": method_route,
             "method": method,
             "method_example": method or "GET",
-            **_route_params(chain.route_path),
+            **route,
             "route_example": route_example(chain.route_path),
             "payload_selection": selection,
             "payload_where": where,
@@ -644,6 +653,7 @@ def _taint_rule(rule_id: str, chain: TaintChain, payload: dict) -> RenderedRule 
 
 def _taint_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[DetectionOpportunity]:
     payloads = template_data("injection").get("payloads", {})
+    covered = {rule_id: _location_keys(finding) for rule_id, finding in by_rule.items()}
     out: list[DetectionOpportunity] = []
     seen: set[tuple[str, str, str]] = set()
     per_rule: dict[str, int] = {}
@@ -658,7 +668,7 @@ def _taint_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[
         if finding is None or payload is None:
             continue
         # The chain must be one the (possibly partially suppressed) finding covers.
-        if (chain.sink_file, chain.sink_line) not in _location_keys(finding):
+        if (chain.sink_file, chain.sink_line) not in covered[rule_id]:
             continue
         key = (rule_id, chain.route_method.upper(), chain.route_path)
         if key in seen or per_rule.get(rule_id, 0) >= _MAX_ROUTES_PER_RULE:
@@ -732,6 +742,9 @@ def _ssrf_followups(
 
 
 def _bola_rule(rule_id: str, cand: BolaCandidate) -> RenderedRule | None:
+    route = _route_params(cand.route_path)
+    if route is None:
+        return None
     method = sigma_method(cand.route_method)
     in_path = cand.surface == "path_param" and has_path_params(cand.route_path)
     value_field = "cs-uri-stem" if in_path else "cs-uri-query"
@@ -747,7 +760,7 @@ def _bola_rule(rule_id: str, cand: BolaCandidate) -> RenderedRule | None:
             "method_route": _short(key),
             "method": method,
             "method_example": method or "GET",
-            **_route_params(cand.route_path),
+            **route,
             "positive_stem": route_example(cand.route_path),
             "positive_query": "" if in_path else f"{cand.id_param}=1001",
             "id_param": cand.id_param,
@@ -765,6 +778,7 @@ def _bola_rule(rule_id: str, cand: BolaCandidate) -> RenderedRule | None:
 
 
 def _bola_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[DetectionOpportunity]:
+    covered = {r: _location_keys(f) for r, f in by_rule.items() if r in ("bola-read", "bola-modify")}
     out: list[DetectionOpportunity] = []
     seen: set[tuple[str, str, str]] = set()
     per_rule: dict[str, int] = {}
@@ -773,7 +787,7 @@ def _bola_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[D
             continue
         rule_id = "bola-modify" if cand.route_method.upper() in _WRITE_METHODS else "bola-read"
         finding = by_rule.get(rule_id)
-        if finding is None or (cand.route_file, cand.route_line) not in _location_keys(finding):
+        if finding is None or (cand.route_file, cand.route_line) not in covered[rule_id]:
             continue
         key = (rule_id, cand.route_method.upper(), cand.route_path)
         if key in seen or per_rule.get(rule_id, 0) >= _MAX_ROUTES_PER_RULE:
@@ -810,9 +824,12 @@ def _webhook_rule(
         verification = surface.webhook_verification
         if verification is not None and verification.provider in headers:
             providers.setdefault(surface.route, verification.provider)
+    # Sorted, so the rule (and its id) doesn't depend on evidence order;
+    # catch-all routes (`/:hook`, `*`) are left out rather than widening the
+    # rule to every POST on the site.
+    scoped = sorted({r.split(" ", 1)[-1] for r in routes if route_scopable(r.split(" ", 1)[-1])})[:10]
     groups: dict[str, list[str]] = {}
-    for route in routes[:10]:
-        path = route.split(" ", 1)[-1]
+    for path in scoped:
         groups.setdefault(providers.get(path, "unknown"), []).append(path)
     if not groups:
         return None
@@ -821,7 +838,10 @@ def _webhook_rule(
     used: list[str] = []
     for provider, paths in sorted(groups.items()):
         names = headers.get(provider, all_headers)
-        selection: dict[str, object] = {"cs-method": "POST", "cs-uri-stem": [route_glob(p) for p in paths]}
+        stem = stem_selector(paths)
+        if stem is None:
+            continue
+        selection: dict[str, object] = {"cs-method": "POST", stem[0]: stem[1]}
         for header in names:
             selection[f"cs({header})"] = None
             if header not in used:
@@ -832,11 +852,11 @@ def _webhook_rule(
     example = route_example(first_paths[0])
     signed = headers.get(first_provider, all_headers)
     known = sorted(p for p in groups if p != "unknown")
-    paths = [route.split(" ", 1)[-1] for route in routes]
+    paths = scoped
     rendered = render_rule(
         "webhook-signature-missing",
         rule_ids=rule_ids or ["public-webhook"],
-        key="|".join(sorted(r for r in routes[:10])),
+        key="|".join(scoped),
         params={
             "routes_text": ", ".join(_short(p, 80) for p in paths[:3]) + (" and more" if len(paths) > 3 else ""),
             "provider_text": "/".join(known) if known else "known provider",
@@ -861,12 +881,32 @@ def _finding_class_opportunities(findings: list[Finding], scan: ScanResult) -> l
     for finding in findings:
         if finding.rule_id and finding.rule_id not in by_rule:
             by_rule[finding.rule_id] = finding
-    out = _taint_opportunities(scan, by_rule)
+    routes = _fair_cap(_taint_opportunities(scan, by_rule) + _bola_opportunities(scan, by_rule))
+    out = [o for o in routes if not o.id.startswith("detect:bola-")]
     ssrf_finding = by_rule.get("ssrf")
     if ssrf_finding is not None:
         out += _ssrf_followups([o for o in out if "ssrf" in o.related_rule_ids], ssrf_finding, scan)
-    out += _bola_opportunities(scan, by_rule)
-    return out[:_MAX_RULE_OPPORTUNITIES]
+    return out + [o for o in routes if o.id.startswith("detect:bola-")]
+
+
+def _fair_cap(opportunities: list[DetectionOpportunity], limit: int = _MAX_RULE_OPPORTUNITIES) -> list[DetectionOpportunity]:
+    """At most ``limit`` per-route rules, taken round-robin across rule ids
+    so no class (often BOLA, generated last) is the one always dropped.
+    Kept rules stay in their original order."""
+    if len(opportunities) <= limit:
+        return opportunities
+    by_rule: dict[str, list[int]] = {}
+    for index, opp in enumerate(opportunities):
+        by_rule.setdefault(opp.related_rule_ids[0] if opp.related_rule_ids else "", []).append(index)
+    keep: set[int] = set()
+    queues = list(by_rule.values())
+    depth = 0
+    while len(keep) < limit and any(depth < len(q) for q in queues):
+        for queue in queues:
+            if depth < len(queue) and len(keep) < limit:
+                keep.add(queue[depth])
+        depth += 1
+    return [opp for index, opp in enumerate(opportunities) if index in keep]
 
 
 def detection_coverage(

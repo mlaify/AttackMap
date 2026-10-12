@@ -15,7 +15,7 @@ from attackmap import detections
 from attackmap.analyzer import identify_attack_surfaces
 from attackmap.defensive_review import render_defensive_review
 from attackmap.detection_opportunities import detection_coverage, generate_detection_opportunities
-from attackmap.detections import route_example, route_glob, route_selector, template_data, templates
+from attackmap.detections import route_example, route_scopable, route_selector, template_data, templates
 from attackmap.detections.sigma import (
     correlation_fires,
     correlation_problems,
@@ -183,8 +183,8 @@ def test_rules_validate_with_pysigma_when_installed() -> None:
 def test_sql_injection_rule_is_anchored_on_the_traced_parameter() -> None:
     opp = _by_id(TAINT_PY)["detect:sql-injection:GET:/orders/search"]
     selection = opp.sigma["detection"]["selection_payload"]
-    regex = selection["cs-uri-query|re"]
-    assert regex.startswith("(?i)(?:^|&)q=")
+    regex = selection["cs-uri-query|re|i"]
+    assert regex.startswith("(?:^|&)q=")
     rule = opp.sigma
     base = {"cs-method": "GET", "cs-uri-stem": "/orders/search"}
     assert sigma_matches(rule, {**base, "cs-uri-query": "page=2&q=x%27+UNION+SELECT+1--"})
@@ -212,7 +212,7 @@ def test_path_parameter_source_matches_the_request_path(tmp_path: Path) -> None:
     (tmp_path / "orders.js").write_text(_PATH_PARAM_SQLI, encoding="utf-8")
     opp = _by_id(tmp_path)["detect:sql-injection:GET:/orders/:id"]
     detection = opp.sigma["detection"]
-    assert detection["selection_route"] == {"cs-uri-stem|startswith": "/orders/", "cs-method": "GET"}
+    assert detection["selection_route"] == {"cs-uri-stem|re": "^/orders/[^/]+$", "cs-method": "GET"}
     assert "cs-uri-stem|contains" in detection["selection_payload"]
     assert sigma_matches(opp.sigma, {"cs-method": "GET", "cs-uri-stem": "/orders/1%27%20or%201=1"})
     assert not sigma_matches(opp.sigma, {"cs-method": "GET", "cs-uri-stem": "/orders/42"})
@@ -228,7 +228,7 @@ def test_markers_with_sigma_wildcards_are_escaped() -> None:
     assert sigma_matches(rule, {"cs-uri-query": "q=1/*x"})
     assert not sigma_matches(rule, {"cs-uri-query": "q=a/b"})
     selection, _, _ = _payload_selector(payload, "q", "query", False)
-    assert selection == {"cs-uri-query|re": "(?i)(?:^|&)q=[^&]*(?:/\\*|a\\?)"}
+    assert selection == {"cs-uri-query|re|i": "(?:^|&)q=[^&]*(?:/\\*|a\\?)"}
 
 
 def test_unknown_source_on_a_parameterized_route_checks_path_and_query() -> None:
@@ -241,6 +241,24 @@ def test_unknown_source_on_a_parameterized_route_checks_path_and_query() -> None
     assert sigma_matches(rule, {"cs-uri-stem": "/track/1%27", "cs-uri-query": ""})
     assert sigma_matches(rule, {"cs-uri-stem": "/track/1", "cs-uri-query": "x=%27"})
     assert not sigma_matches(rule, {"cs-uri-stem": "/track/1", "cs-uri-query": "x=1"})
+
+
+def test_injection_rules_state_the_encoding_limit() -> None:
+    opp = _by_id(TAINT_PY)["detect:sql-injection:GET:/orders/search"]
+    assert "percent-encoding" in opp.sigma["description"]
+    assert any("percent-encoding" in fp for fp in opp.sigma["falsepositives"])
+
+
+def test_location_gating_is_computed_once_per_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    import attackmap.detection_opportunities as do
+
+    scan, surfaces, findings, _ = _generate(SINKS)
+    calls: list[str] = []
+    real = do._location_keys
+    monkeypatch.setattr(do, "_location_keys", lambda f: calls.append(f.rule_id) or real(f))
+    scan.taint_chains = scan.taint_chains * 50
+    do._taint_opportunities(scan, {f.rule_id: f for f in findings if f.rule_id})
+    assert len(calls) == len({f.rule_id for f in findings if f.rule_id})
 
 
 def test_body_sources_state_the_access_log_blind_spot() -> None:
@@ -258,6 +276,10 @@ def test_ssrf_has_route_metadata_egress_and_cloudtrail_variants() -> None:
     assert egress.logsource.category == "network_connection" and egress.signal_kind == "network"
     assert (cloudtrail.logsource.product, cloudtrail.logsource.service) == ("aws", "cloudtrail")
     assert "attack.t1552.005" in cloudtrail.sigma["tags"]
+    # Public-IP instances without a VPC endpoint look like this too: medium, with filters.
+    assert cloudtrail.sigma["level"] == "medium"
+    assert cloudtrail.sigma["detection"]["filter_aws_internal"] == {"sourceIPAddress": "AWS Internal"}
+    assert any("public IP" in fp for fp in cloudtrail.sigma["falsepositives"])
     assert sigma_matches(route.sigma, {"cs-method": "GET", "cs-uri-stem": "/fetch",
                                        "cs-uri-query": "url=http://metadata.google.internal/computeMetadata/v1/"})
 
@@ -278,6 +300,10 @@ def test_bola_cardinality_correlation_fires_on_enumeration_only() -> None:
     normal = [event(i % 5) for i in range(60)] + [event(i, f"198.51.100.{i}") for i in range(60)]
     assert correlation_fires(corr, base, enumeration)
     assert not correlation_fires(corr, base, normal)
+    # Sub-resources of an object are not more objects.
+    sub = [{**event(1), "cs-uri-stem": f"/orders/1/item{i}"} for i in range(60)]
+    assert not correlation_fires(corr, base, sub)
+    assert corr["description"].startswith("At least 50 distinct")
     # Failed requests are not object accesses.
     assert not correlation_fires(corr, base, [{**e, "sc-status": 404} for e in enumeration])
 
@@ -395,26 +421,76 @@ def test_review_json_validates_against_the_schema() -> None:
 
 
 @pytest.mark.parametrize(
-    ("route", "glob", "example"),
+    ("route", "inside", "outside"),
     [
-        ("/orders/<int:order_id>", "/orders/*", "/orders/1001"),
-        ("/invoices/:id", "/invoices/*", "/invoices/1001"),
-        ("/users/{id}/posts/{post}", "/users/*/posts/*", "/users/1001/posts/1001"),
-        ("/blog/[slug]", "/blog/*", "/blog/1001"),
-        ("/docs/[[...path]]", "/docs/*", "/docs/1001"),
-        ("/files/*", "/files/*", "/files/1001"),
-        ("/a?b", "/a\\?b", "/a?b"),
-        ("/static", "/static", "/static"),
-        ("", "/", "/"),
+        ("/orders/<int:order_id>", "/orders/42", ["/orders/42/edit", "/orders/", "/orders"]),
+        ("/invoices/:id", "/invoices/1", ["/invoices/1/edit", "/invoicesX/1"]),
+        ("/users/{id}/posts/{post}", "/users/1/posts/2", ["/users/1/posts/2/x", "/users/1/posts"]),
+        ("/blog/[slug]", "/blog/hello", ["/blog/a/b"]),
+        ("/files/*", "/files/a/b.txt", ["/other/a"]),
+        ("/api/:id/*", "/api/7/x/y", ["/api/x"]),
+        ("/a.b/<id>", "/a.b/1", ["/aXb/1"]),
+        ("/a?b", "/a?b", ["/ab"]),
+        ("/static", "/static", ["/static/x", "/STATICX"]),
     ],
 )
-def test_route_glob_and_example(route: str, glob: str, example: str) -> None:
-    assert route_glob(route) == glob
-    assert route_example(route) == example
-    rule = {"detection": {"s": {"cs-uri-stem": glob}, "condition": "s"}}
-    assert sigma_matches(rule, {"cs-uri-stem": example})
+def test_route_selector_scopes_parameters_to_one_segment(route: str, inside: str, outside: list[str]) -> None:
     field, value = route_selector(route)
-    assert sigma_matches({"detection": {"s": {field: value}, "condition": "s"}}, {"cs-uri-stem": example})
+    rule = {"detection": {"s": {field: value}, "condition": "s"}}
+    assert sigma_matches(rule, {"cs-uri-stem": inside})
+    assert sigma_matches(rule, {"cs-uri-stem": route_example(route)})
+    for path in outside:
+        assert not sigma_matches(rule, {"cs-uri-stem": path}), path
+
+
+@pytest.mark.parametrize("route", ["/", "*", "", "/:id", "/<path:p>", "/*/*", "/**", "/:a/:b", "/{x}", "/" + "a" * 200])
+def test_site_wide_and_overlong_routes_are_not_scoped(route: str) -> None:
+    assert route_scopable(route) is False
+    assert route_selector(route) is None
+
+
+def test_catch_all_routes_get_no_rule(tmp_path: Path) -> None:
+    (tmp_path / "app.js").write_text(
+        'const express = require("express");\n'
+        'const { exec } = require("child_process");\n'
+        "const app = express();\n"
+        'app.get("*", (req, res) => { exec("ping " + req.query.host); res.send("ok"); });\n'
+        'app.get("/:id", (req, res) => { exec("ping " + req.query.host); res.send("ok"); });\n'
+        "module.exports = app;\n",
+        encoding="utf-8",
+    )
+    _, _, findings, opps = _generate(tmp_path)
+    assert any(f.rule_id == "subprocess-shell" for f in findings)
+    assert not [o for o in opps if o.id.startswith("detect:subprocess-shell:")]
+
+
+def test_webhook_catch_all_route_is_left_out() -> None:
+    from attackmap.detection_opportunities import _webhook_rule
+
+    assert _webhook_rule(["POST /:webhook"], ["public-webhook"], []) is None
+    rendered = _webhook_rule(["POST /hooks/b", "POST /:webhook", "POST /hooks/a/:id"], ["public-webhook"], [])
+    selection = rendered.sigma["detection"]["selection_unknown"]
+    assert selection["cs-uri-stem|re"] == "^(?:/hooks/a/[^/]+|/hooks/b)$"
+    # Order of the evidence doesn't change the rule id.
+    again = _webhook_rule(["POST /hooks/a/:id", "POST /hooks/b"], ["public-webhook"], [])
+    assert again.sigma["id"] == rendered.sigma["id"]
+
+
+def test_route_cap_is_shared_across_classes() -> None:
+    from attackmap.detection_opportunities import _fair_cap
+    from attackmap.models import DetectionOpportunity
+
+    def opp(rule: str, i: int) -> DetectionOpportunity:
+        return DetectionOpportunity(id=f"detect:{rule}:{i}", title="t", rationale="r", signal_kind="log",
+                                    suggested_rule="s", related_rule_ids=[rule])
+
+    many = [opp("sql-injection", i) for i in range(5)] + [opp("eval", i) for i in range(5)] + [
+        opp("bola-read", i) for i in range(5)
+    ]
+    kept = _fair_cap(many, limit=6)
+    assert [o.related_rule_ids[0] for o in kept].count("bola-read") == 2
+    assert [o.id for o in kept] == [o.id for o in many if o in kept]  # original order
+    assert _fair_cap(many, limit=60) == many
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +542,9 @@ def test_matcher_conditions_and_modifiers() -> None:
     assert not sigma_matches(rule, {"a": "zzXzz", "b": "PREfix", "ip": "8.8.8.8", "c": "set"})
     assert sigma_matches(rule, {"e": "1-2", "c": "set", "d": "a.com", "ip": "8.8.8.8"})
     assert not sigma_matches(rule, {"e": "1", "ip": "8.8.8.8"})
+    flags = _rule({"s": {"q|re|i": "union select"}, "c": {"q|re": "union select"}, "condition": "s and not c"})
+    assert sigma_matches(flags, {"q": "UNION SELECT"})
+    assert not sigma_matches(flags, {"q": "union select"})
     nested = _rule({"s": {"userIdentity.type": "AssumedRole"}, "condition": "all of them"})
     assert sigma_matches(nested, {"userIdentity": {"type": "AssumedRole"}})
     assert sigma_matches(nested, {"userIdentity.type": "assumedrole"})

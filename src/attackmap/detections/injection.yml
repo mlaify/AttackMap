@@ -19,7 +19,10 @@ templates:
       Requests to ${method_route} whose ${payload_where} carries ${label} syntax.
       AttackMap traced request input (${source}) at ${location} into a ${label}
       sink (rule ${rule_id}). Until the code is fixed, these requests are the
-      exploitation attempts; after the fix they stay a useful probe signal.${blind_spot}
+      exploitation attempts; after the fix they stay a useful probe signal.
+      Limit: the markers are fixed strings, so double or mixed percent-encoding
+      (%2527, %u0027) and other encodings evade them unless your pipeline
+      decodes the URL first.${blind_spot}
     logsource:
       category: webserver
     fields_required: [cs-method, cs-uri-stem, cs-uri-query, sc-status, c-ip]
@@ -32,6 +35,7 @@ templates:
     falsepositives:
       - Security scanners and penetration tests you run yourself (allow-list their source IPs)
       - Legitimate values that happen to contain the matched characters; check the full request before acting
+      - Missed rather than false matches - double or mixed percent-encoding evades the fixed markers; decode URLs in the pipeline
     level: "${level}"
     test_events:
       positive:

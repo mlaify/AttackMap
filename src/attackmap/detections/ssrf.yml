@@ -60,13 +60,15 @@ templates:
         userIdentity.arn|re: ":assumed-role/[^/]+/i-[0-9a-f]{8,17}$"
       filter_aws_service:
         sourceIPAddress|endswith: ".amazonaws.com"
+      filter_aws_internal:
+        sourceIPAddress: AWS Internal
       filter_private:
         sourceIPAddress|cidr: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
       condition: selection and not 1 of filter_*
     falsepositives:
-      - Calls through a NAT gateway or proxy with a public IP; add its addresses to filter_private
+      - Instances with a public IP (or behind a NAT gateway) call AWS APIs from that public address when there is no VPC endpoint, so every normal call matches until you add your instances' public and NAT addresses to filter_private
       - Calls routed through VPC endpoints report private source addresses and are already excluded
-    level: high
+    level: medium
     test_events:
       positive:
         - eventSource: s3.amazonaws.com
@@ -88,3 +90,9 @@ templates:
           userIdentity:
             type: AssumedRole
             arn: arn:aws:sts::123456789012:assumed-role/deploy-role/ci-session
+        - eventSource: kms.amazonaws.com
+          eventName: Decrypt
+          sourceIPAddress: AWS Internal
+          userIdentity:
+            type: AssumedRole
+            arn: arn:aws:sts::123456789012:assumed-role/app-instance-role/i-0abc123def4567890

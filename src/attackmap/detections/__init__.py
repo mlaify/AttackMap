@@ -232,44 +232,95 @@ _COLON_PARAM = re.compile(r":[A-Za-z_][A-Za-z0-9_]{0,63}(?:\([^()/]{0,80}\))?\??
 _BRACE_PARAM = re.compile(r"\{[^{}/]{1,80}\}")
 _BRACKET_PARAM = re.compile(r"\[{1,2}[^\[\]/]{1,80}\]{1,2}")
 _PARAM_TOKEN = "\x00"
+_PARAM_RUN = re.compile("\x00{2,}")
+_STAR_RUN = re.compile(r"\*{2,}")
+# A parameter token, a `*`, or a run of literal characters.
+_ROUTE_PARTS = re.compile("\x00|\\*|[^\x00*]+")
+_REGEX_META = re.compile(r"([.^$*+?()\[\]{}|\\])")
 _HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 MAX_ROUTE_CHARS = 160
 
 
 def _tokenize_params(path: str) -> str:
-    path = path[:MAX_ROUTE_CHARS]
     for pattern in (_ANGLE_PARAM, _BRACE_PARAM, _BRACKET_PARAM, _COLON_PARAM):
         path = pattern.sub(_PARAM_TOKEN, path)
-    return path
+    # A catch-all `*` is a parameter too; adjacent ones are one wildcard.
+    path = path.replace("*", _PARAM_TOKEN)
+    return _PARAM_RUN.sub(_PARAM_TOKEN, path)
+
+
+def route_scopable(path: str) -> bool:
+    """Whether a rule can be scoped to this route. Refused: routes longer
+    than ``MAX_ROUTE_CHARS`` (never truncated: a cut-off route would be a
+    dead exact match), and routes with no literal text besides slashes and
+    parameters (``/``, ``*``, ``/:id``, ``/*/*``), whose rule would be
+    site-wide."""
+    if not path or len(path) > MAX_ROUTE_CHARS:
+        return False
+    literal = _tokenize_params(path).replace(_PARAM_TOKEN, "").replace("/", "")
+    return bool(literal.strip())
+
+
+def _segment_regex(path: str) -> str:
+    """``^...$`` regex for a route: a named parameter matches exactly one
+    path segment (``[^/]+``), a catch-all ``*`` matches the rest (``.*``)."""
+    named = path
+    for pattern in (_ANGLE_PARAM, _BRACE_PARAM, _BRACKET_PARAM, _COLON_PARAM):
+        named = pattern.sub(_PARAM_TOKEN, named)
+    named = _STAR_RUN.sub("*", named)
+    out: list[str] = []
+    for char_run in _ROUTE_PARTS.findall(named):
+        if char_run == _PARAM_TOKEN:
+            out.append("[^/]+")
+        elif char_run == "*":
+            out.append(".*")
+        else:
+            out.append(_REGEX_META.sub(r"\\\1", char_run))
+    regex = "".join(out)
+    if not regex.startswith("/"):
+        regex = "/" + regex
+    return f"^{regex}$"
+
+
+def _sigma_literal(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
 
 
 def route_glob(path: str) -> str:
-    """Sigma wildcard pattern for a route template: path parameters
-    (``<id>``, ``:id``, ``{id}``, ``[id]``) become ``*``; literal ``?`` and
-    ``\\`` are escaped. A ``*`` already in the route stays a wildcard."""
-    tokenized = _tokenize_params(path or "/")
-    escaped = tokenized.replace("\\", "\\\\").replace("?", "\\?")
-    glob = escaped.replace(_PARAM_TOKEN, "*")
-    return glob if glob.startswith(("/", "*")) else f"*{glob}"
+    """Display/wildcard form of a route: parameters become ``*``."""
+    glob = _tokenize_params(path or "/").replace(_PARAM_TOKEN, "*")
+    return glob if glob.startswith(("/", "*")) else f"/{glob}"
 
 
-def route_selector(path: str) -> tuple[str, str]:
+def route_selector(path: str) -> tuple[str, str] | None:
     """``(field, value)`` matching the request path of a route on
-    ``cs-uri-stem``: an exact path, ``|startswith`` when the only wildcard is
-    a trailing parameter (pySigma prefers the modifier), else a wildcard."""
-    glob = route_glob(path)
-    head = glob[:-1]
-    # `route_glob` never escapes `*`, so any `*` left in `head` is a wildcard.
-    if glob.endswith("*") and head and "*" not in head:
-        return "cs-uri-stem|startswith", head
-    return "cs-uri-stem", glob
+    ``cs-uri-stem``: the exact path when it has no parameters, otherwise a
+    ``|re`` anchored at both ends in which each parameter matches one
+    segment. ``None`` when the route can't be scoped (:func:`route_scopable`)."""
+    if not route_scopable(path):
+        return None
+    if not has_path_params(path):
+        value = path if path.startswith("/") else f"/{path}"
+        return "cs-uri-stem", _sigma_literal(value)
+    return "cs-uri-stem|re", _segment_regex(path)
+
+
+def stem_selector(paths: list[str]) -> tuple[str, object] | None:
+    """One ``cs-uri-stem`` selection for several routes: a list of exact
+    paths, or one anchored alternation regex if any route has parameters.
+    Unscopable routes are left out; ``None`` if none remain."""
+    kept = [p for p in paths if route_scopable(p)]
+    if not kept:
+        return None
+    if not any(has_path_params(p) for p in kept):
+        return "cs-uri-stem", [_sigma_literal(p if p.startswith("/") else f"/{p}") for p in kept]
+    return "cs-uri-stem|re", "^(?:" + "|".join(_segment_regex(p)[1:-1] for p in kept) + ")$"
 
 
 def route_example(path: str, value: str = "1001") -> str:
-    """A concrete URI path that matches :func:`route_glob` (parameters and
-    wildcards filled with ``value``)."""
-    tokenized = _tokenize_params(path or "/").replace("*", _PARAM_TOKEN)
-    example = tokenized.replace(_PARAM_TOKEN, value)
+    """A concrete URI path that matches :func:`route_selector` (parameters
+    and wildcards filled with ``value``)."""
+    example = _tokenize_params(path or "/").replace(_PARAM_TOKEN, value)
     return example if example.startswith("/") else f"/{example}"
 
 
@@ -290,7 +341,9 @@ __all__ = [
     "render_rule",
     "route_example",
     "route_glob",
+    "route_scopable",
     "route_selector",
+    "stem_selector",
     "rule_uuid",
     "sigma_method",
     "taxonomy_references",
