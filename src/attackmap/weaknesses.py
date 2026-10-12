@@ -41,8 +41,8 @@ _FIELD_ALLOWLIST = _rx(r"\bfields\s*:\s*\[")
 # `crypto.createHmac(…).update(req.body)` digests the body, it doesn't bind it
 # (#330). Same pattern as the `mongo-filter-request` sink's `receiver_unless`.
 _DIGEST_RECEIVER = re.compile(
-    r"\bcreate(?:Hmac|Hash|Cipheriv|Decipheriv|Cipher|Decipher|Sign|Verify)\s*\(|\bhashlib\.\w+\s*\(|\bhmac\.new\s*\("
-    r"|\bCryptoJS\.|\bforge\.(?:md|hmac)\."
+    r"(?:\bcreate(?:Hmac|Hash|Cipheriv|Decipheriv|Cipher|Decipher|Sign|Verify)|\bhashlib\.\w{1,40}|\bhmac\.new"
+    r"|\bCryptoJS\.[\w.]{1,80}|\bforge\.(?:md|hmac)\.[\w.]{1,80})\(\)(?:\.update\(\)){0,8}$"
 )
 _CALL_SCAN_LIMIT = 2000
 

@@ -214,6 +214,7 @@ _DIGEST_UPDATES = [
     "createCipheriv('aes-256-gcm', key, iv).update(req.body.data)",
 ]
 _MONGO_UPDATES = [
+    "db.collection('s').doc(crypto.createHash('sha256').update(req.params.id).digest('hex')).update(req.body)",
     "User.update(req.body)",
     "Model.findOneAndUpdate(req.body.filter, { $set: { seen: true } })",
     "collection.update(req.query.x, { $set: { seen: true } })",
@@ -247,6 +248,11 @@ def test_update_on_a_variable_holding_an_hmac_is_not_nosql(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("statement", _MONGO_UPDATES)
 def test_mongo_update_with_request_data_is_still_nosql(tmp_path: Path, statement: str) -> None:
+    assert "nosql_injection" in _kinds(_express(tmp_path, statement))
+
+
+def test_update_on_a_model_declared_beside_an_hmac_is_still_nosql(tmp_path: Path) -> None:
+    statement = "(() => { const User = require('./user'), sig = crypto.createHmac('sha256', key);\n  return User.update(req.body) })()"
     assert "nosql_injection" in _kinds(_express(tmp_path, statement))
 
 

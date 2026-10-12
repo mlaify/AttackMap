@@ -23,9 +23,11 @@
 #   unless      never fire when the call's arguments match this regex
 #   receiver_unless
 #               never fire when the receiver of the matched `.method(` call
-#               matches this regex: the expression before the `.`, plus the
-#               right-hand side of its last assignment when it is a bare name
-#               (`taint_sinks.call_receiver`)
+#               matches this regex: the expression before the `.` with call
+#               arguments elided and whitespace dropped (`a.b()` for
+#               `a.b(x)\n  .m(`), or `name=<rhs>` for a bare name and its
+#               nearest declarator (`taint_sinks.call_receiver`). Anchor with
+#               `$` to test the receiver's own last call.
 #   requires    only consider files whose content matches this regex
 #   flags       optional: [ignorecase, dotall]
 #   base_score  optional exploitability override for this entry
@@ -268,7 +270,8 @@ sinks:
      note: "a raw request object as the filter; a bare .find( is overwhelmingly array iteration",
      regex: '\.(?:find|findOne|findOneAndUpdate|update|updateOne|updateMany|remove|deleteOne|deleteMany|aggregate|count|countDocuments)\s*\(\s*(?:req|request|body|query|params|payload|user_input|user_data|form_data)\s*(?:\.\s*\w|\[)',
      # A hash/HMAC/cipher `.update(req.body)` digests the body; it isn't a query (#330).
-     receiver_unless: '\bcreate(?:Hmac|Hash|Cipheriv|Decipheriv|Cipher|Decipher|Sign|Verify)\s*\(|\bhashlib\.\w+\s*\(|\bhmac\.new\s*\(|\bCryptoJS\.|\bforge\.(?:md|hmac)\.'}
+     # Only when the receiver's last call (past chained `.update()`s) builds the digest.
+     receiver_unless: '(?:\bcreate(?:Hmac|Hash|Cipheriv|Decipheriv|Cipher|Decipher|Sign|Verify)|\bhashlib\.\w{1,40}|\bhmac\.new|\bCryptoJS\.[\w.]{1,80}|\bforge\.(?:md|hmac)\.[\w.]{1,80})\(\)(?:\.update\(\)){0,8}$'}
   - {id: mongo-where, kind: nosql_injection, langs: [python, js, go, php], cwe: 943,
      regex: '\$where'}
 

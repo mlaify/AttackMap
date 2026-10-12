@@ -205,10 +205,14 @@ def test_core_registry_is_the_module_table() -> None:
 @pytest.mark.parametrize(
     "code,receiver",
     [
-        ("crypto.createHmac('sha256', k).update(req.body)", "crypto.createHmac('sha256', k)"),
-        ("x = a.b[c](d).update(req.body)", "a.b[c](d)"),
-        ("crypto\n  .createHash('md5')\n  .update(req.body)", "crypto\n  .createHash('md5')"),
-        ("const h = crypto.createHmac('sha256', k)\nh.update(req.body)", "h = crypto.createHmac('sha256', k)"),
+        ("crypto.createHmac('sha256', k).update(req.body)", "crypto.createHmac()"),
+        ("x = a.b[c](d).update(req.body)", "a.b[]()"),
+        ("crypto\n  .createHash('md5')\n  .update(req.body)", "crypto.createHash()"),
+        ("const h = crypto.createHmac('sha256', k)\nh.update(req.body)", "h=crypto.createHmac()"),
+        ("db.doc(crypto.createHash('x').digest()).update(req.body)", "db.doc()"),
+        ("const User = require('m'), sig = crypto.createHmac('a', k);\nUser.update(req.body)", "User=require()"),
+        ("const a = f(1, 2), h = crypto.createHash('x');\nh.update(req.body)", "h=crypto.createHash()"),
+        ("const s = 'a,b', h = g(')');\nh.update(req.body)", "h=g()"),
         ("return User.update(req.body)", "User"),
         ("await user.update(req.body)", "user"),
         ("if (h == 1) h.update(req.body)", "h"),
@@ -238,3 +242,22 @@ def test_call_receiver_never_raises_and_stays_bounded() -> None:
         start = time.perf_counter()
         taint_sinks.call_receiver(hostile, hostile.rindex(".update("))
         assert time.perf_counter() - start < 0.5
+
+
+def test_call_receiver_stays_linear_over_a_file_full_of_calls() -> None:
+    # Every call site resolves its receiver; the assignment search must not
+    # rescan the whole file each time (1 MB took seconds before the window).
+    import time
+
+    def run(n: int) -> float:
+        text = "h = 1\n" + "h.update(req.body)\n" * n
+        start = time.perf_counter()
+        pos = text.find(".update(")
+        while pos != -1:
+            taint_sinks.call_receiver(text, pos)
+            pos = text.find(".update(", pos + 1)
+        return time.perf_counter() - start
+
+    small, large = run(14_000), run(56_000)  # ~250 KB and ~1 MB
+    assert large < 3.0
+    assert large < small * 10  # 4x the input: linear ~4x, quadratic ~16x

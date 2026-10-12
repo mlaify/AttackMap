@@ -315,6 +315,8 @@ def test_digest_update_of_the_body_is_not_mass_assignment(line: str) -> None:
         "await user.update(req.body)\n",
         "const h = crypto.createHmac('sha256', key)\nconst user = await User.findByPk(id)\nuser.update(req.body)\n",
         "crypto.createHmac('sha256', key).digest('hex'); Order.create(req.body)\n",
+        "await db.collection('s').doc(crypto.createHash('sha256').digest('hex')).update(req.body)\n",
+        "const User = require('./user'), sig = crypto.createHmac('sha256', key);\nUser.update(req.body)\n",
     ],
 )
 def test_model_update_with_the_body_is_still_mass_assignment(line: str) -> None:
