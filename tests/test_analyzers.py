@@ -728,7 +728,7 @@ const pool = new Pool({ connectionString: process.env.DB_PASSWORD });
 
 app.get("/api/orders", async (req, res) => {
   const auth = req.headers["authorization"];
-  const payload = jwt.decode(auth);
+  const payload = jwt.verify(auth, process.env.JWT_PUBLIC_KEY);
   await axios.post("https://audit.internal.example/create", payload);
   res.send("ok");
 });
@@ -741,7 +741,8 @@ app.get("/api/orders", async (req, res) => {
     assert any(r.path == "/api/orders" and r.method == "GET" for r in result.routes)
     # datastore hints — pg → postgresql (from the newly-added DB_PATTERNS in #2)
     assert any(d.kind == "postgresql" for d in result.databases)
-    # auth hints — jwt.decode fires `jwt`, req.headers['authorization'] fires `authorization`
+    # auth hints — jwt.verify fires `jwt` (jwt.decode doesn't, #325),
+    # req.headers['authorization'] fires `authorization`
     hints = {h.hint for h in result.auth_hints}
     assert "jwt" in hints
     assert "authorization" in hints

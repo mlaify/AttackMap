@@ -449,8 +449,42 @@ def test_route_selector_scopes_parameters_to_one_segment(route: str, inside: str
 
 
 @pytest.mark.parametrize(
+    ("route", "inside", "outside"),
+    [
+        ("/flights/:from-:to", "/flights/LHR-JFK", ["/flights/LHR", "/flights/LHR-JFK/x"]),
+        ("/plantae/:genus.:species", "/plantae/Prunus.persica", ["/plantae/Prunus", "/plantae/a/b.c"]),
+        ("/api/report.:fmt?", "/api/report", ["/api/report.", "/api/report.json/x", "/api/reportX"]),
+        ("/files/:name.:ext?", "/files/a.txt", ["/files/a.txt/b", "/files/"]),
+        ("/flights/:from-:to?", "/flights/LHR", ["/flights/LHR-", "/flights/LHR-JFK/x"]),
+    ],
+)
+def test_express_params_after_dash_or_dot(route: str, inside: str, outside: list[str]) -> None:
+    field, value = route_selector(route)
+    assert field == "cs-uri-stem|re"
+    rule = {"detection": {"s": {field: value}, "condition": "s"}}
+    assert sigma_matches(rule, {"cs-uri-stem": inside})
+    assert sigma_matches(rule, {"cs-uri-stem": route_example(route)})
+    for path in outside:
+        assert not sigma_matches(rule, {"cs-uri-stem": path}), path
+
+
+@pytest.mark.parametrize(
+    "route",
+    ["/users/{id:[0-9]{2}}", "/users/:id(\\d+)", "/users/:id([0-9]+)/edit", '/files/<regex("[a-z]+"):slug>', "/api/{v:v[12]}/items"],
+)
+def test_inline_regex_params_get_no_rule(route: str) -> None:
+    assert route_selector(route) is None
+
+
+def test_typed_params_without_regex_still_scope() -> None:
+    assert route_selector("/users/{id:int}") == ("cs-uri-stem|re", "^/users/[^/]+$")
+    assert route_selector("/users/<int:id>") == ("cs-uri-stem|re", "^/users/[^/]+$")
+
+
+@pytest.mark.parametrize(
     "route",
     [
+        "/a/b.:fmt?", "/x{y}z/:id", "/a/b/:id",
         "/", "*", "", "/:id", "/<path:p>", "/*/*", "/**", "/:a/:b", "/{x}", "/" + "a" * 200,
         # Near site-wide: one literal character isn't a scope.
         "/:a.:b", "*.*", "/<p>.<ext>", "/a/:id",

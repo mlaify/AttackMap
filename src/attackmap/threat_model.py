@@ -2004,7 +2004,9 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         and surface.exposure == "public"
         and surface.method in {"POST", "PUT", "PATCH", "DELETE", "ANY"}
         and (surface.data_store_interaction or surface.outbound_integration)
-        and not any(signal in {"jwt", "oauth", "authorization", "service_auth"} for signal in surface.auth_signals)
+        and not any(
+            signal in {"jwt", "jwt_verified", "oauth", "authorization", "service_auth"} for signal in surface.auth_signals
+        )
         and _webhook_state(surface) in {"absent", "unknown"}
     ]
     weak_webhook_surfaces = [
@@ -2155,7 +2157,9 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
-    if public_integration_surfaces and not any(h.hint in {"jwt", "oauth", "bearer", "token"} for h in scan.auth_hints):
+    if public_integration_surfaces and not any(
+        h.hint in {"jwt", "jwt_verified", "oauth", "bearer", "token"} for h in scan.auth_hints
+    ):
         findings.append(
             Finding(
                 title="Public routes appear to influence outbound integrations without clear auth signals",

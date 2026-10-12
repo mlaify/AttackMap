@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from .md import md_code, md_text
@@ -11,6 +12,7 @@ from .diagrams import (
     render_topology_dot,
     render_topology_mermaid,
 )
+from .detections import RULE_FILE, rule_filename, rule_yaml
 from .diff import finding_id
 from .exploitability import score_exploitability
 from .models import AttackPath, AttackSurface, ExploitabilityScore, Finding, ScanResult
@@ -76,6 +78,7 @@ def write_reports(
     if emit_json:
         write("defensive-review.json", json.dumps(defensive_review_json, indent=2) + "\n")
         write("review-context-pack.json", json.dumps(review_context_pack, indent=2) + "\n")
+        write_detection_rules(out, defensive_review_json.get("detection_opportunities", []))
 
     exploitability = score_exploitability(scan, attack_surfaces)
     if emit_markdown:
@@ -130,6 +133,89 @@ def write_reports(
     write("attackmap-topology.md", render_topology_mermaid(service_graph))
     write("attackmap-paths.dot", render_attack_paths_dot(attack_paths))
     write("attackmap-topology.dot", render_topology_dot(service_graph))
+
+
+DETECTIONS_DIR = "attackmap-detections"
+DETECTIONS_INDEX = "index.json"
+# Our record in the rules folder: proof we created it, and the files we wrote
+# there, which are the only ones a later run may remove.
+DETECTIONS_MARKER = ".attackmap-detections.json"
+
+
+def _owned_detection_files(target: Path) -> list[str] | None:
+    """Rule files a previous run recorded in ``target``'s marker, or ``None``
+    when ``target`` exists but isn't ours (no readable marker)."""
+    marker = target / DETECTIONS_MARKER
+    if not marker.is_file() or marker.is_symlink():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+    if not isinstance(data, dict) or data.get("tool") != "attackmap":
+        return None
+    files = data.get("files")
+    return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
+
+
+def write_detection_rules(out: Path, opportunities: list[dict]) -> list[str]:
+    """Write each opportunity's Sigma rule to ``<out>/attackmap-detections/*.yml``
+    (#251) with an ``index.json``, ready for `sigma convert` or a SIEM import.
+
+    The folder is used only if this function created it (it holds our marker
+    file); an existing folder of the same name that isn't ours is left alone
+    and nothing is written, with a message on stderr. Rule files from an
+    earlier run that this run no longer produces are removed only when the
+    marker recorded them. Returns the file names written."""
+    rules = [o for o in opportunities if isinstance(o.get("sigma"), dict)]
+    target = out / DETECTIONS_DIR
+    previous: list[str] = []
+    if target.exists() or target.is_symlink():
+        owned = None if target.is_symlink() or not target.is_dir() else _owned_detection_files(target)
+        if owned is None:
+            print(
+                f"attackmap: not writing Sigma rules: {target} exists and was not created by AttackMap",
+                file=sys.stderr,
+            )
+            return []
+        previous = owned
+    elif not rules:
+        return []
+    # Marked like the report directory itself, so a later scan never reads
+    # the rules back in, even with `-o .` (#216).
+    target = ensure_output_dir(target, mark=True)
+    index: list[dict] = []
+    written: list[str] = []
+    for opp in rules:
+        sigma = opp["sigma"]
+        name = rule_filename(str(opp.get("id", "")), str(sigma.get("id", "")))
+        if name in written:
+            continue
+        safe_write_text(target, target / name, rule_yaml(sigma, opp.get("sigma_correlation")))
+        written.append(name)
+        logsource = opp.get("logsource") or {}
+        index.append(
+            {
+                "file": name,
+                "id": sigma.get("id"),
+                "title": sigma.get("title"),
+                "level": sigma.get("level"),
+                "logsource": {k: v for k, v in logsource.items() if v},
+                "rule_ids": opp.get("related_rule_ids", []),
+                "correlation_id": (opp.get("sigma_correlation") or {}).get("id"),
+            }
+        )
+    for name in previous:
+        if name in written or not RULE_FILE.fullmatch(name):
+            continue
+        stale = target / name
+        if stale.is_file() and not stale.is_symlink():
+            stale.unlink()
+    safe_write_text(target, target / DETECTIONS_INDEX, json.dumps(index, indent=2) + "\n")
+    safe_write_text(
+        target, target / DETECTIONS_MARKER, json.dumps({"tool": "attackmap", "files": written}, indent=2) + "\n"
+    )
+    return written
 
 
 def render_exploitability_ranking(scores: list[ExploitabilityScore]) -> str:
