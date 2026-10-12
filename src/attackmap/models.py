@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -1023,6 +1023,25 @@ class Insight(_RedactedEvidence):
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)
 
 
+class DetectionLogsource(BaseModel):
+    """Sigma `logsource` of a generated rule (#251)."""
+
+    product: str | None = None
+    service: str | None = None
+    category: str | None = None
+
+    def label(self) -> str:
+        return self.category or "/".join(p for p in (self.product, self.service) if p) or "unknown"
+
+
+class DetectionTestEvents(BaseModel):
+    """Sample log events for a generated rule (#251): `positive` events match
+    it, `negative` ones don't."""
+
+    positive: list[dict[str, Any]] = Field(default_factory=list)
+    negative: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DetectionOpportunity(BaseModel):
     """A defender-facing detection-engineering hint produced from an insight or finding.
 
@@ -1040,6 +1059,18 @@ class DetectionOpportunity(BaseModel):
     # Rule ids of the linked findings (#250), linked via the taxonomy registry.
     related_rule_ids: list[str] = Field(default_factory=list)
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)
+    # Deployable rule (#251), set on opportunities generated per finding
+    # class: a structurally valid Sigma rule (deterministic `id`, status
+    # experimental), its log source, the log fields it reads, false-positive
+    # notes and sample events (positives match the rule, negatives don't).
+    # `sigma_correlation` is a Sigma correlation rule over `sigma` (BOLA
+    # cardinality). All `None`/empty on prose-only opportunities.
+    sigma: dict[str, Any] | None = None
+    sigma_correlation: dict[str, Any] | None = None
+    logsource: DetectionLogsource | None = None
+    fields_required: list[str] = Field(default_factory=list)
+    false_positive_notes: list[str] = Field(default_factory=list)
+    test_events: DetectionTestEvents | None = None
 
 
 class AnalyzerError(BaseModel):
