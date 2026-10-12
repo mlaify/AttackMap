@@ -57,7 +57,9 @@ templates:
       an OIDC token (id-token: write) on an untrusted trigger (rule ${rule_id},
       ${location}). A role trusting such subjects can be assumed by code from
       a fork; restrict the role's trust policy to branch or environment
-      subjects.
+      subjects. Blind spot: issue_comment and workflow_run runs get the
+      default branch's subject (ref:refs/heads/...), so their tokens look like
+      trusted ones here; fix those workflows instead.
     logsource:
       product: aws
       service: cloudtrail

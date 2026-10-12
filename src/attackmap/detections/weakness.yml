@@ -40,6 +40,9 @@ data:
       label: Prototype pollution
       kind_label: a request object merged into a target without key filtering
       level: medium
+      # Only JavaScript has prototypes to pollute; a deep merge in another
+      # language is a mass-assignment problem these markers don't catch.
+      suffixes: [.js, .mjs, .cjs, .jsx, .ts, .mts, .cts, .tsx, .vue, .svelte]
       contains: ["__proto__", "%5F%5Fproto%5F%5F", "__proto%5F%5F", "constructor[prototype]", "constructor%5Bprototype%5D", "constructor.prototype"]
       sample: "filter%5B__proto__%5D%5Badmin%5D=true"
       benign: "filter%5Bstatus%5D=open"

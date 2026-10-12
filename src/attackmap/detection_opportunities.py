@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from pathlib import Path
 
 from .attack_taxonomy import techniques_for_finding, techniques_for_insight
 from .detections import (
@@ -900,7 +901,7 @@ def _workflow_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
             render_rule(
                 "github-untrusted-trigger-run",
                 rule_ids=rule_ids,
-                key="|".join(events),
+                key="|".join([_repo_key(scan), *events, *sorted(locations)]),
                 params={
                     "trigger_text": "/".join(events),
                     "triggers": list(events),
@@ -931,7 +932,7 @@ def _workflow_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
             render_rule(
                 "github-oidc-untrusted-trigger-cloudtrail",
                 rule_ids=["oidc-on-untrusted-trigger"],
-                key="|".join(files["oidc-on-untrusted-trigger"][:3]),
+                key="|".join([_repo_key(scan), *sorted(files["oidc-on-untrusted-trigger"])]),
                 params={
                     "rule_id": "oidc-on-untrusted-trigger",
                     "location": _listed(files["oidc-on-untrusted-trigger"]),
@@ -975,7 +976,7 @@ def _secret_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list
             render_rule(
                 "aws-leaked-access-key-cloudtrail",
                 rule_ids=[rule_id],
-                key="|".join(sorted(locations)[:5]),
+                key="|".join([_repo_key(scan), *sorted(locations)]),
                 params={
                     "rule_id": rule_id,
                     "locations": _listed(locations),
@@ -1007,6 +1008,9 @@ def _weakness_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
         finding = by_rule.get(rule_id)
         if rule_id in first or rule_id not in markers or finding is None:
             continue
+        suffixes = tuple(markers[rule_id].get("suffixes") or ())
+        if suffixes and not weakness.file.lower().endswith(suffixes):
+            continue
         if (weakness.file, weakness.line) not in _location_keys(finding):
             continue
         first[rule_id] = f"{weakness.file}:{weakness.line}" if weakness.line else weakness.file
@@ -1017,7 +1021,7 @@ def _weakness_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
             render_rule(
                 "weakness-request-markers",
                 rule_ids=[rule_id],
-                key=location.rsplit(":", 1)[0],
+                key=f"{_repo_key(scan)}|{location.rsplit(':', 1)[0]}",
                 params={
                     "label": spec["label"],
                     "kind_label": spec["kind_label"],
@@ -1044,6 +1048,16 @@ def _weakness_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
                 )
             )
     return out
+
+
+def _repo_key(scan: ScanResult) -> str:
+    """The scanned directory's name, folded into the ids of repository-wide
+    rules (workflows, keys, weaknesses) whose other inputs, such as
+    `.github/workflows/ci.yml`, repeat across repositories."""
+    try:
+        return Path(scan.root).resolve().name
+    except (OSError, RuntimeError, ValueError):
+        return Path(scan.root).name
 
 
 def _listed(items: list[str], limit: int = 3) -> str:

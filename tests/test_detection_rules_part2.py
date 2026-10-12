@@ -165,6 +165,18 @@ def test_code_weakness_rules(tmp_path: Path) -> None:
     assert graphql.sigma["level"] == "low"
 
 
+def test_prototype_pollution_rule_is_javascript_only(tmp_path: Path) -> None:
+    (tmp_path / "views.py").write_text(
+        "from utilities.utils import deepmerge\n"
+        "def patch(request, config):\n"
+        "    config.data = deepmerge(config.data, request.data)\n",
+        encoding="utf-8",
+    )
+    scan, surfaces, findings, opps = _generate(tmp_path)
+    assert any(f.rule_id == "prototype-pollution" for f in findings)
+    assert not [o for o in opps if o.id == "detect:prototype-pollution:requests"]
+
+
 # ---------------------------------------------------------------------------
 # pySigma (dev extra)
 # ---------------------------------------------------------------------------
@@ -295,3 +307,16 @@ def test_rule_filename_and_yaml() -> None:
     assert RULE_FILE.fullmatch(name)
     assert RULE_FILE.fullmatch(rule_filename("detect:" + "x" * 500, "0" * 32))
     assert rule_yaml({"a": 1}, {"b": 2}) == "a: 1\n---\nb: 2\n"
+
+
+def test_repository_wide_rules_differ_between_repositories(tmp_path: Path) -> None:
+    # Same workflow files in two repositories: the rules must not share an id,
+    # or a SIEM import of both would overwrite one with the other.
+    first = _rules(_workflow_repo(tmp_path / "service-a"))
+    second = _rules(_workflow_repo(tmp_path / "service-b"))
+    for opp_id in ("detect:workflow:pull_request_target", "detect:oidc-on-untrusted-trigger:cloudtrail"):
+        assert first[opp_id].sigma["id"] != second[opp_id].sigma["id"]
+    # ...but stay stable across reruns of the same one.
+    assert _rules(tmp_path / "service-a")["detect:workflow:workflow_run"].sigma["id"] == (
+        first["detect:workflow:workflow_run"].sigma["id"]
+    )
