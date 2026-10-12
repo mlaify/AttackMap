@@ -32,7 +32,7 @@ from .sdk.contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
-from .models import AnalyzerError
+from .models import APP_SURFACE_ISSUE_KINDS, AnalyzerError
 from .redact import redact_text
 from .sdk.models import (
     AuthHint,
@@ -758,6 +758,11 @@ def analyze_repository(
             if progress is not None:
                 progress.stage(f"Analyzer {analyzer.name} failed ({error.error_type}); continuing")
             continue
+        for unknown in drop_unknown_kinds(result, analyzer.name):
+            if strict:
+                raise ValueError(unknown.message)
+            errors.append(unknown)
+            logger.warning("Analyzer %r: %s", analyzer.name, unknown.message)
         _stamp_provenance(result, analyzer.name)
         results.append(result)
     merged = merge_analyzer_results(results, root=repo_root) if results else AnalyzerResult(root=str(repo_root))
@@ -807,6 +812,38 @@ def _call_analyze(
     except (TypeError, ValueError):
         pass
     return analyzer.analyze(root, **kwargs)  # type: ignore[call-arg]
+
+
+# Signal lists whose `kind` is typed `str` so a plugin built against a newer
+# core still validates: (ScanResult attribute, kinds this core knows, error
+# type of the drop note). Records with another kind are dropped one by one,
+# the rest of the plugin's result is kept, and the drop is noted under
+# `analyzer_errors` (`--strict-analyzers` raises instead).
+KIND_VOCABULARIES: tuple[tuple[str, frozenset[str], str], ...] = (
+    ("app_surface_issues", frozenset(APP_SURFACE_ISSUE_KINDS), "UnknownAppSurfaceIssueKind"),
+)
+
+
+def drop_unknown_kinds(result: AnalyzerResult, analyzer_name: str) -> list[AnalyzerError]:
+    notes: list[AnalyzerError] = []
+    for attr, known, error_type in KIND_VOCABULARIES:
+        items = getattr(result, attr)
+        unknown = [item for item in items if item.kind not in known]
+        if not unknown:
+            continue
+        setattr(result, attr, [item for item in items if item.kind in known])
+        kinds = sorted({item.kind for item in unknown})
+        message = (
+            f"dropped {len(unknown)} {attr} record(s) with kind(s) this AttackMap doesn't know: "
+            f"{', '.join(kinds[:5])}{' …' if len(kinds) > 5 else ''} (upgrade attackmap to report them)"
+        )
+        notes.append(
+            AnalyzerError(
+                analyzer=analyzer_name, error_type=error_type,
+                message=redact_text(message)[:_ANALYZER_ERROR_MAX_CHARS],
+            )
+        )
+    return notes
 
 
 def _stamp_provenance(result: AnalyzerResult, analyzer_name: str) -> None:

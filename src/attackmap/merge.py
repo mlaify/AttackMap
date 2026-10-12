@@ -64,6 +64,29 @@ def _upgrade_route_auth(existing: Any, duplicate: Any) -> None:
         existing.guards = list(duplicate.guards)
         existing.guard_evidence = duplicate.guard_evidence
 
+_SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
+_CONFIDENCE_RANK = {"low": 0.3, "medium": 0.6, "high": 0.9}
+
+
+def _rank(item: Any) -> tuple[int, float]:
+    confidence = getattr(item, "confidence", 0.0)
+    if isinstance(confidence, str):
+        confidence = _CONFIDENCE_RANK.get(confidence, 0.0)
+    return _SEVERITY_RANK.get(getattr(item, "severity", ""), -1), float(confidence or 0.0)
+
+
+def keep_more_severe(existing: Any, duplicate: Any) -> None:
+    """Upgrade hook for records with ``severity`` (and optionally a numeric or
+    low/medium/high ``confidence``): on a duplicate key keep the more severe,
+    then the more confident, report (its evidence too)."""
+    if _rank(duplicate) > _rank(existing):
+        existing.severity = duplicate.severity
+        if hasattr(existing, "confidence"):
+            existing.confidence = duplicate.confidence
+        if hasattr(existing, "evidence_text") and getattr(duplicate, "evidence_text", None):
+            existing.evidence_text = duplicate.evidence_text
+
+
 MERGE_SCHEMA: tuple[MergeRule, ...] = (
     MergeRule("routes", lambda item: (item.path, item.method, item.file), upgrade=_upgrade_route_auth),
     # Method is part of the identity (#146b): two verbs on the same target in one
@@ -123,9 +146,13 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         "supply_chain_issues",
         lambda item: (item.kind, item.file, item.line, item.package),
     ),
+    # Evidence is part of the identity: two ATS exceptions in one binary
+    # (lineless) Info.plist are two instances. On a true duplicate (the Swift
+    # and Objective-C analyzers both reporting a plist) the more severe wins.
     MergeRule(
         "app_surface_issues",
-        lambda item: (item.kind, item.file, item.line),
+        lambda item: (item.kind, item.file, item.line, item.evidence_text),
+        upgrade=keep_more_severe,
     ),
     MergeRule(
         "secret_history",
@@ -171,4 +198,4 @@ def initial_seen(destination: Any, rule: MergeRule) -> set:
     return {rule.key(item) for item in getattr(destination, rule.attr)}
 
 
-__all__ = ["MergeRule", "MERGE_SCHEMA", "merge_into", "initial_seen"]
+__all__ = ["MergeRule", "MERGE_SCHEMA", "keep_more_severe", "merge_into", "initial_seen"]

@@ -250,7 +250,7 @@ App-side issues that aren't HTTP routes or taint sinks go in
 | `apple_xpc_unvalidated_peer` | `apple-xpc-unvalidated-peer` | An XPC listener accepts every connection without checking the peer |
 | `apple_dynamic_dispatch` | `apple-dynamic-dispatch` | A class, selector or library resolved from a string built at runtime |
 
-Core turns each kind into one aggregated finding with CWE/OWASP taxonomy. Put
+Core turns each kind into one aggregated finding with CWE/OWASP taxonomy. A record with a kind this core doesn't know is dropped (and noted under `analyzer_errors`); the rest of your result is kept. Records merge by `(kind, file, line, evidence_text)`, and a duplicate keeps the more severe, then more confident (`confidence`, 0-1), report. Put
 the entry points themselves (URL schemes, universal links, XPC services) in
 `entrypoint_hints` too, so they show up in the surface inventory. Report only
 constructs that are present in the code or config, never absences.

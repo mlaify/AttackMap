@@ -43,9 +43,29 @@ def test_every_kind_has_a_spec_catalog_entry_and_taxonomy() -> None:
         assert entry is not None and entry.cwe and entry.owasp
 
 
-def test_unknown_kind_is_rejected() -> None:
+def test_unknown_kind_is_dropped_and_noted_not_the_whole_result(tmp_path: Path) -> None:
+    from attackmap.analyzers import analyze_repository
+
+    class _Plugin:
+        metadata = sdk.AnalyzerMetadata(name="apple-test", priority=20)
+        name = "apple-test"
+
+        def detect(self, root) -> bool:
+            return True
+
+        def analyze(self, root) -> ScanResult:
+            return ScanResult(root=str(root), app_surface_issues=[
+                AppSurfaceIssue(kind="apple_from_the_future", file="a.swift", line=1),
+                AppSurfaceIssue(kind="apple_custom_url_scheme", file="Info.plist", line=3),
+            ], entrypoint_hints=[sdk.EntrypointHint(hint="url_scheme: x://", file="Info.plist", line=3)])
+
+    merged = analyze_repository(tmp_path, analyzers=[_Plugin()])
+    assert [i.kind for i in merged.app_surface_issues] == ["apple_custom_url_scheme"]
+    assert [h.hint for h in merged.entrypoint_hints] == ["url_scheme: x://"]
+    assert [e.error_type for e in merged.analyzer_errors] == ["UnknownAppSurfaceIssueKind"]
+    assert "apple_from_the_future" in merged.analyzer_errors[0].message
     with pytest.raises(ValueError):
-        AppSurfaceIssue(kind="apple_something_else", file="x")  # type: ignore[arg-type]
+        analyze_repository(tmp_path, analyzers=[_Plugin()], strict=True)
 
 
 def test_one_finding_per_kind_at_the_worst_severity() -> None:
@@ -82,6 +102,23 @@ def test_evidence_is_capped_and_redacted() -> None:
     secret = AppSurfaceIssue(kind="apple_pasteboard_secret", file="A.swift", line=1,
                              evidence_text='UIPasteboard.general.string = "ghp_' + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8" + '"')
     assert "A1b2C3d4E5f6G7h8I9j0" not in (secret.evidence_text or "")
+
+
+def test_merge_keeps_distinct_lineless_instances_and_the_worst_duplicate() -> None:
+    def ats(sev: str, evidence: str, conf: float = 0.8) -> AppSurfaceIssue:
+        return AppSurfaceIssue(kind="apple_ats_insecure_loads", file="Ext/Info.plist", line=None,
+                               severity=sev, evidence_text=evidence, confidence=conf)
+
+    swift = ScanResult(root=".", app_surface_issues=[ats("medium", "NSAllowsArbitraryLoads = true"),
+                                                    ats("low", "NSExceptionDomains.a.example: insecure")])
+    objc = ScanResult(root=".", app_surface_issues=[ats("high", "NSAllowsArbitraryLoads = true"),
+                                                   ats("low", "NSExceptionDomains.a.example: insecure", 0.95)])
+    merged = merge_analyzer_results([swift, objc], root=".")
+    got = [(i.evidence_text, i.severity, i.confidence) for i in merged.app_surface_issues]
+    # Two lineless instances stay two; the first-seen medium is upgraded to the
+    # later high, and an equal-severity duplicate keeps the more confident report.
+    assert got == [("NSAllowsArbitraryLoads = true", "high", 0.8),
+                   ("NSExceptionDomains.a.example: insecure", "low", 0.95)]
 
 
 def test_merge_dedups_plugin_issues_by_kind_file_line() -> None:

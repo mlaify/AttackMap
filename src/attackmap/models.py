@@ -368,13 +368,21 @@ class AppSurfaceIssue(_RedactedEvidence):
     kind, dashed), at the most severe instance's severity. Like the other
     issue families, every instance is a positively-present construct, never
     an absence.
+
+    ``kind`` is one of ``APP_SURFACE_ISSUE_KINDS`` but typed ``str``, so a
+    plugin built against a newer core still validates: core drops records
+    with a kind it doesn't know (noted under ``analyzer_errors``) and keeps
+    the rest of the plugin's result.
     """
 
-    kind: AppSurfaceIssueKind
+    kind: str = Field(min_length=1, max_length=64)
     file: str
     line: int | None = None
     evidence_text: str | None = None
     severity: Literal["low", "medium", "high"] = "medium"
+    # How sure the emitter is (0-1). On a duplicate report of the same
+    # instance the merge keeps the more severe, then the more confident one.
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 

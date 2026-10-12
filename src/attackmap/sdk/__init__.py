@@ -70,8 +70,11 @@ app-side issues as :class:`AppSurfaceIssue` items in
 URL-scheme handlers, weakening entitlements, WKWebView script built from
 strings, secrets in UserDefaults or on the pasteboard, unvalidated XPC peers,
 and classes, selectors or libraries resolved from runtime strings. The
-``kind`` must be one of :data:`APP_SURFACE_ISSUE_KINDS`; ``severity`` is per
-instance. Core turns each kind into one aggregated finding (rule id = the
+``kind`` should be one of :data:`APP_SURFACE_ISSUE_KINDS` (it is typed ``str``:
+a record with a kind this core doesn't know is dropped and noted under
+``analyzer_errors``, the rest of the result is kept); ``severity`` and
+``confidence`` are per instance. Records are merged by ``(kind, file, line,
+evidence_text)``; on a duplicate the more severe, then more confident, wins. Core turns each kind into one aggregated finding (rule id = the
 kind, dashed, e.g. ``apple-ats-insecure-loads``) with CWE/OWASP taxonomy.
 Entry points such as URL schemes, universal links and XPC services also go in
 ``entrypoint_hints`` so they show up in the surface inventory.
