@@ -453,6 +453,9 @@ def test_route_selector_scopes_parameters_to_one_segment(route: str, inside: str
     [
         ("/flights/:from-:to", "/flights/LHR-JFK", ["/flights/LHR", "/flights/LHR-JFK/x"]),
         ("/plantae/:genus.:species", "/plantae/Prunus.persica", ["/plantae/Prunus", "/plantae/a/b.c"]),
+        ("/api/report.:fmt?", "/api/report", ["/api/report.", "/api/report.json/x", "/api/reportX"]),
+        ("/files/:name.:ext?", "/files/a.txt", ["/files/a.txt/b", "/files/"]),
+        ("/flights/:from-:to?", "/flights/LHR", ["/flights/LHR-", "/flights/LHR-JFK/x"]),
     ],
 )
 def test_express_params_after_dash_or_dot(route: str, inside: str, outside: list[str]) -> None:
@@ -481,6 +484,7 @@ def test_typed_params_without_regex_still_scope() -> None:
 @pytest.mark.parametrize(
     "route",
     [
+        "/a/b.:fmt?", "/x{y}z/:id", "/a/b/:id",
         "/", "*", "", "/:id", "/<path:p>", "/*/*", "/**", "/:a/:b", "/{x}", "/" + "a" * 200,
         # Near site-wide: one literal character isn't a scope.
         "/:a.:b", "*.*", "/<p>.<ext>", "/a/:id",

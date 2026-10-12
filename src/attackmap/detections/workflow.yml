@@ -53,11 +53,15 @@ templates:
     description: >-
       CloudTrail AssumeRoleWithWebIdentity calls whose GitHub Actions OIDC
       subject ends in ":pull_request", that is, the token was minted by a run
-      triggered from a pull request. AttackMap found a workflow that requests
-      an OIDC token (id-token: write) on an untrusted trigger (rule ${rule_id},
-      ${location}). A role trusting such subjects can be assumed by code from
-      a fork; restrict the role's trust policy to branch or environment
-      subjects. Blind spot: issue_comment and workflow_run runs get the
+      triggered by a pull request. AttackMap found a workflow that requests
+      an OIDC token (id-token: write) on a pull-request trigger (rule
+      ${rule_id}, ${location}). GitHub gives no OIDC token to pull_request
+      runs from forks, so the exposure is pull requests from branches in the
+      same repository: anyone who can push a branch (a contributor, a
+      compromised account or bot token) can run code holding the role. A
+      pull_request_target workflow that runs fork code with id-token: write
+      exposes it to forks as well. Restrict the role's trust policy to
+      branch or environment subjects. Blind spot: issue_comment and workflow_run runs get the
       default branch's subject (ref:refs/heads/...), so their tokens look like
       trusted ones here; fix those workflows instead.
     logsource:

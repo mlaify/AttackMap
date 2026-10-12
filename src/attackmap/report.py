@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from .md import md_code, md_text
@@ -134,32 +135,55 @@ def write_reports(
     write("attackmap-topology.dot", render_topology_dot(service_graph))
 
 
-DETECTIONS_DIR = "detections"
+DETECTIONS_DIR = "attackmap-detections"
 DETECTIONS_INDEX = "index.json"
+# Our record in the rules folder: proof we created it, and the files we wrote
+# there, which are the only ones a later run may remove.
+DETECTIONS_MARKER = ".attackmap-detections.json"
+
+
+def _owned_detection_files(target: Path) -> list[str] | None:
+    """Rule files a previous run recorded in ``target``'s marker, or ``None``
+    when ``target`` exists but isn't ours (no readable marker)."""
+    marker = target / DETECTIONS_MARKER
+    if not marker.is_file() or marker.is_symlink():
+        return None
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+    if not isinstance(data, dict) or data.get("tool") != "attackmap":
+        return None
+    files = data.get("files")
+    return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
 
 
 def write_detection_rules(out: Path, opportunities: list[dict]) -> list[str]:
-    """Write each opportunity's Sigma rule to ``<out>/detections/*.yml`` (#251)
-    with an ``index.json``, ready for `sigma convert` or a SIEM import.
+    """Write each opportunity's Sigma rule to ``<out>/attackmap-detections/*.yml``
+    (#251) with an ``index.json``, ready for `sigma convert` or a SIEM import.
 
-    Files from an earlier run that this run no longer produces are removed,
-    but only names listed in the previous index that have our file-name shape
-    and aren't symlinks. Returns the file names written."""
+    The folder is used only if this function created it (it holds our marker
+    file); an existing folder of the same name that isn't ours is left alone
+    and nothing is written, with a message on stderr. Rule files from an
+    earlier run that this run no longer produces are removed only when the
+    marker recorded them. Returns the file names written."""
     rules = [o for o in opportunities if isinstance(o.get("sigma"), dict)]
     target = out / DETECTIONS_DIR
-    if not rules and not target.exists():
+    previous: list[str] = []
+    if target.exists() or target.is_symlink():
+        owned = None if target.is_symlink() or not target.is_dir() else _owned_detection_files(target)
+        if owned is None:
+            print(
+                f"attackmap: not writing Sigma rules: {target} exists and was not created by AttackMap",
+                file=sys.stderr,
+            )
+            return []
+        previous = owned
+    elif not rules:
         return []
     # Marked like the report directory itself, so a later scan never reads
     # the rules back in, even with `-o .` (#216).
     target = ensure_output_dir(target, mark=True)
-    previous: list[str] = []
-    index_path = target / DETECTIONS_INDEX
-    if index_path.is_file() and not index_path.is_symlink():
-        try:
-            entries = json.loads(index_path.read_text(encoding="utf-8"))
-            previous = [e.get("file") for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
-        except (ValueError, OSError):
-            previous = []
     index: list[dict] = []
     written: list[str] = []
     for opp in rules:
@@ -182,12 +206,15 @@ def write_detection_rules(out: Path, opportunities: list[dict]) -> list[str]:
             }
         )
     for name in previous:
-        if not isinstance(name, str) or name in written or not RULE_FILE.fullmatch(name):
+        if name in written or not RULE_FILE.fullmatch(name):
             continue
         stale = target / name
         if stale.is_file() and not stale.is_symlink():
             stale.unlink()
-    safe_write_text(target, index_path, json.dumps(index, indent=2) + "\n")
+    safe_write_text(target, target / DETECTIONS_INDEX, json.dumps(index, indent=2) + "\n")
+    safe_write_text(
+        target, target / DETECTIONS_MARKER, json.dumps({"tool": "attackmap", "files": written}, indent=2) + "\n"
+    )
     return written
 
 

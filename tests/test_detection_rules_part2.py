@@ -16,7 +16,7 @@ from attackmap.detection_opportunities import detection_coverage, generate_detec
 from attackmap.detections import RULE_FILE, rule_filename, rule_yaml
 from attackmap.detections.sigma import correlation_problems, sigma_matches, sigma_problems
 from attackmap.models import FindingLocation
-from attackmap.report import write_detection_rules
+from attackmap.report import DETECTIONS_DIR, DETECTIONS_MARKER, write_detection_rules
 from attackmap.review_json import build_defensive_review_json
 from attackmap.scanner import scan_repo
 from attackmap.threat_model import generate_attack_paths, generate_findings
@@ -94,6 +94,9 @@ def test_oidc_on_untrusted_trigger_gets_a_cloudtrail_rule(tmp_path: Path) -> Non
     opp = _rules(_workflow_repo(tmp_path))["detect:oidc-on-untrusted-trigger:cloudtrail"]
     assert (opp.logsource.product, opp.logsource.service) == ("aws", "cloudtrail")
     assert "attack.t1078.004" in opp.sigma["tags"]
+    description = opp.sigma["description"]
+    assert "no OIDC token to pull_request runs from forks" in description
+    assert "same repository" in description
     event = {
         "eventSource": "sts.amazonaws.com",
         "eventName": "AssumeRoleWithWebIdentity",
@@ -136,6 +139,8 @@ def test_leaked_aws_key_rule_uses_a_placeholder_never_the_key(tmp_path: Path) ->
     opp = _rules(_weakness_repo(tmp_path))["detect:hardcoded-secret:aws-access-key"]
     _assert_valid(opp)
     assert opp.sigma["detection"]["selection"] == {"userIdentity.accessKeyId": "REPLACE_WITH_LEAKED_ACCESS_KEY_ID"}
+    # The sample is a call that can actually be denied (GetCallerIdentity never is).
+    assert all(e.get("eventName") != "GetCallerIdentity" for e in opp.test_events.positive)
     assert "config.js" in opp.sigma["description"]
     assert AWS_KEY not in json.dumps(opp.model_dump())
 
@@ -162,6 +167,10 @@ def test_code_weakness_rules(tmp_path: Path) -> None:
         assert opp.logsource.category == "webserver"
     assert sigma_matches(proto.sigma, {"cs-uri-query": "a%5B__proto__%5D%5Bx%5D=1"})
     assert sigma_matches(graphql.sigma, {"cs-uri-query": "query=%7B__schema%7Btypes%7Bname%7D%7D%7D"})
+    assert sigma_matches(graphql.sigma, {"cs-uri-query": "query=%7B__type%28name%3A%22User%22%29%7Bname%7D%7D"})
+    # `__typename` is in every Apollo/Relay query: not introspection.
+    assert not sigma_matches(graphql.sigma, {"cs-uri-query": "query=%7Bme%7Bid+__typename%7D%7D"})
+    assert not sigma_matches(graphql.sigma, {"cs-uri-query": "query={me{__typename}}"})
     assert graphql.sigma["level"] == "low"
 
 
@@ -213,7 +222,7 @@ def test_part2_rules_validate_with_pysigma(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# detections/ export
+# attackmap-detections/ export
 # ---------------------------------------------------------------------------
 
 
@@ -232,16 +241,16 @@ def test_rule_files_are_written_with_an_index(tmp_path: Path) -> None:
     out.mkdir()
     written = write_detection_rules(out, opps)
     assert written and all(RULE_FILE.fullmatch(n) for n in written)
-    index = json.loads((out / "detections" / "index.json").read_text(encoding="utf-8"))
+    index = json.loads((out / DETECTIONS_DIR / "index.json").read_text(encoding="utf-8"))
     assert [e["file"] for e in index] == written
     for entry in index:
-        docs = list(yaml.safe_load_all((out / "detections" / entry["file"]).read_text(encoding="utf-8")))
+        docs = list(yaml.safe_load_all((out / DETECTIONS_DIR / entry["file"]).read_text(encoding="utf-8")))
         assert docs[0]["id"] == entry["id"]
         assert sigma_problems(docs[0]) == []
     # Deterministic: a rerun writes the same names and bytes.
-    before = {n: (out / "detections" / n).read_bytes() for n in written}
+    before = {n: (out / DETECTIONS_DIR / n).read_bytes() for n in written}
     assert write_detection_rules(out, opps) == written
-    assert before == {n: (out / "detections" / n).read_bytes() for n in written}
+    assert before == {n: (out / DETECTIONS_DIR / n).read_bytes() for n in written}
 
 
 def test_bola_rule_file_holds_the_correlation_as_a_second_document(tmp_path: Path) -> None:
@@ -249,7 +258,7 @@ def test_bola_rule_file_holds_the_correlation_as_a_second_document(tmp_path: Pat
     opps = _review_opps(fixtures)
     written = write_detection_rules(tmp_path, opps)
     [name] = [n for n in written if n.startswith("bola-read")]
-    docs = list(yaml.safe_load_all((tmp_path / "detections" / name).read_text(encoding="utf-8")))
+    docs = list(yaml.safe_load_all((tmp_path / DETECTIONS_DIR / name).read_text(encoding="utf-8")))
     assert len(docs) == 2
     assert docs[1]["correlation"]["rules"] == [docs[0]["name"]]
 
@@ -259,46 +268,105 @@ def test_stale_rule_files_are_removed_but_nothing_else(tmp_path: Path) -> None:
     out = tmp_path / "out"
     out.mkdir()
     written = write_detection_rules(out, opps)
-    detections = out / "detections"
+    detections = out / DETECTIONS_DIR
+    assert json.loads((detections / DETECTIONS_MARKER).read_text(encoding="utf-8"))["files"] == written
+    # A file we didn't write, even one shaped like ours, survives.
+    lookalike = "workflow-user-file-0123abcd.yml"
+    (detections / lookalike).write_text("keep", encoding="utf-8")
     (detections / "mine.yml").write_text("keep", encoding="utf-8")
     # A later run produces one rule fewer.
     dropped = written[0]
     survivors = [o for o in opps if not (o.get("sigma") and rule_filename(o["id"], o["sigma"]["id"]) == dropped)]
     write_detection_rules(out, survivors)
     assert not (detections / dropped).exists()
-    assert (detections / "mine.yml").read_text(encoding="utf-8") == "keep"
-    # A tampered index can't make it delete anything outside its own names.
-    (detections / "index.json").write_text(json.dumps([{"file": "../outside.txt"}, {"file": "mine.yml"}, 5]),
-                                           encoding="utf-8")
+    assert (detections / "mine.yml").exists() and (detections / lookalike).exists()
+    # A tampered marker or index can't make it delete anything else.
+    (detections / DETECTIONS_MARKER).write_text(
+        json.dumps({"tool": "attackmap", "files": ["../outside.txt", "mine.yml", lookalike, 5]}), encoding="utf-8"
+    )
+    (detections / "index.json").write_text(json.dumps([{"file": lookalike}]), encoding="utf-8")
     (out / "outside.txt").write_text("x", encoding="utf-8")
     write_detection_rules(out, survivors)
     assert (out / "outside.txt").exists() and (detections / "mine.yml").exists()
+    # The lookalike was listed in the (tampered) marker and matches our name
+    # shape, so it is the only thing a forged marker can remove.
+    assert not (detections / lookalike).exists()
+
+
+def test_a_folder_we_did_not_create_is_left_alone(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    opps = _review_opps(_workflow_repo(tmp_path / "repo"))
+    out = tmp_path / "out"
+    theirs = out / DETECTIONS_DIR
+    theirs.mkdir(parents=True)
+    first = next(o for o in opps if o.get("sigma"))
+    same_name = rule_filename(first["id"], first["sigma"]["id"])
+    (theirs / same_name).write_text("user content", encoding="utf-8")
+    (theirs / "index.json").write_text(json.dumps([{"file": same_name}]), encoding="utf-8")
+    assert write_detection_rules(out, opps) == []
+    assert "not writing Sigma rules" in capsys.readouterr().err
+    assert (theirs / same_name).read_text(encoding="utf-8") == "user content"
+    assert sorted(p.name for p in theirs.iterdir()) == ["index.json", same_name]  # no marker added
+
+
+def test_output_into_the_repo_leaves_its_own_detections_folder_scannable(tmp_path: Path) -> None:
+    # `-o .`: the repo has its own `detections/` folder with code in it.
+    from typer.testing import CliRunner
+
+    from attackmap.cli import app
+
+    repo = _workflow_repo(tmp_path / "repo")
+    (repo / "detections").mkdir()
+    (repo / "detections" / "rules.py").write_text("import os\nTOKEN = os.getenv('API_TOKEN')\n", encoding="utf-8")
+    runner = CliRunner()
+    for _ in range(2):
+        result = runner.invoke(app, ["analyze", str(repo), "-o", str(repo), "--format", "json"])
+        assert result.exit_code == 0, result.output
+    assert not (repo / "detections" / ".attackmap-output").exists()
+    assert (repo / DETECTIONS_DIR / DETECTIONS_MARKER).exists()
+    report = json.loads((repo / "attackmap-report.json").read_text(encoding="utf-8"))
+    assert any(h["file"].startswith("detections/") for h in report["scan"]["secret_hints"])
+    assert not any(h["file"].startswith(DETECTIONS_DIR) for h in report["scan"]["secret_hints"])
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
 def test_symlinked_rule_file_is_not_followed(tmp_path: Path) -> None:
     opps = _review_opps(_workflow_repo(tmp_path / "repo"))
     out = tmp_path / "out"
-    (out / "detections").mkdir(parents=True)
+    out.mkdir()
+    write_detection_rules(out, opps)
     victim = tmp_path / "victim.txt"
     victim.write_text("original", encoding="utf-8")
     first = next(o for o in opps if o.get("sigma"))
-    (out / "detections" / rule_filename(first["id"], first["sigma"]["id"])).symlink_to(victim)
+    target = out / DETECTIONS_DIR / rule_filename(first["id"], first["sigma"]["id"])
+    target.unlink()
+    target.symlink_to(victim)
     with pytest.raises(Exception):
         write_detection_rules(out, opps)
     assert victim.read_text(encoding="utf-8") == "original"
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_symlinked_rules_folder_is_refused(tmp_path: Path) -> None:
+    opps = _review_opps(_workflow_repo(tmp_path / "repo"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / DETECTIONS_DIR).symlink_to(elsewhere)
+    assert write_detection_rules(out, opps) == []
+    assert list(elsewhere.iterdir()) == []
+
+
 def test_no_rules_writes_nothing(tmp_path: Path) -> None:
     assert write_detection_rules(tmp_path, [{"id": "detect:x", "sigma": None}]) == []
-    assert not (tmp_path / "detections").exists()
+    assert not (tmp_path / DETECTIONS_DIR).exists()
 
 
-def test_corrupt_index_is_ignored(tmp_path: Path) -> None:
-    (tmp_path / "detections").mkdir()
-    (tmp_path / "detections" / "index.json").write_text("{not json", encoding="utf-8")
+def test_corrupt_marker_means_not_ours(tmp_path: Path) -> None:
+    (tmp_path / DETECTIONS_DIR).mkdir()
+    (tmp_path / DETECTIONS_DIR / DETECTIONS_MARKER).write_text("{not json", encoding="utf-8")
     opps = _review_opps(_workflow_repo(tmp_path / "repo"))
-    assert write_detection_rules(tmp_path, opps)
+    assert write_detection_rules(tmp_path, opps) == []
 
 
 def test_rule_filename_and_yaml() -> None:
@@ -347,5 +415,5 @@ def test_rule_files_are_injection_safe(tmp_path: Path) -> None:
     opps = [{"id": "detect:subprocess-shell:GET:" + hostile, "sigma": rendered.sigma, "related_rule_ids": []}]
     [name] = write_detection_rules(tmp_path, opps)
     assert RULE_FILE.fullmatch(name) and "/" not in name
-    on_disk = list(yaml.safe_load_all((tmp_path / "detections" / name).read_text(encoding="utf-8")))
+    on_disk = list(yaml.safe_load_all((tmp_path / DETECTIONS_DIR / name).read_text(encoding="utf-8")))
     assert on_disk == [rendered.sigma]

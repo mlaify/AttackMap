@@ -52,9 +52,11 @@ data:
       label: GraphQL introspection
       kind_label: GraphQL introspection or a GraphiQL/playground enabled in production
       level: low
-      contains: ["__schema", "%5F%5Fschema", "__type", "%5F%5Ftype", "IntrospectionQuery"]
+      # With a boundary: `__type(` / `__schema{`, never `__typename`, which
+      # every Apollo/Relay client sends.
+      contains: ["__schema{", "__schema%7B", "__schema+", "__schema%20", "__schema ", "%5F%5Fschema", "__type(", "__type%28", "IntrospectionQuery"]
       sample: "query=%7B__schema%7Btypes%7Bname%7D%7D%7D"
-      benign: "query=%7Bproducts%7Bname%7D%7D"
+      benign: "query=%7Bproducts%7Bname+__typename%7D%7D"
       falsepositives:
         - Your own developer tooling (GraphiQL, codegen) run against production; exclude its source IPs
         - Introspection sent as POST bodies is not visible in access logs

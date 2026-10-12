@@ -256,7 +256,7 @@ def rule_yaml(sigma: dict[str, Any], correlation: dict[str, Any] | None = None) 
 # optional-marker `?`.
 _INLINE_PARAM = re.compile(
     r"<[^<>/]{1,80}>|\{[^{}/]{1,80}\}|\[{1,2}[^\[\]/]{1,80}\]{1,2}|\*+"
-    r"|(?<=[-.]):[A-Za-z_][A-Za-z0-9_]{0,63}"
+    r"|(?<=[-.]):[A-Za-z_][A-Za-z0-9_]{0,63}(\?)?"
 )
 # A parameter with an inline regex: `:id(\d+)`, `{id:[0-9]{2}}`,
 # `<regex("[a-z]+"):slug>`. We can't translate those faithfully, and a
@@ -276,6 +276,9 @@ MAX_OPTIONAL_SEGMENTS = 2
 
 _PARAM = "\x00"  # a parameter part inside a segment
 _REST = "\x01"  # a final catch-all `*`
+# An optional parameter after a separator (`/a/b.:fmt?`): "\x02" + the
+# separator; both are optional together, as in Express.
+_OPT = "\x02"
 
 
 @dataclass(frozen=True)
@@ -301,9 +304,14 @@ def _parse(path: str) -> tuple[_Segment, ...]:
             text = text[head.end():]
         pos = 0
         for match in _INLINE_PARAM.finditer(text):
-            if match.start() > pos:
-                parts.append(text[pos:match.start()])
-            parts.append(_PARAM)
+            if match.lastindex and match.group(1):  # `.:fmt?` / `-:to?`
+                if match.start() - 1 > pos:
+                    parts.append(text[pos:match.start() - 1])
+                parts.append(_OPT + text[match.start() - 1])
+            else:
+                if match.start() > pos:
+                    parts.append(text[pos:match.start()])
+                parts.append(_PARAM)
             pos = match.end()
         if pos < len(text):
             parts.append(text[pos:])
@@ -319,7 +327,12 @@ def _parse(path: str) -> tuple[_Segment, ...]:
 
 
 def _is_marker(part: str) -> bool:
-    return part in (_PARAM, _REST)
+    return part in (_PARAM, _REST) or part.startswith(_OPT)
+
+
+def _marker_text(part: str, value: str) -> str:
+    """A marker filled with a sample value (for examples and globs)."""
+    return part[1] + value if part.startswith(_OPT) else value
 
 
 def _param_count(segments: tuple[_Segment, ...]) -> int:
@@ -348,7 +361,9 @@ def route_scopable(path: str) -> bool:
     if _REGEX_PARAM.search(path):
         return False
     segments = _parse(path)
-    literal = "".join(part for seg in segments for part in seg.parts if not _is_marker(part))
+    # Literal pieces joined with a separator, so `/a/b` or `a{x}b` doesn't
+    # pass as the word "ab".
+    literal = "/".join(part for seg in segments for part in seg.parts if not _is_marker(part))
     params = _param_count(segments)
     if params == 0:
         return any(ch.isalnum() for ch in literal)
@@ -375,10 +390,16 @@ def _segment_body(seg: _Segment) -> str:
     for i, part in enumerate(seg.parts):
         if part == _REST:
             out.append(".*")
-        elif part == _PARAM:
+        elif part == _PARAM or part.startswith(_OPT):
             nxt = seg.parts[i + 1] if i + 1 < len(seg.parts) else None
-            stop = regex_literal(nxt[0]) if nxt and not _is_marker(nxt) else ""
-            out.append(f"[^/{stop}]+")
+            if nxt and nxt.startswith(_OPT):
+                stop = regex_literal(nxt[1])
+            else:
+                stop = regex_literal(nxt[0]) if nxt and not _is_marker(nxt) else ""
+            if part == _PARAM:
+                out.append(f"[^/{stop}]+")
+            else:
+                out.append(f"(?:{regex_literal(part[1])}[^/{stop}]+)?")
         else:
             out.append(regex_literal(part))
     return "".join(out)
@@ -400,7 +421,7 @@ def _sigma_literal(text: str) -> str:
 
 def route_glob(path: str) -> str:
     """Display form of a route: parameters become ``*``."""
-    segs = ["".join("*" if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
+    segs = ["".join(_marker_text(p, "*") if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
     return "/" + "/".join(segs)
 
 
@@ -433,7 +454,7 @@ def stem_selector(paths: list[str]) -> tuple[str, object] | None:
 def route_example(path: str, value: str = "1001") -> str:
     """A concrete URI path that matches :func:`route_selector` (parameters
     and wildcards filled with ``value``, optional segments included)."""
-    segs = ["".join(value if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
+    segs = ["".join(_marker_text(p, value) if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
     return "/" + "/".join(segs)
 
 
