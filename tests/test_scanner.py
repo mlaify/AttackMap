@@ -1,9 +1,13 @@
 import base64
 from pathlib import Path
 
+import pytest
+
+from attackmap.analyzer import identify_attack_surfaces
 from attackmap.analyzers import AnalyzerSignals, get_builtin_analyzers, merge_analyzer_signals
 from attackmap.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from attackmap.scanner import scan_repo
+from attackmap.threat_model import generate_findings
 
 
 def test_builtin_analyzers_are_explicitly_registered() -> None:
@@ -511,7 +515,8 @@ client = redis.from_url("redis://localhost:6379/0")
 # --- Auth detection improvements ------------------------------------------
 
 
-def test_jwt_decode_call_produces_jwt_auth_hint(tmp_path: Path) -> None:
+def test_pyjwt_decode_with_pinned_algorithms_is_a_verified_jwt_hint(tmp_path: Path) -> None:
+    # PyJWT `decode` verifies; the auth_protocol pass credits it (#324, #325).
     scan = _scan_source(
         tmp_path,
         """
@@ -523,7 +528,7 @@ def get_user(token):
 """,
     )
     hints = {(h.hint, h.file) for h in scan.auth_hints}
-    assert ("jwt", "app.py") in hints
+    assert ("jwt_verified", "app.py") in hints
 
 
 def test_python_authorization_header_access_produces_authorization_hint(tmp_path: Path) -> None:
@@ -636,9 +641,9 @@ def test_auth_hint_dedup_at_kind_file_level(tmp_path: Path) -> None:
         tmp_path,
         """
 import jwt
-a = jwt.decode(t1, k)
-b = jwt.decode(t2, k)
-c = jwt.encode({}, k)
+a = jwt.verify(t1, k)
+b = jwt.verify(t2, k)
+c = jwt.verify(t3, k)
 """,
     )
     hints = [h for h in scan.auth_hints if h.hint == "jwt" and h.file == "app.py"]
@@ -1068,3 +1073,138 @@ def odd(): ...
     # Flask's path-first form is unchanged, including a path that spells a verb.
     assert ("/get", "POST", "flask_app.py") in pairs
     assert ("/GET", "GET", "flask_app.py") in pairs
+
+
+# ---------------------------------------------------------------------------
+# #325: only JWT *verification* is a route auth signal.
+# ---------------------------------------------------------------------------
+
+_JWT_SIGNALS = {"jwt", "jwt_verified"}
+
+
+@pytest.mark.parametrize(
+    "source,name",
+    [
+        ("const jwt = require('jsonwebtoken')\nconst claims = jwt.decode(token)\n", "a.js"),
+        ("const jwt = require('jsonwebtoken')\nconst t = jwt.sign({ sub: id }, process.env.JWT_SECRET)\n", "a.js"),
+        ("import jwt\ntoken = jwt.encode({'sub': uid}, SECRET, algorithm='HS256')\n", "a.py"),
+        ("import jwt  # PyJWT\n", "a.py"),
+        ("import jsonwebtoken from 'jsonwebtoken'\n", "a.ts"),
+        ("// Auth uses JWT bearer tokens, see docs/jwt.md\nconst x = 1\n", "a.js"),
+        ("const jwtSecret = process.env.JWT_SECRET\n", "a.js"),
+        ('package main\n\nfunc peek(s string) { tok, _, _ := jwt.NewParser().ParseUnverified(s, claims) }\n', "a.go"),
+        ("<?php\n$jwtSecretRotationDays = 30; // named like a JWT\n", "a.php"),
+        ("const { decode, sign } = require('jsonwebtoken')\nconst c = decode(token)\nverify(token, KEY)\n", "a.js"),
+        ("const jwt = require('jsonwebtoken')\napp.use(jwt({ secret: KEY }))\n", "a.js"),
+        ("import { verify } from 'jsonwebtoken'\nconst c = jwt.verifyLater(token)\n", "a.ts"),
+        ("<?php\n$token = JWTAuth::fromUser($user);\n", "a.php"),
+        ("const { decode: verify } = require('jsonwebtoken')\nconst c = verify(tok)\n", "a.js"),
+        ("import { decode as verify } from 'jsonwebtoken'\nconst c = verify(tok)\n", "a.ts"),
+        ("const tokens = require('jsonwebtoken')\nconst c = tokens.decode(tok)\nother.verify(tok)\n", "a.js"),
+        ('package main\n\nimport jwtv5 "github.com/golang-jwt/jwt/v5"\n\nfunc a(s string) { t, _, _ := jwtv5.NewParser().ParseUnverified(s, c) }\n', "a.go"),
+    ],
+)
+def test_jwt_use_without_verification_is_not_an_auth_hint(tmp_path: Path, source: str, name: str) -> None:
+    scan = _scan_source(tmp_path, source, name)
+    assert not {h.hint for h in scan.auth_hints} & _JWT_SIGNALS
+
+
+@pytest.mark.parametrize(
+    "source,name",
+    [
+        ("const jwt = require('jsonwebtoken')\nconst c = jwt.verify(token, publicKey)\n", "a.js"),
+        ("const jwt = require('jsonwebtoken')\nconst c = jwt.verify(token, publicKey, { algorithms: ['RS256'] })\n", "a.js"),
+        ("import { jwtVerify } from 'jose'\nconst { payload } = await jwtVerify(token, JWKS)\n", "a.ts"),
+        ("const { expressjwt } = require('express-jwt')\napp.use(expressjwt({ secret, algorithms: ['HS256'] }))\n", "a.js"),
+        ("from flask_jwt_extended import jwt_required\n@jwt_required\ndef me():\n    pass\n", "a.py"),
+        ("from flask_jwt_extended import verify_jwt_in_request\nverify_jwt_in_request()\n", "a.py"),
+        ("import jwt\nclaims = jwt.decode(token, key, algorithms=['RS256'])\n", "a.py"),
+        ("fastify.addHook('onRequest', async (request) => { await request.jwtVerify() })\n", "a.js"),
+        ("<?php\n$claims = JWT::decode($token, new Key(getenv('JWT_SECRET'), 'HS256'));\n", "a.php"),
+        ("<?php\n$app->add(new JwtAuthentication(['secret' => getenv('JWT_SECRET')]));\n", "a.php"),
+        ('package main\n\nfunc auth(s string) { tok, err := jwt.Parse(s, keyFunc) }\n', "a.go"),
+        ("@UseGuards(JwtAuthGuard)\nexport class MeController {}\n", "a.ts"),
+        ("const jwt = require('express-jwt')\napp.use(jwt({ secret: KEY, algorithms: ['HS256'] }))\n", "a.js"),
+        ("const jwt = require('koa-jwt')\napp.use(jwt({ secret: KEY }))\n", "a.js"),
+        ("import { jwt } from 'hono/jwt'\napp.use('/api/*', jwt({ secret: KEY }))\n", "a.ts"),
+        ('package main\n\nimport echojwt "github.com/labstack/echo-jwt/v4"\n\nfunc r() { e.Use(echojwt.JWT([]byte(key))) }\n', "a.go"),
+        ("<?php\n$user = JWTAuth::parseToken()->authenticate();\n", "a.php"),
+        ("const { verify } = require('jsonwebtoken')\nconst claims = verify(token, KEY)\n", "a.js"),
+        ("import { decode, verify as check } from 'jsonwebtoken'\nconst claims = check(token, KEY)\n", "a.ts"),
+        ("const jsonwebtoken = require('jsonwebtoken')\nconst c = jsonwebtoken.verify(tok, KEY)\n", "a.js"),
+        ("const tokens = require('jsonwebtoken')\ntokens.verify(tok, KEY, (err, claims) => next(err))\n", "a.js"),
+        ("import * as tokens from 'jsonwebtoken'\nconst c = tokens.verify(tok, KEY)\n", "a.ts"),
+        ("const { verify: check } = require('jsonwebtoken')\nconst c = check(tok, KEY)\n", "a.js"),
+        ('package main\n\nimport jwtv5 "github.com/golang-jwt/jwt/v5"\n\nfunc a(s string) { t, err := jwtv5.Parse(s, kf) }\n', "a.go"),
+        ('package main\n\nimport (\n\tjwtlib "github.com/golang-jwt/jwt/v5"\n)\n\nfunc a(s string) { t, err := jwtlib.ParseWithClaims(s, c, kf) }\n', "a.go"),
+        ("REST_FRAMEWORK = {'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework_simplejwt.authentication.JWTAuthentication']}\n", "settings.py"),
+    ],
+)
+def test_jwt_verification_is_an_auth_hint(tmp_path: Path, source: str, name: str) -> None:
+    scan = _scan_source(tmp_path, source, name)
+    assert {h.hint for h in scan.auth_hints} & _JWT_SIGNALS
+
+
+_REFRESH_ROUTE = """const express = require('express')
+const jwt = require('jsonwebtoken')
+const app = express()
+app.use(express.json())
+
+app.post('/token/refresh', async (req, res) => {
+  const claims = CALL
+  await db.orders.cancel(req.params.id, claims.sub)
+  res.json({ ok: true })
+})
+"""
+
+
+def test_decode_only_route_has_no_jwt_auth_signal(tmp_path: Path) -> None:
+    # The #325 repro: a decode-only refresh route looked protected (medium).
+    scan = _scan_source(tmp_path, _REFRESH_ROUTE.replace("CALL", "jwt.decode(req.headers.authorization.slice(7))"), "server.js")
+    [surface] = identify_attack_surfaces(scan)
+    assert surface.auth_signals == [] and surface.risk == "high"
+
+
+def test_verified_route_carries_a_jwt_auth_signal(tmp_path: Path) -> None:
+    call = "jwt.verify(req.headers.authorization.slice(7), publicKey, { algorithms: ['RS256'] })"
+    scan = _scan_source(tmp_path, _REFRESH_ROUTE.replace("CALL", call), "server.js")
+    [surface] = identify_attack_surfaces(scan)
+    assert set(surface.auth_signals) & _JWT_SIGNALS and surface.risk == "medium"
+
+
+def test_verified_jwt_hint_counts_as_auth_for_outbound_integrations() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/sync", method="POST", file="api.js", line=3)],
+        external_calls=[ExternalCall(target="https://partner.example.com/push", file="api.js")],
+        auth_hints=[AuthHint(hint="jwt_verified", file="api.js", line=4)],
+    )
+    assert "unauth-outbound-integration" not in {f.rule_id for f in generate_findings(scan)}
+    scan.auth_hints = []
+    assert "unauth-outbound-integration" in {f.rule_id for f in generate_findings(scan)}
+
+
+def test_verified_jwt_signal_counts_as_auth_on_a_webhook_route() -> None:
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/webhook/events", method="POST", file="hooks.js", line=3)],
+        databases=[DatabaseHint(kind="postgresql", file="db.js")],
+        auth_hints=[AuthHint(hint="jwt_verified", file="hooks.js", line=4)],
+    )
+    assert "public-webhook" not in {f.rule_id for f in generate_findings(scan)}
+    scan.auth_hints = []
+    assert "public-webhook" in {f.rule_id for f in generate_findings(scan)}
+
+
+def test_gated_jwt_verification_never_raises_on_garbage() -> None:
+    import random
+
+    from attackmap.scanner import _gated_jwt_verification
+
+    rng = random.Random(325)
+    alphabet = "{}()=:'\"` verifyjwtasrequirefromjsonwebtokenexpress-\n$_."
+    for _ in range(3000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 120)))
+        _gated_jwt_verification(text)
+    hostile = "const { verify } = require('jsonwebtoken')\n" + "xverify(" * 20_000
+    assert _gated_jwt_verification(hostile) is None
