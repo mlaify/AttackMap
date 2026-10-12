@@ -231,10 +231,13 @@ AUTH_PATTERNS = [
     # firebase/php-jwt `JWT::decode` (it always checks the signature),
     # golang-jwt `Parse`/`ParseWithClaims` (not `ParseUnverified`), express-jwt /
     # koa-jwt, flask-jwt-extended, Tuupola JwtAuthentication, NestJS
-    # JwtAuthGuard, passport-jwt JwtStrategy.
+    # JwtAuthGuard, passport-jwt JwtStrategy, DRF simplejwt JWTAuthentication.
     (re.compile(r"\bjwtVerify\s*\(|\bJWT::decode\s*\(|\bjwt\.Parse(?:WithClaims)?\s*\("), "jwt"),
     (re.compile(r"\b(?:express|koa)jwt\s*\(|\bverify_jwt_in_request\s*\(", re.IGNORECASE), "jwt"),
-    (re.compile(r"\bJwt(?:Authentication|AuthGuard|Strategy)\b"), "jwt"),
+    (re.compile(r"\b(?:Jwt|JSONWebToken)(?:Authentication|AuthGuard|Strategy)\b", re.IGNORECASE), "jwt"),
+    # echo-jwt / echo's JWT middleware, tymon/jwt-auth's verifying calls.
+    (re.compile(r"\bechojwt\.(?:JWT|WithConfig)\s*\(|\bmiddleware\.JWT(?:WithConfig)?\s*\("), "jwt"),
+    (re.compile(r"\bJWTAuth::(?:parseToken|authenticate|toUser|getPayload|check)\b"), "jwt"),
     # OAuth / OIDC library forms
     (re.compile(r"OAuth2PasswordBearer\(", re.IGNORECASE), "oauth"),
     (re.compile(r"\bauthlib\.\w+", re.IGNORECASE), "oauth"),
@@ -714,6 +717,40 @@ def _append_unique_database_hints(result: ScanResult, relative: str, content: st
             seen.add((kind, relative))
 
 
+# JWT verification whose call name alone is too generic to trust (#325):
+# middleware called as `jwt({ secret })` counts only in a file that imports
+# express-jwt, koa-jwt or hono's jwt; a bare `verify(` only when jsonwebtoken's
+# `verify` is a named import (with its alias, if any).
+_JWT_MIDDLEWARE_IMPORT_RE = re.compile(r"""['"](?:express-jwt|koa-jwt|hono/jwt|@hono/[\w-]{0,40}jwt)['"]""")
+_JWT_MIDDLEWARE_CALL_RE = re.compile(r"\b(?:jwt|expressjwt|expressJwt|koaJwt|koajwt)\s*\(\s*\{")
+_JWT_NAMED_IMPORT_RE = re.compile(r"""\{([^{}]{0,300})\}\s*(?:=\s*require\s*\(\s*|from\s+)['"]jsonwebtoken['"]""")
+_NAMED_VERIFY_RE = re.compile(r"\bverify\b(?:\s*(?::|as)\s*([A-Za-z_$][\w$]{0,63}))?")
+_NAMED_CALL_SCAN_LIMIT = 50
+
+
+def _gated_jwt_verification(content: str) -> int | None:
+    """Offset of a JWT verification that only counts with its import (see above)."""
+    if _JWT_MIDDLEWARE_IMPORT_RE.search(content):
+        call = _JWT_MIDDLEWARE_CALL_RE.search(content)
+        if call:
+            return call.start()
+    for imp in _JWT_NAMED_IMPORT_RE.finditer(content):
+        named = _NAMED_VERIFY_RE.search(imp.group(1))
+        if named is None:
+            continue
+        needle = (named.group(1) or "verify") + "("
+        pos = imp.end()
+        for _ in range(_NAMED_CALL_SCAN_LIMIT):
+            pos = content.find(needle, pos)
+            if pos < 0:
+                break
+            before = content[pos - 1] if pos else ""
+            if not (before.isalnum() or before in "_$."):
+                return pos
+            pos += len(needle)
+    return None
+
+
 def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, lowered: str) -> None:
     seen = {(hint.hint, hint.file) for hint in result.auth_hints}
 
@@ -730,6 +767,20 @@ def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, l
                 )
             )
             seen.add((hint, relative))
+
+    if ("jwt", relative) not in seen:
+        offset = _gated_jwt_verification(content)
+        if offset is not None:
+            result.auth_hints.append(
+                AuthHint(
+                    hint="jwt",
+                    file=relative,
+                    line=_line_of(content, offset),
+                    evidence_text=_line_snippet(content, offset),
+                    confidence=0.85,
+                )
+            )
+            seen.add(("jwt", relative))
 
     for keyword in AUTH_KEYWORDS:
         idx = lowered.find(keyword)

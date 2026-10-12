@@ -1094,6 +1094,10 @@ _JWT_SIGNALS = {"jwt", "jwt_verified"}
         ("const jwtSecret = process.env.JWT_SECRET\n", "a.js"),
         ('package main\n\nfunc peek(s string) { tok, _, _ := jwt.NewParser().ParseUnverified(s, claims) }\n', "a.go"),
         ("<?php\n$jwtSecretRotationDays = 30; // named like a JWT\n", "a.php"),
+        ("const { decode, sign } = require('jsonwebtoken')\nconst c = decode(token)\nverify(token, KEY)\n", "a.js"),
+        ("const jwt = require('jsonwebtoken')\napp.use(jwt({ secret: KEY }))\n", "a.js"),
+        ("import { verify } from 'jsonwebtoken'\nconst c = jwt.verifyLater(token)\n", "a.ts"),
+        ("<?php\n$token = JWTAuth::fromUser($user);\n", "a.php"),
     ],
 )
 def test_jwt_use_without_verification_is_not_an_auth_hint(tmp_path: Path, source: str, name: str) -> None:
@@ -1116,6 +1120,14 @@ def test_jwt_use_without_verification_is_not_an_auth_hint(tmp_path: Path, source
         ("<?php\n$app->add(new JwtAuthentication(['secret' => getenv('JWT_SECRET')]));\n", "a.php"),
         ('package main\n\nfunc auth(s string) { tok, err := jwt.Parse(s, keyFunc) }\n', "a.go"),
         ("@UseGuards(JwtAuthGuard)\nexport class MeController {}\n", "a.ts"),
+        ("const jwt = require('express-jwt')\napp.use(jwt({ secret: KEY, algorithms: ['HS256'] }))\n", "a.js"),
+        ("const jwt = require('koa-jwt')\napp.use(jwt({ secret: KEY }))\n", "a.js"),
+        ("import { jwt } from 'hono/jwt'\napp.use('/api/*', jwt({ secret: KEY }))\n", "a.ts"),
+        ('package main\n\nimport echojwt "github.com/labstack/echo-jwt/v4"\n\nfunc r() { e.Use(echojwt.JWT([]byte(key))) }\n', "a.go"),
+        ("<?php\n$user = JWTAuth::parseToken()->authenticate();\n", "a.php"),
+        ("const { verify } = require('jsonwebtoken')\nconst claims = verify(token, KEY)\n", "a.js"),
+        ("import { decode, verify as check } from 'jsonwebtoken'\nconst claims = check(token, KEY)\n", "a.ts"),
+        ("REST_FRAMEWORK = {'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework_simplejwt.authentication.JWTAuthentication']}\n", "settings.py"),
     ],
 )
 def test_jwt_verification_is_an_auth_hint(tmp_path: Path, source: str, name: str) -> None:
@@ -1172,3 +1184,17 @@ def test_verified_jwt_signal_counts_as_auth_on_a_webhook_route() -> None:
     assert "public-webhook" not in {f.rule_id for f in generate_findings(scan)}
     scan.auth_hints = []
     assert "public-webhook" in {f.rule_id for f in generate_findings(scan)}
+
+
+def test_gated_jwt_verification_never_raises_on_garbage() -> None:
+    import random
+
+    from attackmap.scanner import _gated_jwt_verification
+
+    rng = random.Random(325)
+    alphabet = "{}()=:'\"` verifyjwtasrequirefromjsonwebtokenexpress-\n$_."
+    for _ in range(3000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 120)))
+        _gated_jwt_verification(text)
+    hostile = "const { verify } = require('jsonwebtoken')\n" + "xverify(" * 20_000
+    assert _gated_jwt_verification(hostile) is None
