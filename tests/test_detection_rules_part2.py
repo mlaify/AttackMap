@@ -329,7 +329,9 @@ def test_rule_files_are_injection_safe(tmp_path: Path) -> None:
     from attackmap.detections import template_data
     from attackmap.models import TaintChain
 
-    hostile = "/x/:id\n---\n!!python/object/apply:os.system ['id']\nlevel: ${level}\ndetection: {}"
+    # Routes with newlines/control characters get no rule at all (#344);
+    # everything printable that YAML treats specially is still possible.
+    hostile = "/api/:id/--- !!python/object/apply:os.system ['id'] level: ${level} detection: {} #x &a *a"
     chain = TaintChain(route_path=hostile, route_method="GET", route_file="a.py", sink_kind="subprocess_shell",
                        sink_file="a.py", sink_line=3, hops=0, source_kind="query")
     rendered = _taint_rule("subprocess-shell", chain, template_data("injection")["payloads"]["subprocess-shell"])
@@ -338,6 +340,8 @@ def test_rule_files_are_injection_safe(tmp_path: Path) -> None:
     docs = list(yaml.safe_load_all(text))
     assert len(docs) == 1 and docs[0] == rendered.sigma
     assert docs[0]["level"] == "high" and "\n" not in docs[0]["title"]
+    newline = chain.model_copy(update={"route_path": "/api/:id\n---\nlevel: low"})
+    assert _taint_rule("subprocess-shell", newline, template_data("injection")["payloads"]["subprocess-shell"]) is None
     assert "!!python/object/apply:os.system" in docs[0]["title"]  # kept as plain text
     assert "${level}" in docs[0]["description"]  # not re-expanded
     opps = [{"id": "detect:subprocess-shell:GET:" + hostile, "sigma": rendered.sigma, "related_rule_ids": []}]
