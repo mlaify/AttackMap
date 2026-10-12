@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 import networkx as nx
@@ -14,6 +15,75 @@ from .webhook_verification import assess_webhook_surfaces
 # handler; smaller than the distance between two adjacent routes. See #41
 # / Bluesky FINDINGS §55 for the noise problem this fixes.
 _ROUTE_AUTH_LINE_WINDOW = 40
+
+
+# Authentication entry points (#328). The route that authenticates the caller
+# has to be reachable without authentication, so `POST /admin/login` is an
+# `auth` surface (brute force, lockout), not an unguarded admin action. Matched
+# on whole path segments, and only when every segment before the action is
+# admin/auth vocabulary: `/admin/users/:id/logout` (forcing another user out)
+# and `/admin/login-as/:id` (impersonation) stay admin actions.
+_LOGIN_SEGMENTS = frozenset({
+    "login", "log-in", "log_in", "logon", "signin", "sign-in", "sign_in", "authenticate",
+    "logout", "log-out", "log_out", "logoff", "signout", "sign-out", "sign_out",
+    "forgot-password", "forgot_password", "forgotpassword", "reset-password", "reset_password",
+    "resetpassword", "password-reset", "password_reset", "passwordreset",
+})
+# `/admin/password/reset`, `/admin/password/email` (Laravel).
+_PASSWORD_ACTIONS = frozenset({"reset", "forgot", "email"})
+# Token and callback actions count only under an auth segment
+# (`/admin/auth/token`, `/admin/oauth/callback`): `/admin/api/token` may mint
+# API tokens for others.
+_TOKEN_SEGMENTS = frozenset({"token", "refresh", "refresh-token", "refresh_token", "callback"})
+_AUTH_SEGMENTS = frozenset({
+    "auth", "authentication", "oauth", "oauth2", "oidc", "openid", "sso", "saml", "jwt", "token",
+})
+_ADMIN_PREFIX_SEGMENTS = frozenset({
+    "root", "api", "dashboard", "backend", "backoffice", "panel", "console", "staff",
+    "session", "sessions", "account", "accounts", "password",
+})
+_VERSION_SEGMENT_RE = re.compile(r"v\d{1,3}")
+_PLAIN_SEGMENT_RE = re.compile(r"[a-z0-9_-]{1,40}")
+_ENTRY_SUFFIXES = (".php", ".aspx", ".asp", ".jsp", ".html", ".htm", ".do")
+
+
+def _prefix_segment(segment: str) -> bool:
+    return (
+        segment.startswith(("admin", "manage"))
+        or segment in _ADMIN_PREFIX_SEGMENTS
+        or segment in _AUTH_SEGMENTS
+        or _VERSION_SEGMENT_RE.fullmatch(segment) is not None
+    )
+
+
+def is_auth_entry_point(path: str) -> bool:
+    """Whether `path` is a login/logout/password-reset/token/OAuth-callback
+    endpoint rather than an action behind authentication (#328)."""
+    segments = [seg for seg in path.lower().split("?", 1)[0].split("/") if seg]
+    if not segments or len(segments) > 8:
+        return False
+    action = segments[-1]
+    for suffix in _ENTRY_SUFFIXES:
+        if action.endswith(suffix):
+            action = action[: -len(suffix)]
+            break
+    before = segments[:-1]
+    if action in _LOGIN_SEGMENTS:
+        pass
+    elif action in _PASSWORD_ACTIONS:
+        if not before or before[-1] != "password":
+            return False
+    elif action in _TOKEN_SEGMENTS:
+        # One provider segment may sit before a callback: /admin/auth/google/callback.
+        if action == "callback" and len(before) >= 2 and before[-2] in _AUTH_SEGMENTS:
+            if _PLAIN_SEGMENT_RE.fullmatch(before[-1]) is None:
+                return False
+            before = before[:-1]
+        if not any(seg in _AUTH_SEGMENTS for seg in before):
+            return False
+    else:
+        return False
+    return all(_prefix_segment(seg) for seg in before)
 
 
 def _auth_hints_for_route(
@@ -99,15 +169,18 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
         has_explicit_public_visibility = "handler_visibility:public" in supporting_signals
         has_internal_handler_hint = any(marker in supporting_signals for marker in internal_handler_markers) and not has_explicit_public_visibility
 
+        admin_path = any(segment in path_lower for segment in ("/admin", "/manage", "/root"))
         if "webhook" in path_lower:
             category = "webhook"
             risk = "high"
             rationale.append("Webhook endpoints commonly accept attacker-controlled input from the internet.")
-        elif any(segment in path_lower for segment in ("/admin", "/manage", "/root")):
+        elif admin_path and not is_auth_entry_point(path_lower):
             category = "admin"
             risk = "high"
             rationale.append("Administrative routes are high-value targets because they expose privileged actions.")
-        elif any(segment in path_lower for segment in ("/login", "/signin", "/signup", "/auth", "/session", "/token", "/oauth")):
+        elif admin_path or any(  # an admin path here is its login/logout/token endpoint (#328)
+            segment in path_lower for segment in ("/login", "/signin", "/signup", "/auth", "/session", "/token", "/oauth")
+        ):
             category = "auth"
             risk = "high" if not auth_signals else "medium"
             rationale.append("Authentication endpoints are common targets for brute force, token abuse, and session attacks.")
