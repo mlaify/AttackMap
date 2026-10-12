@@ -230,6 +230,29 @@ and `composer.json` manifests, and the `package-lock.json`, `pnpm-lock.yaml`,
 `poetry.lock`, `uv.lock`, `Cargo.lock`, `composer.lock`, `packages.lock.json`
 and `gradle.lockfile` lockfiles. Don't re-emit them.
 
+## Cloud / IaC misconfigurations
+
+IaC analyzers report misconfigurations as `CloudMisconfig` records in
+`result.cloud_misconfigs`, not as auth/entrypoint hints (core reads those as
+recon, and an `AuthHint` near a route even counts as an auth control). `kind`
+is one of `attackmap.sdk.CLOUD_MISCONFIG_KINDS`; each kind is a core rule
+(`host_path_mount` → `host-path-mount`) with CWE/OWASP/ATT&CK ids, and core
+emits one finding per kind at the highest severity among its records.
+
+| Field | Meaning |
+|---|---|
+| `kind`, `file`, `line` | what and where (required: `kind`, `file`) |
+| `resource` | `aws_eks_cluster.main`, `Deployment/web container app`, `module.vpc` |
+| `platform` | `aws` / `azure` / `gcp` / `kubernetes` / `helm` / `compose` / `docker` / `terraform` |
+| `severity`, `confidence` | per instance: a `docker.sock` mount is high, `/var/log` low; lower `confidence` for insecure *defaults* you inferred |
+| `context` | `for_each`/`count`, the calling module, "Helm template" |
+| `escalation_path` | one line, e.g. `hostPath / → node root → kubelet credentials` |
+| `evidence_text` | the setting as written (redacted like all evidence) |
+
+Report literal settings only. A templated value (`{{ .Values.x }}`,
+`var.x`) is not something you can see, so skip it or emit it with low
+confidence. A new `kind` needs a core release (finding spec + taxonomy).
+
 ## Contributing taint sinks
 
 Analyzers can add sink signatures to core's taint pass through the

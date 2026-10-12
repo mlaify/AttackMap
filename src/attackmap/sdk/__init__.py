@@ -91,6 +91,32 @@ time an invalid entry is skipped with a warning instead of failing the scan.
 Plugins reuse core's sink kinds (findings, CWE taxonomy and exploitability are
 keyed on them) and core still decides reachability, flow and severity.
 
+## Cloud / IaC misconfigurations
+
+IaC plugins (Terraform, Kubernetes / Helm, compose, Dockerfile) report
+misconfigurations as :class:`CloudMisconfig` records in
+``ScanResult.cloud_misconfigs``, not as auth or entrypoint hints, which core
+treats as recon (an ``AuthHint`` next to a route even counts as an auth
+signal). ``kind`` is one of :data:`CLOUD_MISCONFIG_KINDS`; each kind is a core
+rule id (``privileged_container`` → ``privileged-container``) with CWE/OWASP
+ids, and core emits one finding per kind with the max severity of its
+records::
+
+    CloudMisconfig(
+        kind="host_path_mount", file="k8s/agent.yaml", line=31,
+        resource="DaemonSet/agent container agent", platform="kubernetes",
+        severity="high", confidence=0.9,
+        escalation_path="hostPath / → node root → kubelet credentials",
+        evidence_text="path: /",
+    )
+
+Set ``severity`` per instance (a ``docker.sock`` mount is worse than
+``/var/log``), lower ``confidence`` for settings you inferred from a default
+rather than read, and put ``for_each``/``count`` or module provenance in
+``context``. Report literal values only: a templated value
+(``{{ .Values.x }}``, ``var.x``) is not a misconfiguration you can see. A new
+kind needs a core release (finding spec + taxonomy entry).
+
 ## Versioning
 
 The names exported below are stable across minor releases of the
@@ -114,8 +140,11 @@ from ..taint_sinks import PLUGIN_GROUP as TAINT_SINK_PLUGIN_GROUP
 from ..taint_sinks import SINK_KINDS as TAINT_SINK_KINDS
 from ..taint_sinks import validate_sink_entry as validate_taint_sink
 from .models import (
+    CLOUD_MISCONFIG_KINDS,
     DEPENDENCY_ECOSYSTEMS,
     AuthHint,
+    CloudMisconfig,
+    CloudMisconfigKind,
     DatabaseHint,
     DependencyEcosystem,
     DependencyHint,
@@ -151,6 +180,11 @@ __all__ = [
     # Package ecosystems a DependencyHint may carry (#255).
     "DependencyEcosystem",
     "DEPENDENCY_ECOSYSTEMS",
+    # Cloud / IaC / container misconfigurations (terraform#4, iac#1); core
+    # turns each kind into a finding.
+    "CloudMisconfig",
+    "CloudMisconfigKind",
+    "CLOUD_MISCONFIG_KINDS",
     # Repo-confined filesystem helpers (#234): walk and read the scanned repo
     # without following symlinks out of it. Plugins should use these instead
     # of Path.rglob / read_text.

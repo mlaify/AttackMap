@@ -362,6 +362,82 @@ class SupplyChainIssue(_RedactedEvidence):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+# Cloud / IaC / container-runtime misconfiguration kinds (`CloudMisconfig`).
+# Exported from `attackmap.sdk`; each kind is a core rule id (dashed) with a
+# finding spec in `threat_model` and a taxonomy entry in `taxonomy.py`.
+CloudMisconfigKind = Literal[
+    # Cloud resources (Terraform)
+    "iac_module_unpinned",
+    "public_network_access",
+    "public_cluster_endpoint",
+    "plaintext_listener",
+    "api_no_authorizer",
+    "unencrypted_storage",
+    "public_data_access",
+    "public_invoker",
+    # Workloads (Kubernetes / Helm / compose / Dockerfile)
+    "privileged_container",
+    "privilege_escalation_allowed",
+    "container_runs_as_root",
+    "missing_security_context",
+    "host_path_mount",
+    "host_namespace_shared",
+    "dangerous_capability",
+    "security_profile_disabled",
+    "exposed_service",
+    "unpinned_container_image",
+    "dockerfile_remote_add",
+    "dockerfile_curl_pipe_shell",
+    # Kubernetes RBAC
+    "rbac_wildcard",
+    "rbac_escalation",
+    "rbac_secret_access",
+    "cluster_admin_binding",
+]
+CLOUD_MISCONFIG_KINDS: tuple[str, ...] = get_args(CloudMisconfigKind)
+
+
+class CloudMisconfig(_RedactedEvidence):
+    """A cloud, IaC or container-runtime misconfiguration (terraform#4, iac#1).
+
+    Emitted by IaC plugins (Terraform, Kubernetes / Helm, compose,
+    Dockerfile). Like the other issue families, each one is a
+    positively-present setting (or a documented insecure default that the
+    file leaves in place) at a file and line. Core turns each `kind` into one
+    aggregated finding whose severity is the max over its instances.
+
+    - `resource`: what the setting belongs to, e.g. `aws_eks_cluster.main`,
+      `Deployment/web container app`, `module.vpc`.
+    - `platform`: `aws`, `azure`, `gcp`, `kubernetes`, `helm`, `compose`,
+      `docker` or `terraform` (modules).
+    - `context`: how the resource is instantiated — `for_each`/`count`,
+      the calling module of a local module, a Helm template.
+    - `escalation_path`: what an attacker gets from it, in one line, e.g.
+      `hostPath / → node root → kubelet credentials`.
+    """
+
+    kind: CloudMisconfigKind
+    file: str
+    line: int | None = None
+    resource: str | None = None
+    platform: str | None = None
+    context: str | None = None
+    escalation_path: str | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+    @model_validator(mode="after")
+    def _redact_descriptive_fields(self) -> "CloudMisconfig":
+        # Also copied from the repo (a module source URL can carry a token).
+        for name in ("resource", "context", "escalation_path"):
+            value = getattr(self, name)
+            if value:
+                object.__setattr__(self, name, redact_text(value))
+        return self
+
+
 class WorkflowIssue(_RedactedEvidence):
     """A CI-workflow security issue in a GitHub Actions file (#142).
 
@@ -917,6 +993,7 @@ class ScanResult(BaseModel):
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
     supply_chain_issues: list[SupplyChainIssue] = Field(default_factory=list)
+    cloud_misconfigs: list[CloudMisconfig] = Field(default_factory=list)
     secret_history: list[SecretHistoryHit] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
     # What the scan deliberately did not analyze (e.g. symlinks that point out
