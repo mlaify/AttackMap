@@ -106,6 +106,7 @@ def test_a_sink_without_a_cwe_is_rejected() -> None:
         ({"kind": "made_up"}, "unknown kind"),
         ({"langs": ["cobol"]}, "langs"),
         ({"regex": "("}, "does not compile"),
+        ({"receiver_unless": "("}, "receiver_unless"),
         ({"gate": "sometimes"}, "gate"),
         ({"args": "everything"}, "args"),
         ({"surprise": 1}, "unknown field"),
@@ -194,3 +195,69 @@ def test_core_registry_is_the_module_table() -> None:
     from attackmap import taint
 
     assert taint._SINK_PATTERNS is SINKS
+
+
+# ---------------------------------------------------------------------------
+# `receiver_unless` and call_receiver (#330)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "code,receiver",
+    [
+        ("crypto.createHmac('sha256', k).update(req.body)", "crypto.createHmac()"),
+        ("x = a.b[c](d).update(req.body)", "a.b[]()"),
+        ("crypto\n  .createHash('md5')\n  .update(req.body)", "crypto.createHash()"),
+        ("const h = crypto.createHmac('sha256', k)\nh.update(req.body)", "h=crypto.createHmac()"),
+        ("db.doc(crypto.createHash('x').digest()).update(req.body)", "db.doc()"),
+        ("const User = require('m'), sig = crypto.createHmac('a', k);\nUser.update(req.body)", "User=require()"),
+        ("const a = f(1, 2), h = crypto.createHash('x');\nh.update(req.body)", "h=crypto.createHash()"),
+        ("const s = 'a,b', h = g(')');\nh.update(req.body)", "h=g()"),
+        ("return User.update(req.body)", "User"),
+        ("await user.update(req.body)", "user"),
+        ("if (h == 1) h.update(req.body)", "h"),
+        (".update(req.body)", ""),
+    ],
+)
+def test_call_receiver(code: str, receiver: str) -> None:
+    dot = code.rindex(".update(")
+    assert taint_sinks.call_receiver(code, dot) == receiver
+
+
+def test_call_receiver_never_raises_and_stays_bounded() -> None:
+    import random
+    import time
+
+    rng = random.Random(330)
+    alphabet = "ab.()[]{} \n\t=;'\"$_hxu"
+    for _ in range(3000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 80)))
+        for dot in range(len(text)):
+            taint_sinks.call_receiver(text, dot)
+    for hostile in (
+        "h = 1\n" + ")" * 50_000 + ".update(req.body)",
+        "h = 1\n" + "h " * 50_000 + "h.update(req.body)",
+        "(" * 50_000 + "\n" * 50_000 + ".update(req.body)",
+    ):
+        start = time.perf_counter()
+        taint_sinks.call_receiver(hostile, hostile.rindex(".update("))
+        assert time.perf_counter() - start < 0.5
+
+
+def test_call_receiver_stays_linear_over_a_file_full_of_calls() -> None:
+    # Every call site resolves its receiver; the assignment search must not
+    # rescan the whole file each time (1 MB took seconds before the window).
+    import time
+
+    def run(n: int) -> float:
+        text = "h = 1\n" + "h.update(req.body)\n" * n
+        start = time.perf_counter()
+        pos = text.find(".update(")
+        while pos != -1:
+            taint_sinks.call_receiver(text, pos)
+            pos = text.find(".update(", pos + 1)
+        return time.perf_counter() - start
+
+    small, large = run(14_000), run(56_000)  # ~250 KB and ~1 MB
+    assert large < 3.0
+    assert large < small * 10  # 4x the input: linear ~4x, quadratic ~16x

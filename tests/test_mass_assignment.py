@@ -286,3 +286,47 @@ def test_scan_repo_reports_field_level_mass_assignment() -> None:
     )
     finding = next(f for f in generate_findings(scan) if f.rule_id == "mass-assignment")
     assert any("accounts/serializers.py:10" in e for e in finding.evidence)
+
+
+# ---------------------------------------------------------------------------
+# Hash/HMAC `.update(req.body)` is not a model update (#330)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "const mine = crypto.createHmac('sha256', process.env.GH_SECRET).update(req.body).digest('hex')\n",
+        "const d = createHash('sha256').update(req.body).digest('hex')\n",
+        "const d = crypto\n  .createHmac('sha256', key)\n  .update(req.body)\n  .digest()\n",
+        "const d = crypto.createHash('sha256')\n  .update(`${ts}:`)\n  .update(req.body)\n  .digest('hex')\n",
+        "const h = crypto.createHmac('sha256', key)\nh.update(req.body)\n",
+        "const c = crypto.createCipheriv('aes-256-gcm', key, iv); c.update(req.body)\n",
+    ],
+)
+def test_digest_update_of_the_body_is_not_mass_assignment(line: str) -> None:
+    assert not [w for w in find_code_weaknesses(line, "server.js") if w.kind == "mass_assignment"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "await User.update(req.body)\n",
+        "await user.update(req.body)\n",
+        "const h = crypto.createHmac('sha256', key)\nconst user = await User.findByPk(id)\nuser.update(req.body)\n",
+        "crypto.createHmac('sha256', key).digest('hex'); Order.create(req.body)\n",
+        "await db.collection('s').doc(crypto.createHash('sha256').digest('hex')).update(req.body)\n",
+        "const User = require('./user'), sig = crypto.createHmac('sha256', key);\nUser.update(req.body)\n",
+    ],
+)
+def test_model_update_with_the_body_is_still_mass_assignment(line: str) -> None:
+    assert [w for w in find_code_weaknesses(line, "server.js") if w.kind == "mass_assignment"]
+
+
+def test_digest_receiver_matches_the_nosql_sink_exemption() -> None:
+    from attackmap import weaknesses
+    from attackmap.taint_sinks import SINKS
+
+    sink = next(s for s in SINKS if s.id == "mongo-filter-request")
+    assert sink.receiver_unless is not None
+    assert sink.receiver_unless.pattern == weaknesses._DIGEST_RECEIVER.pattern

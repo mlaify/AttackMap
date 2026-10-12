@@ -6,7 +6,7 @@ module.exports = (app) => {
   app.post('/webhooks/github', express.raw({ type: 'application/json' }), async (req, res) => {
     const payload = req.body
     const signature = req.get('X-Hub-Signature-256')
-    const expected = 'sha256=' + crypto.createHmac('sha256', process.env.GH_SECRET).update(payload).digest('hex')
+    const expected = 'sha256=' + crypto.createHmac('sha256', process.env.GH_SECRET).update(req.body).digest('hex')
     if (signature !== expected) {
       return res.status(401).end()
     }
