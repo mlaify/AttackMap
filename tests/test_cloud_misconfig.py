@@ -349,3 +349,59 @@ def test_single_location_fingerprints_are_unchanged() -> None:
     assign_fingerprints([finding, other], ".")
     assert finding.locations[0].fingerprint == _digest("hardcoded-secret", "a.py", "", "0")
     assert other.locations[0].fingerprint == _digest("insecure-tls", "a.py", "", "0")
+
+
+def _fingerprints(tmp_path: Path, records: list[CloudMisconfig]) -> dict[str, str]:
+    """resource -> fingerprint of its location."""
+    (tmp_path / "compose.yaml").write_text('volumes: ["/a:/a", "/b:/b", "/c:/c"]\n', encoding="utf-8")
+    findings = translate_recon(ScanResult(root=str(tmp_path), cloud_misconfigs=records)).findings
+    out = {}
+    for finding in findings:
+        if "cloud-misconfig" not in finding.tags:
+            continue
+        for loc, rec in zip(finding.locations, sorted(
+            (r for r in records if r.severity == finding.severity), key=lambda r: -r.confidence
+        )):
+            out[rec.resource] = loc.fingerprint
+    return out
+
+
+def _mount(resource: str, severity: str, confidence: float = 0.8) -> CloudMisconfig:
+    return CloudMisconfig(kind="host_path_mount", file="compose.yaml", line=1, resource=resource,
+                          evidence_text=f"/{resource}", severity=severity, confidence=confidence)
+
+
+def test_fingerprints_stay_put_when_a_tier_or_instance_is_added(tmp_path: Path) -> None:
+    before = _fingerprints(tmp_path, [_mount("a", "low"), _mount("b", "low")])
+    after = _fingerprints(tmp_path, [_mount("c", "high"), _mount("a", "low"), _mount("b", "low")])
+    assert after["a"] == before["a"] and after["b"] == before["b"]
+    assert len(set(after.values())) == 3
+
+
+def test_fingerprints_stay_put_when_a_confidence_changes(tmp_path: Path) -> None:
+    before = _fingerprints(tmp_path, [_mount("a", "low", 0.9), _mount("b", "low", 0.5)])
+    after = _fingerprints(tmp_path, [_mount("a", "low", 0.5), _mount("b", "low", 0.9)])
+    assert before == after
+
+
+def test_instance_key_is_not_serialized_and_untouched_rules_keep_fingerprints() -> None:
+    from attackmap.fingerprint import _digest, assign_fingerprints
+    from attackmap.models import Finding, FindingLocation
+
+    loc = FindingLocation(file="a.py", line=None, instance="r\x1fe")
+    assert "instance" not in loc.model_dump()
+    plain = Finding(title="t", severity="high", mitigation="m", rule_id="hardcoded-secret",
+                    locations=[FindingLocation(file="a.py")])
+    assign_fingerprints([plain], ".")
+    assert plain.locations[0].fingerprint == _digest("hardcoded-secret", "a.py", "", "0")
+
+
+def test_tiered_tables_reject_duplicate_kinds_and_missing_tiers() -> None:
+    from attackmap.threat_model import check_tiered_tables
+
+    spec = {"tier": "high", "title": "t", "mitigation": "m"}
+    check_tiered_tables(({"a": spec}, {"b": spec}))
+    with pytest.raises(ValueError, match="registered twice"):
+        check_tiered_tables(({"a": spec}, {"a": spec}))
+    with pytest.raises(ValueError, match="default tier"):
+        check_tiered_tables(({"a": {"title": "t", "mitigation": "m"}},))

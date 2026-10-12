@@ -77,6 +77,14 @@ def assign_fingerprints(findings: list[Finding], root: str | Path) -> None:
         for loc in finding.locations:
             file = loc.file.replace("\\", "/")
             content = source_line(file, loc.line)
-            occurrence = seen.get((rule, file, content), 0)
-            seen[(rule, file, content)] = occurrence + 1
-            loc.fingerprint = _digest(rule, file, content, str(occurrence))
+            if loc.instance is None:
+                occurrence = seen.get((rule, file, content), 0)
+                seen[(rule, file, content)] = occurrence + 1
+                loc.fingerprint = _digest(rule, file, content, str(occurrence))
+            else:
+                # Tiered records name themselves (resource + evidence), so
+                # their fingerprint doesn't depend on same-line neighbours.
+                key = (rule, file, content, loc.instance)
+                occurrence = seen.get(key, 0)
+                seen[key] = occurrence + 1
+                loc.fingerprint = _digest(rule, file, content, loc.instance, str(occurrence))

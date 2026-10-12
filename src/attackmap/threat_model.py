@@ -1560,6 +1560,22 @@ _CLOUD_MISCONFIG_FINDING_SPEC: dict[str, dict[str, str]] = {
 # Spec tables whose findings are split by severity tier (see `tiered_findings`).
 _TIERED_SPEC_TABLES: tuple[dict[str, dict[str, str]], ...] = (_CLOUD_MISCONFIG_FINDING_SPEC,)
 
+
+def check_tiered_tables(tables: tuple[dict[str, dict[str, str]], ...]) -> None:
+    """Every tiered kind is in one table only and has a valid default tier,
+    so `tiered_rule_defaults` can't silently pick the wrong spec."""
+    seen: dict[str, int] = {}
+    for index, table in enumerate(tables):
+        for kind, spec in table.items():
+            if kind in seen:
+                raise ValueError(f"tiered kind {kind!r} is registered twice (tables {seen[kind]} and {index})")
+            if spec.get("tier") not in {"high", "medium", "low"}:
+                raise ValueError(f"tiered kind {kind!r} has no valid default tier")
+            seen[kind] = index
+
+
+check_tiered_tables(_TIERED_SPEC_TABLES)
+
 # App attack surface reported by platform plugins (#188, #190): the Apple
 # analyzers (Swift, Objective-C). Severity is per instance (a global ATS
 # exception outranks a per-domain one), so the finding takes the max; the spec
@@ -1716,7 +1732,7 @@ def tiered_findings(
     items: list,
     *,
     evidence: Callable[[Any], str],
-    locations: Callable[[list], list[FindingLocation]],
+    locations: Callable[[list], list[FindingLocation]] | None = None,
     tags: list[str],
 ) -> list[Finding]:
     """One finding per severity tier of ``items`` (records with `severity`
@@ -1736,7 +1752,7 @@ def tiered_findings(
                 rule_id=_rule_slug_kind(kind),
                 severity=tier,  # type: ignore[arg-type]
                 evidence=lines,
-                locations=locations(tier_items),
+                locations=(locations or instance_locs)(tier_items),
                 mitigation=spec["mitigation"],
                 confidence=_numeric_to_confidence(tier_items[0].confidence),  # type: ignore[arg-type]
                 tags=list(tags),
@@ -1756,16 +1772,19 @@ def tiered_rule_defaults(rule_id: str) -> tuple[str, str, str] | None:
     return None
 
 
-def _cloud_locs(items: list[CloudMisconfig]) -> list[FindingLocation]:
-    """One location per instance. Unlike `_locs`, two resources at the same
-    (file, line) — or both without a line — stay two locations."""
+def instance_locs(items: list) -> list[FindingLocation]:
+    """One location per record of a tiered family, carrying an `instance`
+    key (resource + evidence) for its fingerprint. Unlike `_locs`, two
+    resources at the same (file, line) — or both without a line — stay two
+    locations."""
     out: list[FindingLocation] = []
     seen: set[tuple] = set()
     for item in items:
-        key = (item.file, item.line, item.resource, item.evidence_text)
+        instance = "\x1f".join(str(getattr(item, a, None) or "") for a in ("resource", "evidence_text"))
+        key = (item.file, item.line, instance)
         if key not in seen:
             seen.add(key)
-            out.append(FindingLocation(file=item.file, line=item.line))
+            out.append(FindingLocation(file=item.file, line=item.line, instance=instance))
     return out
 
 
@@ -2610,7 +2629,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         findings.extend(
             tiered_findings(
                 kind, spec, cloud_by_kind.get(kind, []),
-                evidence=_cloud_misconfig_evidence, locations=_cloud_locs,
+                evidence=_cloud_misconfig_evidence,
                 tags=["cloud-misconfig", *_cwe_tags(kind)],
             )
         )

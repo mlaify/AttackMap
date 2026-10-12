@@ -855,6 +855,12 @@ class FindingLocation(BaseModel):
     # Instance identity across runs (#222): rule + file + normalized source
     # line, without the line number. Set by `fingerprint.assign_fingerprints`.
     fingerprint: str | None = None
+    # What tells this instance apart from others on the same line (a
+    # severity-tiered record's resource and evidence). Set only by tiered
+    # findings; when set it is mixed into the fingerprint, so an instance's
+    # fingerprint doesn't depend on its position among same-line instances
+    # (adding one, or re-tiering one, doesn't move dismissals). Not serialized.
+    instance: str | None = Field(default=None, exclude=True, repr=False)
 
 
 class FindingTaxonomy(BaseModel):
