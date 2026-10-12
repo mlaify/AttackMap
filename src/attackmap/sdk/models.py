@@ -12,6 +12,9 @@ from ..models import (
     AppSurfaceIssueKind,
     DependencyEcosystem,
     DependencyHint,
+    CODE_WEAKNESS_KINDS,
+    CodeWeakness,
+    SupplyChainIssue,
 )
 from ..recon_models import (
     AuthHint,
@@ -50,4 +53,7 @@ __all__ = [
     "AppSurfaceIssue",
     "AppSurfaceIssueKind",
     "APP_SURFACE_ISSUE_KINDS",
+    "CodeWeakness",
+    "CODE_WEAKNESS_KINDS",
+    "SupplyChainIssue",
 ]

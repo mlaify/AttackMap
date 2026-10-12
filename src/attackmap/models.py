@@ -33,6 +33,9 @@ DependencyEcosystem = Literal[
     "nuget",
     "conan",
     "vcpkg",
+    # CMake `FetchContent` / `find_package` dependencies (#191): no package
+    # registry behind them, so inventory only (never CVE-matched).
+    "cmake",
     "gem",
     "cocoapods",
     # Carthage pins git repositories (`github "owner/repo" "1.2.3"`); CVE-matched
@@ -264,12 +267,40 @@ class CodeWeakness(_RedactedEvidence):
         "graphql_no_query_limits",
         "graphql_batching",
         "prompt_injection_attempt",
+        # Native (C/C++) memory-safety and command-exec sinks (#189), emitted
+        # by the C/C++ analyzer plugins. See `NATIVE_WEAKNESS_KINDS`.
+        "unbounded_copy",
+        "format_string",
+        "native_command_exec",
+        "tainted_copy_length",
+        "alloc_size_overflow",
     ]
     file: str
     line: int | None = None
     evidence_text: str | None = None
     severity: Literal["low", "medium", "high"] = "medium"
+    # Optional per-instance confidence (#189). When set, the finding takes the
+    # highest confidence among its instances instead of the default `medium`.
+    confidence: Literal["low", "medium", "high"] | None = None
+    # The input that reaches the weakness in the same function, when the
+    # emitter traced one (#189): `request`, `network`, `stdin`, `argv`, `env`,
+    # `file`. None means no source was traced.
+    source_kind: str | None = None
+    source_line: int | None = None
     source_analyzer: str | None = _PROVENANCE_FIELD
+
+
+CODE_WEAKNESS_KINDS: tuple[str, ...] = get_args(CodeWeakness.model_fields["kind"].annotation)
+# Kinds whose severity and confidence are set per instance by the emitter
+# (they depend on whether an input source reaches the sink), so findings are
+# grouped per severity tier instead of taking the kind's fixed severity.
+NATIVE_WEAKNESS_KINDS: tuple[str, ...] = (
+    "unbounded_copy",
+    "format_string",
+    "native_command_exec",
+    "tainted_copy_length",
+    "alloc_size_overflow",
+)
 
 
 class Anomaly(BaseModel):
