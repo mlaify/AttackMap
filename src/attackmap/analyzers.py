@@ -32,7 +32,7 @@ from .sdk.contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
-from .models import APP_SURFACE_ISSUE_KINDS, AnalyzerError
+from .models import APP_SURFACE_ISSUE_KINDS, CLOUD_MISCONFIG_KINDS, AnalyzerError
 from .redact import redact_text
 from .sdk.models import (
     AuthHint,
@@ -820,6 +820,7 @@ def _call_analyze(
 # the rest of the plugin's result is kept, and the drop is noted under
 # `analyzer_errors` (`--strict-analyzers` raises instead).
 KIND_VOCABULARIES: tuple[tuple[str, frozenset[str], str], ...] = (
+    ("cloud_misconfigs", frozenset(CLOUD_MISCONFIG_KINDS), "UnknownCloudMisconfigKind"),
     ("app_surface_issues", frozenset(APP_SURFACE_ISSUE_KINDS), "UnknownAppSurfaceIssueKind"),
 )
 
