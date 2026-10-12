@@ -22,6 +22,7 @@ from .workflow_scanner import scan_workflows
 from .srcpaths import is_test_file, is_vendored_file
 from .mass_assignment import analyze_mass_assignment
 from .weaknesses import find_code_weaknesses
+from .auth_protocol import find_jwt_issues
 from .webhardening import find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import DEFAULT_RECALL, analyze_taint, recall_config
@@ -851,6 +852,11 @@ def scan_files(
             csrf_protected = csrf_protected or has_csrf_protection(content)
             # Novel vuln classes (#77): proto pollution, mass assignment, JWT, XXE.
             result.code_weaknesses.extend(find_code_weaknesses(content, relative))
+            # JWT verification (#243): library-aware checks, plus the
+            # `jwt_verified` hint that credits the "JWT verification" control.
+            jwt_weaknesses, jwt_verified = find_jwt_issues(content, relative)
+            result.code_weaknesses.extend(jwt_weaknesses)
+            result.auth_hints.extend(jwt_verified)
 
     if csrf_protected:
         # A CSRF defence anywhere in the repo (#244) — session config and CSRF

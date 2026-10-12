@@ -998,6 +998,47 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Exploit Public-Facing Application",
         "tactic": "Initial Access",
     },
+    # JWT verification (#243)
+    "jwt_alg_confusion": {
+        "severity": "high",
+        "title": "JWT verified without a pinned algorithm (algorithm confusion)",
+        "mitigation": "Pass an explicit algorithm allow-list on every verify: jsonwebtoken `verify(token, key, { algorithms: ['RS256'] })`, PyJWT `decode(token, key, algorithms=['RS256'])`, golang-jwt `jwt.WithValidMethods([]string{\"RS256\"})` or a keyfunc that checks `token.Method`. Otherwise a token signed with HS256 using the public key as the HMAC secret can pass as an RS256 token.",
+        "technique_id": "T1606",
+        "technique_name": "Forge Web Credentials",
+        "tactic": "Credential Access",
+    },
+    "jwt_unverified_decode": {
+        "severity": "high",
+        "title": "JWT decoded without signature verification",
+        "mitigation": "`decode` / `decodeJwt` / `ParseUnverified` / `get_unverified_claims` only base64-decode the token. Trust its claims only after a verifying call (`jwt.verify`, jose `jwtVerify`, PyJWT `decode` with a key and `algorithms`, golang-jwt `Parse` with a keyfunc).",
+        "technique_id": "T1606",
+        "technique_name": "Forge Web Credentials",
+        "tactic": "Credential Access",
+    },
+    "jwt_claims_unchecked": {
+        "severity": "medium",
+        "title": "JWT expiry or claims not validated",
+        "mitigation": "Leave expiry checking on (no `ignoreExpiration`, `verify_exp: False` or `WithoutClaimsValidation`), and with authlib call `claims.validate()` after `jwt.decode`. Expired or stolen tokens otherwise stay valid forever.",
+        "technique_id": "T1550.001",
+        "technique_name": "Use Alternate Authentication Material: Application Access Token",
+        "tactic": "Lateral Movement",
+    },
+    "jwt_header_trust": {
+        "severity": "high",
+        "title": "JWT key lookup trusts the unverified token header (kid / jku / x5u)",
+        "mitigation": "The header is attacker-controlled until the signature is verified. Look `kid` up in a fixed key map (or a bound SQL parameter), never a file path or an interpolated query, and never fetch keys from a header `jku`/`x5u` URL: pin the JWKS URL in configuration.",
+        "technique_id": "T1606",
+        "technique_name": "Forge Web Credentials",
+        "tactic": "Credential Access",
+    },
+    "jwt_weak_secret": {
+        "severity": "high",
+        "title": "Short JWT signing secret hard-coded in source",
+        "mitigation": "Load the HMAC secret from a secret manager or the environment and make it at least 256 bits of randomness. A short secret can be brute-forced offline from a single captured token, after which any token can be forged.",
+        "technique_id": "T1606",
+        "technique_name": "Forge Web Credentials",
+        "tactic": "Credential Access",
+    },
     "xxe": {
         "severity": "high",
         "title": "XML external entity (XXE) processing enabled",
@@ -1055,6 +1096,20 @@ _CODE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
         "tactic": "Defense Evasion",
     },
 }
+
+
+# Token-authentication kinds (#243), tagged `token-auth` so the benchmark
+# scores them as one class.
+_TOKEN_AUTH_KINDS = frozenset(
+    {
+        "jwt_weakness",
+        "jwt_alg_confusion",
+        "jwt_unverified_decode",
+        "jwt_claims_unchecked",
+        "jwt_header_trust",
+        "jwt_weak_secret",
+    }
+)
 
 
 # Rank for picking the most severe issue in an aggregated group.
@@ -1983,7 +2038,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 locations=_locs(items),
                 mitigation=spec["mitigation"],
                 confidence="medium",
-                tags=["novel-vuln"],
+                tags=["novel-vuln", "token-auth"] if kind in _TOKEN_AUTH_KINDS else ["novel-vuln"],
                 attack_techniques=[
                     AttackTechnique(
                         technique_id=spec["technique_id"],
