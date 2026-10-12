@@ -25,8 +25,11 @@ from __future__ import annotations
 
 import re
 
-from .srcpaths import line_number
+from pathlib import Path
+
 from .models import WebHardeningIssue
+from .safe_fs import is_oversized, walk_repo
+from .srcpaths import is_skipped_dir, is_test_file, is_vendored_file, line_number
 
 
 def _rx(pattern: str) -> re.Pattern[str]:
@@ -112,6 +115,21 @@ def has_csrf_protection(content: str) -> bool:
     return False
 
 
+# Spring Security turning CSRF protection off: the Java builder
+# (`csrf().disable()`, `csrf(c -> c.disable())`, `csrf(AbstractHttpConfigurer::disable)`)
+# and the Kotlin DSL (`csrf { disable() }`, #341). Core's per-file pass
+# doesn't read .java/.kt files, so `find_jvm_csrf_disabled` runs it over them.
+_SPRING_CSRF_DISABLED = _rx(
+    r"\.csrf\s*\(\s*\)\s*\.\s*disable\s*\("
+    r"|csrf\s*\(\s*(?:[\w.]+\s*->\s*[\w.]+\s*\.\s*disable\s*\(\)|[\w.:]+::disable)\s*\)"
+    r"|\bcsrf\s*\{\s*disable\s*\(\s*\)\s*\}"
+)
+_JVM_SUFFIXES = frozenset({".java", ".kt"})
+# A stateless session policy in the same config: the usual bearer-token API,
+# where disabling CSRF is the documented setup. Reported, but at low severity.
+_STATELESS_SESSION = _rx(r"SessionCreationPolicy\s*\.\s*STATELESS\b")
+
+
 # Single-pattern families: (kind, severity, pattern).
 _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     # --- CSRF explicitly disabled ---------------------------------------
@@ -121,10 +139,13 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         _rx(
             r"@?csrf_exempt\b"
             r"|WTF_CSRF_ENABLED\s*=\s*False"
-            r"|\.csrf\s*\(\s*\)\s*\.\s*disable\s*\("
-            r"|csrf\s*\(\s*(?:[\w.]+\s*->\s*[\w.]+\s*\.\s*disable\s*\(\)|[\w.:]+::disable)\s*\)"
             r"|\bcsrf\s*:\s*false"
         ),
+    ),
+    (
+        "csrf_disabled",
+        "medium",
+        _SPRING_CSRF_DISABLED,
     ),
     # --- insecure cookie flags ------------------------------------------
     (
@@ -212,6 +233,50 @@ def find_web_hardening_issues(content: str, rel_file: str) -> list[WebHardeningI
     return out
 
 
+def find_jvm_csrf_disabled(root: str | Path) -> list[WebHardeningIssue]:
+    """`csrf_disabled` in Spring Security config written in Java or Kotlin
+    (#341). Whole-repo pass: core's per-file scan covers Python/JS/TS/Go/PHP
+    only, so without it the Spring forms above were never checked. Test and
+    vendored files are skipped, and so are matches on comment lines."""
+    root_path = Path(root)
+    out: list[WebHardeningIssue] = []
+    for path in walk_repo(root_path, prune=is_skipped_dir):
+        if path.suffix not in _JVM_SUFFIXES or is_oversized(path):
+            continue
+        rel = path.relative_to(root_path).as_posix()
+        if is_test_file(rel) or is_vendored_file(rel):
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "csrf" not in content:
+            continue
+        stateless = _STATELESS_SESSION.search(content) is not None
+        seen: set[int] = set()
+        for match in _SPRING_CSRF_DISABLED.finditer(content):
+            start = content.rfind("\n", 0, match.start()) + 1
+            prefix = content[start:match.start()].lstrip()
+            if prefix.startswith(("//", "/*", "*")):
+                continue
+            line = line_number(content, match.start())
+            if line in seen:
+                continue
+            seen.add(line)
+            out.append(
+                WebHardeningIssue(
+                    kind="csrf_disabled",
+                    file=rel,
+                    line=line,
+                    evidence_text=_snippet(content, match.start())
+                    + (" [stateless session policy in this config]" if stateless else ""),
+                    severity="low" if stateless else "medium",
+                    source_analyzer="webhardening",
+                )
+            )
+    return out
+
+
 def _line_at(content: str, offset: int) -> tuple[int, int]:
     start = content.rfind("\n", 0, offset) + 1
     end = content.find("\n", offset)
@@ -287,4 +352,4 @@ def _snippet(content: str, offset: int, radius: int = 120) -> str:
     return line[:radius] + ("…" if len(line) > radius else "")
 
 
-__all__ = ["find_web_hardening_issues", "has_csrf_protection"]
+__all__ = ["find_jvm_csrf_disabled", "find_web_hardening_issues", "has_csrf_protection"]

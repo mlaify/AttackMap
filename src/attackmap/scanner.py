@@ -23,7 +23,7 @@ from .srcpaths import is_test_file, is_vendored_file
 from .mass_assignment import analyze_mass_assignment
 from .weaknesses import find_code_weaknesses
 from .auth_protocol import find_jwt_issues, find_oauth_session_issues
-from .webhardening import find_web_hardening_issues, has_csrf_protection
+from .webhardening import find_jvm_csrf_disabled, find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import DEFAULT_RECALL, analyze_taint, recall_config
 
@@ -937,6 +937,12 @@ def run_repo_passes(
     # Field-level mass assignment (#242): binders and models live in
     # different files, so this can't ride the per-file weakness pass.
     result.code_weaknesses = result.code_weaknesses + analyze_mass_assignment(root_path)
+    # Spring Security `csrf_disabled` in Java/Kotlin config (#341): the
+    # per-file pass doesn't read JVM sources.
+    seen = {(i.kind, i.file, i.line) for i in result.web_hardening_issues}
+    result.web_hardening_issues = result.web_hardening_issues + [
+        i for i in find_jvm_csrf_disabled(root_path) if (i.kind, i.file, i.line) not in seen
+    ]
     # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
     # Runs last so the full route list is assembled into cohorts. It drives its
     # own determinate per-cohort progress (the slow tail on big route surfaces).

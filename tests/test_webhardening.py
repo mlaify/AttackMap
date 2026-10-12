@@ -61,10 +61,103 @@ def test_specific_origin_with_credentials_not_flagged() -> None:
         "http.csrf().disable();\n",
         "http.csrf(csrf -> csrf.disable());\n",
         "app.use(csurf({ csrf: false }))\n",
+        "http {\n    csrf { disable() }\n}\n",  # Spring Security Kotlin DSL (#341)
+        "http { csrf {disable()} }\n",
     ],
 )
 def test_csrf_disabled_flagged(content: str) -> None:
     assert "csrf_disabled" in _kinds(content)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'http {\n    csrf { ignoringRequestMatchers("/webhooks/**") }\n}\n',
+        "http {\n    csrf { }\n}\n",
+        "val disableCsrf = false\n",
+    ],
+)
+def test_kotlin_csrf_configuration_without_disable_not_flagged(content: str) -> None:
+    assert "csrf_disabled" not in _kinds(content)
+
+
+# ---------------------------------------------------------------------------
+# Spring Security config in Java / Kotlin (#341): a whole-repo pass, since the
+# per-file scan doesn't read .java/.kt files.
+# ---------------------------------------------------------------------------
+
+_KOTLIN_CONFIG = """package demo
+
+@Configuration
+class SecurityConfig {
+    @Bean
+    fun filterChain(http: HttpSecurity): SecurityFilterChain {
+        http {
+            csrf { disable() }
+            authorizeHttpRequests { authorize(anyRequest, authenticated) }
+        }
+        return http.build()
+    }
+}
+"""
+
+_JAVA_CONFIG = """@Configuration
+public class WebSecurityConfig {
+  @Bean
+  SecurityFilterChain chain(HttpSecurity http) throws Exception {
+    return http.csrf(csrf -> csrf.disable()).build();
+  }
+}
+"""
+
+
+def _csrf_issues(tmp_path: Path) -> list[WebHardeningIssue]:
+    return [i for i in scan_repo(tmp_path).web_hardening_issues if i.kind == "csrf_disabled"]
+
+
+def test_kotlin_dsl_csrf_disable_in_a_kt_file(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "SecurityConfig.kt").write_text(_KOTLIN_CONFIG, encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert (issue.file, issue.line, issue.severity) == ("src/SecurityConfig.kt", 8, "medium")
+    assert "csrf-disabled" in {f.rule_id for f in generate_findings(scan_repo(tmp_path))}
+
+
+def test_java_csrf_disable_in_a_java_file(tmp_path: Path) -> None:
+    (tmp_path / "WebSecurityConfig.java").write_text(_JAVA_CONFIG, encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == 5
+
+
+def test_kotlin_ignoring_matchers_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "SecurityConfig.kt").write_text(
+        _KOTLIN_CONFIG.replace("csrf { disable() }", 'csrf { ignoringRequestMatchers("/webhooks/**") }'),
+        encoding="utf-8",
+    )
+    assert _csrf_issues(tmp_path) == []
+
+
+def test_commented_out_disable_and_test_code_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "SecurityConfig.kt").write_text(
+        _KOTLIN_CONFIG.replace("csrf { disable() }", "// csrf { disable() }"), encoding="utf-8"
+    )
+    tests = tmp_path / "src" / "test" / "kotlin"
+    tests.mkdir(parents=True)
+    (tests / "TestSecurityConfig.kt").write_text(_KOTLIN_CONFIG, encoding="utf-8")
+    assert _csrf_issues(tmp_path) == []
+
+
+def test_stateless_token_api_is_reported_low(tmp_path: Path) -> None:
+    (tmp_path / "SecurityConfig.java").write_text(
+        _JAVA_CONFIG.replace(
+            "return http.csrf",
+            "http.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n    return http.csrf",
+        ),
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "low"
+    assert "stateless session policy" in (issue.evidence_text or "")
 
 
 # ---------------------------------------------------------------------------
