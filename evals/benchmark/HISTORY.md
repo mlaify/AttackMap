@@ -4,6 +4,32 @@ Before/after `attackmap bench` results for detector changes, newest first.
 Each row is scored against the corpus in `benchmark.json` as of that change, so
 "before" and "after" use the same labels.
 
+## #243 (part B): Webhook signature verification (v0.6.0)
+
+Corpus change: new case `express-webhooks-demo` with 3 `webhook_exposure`
+labels: a payments webhook with no signature check (`routes/payments.js`), a
+GitHub HMAC compared with `!==` (`routes/github.js:10`) and a Slack signature
+verified without checking its timestamp (`routes/slack.js:11`).
+`routes/github-app.js` (`timingSafeEqual`) and `routes/stripe.js`
+(`constructEvent`) are the clean twins.
+
+| Detector class | Precision before | Precision after | Recall before | Recall after | TP / FP / expected after |
+|---|---|---|---|---|---|
+| `webhook_exposure` | 100% | 100% | 100% | 100% | 3 / 0 / 4 |
+| `injection` | 100% | 100% | 100% | 100% | 3 / 0 / 5 |
+| `bola` | 100% | 100% | 100% | 100% | 2 / 0 / 2 |
+| `unauth_state_change` | 100% | 100% | 100% | 100% | 3 / 0 / 5 |
+| `token_auth` | 100% | 100% | 100% | 100% | 6 / 0 / 6 |
+| `session_auth` | 100% | 100% | 100% | 100% | 2 / 0 / 2 |
+
+Before: `main` 836f16d scored against the same corpus. The scores don't move
+because before this change a single `public-webhook` finding listed all five
+routes of the case, so it matched every label, and the scorer doesn't count
+the two verified routes it also cited as false positives. The difference is in
+the findings: `main` reports all five routes as high; this change reports the
+payments route as high, the GitHub and Slack routes as medium
+`webhook-weak-verification`, and leaves the two verified routes out.
+
 ## #243 (part 2): OAuth client and session checks (v0.6.0)
 
 Corpus change: new scored class `session_auth` (findings tagged

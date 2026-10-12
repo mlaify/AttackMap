@@ -601,6 +601,26 @@ class Signal(_RedactedEvidence):
         return f"{self.file}:{self.line}" if self.line is not None else self.file
 
 
+WebhookVerificationState = Literal["verified", "weak_compare", "no_replay_guard", "absent", "unknown"]
+
+
+class WebhookVerification(BaseModel):
+    """How a webhook handler authenticates the events it receives (#243, part B).
+
+    ``verified``: a provider SDK verifier, or an HMAC checked with a
+    constant-time compare (and, for schemes that sign a timestamp, a freshness
+    check). ``weak_compare``: an HMAC compared with ``==``. ``no_replay_guard``:
+    a timestamped scheme whose timestamp is never checked. ``absent``: nothing
+    that verifies the payload. ``unknown``: the handler couldn't be read, or it
+    hands the signature to code we couldn't follow.
+    """
+
+    state: WebhookVerificationState
+    provider: str | None = None  # stripe, github, slack, twilio, shopify, svix, sns, hmac
+    evidence: str | None = None  # file:line — the line that decided the state
+    notes: list[str] = Field(default_factory=list)
+
+
 class AttackSurface(BaseModel):
     route: str
     method: str
@@ -613,6 +633,8 @@ class AttackSurface(BaseModel):
     outbound_integration: bool = False
     rationale: list[str] = Field(default_factory=list)
     line: int | None = None
+    # Set on webhook surfaces only (#243, part B).
+    webhook_verification: WebhookVerification | None = None
 
     def location(self) -> str:
         return f"{self.file}:{self.line}" if self.line is not None else self.file

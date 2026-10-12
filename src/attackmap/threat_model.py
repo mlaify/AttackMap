@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .analyzer import identify_attack_surfaces
+from .webhook_verification import describe as describe_webhook
 from .exploitability import best_by_sink_kind, score_exploitability
 from .models import (
     AttackPath,
@@ -92,6 +93,67 @@ def _fill_missing_locations(findings: list[Finding]) -> None:
     for finding in findings:
         if not finding.locations:
             finding.locations = [FindingLocation(file=f, line=l) for f, l in evidence_locations(finding.evidence)]
+
+
+def _webhook_state(surface: AttackSurface) -> str:
+    return surface.webhook_verification.state if surface.webhook_verification is not None else "unknown"
+
+
+def _webhook_detail(surface: AttackSurface) -> str:
+    v = surface.webhook_verification
+    if v is not None and v.state == "absent":
+        return "no signature verification found in the handler"
+    if v is not None and v.notes:
+        return "; ".join(v.notes)
+    return "signature verification could not be determined"
+
+
+def _webhook_extra_notes(surface: AttackSurface) -> list[str]:
+    """Notes beyond what the state's description already says."""
+    v = surface.webhook_verification
+    if v is None:
+        return []
+    return [note for note in v.notes if not (v.state == "no_replay_guard" and "timestamp" in note)]
+
+
+def _webhook_locs(surfaces: list[AttackSurface]) -> list[FindingLocation]:
+    """The route and the line its verification state rests on."""
+    out = _locs(surfaces)
+    seen = {(loc.file, loc.line) for loc in out}
+    for surface in surfaces:
+        evidence = surface.webhook_verification.evidence if surface.webhook_verification else None
+        if not evidence or ":" not in evidence:
+            continue
+        file, _, line = evidence.rpartition(":")
+        if line.isdigit() and (file, int(line)) not in seen:
+            seen.add((file, int(line)))
+            out.append(FindingLocation(file=file, line=int(line)))
+    return out
+
+
+def _webhook_weak_point(surface: AttackSurface) -> str:
+    """The attack path's weak point, citing the verification state (#243)."""
+    v = surface.webhook_verification
+    state = _webhook_state(surface)
+    if state == "absent":
+        return (
+            f"No signature verification was found for the event payload (handler at {surface.location()}), "
+            "so a forged event is processed as if it came from the provider"
+        )
+    if state == "weak_compare" and v is not None:
+        return (
+            f"The HMAC signature is compared with a non-constant-time equality at {v.evidence}, "
+            "so response timing reveals how much of a forged signature matched"
+        )
+    if state == "no_replay_guard" and v is not None:
+        return (
+            f"The signature is verified at {v.evidence}, but the signed timestamp is never checked, "
+            "so a captured event can be replayed"
+        )
+    return (
+        "The endpoint is treated like a trusted integration boundary before its input is fully verified "
+        "(signature verification could not be determined statically)"
+    )
 
 
 def _finding_evidence(surface: AttackSurface) -> str:
@@ -1609,6 +1671,15 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         and surface.method in {"POST", "PUT", "PATCH", "DELETE", "ANY"}
         and (surface.data_store_interaction or surface.outbound_integration)
         and not any(signal in {"jwt", "oauth", "authorization", "service_auth"} for signal in surface.auth_signals)
+        and _webhook_state(surface) in {"absent", "unknown"}
+    ]
+    weak_webhook_surfaces = [
+        surface
+        for surface in runtime_surfaces
+        if surface.category == "webhook"
+        and surface.exposure == "public"
+        and surface.method in {"POST", "PUT", "PATCH", "DELETE", "ANY"}
+        and _webhook_state(surface) in {"weak_compare", "no_replay_guard"}
     ]
     admin_surfaces = [surface for surface in runtime_surfaces if surface.category == "admin"]
     upload_surfaces = [surface for surface in runtime_surfaces if surface.category == "upload"]
@@ -1630,11 +1701,35 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 title="Public webhook endpoint may trust attacker-controlled events",
                 rule_id="public-webhook",
                 severity="high",
-                evidence=[_finding_evidence(surface) for surface in webhook_surfaces[:10]],
+                evidence=[
+                    f"{_finding_evidence(surface)}; {_webhook_detail(surface)}" for surface in webhook_surfaces[:10]
+                ],
                 locations=_locs(webhook_surfaces),
                 mitigation="Require signature verification before processing webhook payloads, reject replays, and keep any downstream state change behind strict validation.",
                 confidence="high",
                 tags=["exposed-endpoint", "auth-missing"],
+            )
+        )
+
+    if weak_webhook_surfaces:
+        findings.append(
+            Finding(
+                title="Webhook signature verification is weak or replayable",
+                rule_id="webhook-weak-verification",
+                severity="medium",
+                evidence=[
+                    "; ".join([describe_webhook(surface), *_webhook_extra_notes(surface)])
+                    for surface in weak_webhook_surfaces[:10]
+                ],
+                locations=_webhook_locs(weak_webhook_surfaces),
+                mitigation=(
+                    "Compare signatures with a constant-time function (`crypto.timingSafeEqual`, "
+                    "`hmac.compare_digest`, `hmac.Equal`, `hash_equals`), or use the provider's SDK verifier. "
+                    "For schemes that sign a timestamp, reject events older than a few minutes; "
+                    "deduplicate on the event or delivery id."
+                ),
+                confidence="medium",
+                tags=["exposed-endpoint", "webhook-verification"],
             )
         )
 
@@ -2564,7 +2659,11 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
     # surface multiple distinct attack-path archetypes — see #24. Each
     # archetype consumes one surface; we dedup by surface identity so the
     # same route doesn't anchor two paths.
-    webhook_surface = next((surface for surface in surfaces if surface.category == "webhook"), None)
+    # A webhook that verifies its signature doesn't anchor a spoofing path (#243).
+    webhook_surface = next(
+        (surface for surface in surfaces if surface.category == "webhook" and _webhook_state(surface) != "verified"),
+        None,
+    )
     admin_surface = next((surface for surface in surfaces if surface.category == "admin"), None)
     auth_surface = next((surface for surface in surfaces if surface.category == "auth"), None)
     upload_surface = next((surface for surface in surfaces if surface.category == "upload"), None)
@@ -2616,7 +2715,7 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
         webhook_ext = _same_file_external(webhook_surface, scan)
         steps = [
             _action_step("Entry", f"An attacker reaches {webhook_surface.method} {webhook_surface.route} in {webhook_surface.file}, a webhook-style endpoint that accepts untrusted inbound events"),
-            _action_step("Weak point", "The endpoint is treated like a trusted integration boundary before its input is fully verified"),
+            _action_step("Weak point", _webhook_weak_point(webhook_surface)),
         ]
         if public_data_surface:
             if webhook_db:
@@ -2792,6 +2891,7 @@ def rule_catalog() -> list[tuple[str, str, str]]:
     `attackmap rules` and the docs. Family specs are expanded per kind."""
     rules: list[tuple[str, str, str]] = [
         ("public-webhook", "Public webhook endpoint may trust attacker-controlled events", "high"),
+        ("webhook-weak-verification", "Webhook signature verification is weak or replayable", "medium"),
         ("exposed-admin-route", "Administrative routes appear reachable from the main application surface", "high"),
         ("upload-route", "Upload or import routes expand attacker-controlled input handling", "medium"),
         ("weak-auth-route", "Authentication routes were detected without strong nearby auth controls", "medium"),

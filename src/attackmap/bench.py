@@ -90,7 +90,7 @@ def canonical_category(finding: dict[str, Any]) -> str:
         return "injection"
     if "broken-authorization" in tags or "bola" in title or "idor" in title:
         return "bola"
-    if "auth-missing" in tags and "webhook" in title:
+    if ("auth-missing" in tags and "webhook" in title) or "webhook-verification" in tags:
         return "webhook_exposure"
     if "auth-missing" in tags and "state-changing" in tags:
         return "unauth_state_change"

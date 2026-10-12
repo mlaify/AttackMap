@@ -619,7 +619,15 @@ class _HopResolver:
         self._imports: dict[str, dict[str, str]] = {}
         self._defs: dict[str, tuple[list[str], dict[str, int]]] = {}
 
-    def delegated_text(self, rel_file: str, content: str | None, handler: str) -> str:
+    def delegated_text(
+        self,
+        rel_file: str,
+        content: str | None,
+        handler: str,
+        located: list[tuple[str, int, str]] | None = None,
+    ) -> str:
+        """The bodies ``handler`` delegates to, joined. ``located``, when given,
+        also receives ``(file, 1-based start line, body)`` for each one."""
         if not content:
             return ""
         imports = self._import_map(rel_file, content)
@@ -648,6 +656,8 @@ class _HopResolver:
             body = self._definition(target, func)
             if body:
                 bodies.append(body)
+                if located is not None:
+                    located.append((target, self._defs[target][1][func] + 1, body))
         return "\n".join(bodies)
 
     def _definition(self, rel_file: str, name: str) -> str:

@@ -5,6 +5,7 @@ from collections import Counter
 import networkx as nx
 
 from .models import AttackSurface, AuthHint, Route, ScanResult
+from .webhook_verification import assess_webhook_surfaces
 
 
 # Bounded line window used to attribute auth hints to a specific route
@@ -161,6 +162,7 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
             )
         )
 
+    assess_webhook_surfaces(scan, surfaces)
     return surfaces
 
 
@@ -244,6 +246,8 @@ def _surface_summary(surface: AttackSurface) -> str:
         traits.append("data store reachable")
     if surface.outbound_integration:
         traits.append("external trust boundary")
+    if surface.webhook_verification is not None:
+        traits.append(f"webhook signature: {surface.webhook_verification.state.replace('_', ' ')}")
 
     return "; ".join(traits)
 

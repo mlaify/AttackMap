@@ -69,12 +69,14 @@ CWE_NAMES: dict[int, str] = {
     98: "Improper Control of Filename for Include/Require Statement in PHP Program ('PHP Remote File Inclusion')",
     113: "Improper Neutralization of CRLF Sequences in HTTP Headers ('HTTP Request/Response Splitting')",
     200: "Exposure of Sensitive Information to an Unauthorized Actor",
+    208: "Observable Timing Discrepancy",
     214: "Invocation of Process Using Visible Sensitive Information",
     215: "Insertion of Sensitive Information Into Debugging Code",
     250: "Execution with Unnecessary Privileges",
     284: "Improper Access Control",
     285: "Improper Authorization",
     287: "Improper Authentication",
+    294: "Authentication Bypass by Capture-replay",
     295: "Improper Certificate Validation",
     306: "Missing Authentication for Critical Function",
     307: "Improper Restriction of Excessive Authentication Attempts",
@@ -217,6 +219,7 @@ INFORMATIONAL_RULES: frozenset[str] = frozenset({"limited-surface"})
 RULE_TAXONOMY: dict[str, RuleTaxonomy] = {
     # Route / surface heuristics
     "public-webhook": RuleTaxonomy(cwe=(345,), owasp=("A08:2021",), asvs=("V13.2.6",), attack=("T1190", "T1199")),
+    "webhook-weak-verification": RuleTaxonomy(cwe=(208, 294, 345), owasp=("A08:2021",), asvs=("V13.2.6",), attack=("T1190", "T1199")),
     "exposed-admin-route": RuleTaxonomy(cwe=(285,), owasp=("A01:2021", "API5:2023"), asvs=("V4.1.3",), attack=("T1078", "T1068", "T1098")),
     "upload-route": RuleTaxonomy(cwe=(434,), owasp=("A04:2021",), asvs=("V12.2.1", "V12.5.2"), attack=("T1190", "T1505.003")),
     "weak-auth-route": RuleTaxonomy(cwe=(287, 307), owasp=("A07:2021", "API2:2023"), asvs=("V2.2.1",), attack=("T1110", "T1078")),
