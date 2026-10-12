@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from .srcpaths import JS_TS_SUFFIXES, SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
-from .merge import MERGE_SCHEMA, initial_seen, merge_into
+from .merge import MERGE_SCHEMA, initial_seen, merge_into, superseded_builtin_routes
 
 from .sdk.contracts import (
     AnalyzerMetadata,
@@ -32,7 +32,7 @@ from .sdk.contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
-from .models import APP_SURFACE_ISSUE_KINDS, AnalyzerError
+from .models import APP_SURFACE_ISSUE_KINDS, CLOUD_MISCONFIG_KINDS, AnalyzerError
 from .redact import redact_text
 from .sdk.models import (
     AuthHint,
@@ -403,6 +403,16 @@ def get_builtin_repository_analyzers() -> list[Analyzer]:
     ]
 
 
+_BUILTIN_ANALYZER_TYPES = (BuiltinPythonWebAnalyzer, BuiltinJavaScriptWebAnalyzer, BuiltinConfigAnalyzer, DefaultAnalyzer)
+
+
+def is_builtin_analyzer(analyzer: object) -> bool:
+    """Whether ``analyzer`` is one of core's own extractors, by type: a
+    plugin can't claim it by name or by pre-stamping ``source_analyzer``.
+    A plugin route supersedes a built-in twin (#337)."""
+    return isinstance(analyzer, _BUILTIN_ANALYZER_TYPES)
+
+
 # Official plugins by package name, pinned to immutable commits (#237).
 _OFFICIAL_BY_PACKAGE = {entry["package"]: entry for entry in OFFICIAL_PLUGINS}
 # ...and by each analyzer entry point a package registers (#190): one package
@@ -741,6 +751,7 @@ def analyze_repository(
     repo_root = Path(root).resolve()
     active_analyzers = resolve_run_analyzers(repo_root, analyzers=analyzers)
     results: list[AnalyzerResult] = []
+    builtin: list[bool] = []  # per result: produced by a core extractor
     errors: list[AnalyzerError] = []
     for analyzer in active_analyzers:
         try:
@@ -765,7 +776,12 @@ def analyze_repository(
             logger.warning("Analyzer %r: %s", analyzer.name, unknown.message)
         _stamp_provenance(result, analyzer.name)
         results.append(result)
-    merged = merge_analyzer_results(results, root=repo_root) if results else AnalyzerResult(root=str(repo_root))
+        builtin.append(is_builtin_analyzer(analyzer))
+    merged = (
+        merge_analyzer_results(results, root=repo_root, builtin=builtin)
+        if results
+        else AnalyzerResult(root=str(repo_root))
+    )
     merged.analyzer_errors = errors
     # Whole-repo passes run once, over every analyzer's merged signals (#219).
     run_repo_passes(merged, repo_root, progress=progress, recall=recall)
@@ -820,6 +836,7 @@ def _call_analyze(
 # the rest of the plugin's result is kept, and the drop is noted under
 # `analyzer_errors` (`--strict-analyzers` raises instead).
 KIND_VOCABULARIES: tuple[tuple[str, frozenset[str], str], ...] = (
+    ("cloud_misconfigs", frozenset(CLOUD_MISCONFIG_KINDS), "UnknownCloudMisconfigKind"),
     ("app_surface_issues", frozenset(APP_SURFACE_ISSUE_KINDS), "UnknownAppSurfaceIssueKind"),
 )
 
@@ -905,11 +922,15 @@ def _should_run_analyzer(analyzer: Analyzer, repo_root: Path) -> bool:
 def merge_analyzer_results(
     results: Iterable[AnalyzerResult],
     root: str | Path | None = None,
+    builtin: Iterable[bool] | None = None,
 ) -> AnalyzerResult:
     """Combine multiple whole-repo analyzer results into one.
 
     Field-by-field merge behavior is declared in :data:`merge.MERGE_SCHEMA`
-    and applied uniformly here. See `merge.py` for the rules.
+    and applied uniformly here. See `merge.py` for the rules. ``builtin``
+    marks, per result, those produced by a core extractor
+    (:func:`is_builtin_analyzer`); a plugin route then supersedes a built-in
+    twin of it (#337). Without it, routes merge on their key alone.
     """
     result_list = list(results)
     if not result_list:
@@ -920,6 +941,19 @@ def merge_analyzer_results(
     merged = AnalyzerResult(root=str(resolved_root))
     seen_by_attr: dict[str, set] = {rule.attr: set() for rule in MERGE_SCHEMA}
 
+    # A plugin route on the same (file, line) replaces core's built-in twin of
+    # it (a group prefix the built-in couldn't join), whatever order they run in.
+    flags = list(builtin) if builtin is not None else [False] * len(result_list)
+    if len(flags) != len(result_list):
+        raise ValueError("builtin must have one flag per result")
+    superseded = (
+        superseded_builtin_routes(
+            (route for result, flag in zip(result_list, flags) if flag for route in result.routes),
+            (route for result, flag in zip(result_list, flags) if not flag for route in result.routes),
+        )
+        if any(flags) and not all(flags)
+        else set()
+    )
     for result in result_list:
         merged.files_scanned += result.files_scanned
         for language in result.languages:
@@ -929,7 +963,10 @@ def merge_analyzer_results(
             if limitation not in merged.limitations:
                 merged.limitations.append(limitation)
         for rule in MERGE_SCHEMA:
-            merge_into(merged, getattr(result, rule.attr), rule, seen_by_attr[rule.attr])
+            items = getattr(result, rule.attr)
+            if rule.attr == "routes" and superseded:
+                items = [route for route in items if id(route) not in superseded]
+            merge_into(merged, items, rule, seen_by_attr[rule.attr])
 
     merged.languages.sort()
     return merged
