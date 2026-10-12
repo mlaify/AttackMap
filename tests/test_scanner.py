@@ -1098,6 +1098,10 @@ _JWT_SIGNALS = {"jwt", "jwt_verified"}
         ("const jwt = require('jsonwebtoken')\napp.use(jwt({ secret: KEY }))\n", "a.js"),
         ("import { verify } from 'jsonwebtoken'\nconst c = jwt.verifyLater(token)\n", "a.ts"),
         ("<?php\n$token = JWTAuth::fromUser($user);\n", "a.php"),
+        ("const { decode: verify } = require('jsonwebtoken')\nconst c = verify(tok)\n", "a.js"),
+        ("import { decode as verify } from 'jsonwebtoken'\nconst c = verify(tok)\n", "a.ts"),
+        ("const tokens = require('jsonwebtoken')\nconst c = tokens.decode(tok)\nother.verify(tok)\n", "a.js"),
+        ('package main\n\nimport jwtv5 "github.com/golang-jwt/jwt/v5"\n\nfunc a(s string) { t, _, _ := jwtv5.NewParser().ParseUnverified(s, c) }\n', "a.go"),
     ],
 )
 def test_jwt_use_without_verification_is_not_an_auth_hint(tmp_path: Path, source: str, name: str) -> None:
@@ -1127,6 +1131,12 @@ def test_jwt_use_without_verification_is_not_an_auth_hint(tmp_path: Path, source
         ("<?php\n$user = JWTAuth::parseToken()->authenticate();\n", "a.php"),
         ("const { verify } = require('jsonwebtoken')\nconst claims = verify(token, KEY)\n", "a.js"),
         ("import { decode, verify as check } from 'jsonwebtoken'\nconst claims = check(token, KEY)\n", "a.ts"),
+        ("const jsonwebtoken = require('jsonwebtoken')\nconst c = jsonwebtoken.verify(tok, KEY)\n", "a.js"),
+        ("const tokens = require('jsonwebtoken')\ntokens.verify(tok, KEY, (err, claims) => next(err))\n", "a.js"),
+        ("import * as tokens from 'jsonwebtoken'\nconst c = tokens.verify(tok, KEY)\n", "a.ts"),
+        ("const { verify: check } = require('jsonwebtoken')\nconst c = check(tok, KEY)\n", "a.js"),
+        ('package main\n\nimport jwtv5 "github.com/golang-jwt/jwt/v5"\n\nfunc a(s string) { t, err := jwtv5.Parse(s, kf) }\n', "a.go"),
+        ('package main\n\nimport (\n\tjwtlib "github.com/golang-jwt/jwt/v5"\n)\n\nfunc a(s string) { t, err := jwtlib.ParseWithClaims(s, c, kf) }\n', "a.go"),
         ("REST_FRAMEWORK = {'DEFAULT_AUTHENTICATION_CLASSES': ['rest_framework_simplejwt.authentication.JWTAuthentication']}\n", "settings.py"),
     ],
 )

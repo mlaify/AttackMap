@@ -22,7 +22,7 @@ from .workflow_scanner import scan_workflows
 from .srcpaths import is_test_file, is_vendored_file
 from .mass_assignment import analyze_mass_assignment
 from .weaknesses import find_code_weaknesses
-from .auth_protocol import find_jwt_issues, find_oauth_session_issues
+from .auth_protocol import _GO_JWT, _JS_JWT_DEFAULT, _JS_JWT_NAMED, find_jwt_issues, find_oauth_session_issues
 from .webhardening import find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import DEFAULT_RECALL, analyze_taint, recall_config
@@ -719,13 +719,42 @@ def _append_unique_database_hints(result: ScanResult, relative: str, content: st
 
 # JWT verification whose call name alone is too generic to trust (#325):
 # middleware called as `jwt({ secret })` counts only in a file that imports
-# express-jwt, koa-jwt or hono's jwt; a bare `verify(` only when jsonwebtoken's
-# `verify` is a named import (with its alias, if any).
+# express-jwt, koa-jwt or hono's jwt; `<name>.verify(` / `<name>.Parse(` and a
+# bare `verify(` only when the name is bound to jsonwebtoken / golang-jwt by an
+# import (auth_protocol's import patterns, so any alias works and a named
+# `{ decode: verify }` doesn't).
 _JWT_MIDDLEWARE_IMPORT_RE = re.compile(r"""['"](?:express-jwt|koa-jwt|hono/jwt|@hono/[\w-]{0,40}jwt)['"]""")
 _JWT_MIDDLEWARE_CALL_RE = re.compile(r"\b(?:jwt|expressjwt|expressJwt|koaJwt|koajwt)\s*\(\s*\{")
-_JWT_NAMED_IMPORT_RE = re.compile(r"""\{([^{}]{0,300})\}\s*(?:=\s*require\s*\(\s*|from\s+)['"]jsonwebtoken['"]""")
-_NAMED_VERIFY_RE = re.compile(r"\bverify\b(?:\s*(?::|as)\s*([A-Za-z_$][\w$]{0,63}))?")
 _NAMED_CALL_SCAN_LIMIT = 50
+_GO_JWT_VERIFY_METHODS = ("Parse(", "ParseWithClaims(")
+
+
+def _call_at(content: str, needle: str, start: int) -> int | None:
+    """First `needle` (a callee ending in `(`) at or after ``start`` that isn't
+    the tail of a longer name or member (`xverify(`, `a.verify(` for `verify(`)."""
+    pos = start
+    for _ in range(_NAMED_CALL_SCAN_LIMIT):
+        pos = content.find(needle, pos)
+        if pos < 0:
+            return None
+        before = content[pos - 1] if pos else ""
+        if not (before.isalnum() or before in "_$."):
+            return pos
+        pos += len(needle)
+    return None
+
+
+def _named_verify_aliases(members: str) -> set[str]:
+    """Local names bound to jsonwebtoken's `verify` in a `{ … }` import list
+    (`verify`, `verify as check`, `verify: check`; not `decode: verify`)."""
+    out: set[str] = set()
+    for part in members.split(","):
+        pieces = part.replace(":", " as ").split(" as ")
+        source = pieces[0].strip()
+        local = pieces[-1].strip() if len(pieces) > 1 else source
+        if source == "verify" and local:
+            out.add(local)
+    return out
 
 
 def _gated_jwt_verification(content: str) -> int | None:
@@ -734,20 +763,22 @@ def _gated_jwt_verification(content: str) -> int | None:
         call = _JWT_MIDDLEWARE_CALL_RE.search(content)
         if call:
             return call.start()
-    for imp in _JWT_NAMED_IMPORT_RE.finditer(content):
-        named = _NAMED_VERIFY_RE.search(imp.group(1))
-        if named is None:
-            continue
-        needle = (named.group(1) or "verify") + "("
-        pos = imp.end()
-        for _ in range(_NAMED_CALL_SCAN_LIMIT):
-            pos = content.find(needle, pos)
-            if pos < 0:
-                break
-            before = content[pos - 1] if pos else ""
-            if not (before.isalnum() or before in "_$."):
-                return pos
-            pos += len(needle)
+    for imp in _JS_JWT_DEFAULT.finditer(content):
+        name = imp.group(1) or imp.group(2)
+        found = _call_at(content, f"{name}.verify(", imp.end()) if name else None
+        if found is not None:
+            return found
+    for imp in _JS_JWT_NAMED.finditer(content):
+        for name in sorted(_named_verify_aliases(imp.group(1) or imp.group(2) or "")):
+            found = _call_at(content, f"{name}(", imp.end())
+            if found is not None:
+                return found
+    for imp in _GO_JWT.finditer(content):
+        name = (imp.group(1) or "jwt").strip()
+        for method in _GO_JWT_VERIFY_METHODS:
+            found = _call_at(content, f"{name}.{method}", imp.end())
+            if found is not None:
+                return found
     return None
 
 
