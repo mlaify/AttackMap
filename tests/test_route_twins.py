@@ -201,14 +201,21 @@ def _best_time(builtin: list[Route], plugin: list[Route]) -> float:
     return best
 
 
+# 8x the routes must cost under 20x the time: linear measures ~8x, quadratic
+# 64x. Best of three for both sizes, a floor under the small one, and a
+# re-time of the large one before failing, so a slow runner doesn't matter.
+_TWIN_SMALL, _TWIN_LARGE, _TWIN_MAX_RATIO, _TWIN_MIN_BASELINE = 300, 2400, 20.0, 0.005
+
+
 def test_twin_matching_is_linear_on_crowded_lines() -> None:
-    """Thousands of routes of both kinds on one line. Measured as a ratio
-    (4x the input must cost well under 16x, which quadratic would), so a
-    slow runner doesn't matter."""
-    small, large = _crowded(500), _crowded(2000)
-    assert len(superseded_builtin_routes(*large)) == 2000  # the flat twins; deep paths and roots aren't
-    ratio = _best_time(*large) / max(_best_time(*small), 1e-6)
-    assert ratio < 8, ratio
+    """Thousands of routes of both kinds on one line."""
+    small, large = _crowded(_TWIN_SMALL), _crowded(_TWIN_LARGE)
+    assert len(superseded_builtin_routes(*large)) == _TWIN_LARGE  # the flat twins; deep paths and roots aren't
+    baseline = max(_best_time(*small), _TWIN_MIN_BASELINE)
+    ratio = _best_time(*large) / baseline
+    if ratio >= _TWIN_MAX_RATIO:
+        ratio = min(ratio, _best_time(*large) / baseline)
+    assert ratio < _TWIN_MAX_RATIO, ratio
 
 
 class _PrefixPlugin:
