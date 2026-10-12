@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from .srcpaths import JS_TS_SUFFIXES, SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
-from .merge import MERGE_SCHEMA, initial_seen, merge_into
+from .merge import MERGE_SCHEMA, initial_seen, merge_into, superseded_builtin_routes
 
 from .sdk.contracts import (
     AnalyzerMetadata,
@@ -401,6 +401,11 @@ def get_builtin_repository_analyzers() -> list[Analyzer]:
         BuiltinConfigAnalyzer(),
         DefaultAnalyzer(),
     ]
+
+
+# Signals stamped with these names come from core's own extractors; anything
+# else is a plugin. A plugin route supersedes a built-in twin (#337).
+BUILTIN_ANALYZER_NAMES = frozenset(analyzer.name for analyzer in get_builtin_repository_analyzers())
 
 
 # Official plugins by package name, pinned to immutable commits (#237).
@@ -869,6 +874,11 @@ def merge_analyzer_results(
     merged = AnalyzerResult(root=str(resolved_root))
     seen_by_attr: dict[str, set] = {rule.attr: set() for rule in MERGE_SCHEMA}
 
+    # A plugin route on the same (file, line) replaces core's built-in twin of
+    # it (a group prefix the built-in couldn't join), whatever order they run in.
+    superseded = superseded_builtin_routes(
+        (route for result in result_list for route in result.routes), BUILTIN_ANALYZER_NAMES
+    )
     for result in result_list:
         merged.files_scanned += result.files_scanned
         for language in result.languages:
@@ -878,7 +888,10 @@ def merge_analyzer_results(
             if limitation not in merged.limitations:
                 merged.limitations.append(limitation)
         for rule in MERGE_SCHEMA:
-            merge_into(merged, getattr(result, rule.attr), rule, seen_by_attr[rule.attr])
+            items = getattr(result, rule.attr)
+            if rule.attr == "routes" and superseded:
+                items = [route for route in items if id(route) not in superseded]
+            merge_into(merged, items, rule, seen_by_attr[rule.attr])
 
     merged.languages.sort()
     return merged

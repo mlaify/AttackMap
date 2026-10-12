@@ -20,6 +20,10 @@ merge / dedup behavior follows automatically.
   signal itself (e.g. `(path, method, file)` for routes). Two signals
   that hash to the same key are treated as duplicates; only the first is
   kept.
+- **Route twins** (#337): a plugin route on the same `(file, line)` as a
+  built-in route supersedes it when they are plausibly one registration
+  (the plugin joined a group prefix, or parsed a raw pattern). See
+  :func:`superseded_builtin_routes`.
 - **`languages`**: union, then sorted alphabetically for stable display.
 - **`files_scanned`**: summed across results.
 - **`root`**: taken from the explicit `root` argument when supplied,
@@ -28,6 +32,7 @@ merge / dedup behavior follows automatically.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -159,6 +164,71 @@ def merge_into(destination: Any, items: Iterable[Any], rule: MergeRule, seen: se
             index[k] = item
 
 
+# A built-in extractor's path that is still a raw route pattern: Go 1.22
+# `"GET /items/{id}"`, a host-scoped `"example.com/x"`. Bounded: route paths
+# are short, and a longer one just isn't treated as raw.
+_RAW_ROUTE_PATTERN = re.compile(r"(?:([A-Z]{1,16})[ \t]+)?[^/\s]{0,253}(/\S{0,2048})")
+
+
+def _route_path_key(path: str) -> str:
+    """A path compared for twin matching: a leading `/`, no repeated or
+    trailing `/` (the root is the empty string)."""
+    cleaned = "/" + path.strip().strip("/")
+    while "//" in cleaned:
+        cleaned = cleaned.replace("//", "/")
+    return cleaned.rstrip("/")
+
+
+def _is_route_twin(builtin: Any, plugin: Any) -> bool:
+    """Whether a built-in route and a plugin route registered on the same
+    (file, line) are plausibly the same registration (#337): the plugin's
+    path ends with the built-in's at a segment boundary (the plugin joined a
+    group prefix the built-in can't see), the built-in path is the raw form
+    the plugin parsed (`"GET /items/{id}"`), and the methods agree or the
+    built-in said `ANY`."""
+    path, method = builtin.path, builtin.method.upper()
+    raw = _RAW_ROUTE_PATTERN.fullmatch(path.strip())
+    if raw and raw.group(0).strip() != raw.group(2):
+        method = raw.group(1) or method
+        path = raw.group(2)
+    plugin_method = plugin.method.upper()
+    if method not in (plugin_method, "ANY"):
+        return False
+    built, joined = _route_path_key(path), _route_path_key(plugin.path)
+    return joined.endswith(built)  # the root ("") is a suffix of every path
+
+
+def superseded_builtin_routes(routes: Iterable[Any], builtin_names: frozenset[str]) -> set[int]:
+    """``id()`` of each built-in route that a plugin route on the same
+    (file, line) supersedes (#337).
+
+    The core's built-in extractors read one call at a time; a plugin that
+    joins group / router prefixes (`api := r.Group("/api")`) or parses a route
+    pattern emits the same registration under a different path, and the
+    `(path, method, file)` merge key keeps both. The plugin route wins: its
+    path, method, auth and provenance are what's left. Only a built-in route
+    is ever dropped, and only when it plausibly is the plugin's registration
+    (:func:`_is_route_twin`), so two plugin routes, two built-in routes, or
+    two different registrations on one line all survive.
+    """
+    routes = list(routes)
+    plugin_by_site: dict[tuple[str, int], list[Any]] = {}
+    for route in routes:
+        source = route.source_analyzer
+        if source is not None and source not in builtin_names and route.line is not None:
+            plugin_by_site.setdefault((route.file, route.line), []).append(route)
+    superseded: set[int] = set()
+    if not plugin_by_site:
+        return superseded
+    for route in routes:
+        if route.source_analyzer not in builtin_names or route.line is None:
+            continue
+        plugins = plugin_by_site.get((route.file, route.line))
+        if plugins and any(_is_route_twin(route, plugin) for plugin in plugins):
+            superseded.add(id(route))
+    return superseded
+
+
 def initial_seen(destination: Any, rule: MergeRule) -> set:
     """Compute the `seen` set for items already on `destination.<rule.attr>`.
 
@@ -167,4 +237,4 @@ def initial_seen(destination: Any, rule: MergeRule) -> set:
     return {rule.key(item) for item in getattr(destination, rule.attr)}
 
 
-__all__ = ["MergeRule", "MERGE_SCHEMA", "merge_into", "initial_seen"]
+__all__ = ["MergeRule", "MERGE_SCHEMA", "merge_into", "initial_seen", "superseded_builtin_routes"]
