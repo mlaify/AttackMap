@@ -141,6 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Test helper packages are test code (#345): `unittest/`, `unittests/`, `unit_tests/`, `testdata/`, `testutil(s)/`, `test_utils/`, `testhelpers/` and `test_helpers/` directories join `is_test_file`'s test-directory list, so the heuristic passes skip them like `tests/`. gitea's `models/unittest/mock_http.go` (its unit-test mock HTTP server) no longer raises `path-traversal` and `ssrf` findings. `mock/` and `mocks/` stay in scope, because a real `/api/mock` route or a mock-server product can live there. `ATTACKMAP_INCLUDE_TESTS=1` still scans them.
 - aiohttp `@routes.route("PATCH", "/x")` (verb first, then path) is read as `PATCH /x` instead of the Flask-style false route `GET /PATCH` (#342). Flask's path-first `@app.route("/x", methods=[...])` is unchanged.
 - **Sequelize field allow-lists clear `mass-assignment` (#242).** `Model.update(req.body, { fields: [...] })` and `create(req.body, { fields: [...] })` were flagged as wholesale binds; the `fields` option is the allow-list, so they no longer are.
 - **No redundant `line: null` finding locations.** A file cited with a line in one evidence entry (`sink at app.py:23`) and without one in another (`import path: app.py`) produced an extra line-less location, which showed up in SARIF and changed the finding's fingerprint set. The line-less citation is now dropped whenever the same file is cited with a line anywhere in the finding.

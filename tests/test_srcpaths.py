@@ -30,6 +30,17 @@ from attackmap.srcpaths import is_test_file, is_vendored_file
         "src/UserServiceTest.java",
         "src/AuthTests.cs",
         "packages/x/fixtures/seed.py",
+        # #345: test-only package directories.
+        "models/unittest/mock_http.go",
+        "unittest/main.c",
+        "lib/tests/unittests/HttpTest.cc",
+        "Crow/tests/unit_tests/router.cpp",
+        "modules/storage/testdata/minio.json",
+        "internal/testutil/server.go",
+        "pkg/testutils/fake.go",
+        "saleor/test_utils/helpers.py",
+        "src/test_helpers/mod.rs",
+        "spec/testhelpers/auth.rb",
     ],
 )
 def test_test_paths_detected(rel: str) -> None:
@@ -46,6 +57,12 @@ def test_test_paths_detected(rel: str) -> None:
         "attestation.py",
         "manifest.json",
         "src/protest/view.py",  # 'protest' != 'test' segment
+        # #345: names that look test-ish but hold real code stay in scope.
+        "apps/web/app/api/mock/route.ts",   # a real /api/mock endpoint
+        "src/mocks/server.ts",              # a mock-server product's engine
+        "models/mock_http.go",              # filename alone isn't test-only
+        "pkg/unittesting_report/view.py",   # segment must match exactly
+        "src/testutility.go",
     ],
 )
 def test_non_test_paths_not_detected(rel: str) -> None:
@@ -197,3 +214,33 @@ def test_routes_in_test_files_excluded_from_surface(tmp_path: Path) -> None:
     paths = {r.path for r in scan.routes}
     assert "/dashboard" in paths
     assert "/only-in-test" not in paths
+
+
+def test_unittest_helper_package_raises_no_taint_findings(tmp_path: Path) -> None:
+    """gitea's models/unittest/mock_http.go (#345): a test-only mock server's
+    request handling must not produce findings, while the same code in an
+    application package still does."""
+    body = (
+        "package unittest\n\n"
+        "import (\n\t\"net/http\"\n\t\"os\"\n)\n\n"
+        "func NewMockWebServer() {\n"
+        "\thttp.HandleFunc(\"/\", func(w http.ResponseWriter, r *http.Request) {\n"
+        "\t\tdata, _ := os.ReadFile(\"testdata/\" + r.URL.Query().Get(\"f\"))\n"
+        "\t\tw.Write(data)\n"
+        "\t\tresp, _ := http.Get(r.URL.Query().Get(\"upstream\"))\n"
+        "\t\t_ = resp\n"
+        "\t})\n"
+        "}\n"
+    )
+    test_repo = tmp_path / "a"
+    (test_repo / "models" / "unittest").mkdir(parents=True)
+    (test_repo / "models" / "unittest" / "mock_http.go").write_text(body, encoding="utf-8")
+    app_repo = tmp_path / "b"
+    (app_repo / "routers" / "web").mkdir(parents=True)
+    (app_repo / "routers" / "web" / "mock_http.go").write_text(body, encoding="utf-8")
+
+    def taint_kinds(repo: Path) -> set[str]:
+        return {chain.sink_kind for chain in scan_repo(repo).taint_chains}
+
+    assert taint_kinds(test_repo) == set()
+    assert taint_kinds(app_repo) == {"dynamic_open", "ssrf"}
