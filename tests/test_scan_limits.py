@@ -68,8 +68,11 @@ def test_max_file_bytes_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 # Linearity is measured by scaling, not wall clock, so a slow runner can't
 # fail it (it flaked at 10.7-11 s against a fixed 10 s bound on macOS): 8x the
 # handlers must cost under MAX_RATIO x the small run. Linear is ~8-12x here
-# (allocation and GC add a little); a quadratic step such as #218's O(offset)
-# line numbers costs 60x+.
+# (allocation and GC add a little). This catches a quadratic step that
+# dominates the scan (a Python-level O(offset) loop per match measured 55x),
+# but not a cheap one diluted by the linear work: #218's `content.count` line
+# numbers run at C speed and only reach ~16x. The per-call tests below cover
+# `line_number` and `_enclosing` directly.
 _SMALL, _LARGE = 750, 6000
 _MAX_RATIO = 20.0
 _MIN_BASELINE = 0.05  # floor: below this the small run is mostly noise
@@ -155,3 +158,63 @@ def test_enclosing_function_is_the_innermost_one() -> None:
                 if start <= line <= end and start > best_start:
                     best, best_start = node, start
             assert flow._enclosing(line) is best, line
+
+
+
+# Per-call complexity: the same number of lookups near the end of a file 4x
+# larger must cost about the same (an O(offset) or O(functions) lookup costs
+# ~4x). Timed as best of three, with the one-off index build done first.
+_PER_CALL_MAX_RATIO = 2.0
+
+
+def _per_call_ratio(make_lookup, small: int) -> float:
+    def best(n: int) -> float:
+        lookup = make_lookup(n)
+        lookup()  # warm: build the per-file index outside the timing
+        runs = []
+        for _ in range(3):
+            start = time.perf_counter()
+            lookup()
+            runs.append(time.perf_counter() - start)
+        return max(min(runs), 1e-4)
+
+    return best(4 * small) / best(small)
+
+
+def test_line_number_lookup_does_not_scale_with_the_offset() -> None:
+    """#218: `line_number` used `content.count("\\n", 0, offset)` per match."""
+    from attackmap.srcpaths import line_number
+
+    def make_lookup(lines: int):
+        # A unique first line: `_line_starts` is cached by content, and an equal
+        # but distinct string from an earlier run would be compared in full.
+        content = f"# {time.perf_counter_ns()}\n" + "x = 1  # padding padding padding padding\n" * lines
+        offsets = [len(content) - 1 - i * 7 for i in range(3000)]
+
+        def lookup() -> None:
+            for offset in offsets:
+                line_number(content, offset)
+
+        return lookup
+
+    assert line_number("a\nb\nc", 4) == 3
+    ratio = _per_call_ratio(make_lookup, 25_000)
+    assert ratio < _PER_CALL_MAX_RATIO, ratio
+
+
+def test_enclosing_lookup_does_not_scale_with_the_function_count() -> None:
+    """Taint flow's `_enclosing` used to loop over every function per sink."""
+    from attackmap.taint_flow import _PyFlow
+
+    def make_lookup(functions: int):
+        flow = _PyFlow("".join(f"def f{i}():\n    return {i}\n" for i in range(functions)))
+        lines = [2 * functions - (i % 50) * 2 for i in range(3000)]
+
+        def lookup() -> None:
+            for line in lines:
+                flow._enclosing(line)
+
+        return lookup
+
+    ratio = _per_call_ratio(make_lookup, 2_000)
+    assert ratio < _PER_CALL_MAX_RATIO, ratio
