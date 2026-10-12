@@ -249,10 +249,23 @@ def rule_yaml(sigma: dict[str, Any], correlation: dict[str, Any] | None = None) 
 
 # ---------------------------------------------------------------- routes
 
-# In-segment parameter syntaxes: <id>, {id}, [id] / [[...path]], and `*`.
-# `:name` counts only at the start of a segment (`/v1/things:batchGet` is a
-# literal), optionally with a `(regex)` constraint and an optional-marker `?`.
-_INLINE_PARAM = re.compile(r"<[^<>/]{1,80}>|\{[^{}/]{1,80}\}|\[{1,2}[^\[\]/]{1,80}\]{1,2}|\*+")
+# In-segment parameter syntaxes: <id>, {id}, [id] / [[...path]], `*`, and
+# `:name` right after `-` or `.` (Express `/flights/:from-:to`,
+# `/plantae/:genus.:species`). Elsewhere `:name` counts only at the start of
+# a segment (`/v1/things:batchGet` is a literal), optionally with an
+# optional-marker `?`.
+_INLINE_PARAM = re.compile(
+    r"<[^<>/]{1,80}>|\{[^{}/]{1,80}\}|\[{1,2}[^\[\]/]{1,80}\]{1,2}|\*+"
+    r"|(?<=[-.]):[A-Za-z_][A-Za-z0-9_]{0,63}"
+)
+# A parameter with an inline regex: `:id(\d+)`, `{id:[0-9]{2}}`,
+# `<regex("[a-z]+"):slug>`. We can't translate those faithfully, and a
+# rule built from them would be dead, so the route gets none.
+_REGEX_PARAM = re.compile(
+    r":[A-Za-z_][A-Za-z0-9_]{0,63}\("
+    r"|\{[^{}/]{0,80}:[^{}/]{0,80}[\[\]()*+?\\|^${]"
+    r"|<[^<>/]{0,80}\("
+)
 _COLON_HEAD = re.compile(r"\A:[A-Za-z_][A-Za-z0-9_]{0,63}(?:\([^()/]{0,80}\))?(\?)?")
 _WORD = re.compile(r"[A-Za-z0-9]{2}")
 _HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
@@ -325,10 +338,14 @@ def route_scopable(path: str) -> bool:
     - parameterized routes without a literal word of at least two letters or
       digits (``/``, ``*``, ``/:id``, ``/:a.:b``, ``*.*``), whose rule would
       match nearly any request; an exact route needs one letter or digit;
+    - routes whose parameters carry an inline regex (``:id(\\d+)``,
+      ``{id:[0-9]{2}}``);
     - routes with more than ``MAX_ROUTE_PARAMS`` parameters or
       ``MAX_OPTIONAL_SEGMENTS`` optional segments.
     """
     if not path or len(path) > MAX_ROUTE_CHARS or not path.isascii() or not path.isprintable():
+        return False
+    if _REGEX_PARAM.search(path):
         return False
     segments = _parse(path)
     literal = "".join(part for seg in segments for part in seg.parts if not _is_marker(part))
