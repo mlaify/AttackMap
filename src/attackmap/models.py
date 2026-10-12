@@ -35,6 +35,9 @@ DependencyEcosystem = Literal[
     "vcpkg",
     "gem",
     "cocoapods",
+    # Carthage pins git repositories (`github "owner/repo" "1.2.3"`); CVE-matched
+    # like SwiftPM, by source URL (#188).
+    "carthage",
     "hex",
     "pub",
 ]
@@ -329,6 +332,45 @@ class WebHardeningIssue(_RedactedEvidence):
         "weak_csp",
         "debug_enabled",
     ]
+    file: str
+    line: int | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
+# Kinds of `AppSurfaceIssue` (#188, #190). Prefixed by platform so their
+# rule ids (`apple-...`) never collide with a core detector family.
+AppSurfaceIssueKind = Literal[
+    "apple_ats_insecure_loads",
+    "apple_custom_url_scheme",
+    "apple_webview_js_injection",
+    "apple_insecure_secret_storage",
+    "apple_pasteboard_secret",
+    "apple_hardened_runtime_exception",
+    "apple_debuggable_entitlement",
+    "apple_xpc_unvalidated_peer",
+    "apple_dynamic_dispatch",
+]
+APP_SURFACE_ISSUE_KINDS: tuple[str, ...] = get_args(AppSurfaceIssueKind)
+
+
+class AppSurfaceIssue(_RedactedEvidence):
+    """A mobile/desktop app attack-surface issue emitted by a platform plugin
+    (#188, #190): the Apple analyzers (Swift, Objective-C) report App Transport
+    Security exceptions, custom URL-scheme handlers, weakening entitlements,
+    WKWebView script built from strings, secrets in UserDefaults or on the
+    pasteboard, unvalidated XPC peers, and classes, selectors or libraries
+    resolved from runtime strings. Native format-string and command-exec
+    constructs are `CodeWeakness` kinds shared with the C/C++ plugins.
+
+    Core owns the findings: one aggregated finding per kind (rule id = the
+    kind, dashed), at the most severe instance's severity. Like the other
+    issue families, every instance is a positively-present construct, never
+    an absence.
+    """
+
+    kind: AppSurfaceIssueKind
     file: str
     line: int | None = None
     evidence_text: str | None = None
@@ -917,6 +959,8 @@ class ScanResult(BaseModel):
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
     supply_chain_issues: list[SupplyChainIssue] = Field(default_factory=list)
+    # Plugin-emitted app attack surface (#188, #190).
+    app_surface_issues: list[AppSurfaceIssue] = Field(default_factory=list)
     secret_history: list[SecretHistoryHit] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
     # What the scan deliberately did not analyze (e.g. symlinks that point out

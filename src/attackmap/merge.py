@@ -124,6 +124,10 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         lambda item: (item.kind, item.file, item.line, item.package),
     ),
     MergeRule(
+        "app_surface_issues",
+        lambda item: (item.kind, item.file, item.line),
+    ),
+    MergeRule(
         "secret_history",
         lambda item: (item.kind, item.file, item.name, item.introduced_in),
     ),

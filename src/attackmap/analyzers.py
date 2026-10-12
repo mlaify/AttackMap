@@ -405,6 +405,13 @@ def get_builtin_repository_analyzers() -> list[Analyzer]:
 
 # Official plugins by package name, pinned to immutable commits (#237).
 _OFFICIAL_BY_PACKAGE = {entry["package"]: entry for entry in OFFICIAL_PLUGINS}
+# ...and by each analyzer entry point a package registers (#190): one package
+# may ship several analyzers (attackmap-analyzer-swift registers `swift` and
+# `objc`), so `-m objc` must resolve to the swift package. Underscored entry
+# point names (`java_spring`) also match their hyphenated analyzer names.
+_OFFICIAL_BY_ENTRY_POINT = {
+    ep.replace("_", "-"): entry for entry in OFFICIAL_PLUGINS for ep in entry.get("entry_points", ())
+}
 TRUSTED_ONLY_ENV = "ATTACKMAP_TRUSTED_ANALYZERS_ONLY"
 ALLOW_SYSTEM_INSTALL_ENV = "ATTACKMAP_ALLOW_SYSTEM_INSTALL"
 
@@ -418,8 +425,13 @@ class MissingAnalyzersError(ValueError):
 
 
 def official_plugin(name: str) -> dict | None:
-    """The lock entry for an official analyzer (by analyzer, package or repo name)."""
-    return _OFFICIAL_BY_PACKAGE.get(_normalize_repo_name(name))
+    """The lock entry for an official analyzer (by analyzer, package or repo
+    name, or by any analyzer entry point the package registers)."""
+    package = _normalize_repo_name(name)
+    entry = _OFFICIAL_BY_PACKAGE.get(package)
+    if entry is None:
+        entry = _OFFICIAL_BY_ENTRY_POINT.get(package.removeprefix("attackmap-analyzer-").replace("_", "-"))
+    return entry
 
 
 def trusted_analyzers_only() -> bool:
@@ -560,9 +572,15 @@ def select_requested_analyzers(
 
     if missing_names and auto_install:
         install_fn = installer if installer is not None else install_analyzer_module
+        installed_packages: set[str] = set()
         for missing_name in missing_names:
+            # One package can provide several requested analyzers (#190).
+            package = official_plugin(missing_name)["package"]  # type: ignore[index]
+            if package in installed_packages:
+                continue
+            installed_packages.add(package)
             try:
-                install_fn(_derive_repo_name(missing_name))
+                install_fn(package)
             except Exception as exc:
                 raise ValueError(f"Failed to install analyzer module '{missing_name}': {exc}") from exc
         resolved = _match_requested_analyzers(requested_names)
@@ -641,10 +659,6 @@ def _normalize_repo_name(repo_name: str) -> str:
     if normalized.startswith("attackmap-analyzer-"):
         return normalized
     return f"attackmap-analyzer-{normalized}"
-
-
-def _derive_repo_name(analyzer_name: str) -> str:
-    return _normalize_repo_name(analyzer_name)
 
 
 def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
