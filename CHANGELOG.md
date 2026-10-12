@@ -153,6 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- aiohttp `@routes.route("PATCH", "/x")` (verb first, then path) is read as `PATCH /x` instead of the Flask-style false route `GET /PATCH` (#342). Flask's path-first `@app.route("/x", methods=[...])` is unchanged.
 - **Sequelize field allow-lists clear `mass-assignment` (#242).** `Model.update(req.body, { fields: [...] })` and `create(req.body, { fields: [...] })` were flagged as wholesale binds; the `fields` option is the allow-list, so they no longer are.
 - **No redundant `line: null` finding locations.** A file cited with a line in one evidence entry (`sink at app.py:23`) and without one in another (`import path: app.py`) produced an extra line-less location, which showed up in SARIF and changed the finding's fingerprint set. The line-less citation is now dropped whenever the same file is cited with a line anywhere in the finding.
 - **Workflow findings point at the right step.** Line numbers came from the first matching line in the file, so identical steps in different jobs (two `uses: actions/checkout@v4`) all pointed at the first job. Lines are now looked up within the current job's and step's span, found from the YAML text. Flow-style YAML falls back to the old file-wide search.
