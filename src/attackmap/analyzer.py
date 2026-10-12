@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 import networkx as nx
@@ -14,6 +15,23 @@ from .webhook_verification import assess_webhook_surfaces
 # handler; smaller than the distance between two adjacent routes. See #41
 # / Bluesky FINDINGS §55 for the noise problem this fixes.
 _ROUTE_AUTH_LINE_WINDOW = 40
+
+# An authentication path segment (#340): the term starts the segment and is
+# followed by the end of the segment, a non-letter (`login-form`, `oauth2`,
+# `auth_callback`, `authCallback`) or one of its own word forms
+# (`authenticate`, `authorize`, `sessions`, `tokens`). A substring match made
+# `/api/authorities` and `/authors` auth routes.
+_AUTH_SEGMENT = re.compile(
+    r"\A(?i:login|signin|signup|auth|session|token|oauth)"
+    r"(?i:s|enticate|entication|orize|orization)?"
+    r"(?![a-z])"
+)
+
+
+def is_auth_path(path: str) -> bool:
+    """Whether a route path has an authentication segment (see `_AUTH_SEGMENT`)."""
+    return any(_AUTH_SEGMENT.match(segment) for segment in path.split("/")[1:] if segment)
+
 
 
 def _auth_hints_for_route(
@@ -107,7 +125,7 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
             category = "admin"
             risk = "high"
             rationale.append("Administrative routes are high-value targets because they expose privileged actions.")
-        elif any(segment in path_lower for segment in ("/login", "/signin", "/signup", "/auth", "/session", "/token", "/oauth")):
+        elif is_auth_path(route.path):
             category = "auth"
             risk = "high" if not auth_signals else "medium"
             rationale.append("Authentication endpoints are common targets for brute force, token abuse, and session attacks.")
