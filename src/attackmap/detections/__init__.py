@@ -225,6 +225,26 @@ def _correlation(template_id: str, rule_id: str, key: str, base: dict, spec: dic
     return rule
 
 
+# ---------------------------------------------------------------- export
+
+_FILE_SLUG = re.compile(r"[^a-z0-9]+")
+# Names `rule_filename` produces; only these are ever removed as stale.
+RULE_FILE = re.compile(r"\A[a-z0-9-]{1,100}-[0-9a-f]{8}\.yml\Z")
+
+
+def rule_filename(opportunity_id: str, sigma_id: str) -> str:
+    """``<slug of the opportunity id>-<first 8 hex of the Sigma id>.yml``."""
+    slug = _FILE_SLUG.sub("-", opportunity_id.lower().removeprefix("detect:")).strip("-")[:90].strip("-")
+    return f"{slug or 'rule'}-{sigma_id.replace('-', '')[:8]}.yml"
+
+
+def rule_yaml(sigma: dict[str, Any], correlation: dict[str, Any] | None = None) -> str:
+    """The rule as a Sigma YAML file: the detection rule, then its
+    correlation rule (if any) as a second document."""
+    docs = [sigma] + ([correlation] if correlation else [])
+    return "---\n".join(yaml.safe_dump(d, sort_keys=False, allow_unicode=True, width=120) for d in docs)
+
+
 # ---------------------------------------------------------------- routes
 
 # In-segment parameter syntaxes: <id>, {id}, [id] / [[...path]], and `*`.
@@ -405,6 +425,7 @@ def sigma_method(method: str | None) -> str | None:
 
 
 __all__ = [
+    "RULE_FILE",
     "RenderedRule",
     "TemplateError",
     "has_path_params",
@@ -414,8 +435,10 @@ __all__ = [
     "route_glob",
     "route_scopable",
     "route_selector",
+    "rule_filename",
     "stem_selector",
     "rule_uuid",
+    "rule_yaml",
     "sigma_method",
     "taxonomy_references",
     "taxonomy_tags",

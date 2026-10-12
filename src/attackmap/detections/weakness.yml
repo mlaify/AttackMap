@@ -1,0 +1,57 @@
+# Application-wide request rules for code weaknesses that have no route
+# (#251, part 2). One rule per rule id: the weakness sits in a library call,
+# so any request carrying the class's payload markers is a probe for it.
+# Markers follow the same conventions as injection.yml (raw and
+# URL-encoded, no `*`, `?` or `\`).
+
+templates:
+  weakness-request-markers:
+    date: "2026-10-12"
+    title: "${label} probe in a request query string"
+    description: >-
+      Requests whose query string carries ${label} syntax. AttackMap found
+      ${kind_label} at ${location} (rule ${rule_id}); probes for it show up as
+      these markers. Query strings only: payloads in JSON bodies need a WAF or
+      application log mapped to cs-uri-query.
+    logsource:
+      category: webserver
+    fields_required: [cs-method, cs-uri-stem, cs-uri-query, sc-status, c-ip]
+    detection:
+      selection:
+        cs-uri-query|contains: "${markers}"
+      condition: selection
+    falsepositives: "${falsepositives}"
+    level: "${level}"
+    test_events:
+      positive:
+        - cs-method: GET
+          cs-uri-stem: /api/items
+          cs-uri-query: "${sample}"
+          sc-status: 200
+      negative:
+        - cs-method: GET
+          cs-uri-stem: /api/items
+          cs-uri-query: "${benign}"
+          sc-status: 200
+
+data:
+  markers:
+    prototype-pollution:
+      label: Prototype pollution
+      kind_label: a request object merged into a target without key filtering
+      level: medium
+      contains: ["__proto__", "%5F%5Fproto%5F%5F", "__proto%5F%5F", "constructor[prototype]", "constructor%5Bprototype%5D", "constructor.prototype"]
+      sample: "filter%5B__proto__%5D%5Badmin%5D=true"
+      benign: "filter%5Bstatus%5D=open"
+      falsepositives:
+        - Security scanners and penetration tests you run yourself
+    graphql-exposure:
+      label: GraphQL introspection
+      kind_label: GraphQL introspection or a GraphiQL/playground enabled in production
+      level: low
+      contains: ["__schema", "%5F%5Fschema", "__type", "%5F%5Ftype", "IntrospectionQuery"]
+      sample: "query=%7B__schema%7Btypes%7Bname%7D%7D%7D"
+      benign: "query=%7Bproducts%7Bname%7D%7D"
+      falsepositives:
+        - Your own developer tooling (GraphiQL, codegen) run against production; exclude its source IPs
+        - Introspection sent as POST bodies is not visible in access logs
