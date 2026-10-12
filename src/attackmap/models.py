@@ -35,6 +35,9 @@ DependencyEcosystem = Literal[
     "vcpkg",
     "gem",
     "cocoapods",
+    # Carthage pins git repositories (`github "owner/repo" "1.2.3"`); CVE-matched
+    # like SwiftPM, by source URL (#188).
+    "carthage",
     "hex",
     "pub",
 ]
@@ -333,6 +336,53 @@ class WebHardeningIssue(_RedactedEvidence):
     line: int | None = None
     evidence_text: str | None = None
     severity: Literal["low", "medium", "high"] = "medium"
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
+# Kinds of `AppSurfaceIssue` (#188, #190). Prefixed by platform so their
+# rule ids (`apple-...`) never collide with a core detector family.
+AppSurfaceIssueKind = Literal[
+    "apple_ats_insecure_loads",
+    "apple_custom_url_scheme",
+    "apple_webview_js_injection",
+    "apple_insecure_secret_storage",
+    "apple_pasteboard_secret",
+    "apple_hardened_runtime_exception",
+    "apple_debuggable_entitlement",
+    "apple_xpc_unvalidated_peer",
+    "apple_dynamic_dispatch",
+]
+APP_SURFACE_ISSUE_KINDS: tuple[str, ...] = get_args(AppSurfaceIssueKind)
+
+
+class AppSurfaceIssue(_RedactedEvidence):
+    """A mobile/desktop app attack-surface issue emitted by a platform plugin
+    (#188, #190): the Apple analyzers (Swift, Objective-C) report App Transport
+    Security exceptions, custom URL-scheme handlers, weakening entitlements,
+    WKWebView script built from strings, secrets in UserDefaults or on the
+    pasteboard, unvalidated XPC peers, and classes, selectors or libraries
+    resolved from runtime strings. Native format-string and command-exec
+    constructs are `CodeWeakness` kinds shared with the C/C++ plugins.
+
+    Core owns the findings: one aggregated finding per kind (rule id = the
+    kind, dashed), at the most severe instance's severity. Like the other
+    issue families, every instance is a positively-present construct, never
+    an absence.
+
+    ``kind`` is one of ``APP_SURFACE_ISSUE_KINDS`` but typed ``str``, so a
+    plugin built against a newer core still validates: core drops records
+    with a kind it doesn't know (noted under ``analyzer_errors``) and keeps
+    the rest of the plugin's result.
+    """
+
+    kind: str = Field(min_length=1, max_length=64)
+    file: str
+    line: int | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    # How sure the emitter is (0-1). On a duplicate report of the same
+    # instance the merge keeps the more severe, then the more confident one.
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
@@ -917,6 +967,8 @@ class ScanResult(BaseModel):
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
     supply_chain_issues: list[SupplyChainIssue] = Field(default_factory=list)
+    # Plugin-emitted app attack surface (#188, #190).
+    app_surface_issues: list[AppSurfaceIssue] = Field(default_factory=list)
     secret_history: list[SecretHistoryHit] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
     # What the scan deliberately did not analyze (e.g. symlinks that point out

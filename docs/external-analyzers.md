@@ -221,6 +221,7 @@ Emit third-party dependencies as `DependencyHint`s in `result.dependencies`.
 | `gem` / `hex` / `pub` | RubyGems / Hex / Pub | package name |
 | `conan` / `vcpkg` | ConanCenter / vcpkg | recipe / port name |
 | `swiftpm` | SwiftURL | package identity; put the source **repository URL** in `evidence_text` (OSV keys Swift packages by URL) |
+| `carthage` | SwiftURL | `owner/repo` or the pinned URL; put the source **repository URL** in `evidence_text`, as for `swiftpm` |
 | `cocoapods` | — | inventory only: no OSV database, reported as not CVE-checked |
 
 Set `resolved=True` when `version` is an exact pin (lockfile), and
@@ -229,6 +230,37 @@ Set `resolved=True` when `version` is an exact pin (lockfile), and
 and `composer.json` manifests, and the `package-lock.json`, `pnpm-lock.yaml`,
 `poetry.lock`, `uv.lock`, `Cargo.lock`, `composer.lock`, `packages.lock.json`
 and `gradle.lockfile` lockfiles. Don't re-emit them.
+
+## App attack surface (mobile/desktop apps)
+
+App-side issues that aren't HTTP routes or taint sinks go in
+`result.app_surface_issues` as `attackmap.sdk.AppSurfaceIssue` items (#188,
+#190). `kind` must be one of `attackmap.sdk.APP_SURFACE_ISSUE_KINDS`, and
+`severity` is set per instance:
+
+| `kind` | Rule id | What it means |
+|---|---|---|
+| `apple_ats_insecure_loads` | `apple-ats-insecure-loads` | App Transport Security allows cleartext HTTP (global: medium, one domain: low) |
+| `apple_custom_url_scheme` | `apple-custom-url-scheme` | A custom URL scheme is declared and handled |
+| `apple_webview_js_injection` | `apple-webview-js-injection` | WKWebView JavaScript built by interpolating values |
+| `apple_insecure_secret_storage` | `apple-insecure-secret-storage` | A secret is written to UserDefaults |
+| `apple_pasteboard_secret` | `apple-pasteboard-secret` | A secret is copied to the general pasteboard |
+| `apple_hardened_runtime_exception` | `apple-hardened-runtime-exception` | Entitlements disable library validation, allow DYLD variables or unsigned executable memory |
+| `apple_debuggable_entitlement` | `apple-debuggable-entitlement` | `get-task-allow` in committed entitlements |
+| `apple_xpc_unvalidated_peer` | `apple-xpc-unvalidated-peer` | An XPC listener accepts every connection without checking the peer |
+| `apple_dynamic_dispatch` | `apple-dynamic-dispatch` | A class, selector or library resolved from a string built at runtime |
+
+Core turns each kind into one aggregated finding with CWE/OWASP taxonomy. A record with a kind this core doesn't know is dropped (and noted under `analyzer_errors`); the rest of your result is kept. Records merge by `(kind, file, line, evidence_text)`, and a duplicate keeps the more severe, then more confident (`confidence`, 0-1), report. Put
+the entry points themselves (URL schemes, universal links, XPC services) in
+`entrypoint_hints` too, so they show up in the surface inventory. Report only
+constructs that are present in the code or config, never absences.
+
+## One package, several analyzers
+
+A package may register more than one analyzer in the `attackmap.analyzers`
+group (`attackmap-analyzer-swift` registers `swift` and `objc`). Each is
+listed, selected (`-m objc`) and ordered on its own. For an official package,
+`-m <entry point>` installs the package that provides it.
 
 ## Contributing taint sinks
 
@@ -286,7 +318,7 @@ pushing to GitHub:
 3. Document the install line in your README:
    `pip install git+https://github.com/<you>/<repo>.git`.
 
-## Reference: the 14 official analyzers
+## Reference: the official analyzers
 
 Each of these lives in its own repo under [`mlaify/`](https://github.com/orgs/mlaify/repositories?q=attackmap-analyzer)
 and installs from git. Source-read any of them for a real, working analyzer.
@@ -302,6 +334,7 @@ and installs from git. Source-read any of them for a real, working analyzer.
 | [`attackmap-analyzer-iac`](https://github.com/mlaify/attackmap-analyzer-iac) | Dockerfile, docker-compose, GitHub Actions, `.env` templates, shell installers |
 | [`attackmap-analyzer-c`](https://github.com/mlaify/attackmap-analyzer-c) | libmicrohttpd, civetweb, mongoose; libcurl; OpenSSL/libsodium |
 | [`attackmap-analyzer-cpp`](https://github.com/mlaify/attackmap-analyzer-cpp) | Crow, Pistache, Drogon, cpprestsdk; libcurl/cpr; libpqxx/mongocxx |
+| [`attackmap-analyzer-swift`](https://github.com/mlaify/attackmap-analyzer-swift) | SwiftPM; Vapor, Hummingbird; iOS/macOS app surface (Info.plist, entitlements); Objective-C (`objc`) |
 | [`attackmap-analyzer-node-service`](https://github.com/mlaify/attackmap-analyzer-node-service) | Node.js / TypeScript service ecosystems |
 | [`attackmap-analyzer-atproto`](https://github.com/mlaify/attackmap-analyzer-atproto) | AT Protocol (Bluesky) services |
 | [`attackmap-analyzer-php-web`](https://github.com/mlaify/attackmap-analyzer-php-web) | Generic PHP web |

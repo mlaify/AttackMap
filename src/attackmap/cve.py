@@ -76,6 +76,9 @@ _OSV_ECOSYSTEM: dict[str, str] = {
     # OSV keys SwiftPM packages by source repository (`github.com/apple/swift-nio`),
     # so the query name is the normalized repo URL, not the package identity.
     "swiftpm": "SwiftURL",
+    # Carthage pins git repositories, so a pinned repo is looked up under the
+    # same SwiftURL name as when SwiftPM fetches it (#188).
+    "carthage": "SwiftURL",
 }
 # Ecosystems with no OSV.dev database: inventoried in the SBOM but never
 # CVE-matched. Reported as such so an empty result isn't read as "no vulns".
@@ -305,11 +308,14 @@ def normalize_swift_url(url: str) -> str | None:
     return f"{host.lower()}/{path}"
 
 
+_SWIFT_URL_ECOSYSTEMS = frozenset({"swiftpm", "carthage"})
+
+
 def osv_package_name(dep: DependencyHint) -> str | None:
-    """The package name OSV indexes ``dep`` under. For SwiftPM that is the
-    source repository URL, which the Swift analyzer records in
+    """The package name OSV indexes ``dep`` under. For SwiftPM and Carthage
+    that is the source repository URL, which the Swift analyzer records in
     ``evidence_text`` (falling back to ``name`` if it already is a URL)."""
-    if dep.ecosystem != "swiftpm":
+    if dep.ecosystem not in _SWIFT_URL_ECOSYSTEMS:
         return dep.name
     for candidate in (dep.evidence_text or "", dep.name):
         normalized = normalize_swift_url(candidate)

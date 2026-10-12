@@ -168,6 +168,7 @@ ROLE_MARKERS = re.compile(
     | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
     | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
+    | \bRolePolicy\s*\( | \bPermissionPolicy\s*\(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
