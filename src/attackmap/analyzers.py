@@ -744,6 +744,12 @@ def analyze_repository(
             if progress is not None:
                 progress.stage(f"Analyzer {analyzer.name} failed ({error.error_type}); continuing")
             continue
+        unknown = _drop_unknown_cloud_kinds(result, analyzer.name)
+        if unknown is not None:
+            if strict:
+                raise ValueError(unknown.message)
+            errors.append(unknown)
+            logger.warning("Analyzer %r: %s", analyzer.name, unknown.message)
         _stamp_provenance(result, analyzer.name)
         results.append(result)
     merged = merge_analyzer_results(results, root=repo_root) if results else AnalyzerResult(root=str(repo_root))
@@ -793,6 +799,26 @@ def _call_analyze(
     except (TypeError, ValueError):
         pass
     return analyzer.analyze(root, **kwargs)  # type: ignore[call-arg]
+
+
+def _drop_unknown_cloud_kinds(result: AnalyzerResult, analyzer_name: str) -> AnalyzerError | None:
+    """Drop `CloudMisconfig` records whose kind this core doesn't know (a
+    plugin built for a newer core). The rest of the result is kept; the
+    drop is reported as an `analyzer_errors` note."""
+    unknown = [m for m in result.cloud_misconfigs if not m.known_kind]
+    if not unknown:
+        return None
+    result.cloud_misconfigs = [m for m in result.cloud_misconfigs if m.known_kind]
+    kinds = sorted({m.kind for m in unknown})
+    message = (
+        f"dropped {len(unknown)} cloud_misconfigs record(s) with kind(s) this AttackMap doesn't know: "
+        f"{', '.join(kinds[:5])}{' …' if len(kinds) > 5 else ''} (upgrade attackmap to report them)"
+    )
+    return AnalyzerError(
+        analyzer=analyzer_name,
+        error_type="UnknownCloudMisconfigKind",
+        message=redact_text(message)[:_ANALYZER_ERROR_MAX_CHARS],
+    )
 
 
 def _stamp_provenance(result: AnalyzerResult, analyzer_name: str) -> None:

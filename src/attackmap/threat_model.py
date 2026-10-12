@@ -1426,102 +1426,130 @@ _SUPPLY_CHAIN_FINDING_SPEC: dict[str, dict[str, str]] = {
 
 # Cloud / IaC / container-runtime misconfigurations (terraform#4, iac#1),
 # reported by IaC plugins as `CloudMisconfig` records. Severity comes from the
-# records (plugins tier per instance: a docker.sock mount outranks /var/log);
-# CWE/OWASP/ATT&CK ids live in the taxonomy registry.
+# records (plugins tier per instance: a docker.sock mount outranks /var/log),
+# and core emits one finding per (kind, severity) so each instance keeps its
+# own severity in SARIF, the diff gate and the report. `tier` is the kind's
+# usual severity: its finding keeps the plain title; other tiers get a
+# "(<severity>-severity instances)" suffix, so titles (and finding ids)
+# depend only on the tier. CWE/OWASP/ATT&CK ids live in `taxonomy.py`.
 _CLOUD_MISCONFIG_FINDING_SPEC: dict[str, dict[str, str]] = {
     "iac_module_unpinned": {
+        "tier": "medium",
         "title": "Infrastructure module is sourced from a mutable reference",
         "mitigation": "Pin git module sources to a commit SHA or release tag (`?ref=v1.2.3`), and give every registry module an exact `version`. A branch or an unpinned source lets whoever controls it change what `terraform apply` builds.",
     },
     "public_network_access": {
+        "tier": "medium",
         "title": "Cloud resource is reachable from the public internet",
         "mitigation": "Turn off public network access (`public_network_access_enabled = false`, no public IP, `publicly_accessible = false`) and reach the resource through private endpoints, a VPN or a bastion.",
     },
     "public_cluster_endpoint": {
+        "tier": "medium",
         "title": "Kubernetes API endpoint is open to the internet",
         "mitigation": "Disable the public endpoint (`endpoint_public_access = false`) or restrict it with `public_access_cidrs` to the networks that administer the cluster.",
     },
     "plaintext_listener": {
+        "tier": "medium",
         "title": "Load balancer serves plain HTTP without redirecting to HTTPS",
         "mitigation": "Make the HTTP listener's default action a 301 redirect to HTTPS, and serve traffic only on an HTTPS/TLS listener with a current TLS policy.",
     },
     "api_no_authorizer": {
+        "tier": "medium",
         "title": "API Gateway route accepts unauthenticated requests",
         "mitigation": "Attach an authorizer (IAM, Cognito, JWT or a Lambda authorizer) to every route that isn't meant to be public. API Gateway's default authorization is NONE, so a route without one is open to the internet.",
     },
     "unencrypted_storage": {
+        "tier": "medium",
         "title": "Data store is not encrypted at rest",
         "mitigation": "Enable encryption at rest (`storage_encrypted = true`, ideally with a customer-managed KMS key). Existing unencrypted instances need a snapshot-and-restore to an encrypted copy.",
     },
     "public_data_access": {
+        "tier": "high",
         "title": "Storage or search data is readable by anyone",
         "mitigation": "Remove public grants (`allUsers`, `Principal \"*\"` without a condition, public ACLs), keep the account-level public-access block on, and share data through signed URLs or scoped principals instead.",
     },
     "public_invoker": {
+        "tier": "low",
         "title": "Serverless function or service can be invoked by anyone",
         "mitigation": "If the function isn't meant to be public, require authentication on its endpoint: bind the invoker role to specific service accounts or groups instead of `allUsers` / `allAuthenticatedUsers` (Cloud Run, Cloud Functions), or use `authorization_type = \"AWS_IAM\"` on a Lambda function URL.",
     },
     "privileged_container": {
+        "tier": "high",
         "title": "Container runs privileged (equivalent to root on the host)",
         "mitigation": "Remove `privileged: true`. Grant the one capability the workload needs (`capabilities.add`) instead, and enforce the Pod Security `restricted` (or at least `baseline`) profile on the namespace.",
     },
     "privilege_escalation_allowed": {
+        "tier": "medium",
         "title": "Container allows privilege escalation",
         "mitigation": "Set `allowPrivilegeEscalation: false` in every container's securityContext so setuid binaries and file capabilities can't raise the process's privileges.",
     },
     "container_runs_as_root": {
+        "tier": "medium",
         "title": "Container runs as root",
         "mitigation": "Add a non-root `USER` to the image's final stage, and set `runAsNonRoot: true` with a non-zero `runAsUser` in the pod securityContext.",
     },
     "missing_security_context": {
+        "tier": "low",
         "title": "Workload has no restrictive security context",
         "mitigation": "Give each pod a securityContext with `runAsNonRoot: true`, and each container `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true` and `capabilities: {drop: [ALL]}`.",
     },
     "host_path_mount": {
+        "tier": "high",
         "title": "Workload mounts a sensitive host path",
         "mitigation": "Replace hostPath volumes with emptyDir, a PVC, a ConfigMap or a CSI driver. Never mount the container runtime socket or the host root; if a node agent truly needs a host path, mount the narrowest path read-only.",
     },
     "host_namespace_shared": {
+        "tier": "high",
         "title": "Workload shares the host's network, PID or IPC namespace",
         "mitigation": "Remove `hostNetwork`, `hostPID` and `hostIPC` (compose: `network_mode: host`, `pid: host`, `ipc: host`). Publish ports through a Service or port mapping instead.",
     },
     "dangerous_capability": {
+        "tier": "high",
         "title": "Container is granted a dangerous Linux capability",
         "mitigation": "Drop `ALL` capabilities and add back only what the workload needs. `SYS_ADMIN`, `SYS_PTRACE`, `SYS_MODULE`, `NET_ADMIN` and `ALL` let a compromised process break out of the container or take over the node's network.",
     },
     "security_profile_disabled": {
+        "tier": "medium",
         "title": "Container seccomp or AppArmor confinement is disabled",
         "mitigation": "Use the runtime's default seccomp profile (`seccompProfile: RuntimeDefault`) and AppArmor profile instead of `unconfined`.",
     },
     "exposed_service": {
+        "tier": "low",
         "title": "Kubernetes Service is exposed outside the cluster without source ranges",
         "mitigation": "Use a ClusterIP Service behind an authenticated Ingress, mark the load balancer internal, or restrict it with `loadBalancerSourceRanges`.",
     },
     "unpinned_container_image": {
+        "tier": "low",
         "title": "Container image uses a mutable tag (`latest` or none)",
         "mitigation": "Pin images to a version tag, ideally with its digest (`image:1.2.3@sha256:…`), so a pushed tag can't change what runs.",
     },
     "dockerfile_remote_add": {
+        "tier": "medium",
         "title": "Dockerfile ADD downloads a remote file without a checksum",
         "mitigation": "Download with a pinned version and verify a checksum or signature (`ADD --checksum=sha256:…`, or `curl` plus `sha256sum -c` in a RUN step) before using the file.",
     },
     "dockerfile_curl_pipe_shell": {
+        "tier": "medium",
         "title": "Image build pipes a downloaded script into a shell",
         "mitigation": "Download the script to a file, verify its checksum or signature, then run it, or install the tool from a package manager with signature checks.",
     },
     "rbac_wildcard": {
+        "tier": "high",
         "title": "RBAC role grants wildcard verbs or resources",
         "mitigation": "List the exact resources and verbs the subject needs. A `*` verb or resource also grants every resource type added later, including Secrets and RBAC objects.",
     },
     "rbac_escalation": {
+        "tier": "high",
         "title": "RBAC role can escalate privileges (escalate, bind, impersonate or pods/exec)",
         "mitigation": "Remove `escalate`, `bind` and `impersonate` from roles that don't administer RBAC, and grant `pods/exec` / `pods/attach` only to operators who need a shell in the pod.",
     },
     "rbac_secret_access": {
+        "tier": "medium",
         "title": "RBAC role can read Kubernetes Secrets",
         "mitigation": "Scope Secret access to a namespaced Role with `resourceNames` for the specific Secrets the workload uses, and avoid `list`/`watch` (which return every Secret's contents).",
     },
     "cluster_admin_binding": {
+        "tier": "high",
         "title": "Binding grants cluster-admin or binds a broad built-in group",
         "mitigation": "Bind `cluster-admin` only to named human administrators, never to service accounts or to `system:authenticated` / `system:unauthenticated` / `system:anonymous`. Give workloads a dedicated Role with the permissions they need.",
     },
@@ -1570,6 +1598,19 @@ def _numeric_to_confidence(value: float) -> str:
     if value >= 0.55:
         return "medium"
     return "low"
+
+
+def _cloud_locs(items: list[CloudMisconfig]) -> list[FindingLocation]:
+    """One location per instance. Unlike `_locs`, two resources at the same
+    (file, line) — or both without a line — stay two locations."""
+    out: list[FindingLocation] = []
+    seen: set[tuple] = set()
+    for item in items:
+        key = (item.file, item.line, item.resource, item.evidence_text)
+        if key not in seen:
+            seen.add(key)
+            out.append(FindingLocation(file=item.file, line=item.line))
+    return out
 
 
 def _cloud_misconfig_evidence(issue: CloudMisconfig) -> str:
@@ -2404,31 +2445,33 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         )
 
     # Cloud / IaC / container misconfigurations (terraform#4, iac#1). One
-    # aggregated finding per kind; severity and confidence are the max over
-    # its records, and the evidence lists the worst instances first.
+    # finding per (kind, severity tier); confidence is the max over that
+    # tier's records, and evidence lists the most confident first.
     cloud_by_kind: dict[str, list] = {}
     for issue in scan.cloud_misconfigs:
         cloud_by_kind.setdefault(issue.kind, []).append(issue)
     for kind, spec in _CLOUD_MISCONFIG_FINDING_SPEC.items():
-        items = cloud_by_kind.get(kind)
-        if not items:
-            continue
-        items = sorted(items, key=lambda i: (-_SEVERITY_ORDER[i.severity], -i.confidence))
-        evidence = [_cloud_misconfig_evidence(i) for i in items[:10]]
-        if len(items) > 10:
-            evidence.append(f"+{len(items) - 10} more occurrence(s)")
-        findings.append(
-            Finding(
-                title=spec["title"],
-                rule_id=_rule_slug_kind(kind),
-                severity=items[0].severity,
-                evidence=evidence,
-                locations=_locs(items),
-                mitigation=spec["mitigation"],
-                confidence=_numeric_to_confidence(max(i.confidence for i in items)),  # type: ignore[arg-type]
-                tags=["cloud-misconfig", *_cwe_tags(kind)],
+        for tier in ("high", "medium", "low"):
+            items = [i for i in cloud_by_kind.get(kind, ()) if i.severity == tier]
+            if not items:
+                continue
+            items.sort(key=lambda i: -i.confidence)
+            evidence = [_cloud_misconfig_evidence(i) for i in items[:10]]
+            if len(items) > 10:
+                evidence.append(f"+{len(items) - 10} more occurrence(s)")
+            title = spec["title"] if tier == spec["tier"] else f"{spec['title']} ({tier}-severity instances)"
+            findings.append(
+                Finding(
+                    title=title,
+                    rule_id=_rule_slug_kind(kind),
+                    severity=tier,  # type: ignore[arg-type]
+                    evidence=evidence,
+                    locations=_cloud_locs(items),
+                    mitigation=spec["mitigation"],
+                    confidence=_numeric_to_confidence(items[0].confidence),  # type: ignore[arg-type]
+                    tags=["cloud-misconfig", *_cwe_tags(kind)],
+                )
             )
-        )
 
     # Anomaly / outlier findings (#78). One aggregated finding per kind,
     # each evidence line naming the peer group and the deviation. The

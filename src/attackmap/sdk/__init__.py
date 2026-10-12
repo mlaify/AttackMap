@@ -99,8 +99,9 @@ misconfigurations as :class:`CloudMisconfig` records in
 treats as recon (an ``AuthHint`` next to a route even counts as an auth
 signal). ``kind`` is one of :data:`CLOUD_MISCONFIG_KINDS`; each kind is a core
 rule id (``privileged_container`` → ``privileged-container``) with CWE/OWASP
-ids, and core emits one finding per kind with the max severity of its
-records::
+ids. Core emits one finding per (kind, severity): instances keep their own
+severity in SARIF and in the ``--fail-on-new-high`` gate, and a kind's usual
+severity keeps the plain title (other tiers add "(low-severity instances)")::
 
     CloudMisconfig(
         kind="host_path_mount", file="k8s/agent.yaml", line=31,
@@ -114,8 +115,21 @@ Set ``severity`` per instance (a ``docker.sock`` mount is worse than
 ``/var/log``), lower ``confidence`` for settings you inferred from a default
 rather than read, and put ``for_each``/``count`` or module provenance in
 ``context``. Report literal values only: a templated value
-(``{{ .Values.x }}``, ``var.x``) is not a misconfiguration you can see. A new
-kind needs a core release (finding spec + taxonomy entry).
+(``{{ .Values.x }}``, ``var.x``) is not a misconfiguration you can see.
+
+``platform`` is one of :data:`CLOUD_MISCONFIG_PLATFORMS`. The free-text fields
+are redacted, folded to one line and capped (evidence, context and escalation
+path 300 characters, resource 200). Records merge on (kind, file, line,
+resource, evidence); for a true duplicate the more severe report wins.
+
+``kind`` is typed ``str``: core drops records with a kind it doesn't know (a
+plugin built against a newer core), keeps the rest of the result and notes the
+drop under ``analyzer_errors`` (``--strict`` fails instead). A new kind needs a
+core release (finding spec + taxonomy entry). A plugin that must also run on
+cores older than this record should feature-detect it (``try: from
+attackmap.sdk import CloudMisconfig`` / ``hasattr(ScanResult,
+"cloud_misconfigs")``) and keep emitting its old hints there, because an older
+core ignores the records.
 
 ## Versioning
 
@@ -141,10 +155,12 @@ from ..taint_sinks import SINK_KINDS as TAINT_SINK_KINDS
 from ..taint_sinks import validate_sink_entry as validate_taint_sink
 from .models import (
     CLOUD_MISCONFIG_KINDS,
+    CLOUD_MISCONFIG_PLATFORMS,
     DEPENDENCY_ECOSYSTEMS,
     AuthHint,
     CloudMisconfig,
     CloudMisconfigKind,
+    CloudMisconfigPlatform,
     DatabaseHint,
     DependencyEcosystem,
     DependencyHint,
@@ -185,6 +201,8 @@ __all__ = [
     "CloudMisconfig",
     "CloudMisconfigKind",
     "CLOUD_MISCONFIG_KINDS",
+    "CloudMisconfigPlatform",
+    "CLOUD_MISCONFIG_PLATFORMS",
     # Repo-confined filesystem helpers (#234): walk and read the scanned repo
     # without following symlinks out of it. Plugins should use these instead
     # of Path.rglob / read_text.

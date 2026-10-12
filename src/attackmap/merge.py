@@ -64,6 +64,19 @@ def _upgrade_route_auth(existing: Any, duplicate: Any) -> None:
         existing.guards = list(duplicate.guards)
         existing.guard_evidence = duplicate.guard_evidence
 
+_SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _upgrade_cloud_misconfig(existing: Any, duplicate: Any) -> None:
+    """Keep the higher (severity, confidence) of two reports of one instance."""
+    if (_SEVERITY_RANK[duplicate.severity], duplicate.confidence) > (
+        _SEVERITY_RANK[existing.severity],
+        existing.confidence,
+    ):
+        existing.severity = duplicate.severity
+        existing.confidence = duplicate.confidence
+
+
 MERGE_SCHEMA: tuple[MergeRule, ...] = (
     MergeRule("routes", lambda item: (item.path, item.method, item.file), upgrade=_upgrade_route_auth),
     # Method is part of the identity (#146b): two verbs on the same target in one
@@ -123,9 +136,13 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         "supply_chain_issues",
         lambda item: (item.kind, item.file, item.line, item.package),
     ),
+    # Evidence is part of the identity: two settings of one kind at one line
+    # (a `/var/log` and a `docker.sock` mount) are two instances. On a true
+    # duplicate the more severe report wins.
     MergeRule(
         "cloud_misconfigs",
-        lambda item: (item.kind, item.file, item.line, item.resource),
+        lambda item: (item.kind, item.file, item.line, item.resource, item.evidence_text),
+        upgrade=_upgrade_cloud_misconfig,
     ),
     MergeRule(
         "secret_history",

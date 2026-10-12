@@ -236,22 +236,37 @@ IaC analyzers report misconfigurations as `CloudMisconfig` records in
 `result.cloud_misconfigs`, not as auth/entrypoint hints (core reads those as
 recon, and an `AuthHint` near a route even counts as an auth control). `kind`
 is one of `attackmap.sdk.CLOUD_MISCONFIG_KINDS`; each kind is a core rule
-(`host_path_mount` → `host-path-mount`) with CWE/OWASP/ATT&CK ids, and core
-emits one finding per kind at the highest severity among its records.
+(`host_path_mount` → `host-path-mount`) with CWE/OWASP/ATT&CK ids. Core emits
+one finding per (kind, severity), so each instance keeps its own severity in
+SARIF and in the `--fail-on-new-high` gate. The kind's usual severity keeps
+the plain title; other tiers add "(low-severity instances)" etc.
 
 | Field | Meaning |
 |---|---|
 | `kind`, `file`, `line` | what and where (required: `kind`, `file`) |
 | `resource` | `aws_eks_cluster.main`, `Deployment/web container app`, `module.vpc` |
-| `platform` | `aws` / `azure` / `gcp` / `kubernetes` / `helm` / `compose` / `docker` / `terraform` |
+| `platform` | one of `CLOUD_MISCONFIG_PLATFORMS`: `aws` / `azure` / `gcp` / `kubernetes` / `helm` / `compose` / `docker` / `terraform` (validated) |
 | `severity`, `confidence` | per instance: a `docker.sock` mount is high, `/var/log` low; lower `confidence` for insecure *defaults* you inferred |
 | `context` | `for_each`/`count`, the calling module, "Helm template" |
 | `escalation_path` | one line, e.g. `hostPath / → node root → kubelet credentials` |
 | `evidence_text` | the setting as written (redacted like all evidence) |
 
+Free-text fields are redacted, folded to one line and capped (300 characters,
+`resource` 200). Records merge on (kind, file, line, resource, evidence); for
+a true duplicate the more severe report wins.
+
 Report literal settings only. A templated value (`{{ .Values.x }}`,
 `var.x`) is not something you can see, so skip it or emit it with low
-confidence. A new `kind` needs a core release (finding spec + taxonomy).
+confidence.
+
+**Versions.** `kind` is typed `str`. Core drops a record whose kind it doesn't
+know (a plugin newer than the core), keeps the rest of the plugin's result and
+adds an `analyzer_errors` note (`UnknownCloudMisconfigKind`; `--strict`
+fails). A new kind needs a core release (finding spec + taxonomy). A core that
+predates `CloudMisconfig` ignores the records entirely, so a plugin that
+supports such cores should feature-detect (`try: from attackmap.sdk import
+CloudMisconfig`, or `hasattr(ScanResult, "cloud_misconfigs")`) and keep its old
+hints there.
 
 ## Contributing taint sinks
 

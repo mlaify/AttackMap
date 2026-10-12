@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from ..models import (
     CLOUD_MISCONFIG_KINDS,
+    CLOUD_MISCONFIG_PLATFORMS,
     DEPENDENCY_ECOSYSTEMS,
     CloudMisconfig,
     CloudMisconfigKind,
+    CloudMisconfigPlatform,
     DependencyEcosystem,
     DependencyHint,
 )
@@ -40,4 +42,6 @@ __all__ = [
     "CloudMisconfig",
     "CloudMisconfigKind",
     "CLOUD_MISCONFIG_KINDS",
+    "CloudMisconfigPlatform",
+    "CLOUD_MISCONFIG_PLATFORMS",
 ]

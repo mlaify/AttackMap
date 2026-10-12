@@ -52,14 +52,26 @@ def test_spec_has_no_kinds_the_model_rejects() -> None:
     assert set(_CLOUD_MISCONFIG_FINDING_SPEC) == set(CLOUD_MISCONFIG_KINDS)
 
 
-def test_unknown_kind_and_out_of_range_confidence_are_rejected() -> None:
-    with pytest.raises(ValidationError):
-        _issue("not_a_kind")
+def test_out_of_range_values_and_unknown_platforms_are_rejected() -> None:
     with pytest.raises(ValidationError):
         _issue(confidence=1.5)
+    with pytest.raises(ValidationError):
+        _issue(platform="openstack")
+    with pytest.raises(ValidationError):
+        _issue(kind="x" * 65)
+    assert set(sdk.CLOUD_MISCONFIG_PLATFORMS) == {
+        "aws", "azure", "gcp", "kubernetes", "helm", "compose", "docker", "terraform",
+    }
 
 
-def test_one_finding_per_kind_with_the_worst_instance_first() -> None:
+def test_unknown_kind_validates_but_is_not_known() -> None:
+    record = _issue("brand_new_kind")  # a plugin built for a newer core
+    assert record.kind == "brand_new_kind" and not record.known_kind
+    assert _issue().known_kind
+    assert not [f for f in _findings(record) if "cloud-misconfig" in f.tags]  # no spec, no finding
+
+
+def test_one_finding_per_kind_and_severity_tier() -> None:
     findings = _findings(
         _issue("host_path_mount", line=40, severity="low", confidence=0.6, evidence_text="path: /var/log"),
         _issue(
@@ -69,21 +81,106 @@ def test_one_finding_per_kind_with_the_worst_instance_first() -> None:
         ),
         _issue("privileged_container", line=20, severity="high", context="Helm template"),
     )
-    by_rule = {f.rule_id: f for f in findings}
-    assert set(by_rule) == {"host-path-mount", "privileged-container"}
+    by_key = {(f.rule_id, f.severity): f for f in findings}
+    assert set(by_key) == {("host-path-mount", "high"), ("host-path-mount", "low"), ("privileged-container", "high")}
 
-    mount = by_rule["host-path-mount"]
-    assert mount.severity == "high" and mount.confidence == "high"
-    assert mount.evidence[0] == (
+    high = by_key[("host-path-mount", "high")]
+    assert high.title == "Workload mounts a sensitive host path"  # the kind's usual tier: plain title
+    assert high.confidence == "high"
+    assert high.evidence == [
         "k8s/app.yaml:31 [Deployment/app container web] — path: /var/run/docker.sock"
         " → Docker socket → root on the node"
+    ]
+    assert [(loc.file, loc.line) for loc in high.locations] == [("k8s/app.yaml", 31)]
+    assert "cloud-misconfig" in high.tags and "external/cwe/cwe-668" in high.tags
+    assert high.taxonomy is not None and high.taxonomy.cwe[0] == "CWE-668"
+    assert [t.technique_id for t in high.attack_techniques] == ["T1611"]
+
+    low = by_key[("host-path-mount", "low")]
+    assert low.title == "Workload mounts a sensitive host path (low-severity instances)"
+    assert (low.confidence, [loc.line for loc in low.locations]) == ("medium", [40])
+    assert low.evidence[0].endswith("— path: /var/log")
+    assert "(Helm template)" in by_key[("privileged-container", "high")].evidence[0]
+
+
+def test_tier_titles_depend_only_on_the_tier() -> None:
+    # Adding a low instance must not rename (re-id) the high finding.
+    alone = {f.severity: f.title for f in _findings(_issue("host_path_mount", severity="high"))}
+    both = {
+        f.severity: f.title
+        for f in _findings(_issue("host_path_mount", severity="high"), _issue("host_path_mount", line=99, severity="low"))
+    }
+    assert alone["high"] == both["high"]
+
+
+def test_confidence_comes_from_the_records_in_the_tier() -> None:
+    findings = _findings(
+        _issue("host_path_mount", line=1, severity="high", confidence=0.4),
+        _issue("host_path_mount", line=2, severity="low", confidence=0.95),
     )
-    assert mount.evidence[1].endswith("— path: /var/log")
-    assert [(loc.file, loc.line) for loc in mount.locations] == [("k8s/app.yaml", 31), ("k8s/app.yaml", 40)]
-    assert "cloud-misconfig" in mount.tags and "external/cwe/cwe-668" in mount.tags
-    assert mount.taxonomy is not None and mount.taxonomy.cwe[0] == "CWE-668"
-    assert [t.technique_id for t in mount.attack_techniques] == ["T1611"]
-    assert "(Helm template)" in by_rule["privileged-container"].evidence[0]
+    by_sev = {f.severity: f.confidence for f in findings}
+    assert by_sev == {"high": "low", "low": "high"}
+
+
+def test_default_confidence_maps_to_a_high_confidence_finding() -> None:
+    (finding,) = _findings(_issue("rbac_wildcard", severity="high"))
+    assert _issue().confidence == 0.8 and finding.confidence == "high"
+
+
+def test_two_resources_at_one_location_stay_two_instances() -> None:
+    (finding,) = _findings(
+        _issue("exposed_service", line=None, severity="low", resource="Service/a"),
+        _issue("exposed_service", line=None, severity="low", resource="Service/b"),
+    )
+    assert len(finding.locations) == 2
+    results = build_sarif([finding])["runs"][0]["results"]
+    assert len(results) == 1  # unfingerprinted: SARIF can't tell them apart yet
+    from attackmap.fingerprint import assign_fingerprints
+
+    assign_fingerprints([finding], ".")
+    assert len({loc.fingerprint for loc in finding.locations}) == 2
+    assert len(build_sarif([finding])["runs"][0]["results"]) == 2
+
+
+def test_sarif_level_and_security_severity_follow_each_instance() -> None:
+    findings = _findings(
+        _issue("host_path_mount", line=31, severity="high", confidence=0.9),
+        _issue("host_path_mount", line=40, severity="low", confidence=0.6),
+    )
+    results = build_sarif(findings)["runs"][0]["results"]
+    by_line = {r["locations"][0]["physicalLocation"]["region"]["startLine"]: r for r in results}
+    assert by_line[31]["level"] == "error" and by_line[40]["level"] == "note"
+    assert float(by_line[40]["properties"]["security-severity"]) < 4.0
+
+
+def test_diff_gate_ignores_a_new_low_instance_of_a_high_kind() -> None:
+    from attackmap.diff import FindingSnapshot, diff_findings
+    from attackmap.fingerprint import assign_fingerprints
+
+    def snaps(*issues):
+        findings = _findings(*issues)
+        assign_fingerprints(findings, ".")
+        return [FindingSnapshot.from_finding(f) for f in findings]
+
+    high = _issue("host_path_mount", line=31, severity="high", evidence_text="docker.sock")
+    baseline = snaps(high)
+    added_low = diff_findings(baseline, snaps(high, _issue("host_path_mount", line=40, severity="low", evidence_text="/var/log")))
+    assert not added_low.has_new_high and [s.severity for s in added_low.new] == ["low"]
+    added_high = diff_findings(baseline, snaps(high, _issue("host_path_mount", line=50, severity="high", evidence_text="/")))
+    assert added_high.has_new_high
+
+
+def test_free_text_is_one_line_and_capped() -> None:
+    record = _issue(
+        evidence_text="line one\nline two\r\n\tthree",
+        resource="r" * 1000,
+        context="c" * 1000,
+        escalation_path="e\n" * 400,
+    )
+    assert record.evidence_text == "line one line two three"
+    assert len(record.resource or "") == 200 and record.resource.endswith("…")
+    assert len(record.context or "") == 300 and len(record.escalation_path or "") <= 300
+    assert "\n" not in (record.escalation_path or "")
 
 
 def test_low_confidence_records_give_a_low_confidence_finding() -> None:
@@ -145,3 +242,55 @@ def test_dict_results_validate_the_record(tmp_path: Path) -> None:
     scan = analyze_repository(tmp_path, analyzers=[_DictPlugin()])
     assert [m.kind for m in scan.cloud_misconfigs] == ["rbac_wildcard"]
     assert scan.cloud_misconfigs[0].severity == "medium"
+
+
+def test_merge_keeps_two_settings_at_one_line_and_the_worse_duplicate() -> None:
+    from attackmap.analyzers import merge_analyzer_results
+
+    low = _issue("host_path_mount", severity="low", confidence=0.6, evidence_text="path: /var/log")
+    high = _issue("host_path_mount", severity="high", confidence=0.9, evidence_text="path: /var/run/docker.sock")
+    merged = merge_analyzer_results([ScanResult(root=".", cloud_misconfigs=[low]), ScanResult(root=".", cloud_misconfigs=[high])])
+    assert sorted(m.severity for m in merged.cloud_misconfigs) == ["high", "low"]
+
+    weaker = _issue("host_path_mount", severity="low", confidence=0.5, evidence_text="path: /")
+    stronger = _issue("host_path_mount", severity="high", confidence=0.9, evidence_text="path: /")
+    (kept,) = merge_analyzer_results(
+        [ScanResult(root=".", cloud_misconfigs=[weaker]), ScanResult(root=".", cloud_misconfigs=[stronger])]
+    ).cloud_misconfigs
+    assert (kept.severity, kept.confidence) == ("high", 0.9)
+
+
+class _NewerPlugin(_IacPlugin):
+    """Emits a kind this core doesn't know next to a known one and a route."""
+
+    name = "newer-iac"
+
+    def analyze(self, root: Path):  # type: ignore[override]
+        return {
+            "routes": [{"path": "/x", "method": "GET", "file": "app.py"}],
+            "cloud_misconfigs": [
+                {"kind": "future_kind", "file": "a.yaml", "line": 1},
+                {"kind": "rbac_wildcard", "file": "role.yaml", "line": 2, "severity": "high"},
+            ],
+        }
+
+
+def test_unknown_kinds_are_dropped_per_record_and_noted(tmp_path: Path) -> None:
+    scan = analyze_repository(tmp_path, analyzers=[_NewerPlugin()])
+    assert [r.path for r in scan.routes] == ["/x"]  # the rest of the result survives
+    assert [m.kind for m in scan.cloud_misconfigs] == ["rbac_wildcard"]
+    (error,) = scan.analyzer_errors
+    assert (error.analyzer, error.error_type) == ("newer-iac", "UnknownCloudMisconfigKind")
+    assert "future_kind" in error.message
+
+
+def test_unknown_kinds_fail_fast_in_strict_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="future_kind"):
+        analyze_repository(tmp_path, analyzers=[_NewerPlugin()], strict=True)
+
+
+def test_taxonomy_ids() -> None:
+    from attackmap.taxonomy import CWE_NAMES
+
+    assert taxonomy_for("privilege-escalation-allowed").attack == ("T1548.001",)
+    assert list(CWE_NAMES) == sorted(CWE_NAMES)

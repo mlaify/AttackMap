@@ -83,13 +83,16 @@ def _instances(finding: Finding) -> list[tuple[str, int | None, str | None]]:
         pairs = [(loc.file, loc.line, loc.fingerprint) for loc in finding.locations]
     else:
         pairs = [(f, l, None) for f, l in evidence_locations(finding.evidence)]
-    seen: set[tuple[str, int | None]] = set()
+    # A fingerprint makes an instance distinct even at a repeated (file, line):
+    # two resources without a line in one file are two results.
+    seen: set[tuple[str, int | None, str | None]] = set()
     out: list[tuple[str, int | None, str | None]] = []
     for file, line, fp in pairs:
-        key = (file.replace("\\", "/"), line)
+        norm = file.replace("\\", "/")
+        key = (norm, line, fp)
         if key not in seen:
             seen.add(key)
-            out.append((key[0], line, fp))
+            out.append((norm, line, fp))
     return out
 
 

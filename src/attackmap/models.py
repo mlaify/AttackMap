@@ -397,30 +397,45 @@ CloudMisconfigKind = Literal[
 CLOUD_MISCONFIG_KINDS: tuple[str, ...] = get_args(CloudMisconfigKind)
 
 
+# Where a CloudMisconfig's resource lives. `terraform` is for module blocks.
+CloudMisconfigPlatform = Literal["aws", "azure", "gcp", "kubernetes", "helm", "compose", "docker", "terraform"]
+CLOUD_MISCONFIG_PLATFORMS: tuple[str, ...] = get_args(CloudMisconfigPlatform)
+
+# Free-text fields are copied from the scanned repo: one line, capped.
+_CLOUD_TEXT_CAPS = {"evidence_text": 300, "resource": 200, "context": 300, "escalation_path": 300}
+_CLOUD_KIND_MAX = 64
+
+
 class CloudMisconfig(_RedactedEvidence):
     """A cloud, IaC or container-runtime misconfiguration (terraform#4, iac#1).
 
     Emitted by IaC plugins (Terraform, Kubernetes / Helm, compose,
     Dockerfile). Like the other issue families, each one is a
     positively-present setting (or a documented insecure default that the
-    file leaves in place) at a file and line. Core turns each `kind` into one
-    aggregated finding whose severity is the max over its instances.
+    file leaves in place) at a file and line. Core turns each `kind` into
+    findings, one per (kind, severity) tier, so a low `/var/log` mount never
+    inherits the severity of a `docker.sock` mount of the same kind.
 
+    - `kind`: one of `CLOUD_MISCONFIG_KINDS`. Typed `str` so a plugin built
+      against a newer core still validates here; core drops records with a
+      kind it doesn't know (noted under `analyzer_errors`) and keeps the rest
+      of the plugin's result.
     - `resource`: what the setting belongs to, e.g. `aws_eks_cluster.main`,
       `Deployment/web container app`, `module.vpc`.
-    - `platform`: `aws`, `azure`, `gcp`, `kubernetes`, `helm`, `compose`,
-      `docker` or `terraform` (modules).
+    - `platform`: one of `CLOUD_MISCONFIG_PLATFORMS`.
     - `context`: how the resource is instantiated — `for_each`/`count`,
       the calling module of a local module, a Helm template.
     - `escalation_path`: what an attacker gets from it, in one line, e.g.
       `hostPath / → node root → kubelet credentials`.
+
+    The free-text fields are redacted, folded to one line and capped.
     """
 
-    kind: CloudMisconfigKind
+    kind: str = Field(min_length=1, max_length=_CLOUD_KIND_MAX)
     file: str
     line: int | None = None
     resource: str | None = None
-    platform: str | None = None
+    platform: CloudMisconfigPlatform | None = None
     context: str | None = None
     escalation_path: str | None = None
     evidence_text: str | None = None
@@ -429,13 +444,22 @@ class CloudMisconfig(_RedactedEvidence):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
     @model_validator(mode="after")
-    def _redact_descriptive_fields(self) -> "CloudMisconfig":
-        # Also copied from the repo (a module source URL can carry a token).
-        for name in ("resource", "context", "escalation_path"):
+    def _clean_text_fields(self) -> "CloudMisconfig":
+        # Redact first (a module source URL can carry a token), then fold to
+        # one line and cap, so a cut never leaves half a secret unredacted.
+        for name, cap in _CLOUD_TEXT_CAPS.items():
             value = getattr(self, name)
-            if value:
-                object.__setattr__(self, name, redact_text(value))
+            if not value:
+                continue
+            value = " ".join(redact_text(value).split())
+            if len(value) > cap:
+                value = value[: cap - 1] + "…"
+            object.__setattr__(self, name, value)
         return self
+
+    @property
+    def known_kind(self) -> bool:
+        return self.kind in CLOUD_MISCONFIG_KINDS
 
 
 class WorkflowIssue(_RedactedEvidence):
