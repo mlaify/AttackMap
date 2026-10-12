@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from ..models import DEPENDENCY_ECOSYSTEMS, DependencyEcosystem, DependencyHint
+from ..models import (
+    APP_SURFACE_ISSUE_KINDS,
+    DEPENDENCY_ECOSYSTEMS,
+    AppSurfaceIssue,
+    AppSurfaceIssueKind,
+    DependencyEcosystem,
+    DependencyHint,
+)
 from ..recon_models import (
     AuthHint,
     DatabaseHint,
@@ -30,4 +37,7 @@ __all__ = [
     "DependencyHint",
     "DependencyEcosystem",
     "DEPENDENCY_ECOSYSTEMS",
+    "AppSurfaceIssue",
+    "AppSurfaceIssueKind",
+    "APP_SURFACE_ISSUE_KINDS",
 ]

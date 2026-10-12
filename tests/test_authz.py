@@ -699,6 +699,24 @@ def test_bfla_respects_declared_role_guard(tmp_path: Path) -> None:
     assert _bfla_findings(scan) == []
 
 
+def test_bfla_respects_hummingbird_role_and_permission_policies(tmp_path: Path) -> None:
+    # Hummingbird's AuthorizationPolicyMiddleware(RolePolicy(...)) gates the route
+    # on a role, as reported by the Swift plugin (#187).
+    (tmp_path / "Admin.swift").write_text("// handled by a plugin\n")
+    routes = [
+        Route(
+            path="/admin/users", method="GET", file="Admin.swift", line=1, auth="required",
+            guards=["BasicAuthenticator", f"AuthorizationPolicyMiddleware({policy}(.admin))"],
+        )
+        for policy in ("RolePolicy", "PermissionPolicy")
+    ]
+    for route in routes:
+        assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+    unguarded = Route(path="/admin/users", method="GET", file="Admin.swift", line=1, auth="required",
+                      guards=["BasicAuthenticator"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[unguarded]))) == 1
+
+
 def test_unauthenticated_write_reported_once_not_as_bola(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         "import sqlite3\n"
