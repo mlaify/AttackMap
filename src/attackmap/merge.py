@@ -76,13 +76,15 @@ def _rank(item: Any) -> tuple[int, float]:
 
 
 def keep_more_severe(existing: Any, duplicate: Any) -> None:
-    """Generic upgrade hook for records with `severity` (and optionally a
-    numeric or low/medium/high `confidence`): on a duplicate key keep the
-    more severe, then the more confident, report."""
+    """Upgrade hook for records with ``severity`` (and optionally a numeric or
+    low/medium/high ``confidence``): on a duplicate key keep the more severe,
+    then the more confident, report (its evidence too)."""
     if _rank(duplicate) > _rank(existing):
         existing.severity = duplicate.severity
         if hasattr(existing, "confidence"):
             existing.confidence = duplicate.confidence
+        if hasattr(existing, "evidence_text") and getattr(duplicate, "evidence_text", None):
+            existing.evidence_text = duplicate.evidence_text
 
 
 MERGE_SCHEMA: tuple[MergeRule, ...] = (
@@ -150,6 +152,14 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
     MergeRule(
         "cloud_misconfigs",
         lambda item: (item.kind, item.file, item.line, item.resource, item.evidence_text),
+        upgrade=keep_more_severe,
+    ),
+    # Evidence is part of the identity: two ATS exceptions in one binary
+    # (lineless) Info.plist are two instances. On a true duplicate (the Swift
+    # and Objective-C analyzers both reporting a plist) the more severe wins.
+    MergeRule(
+        "app_surface_issues",
+        lambda item: (item.kind, item.file, item.line, item.evidence_text),
         upgrade=keep_more_severe,
     ),
     MergeRule(
