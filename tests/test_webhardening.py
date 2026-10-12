@@ -61,10 +61,103 @@ def test_specific_origin_with_credentials_not_flagged() -> None:
         "http.csrf().disable();\n",
         "http.csrf(csrf -> csrf.disable());\n",
         "app.use(csurf({ csrf: false }))\n",
+        "http {\n    csrf { disable() }\n}\n",  # Spring Security Kotlin DSL (#341)
+        "http { csrf {disable()} }\n",
     ],
 )
 def test_csrf_disabled_flagged(content: str) -> None:
     assert "csrf_disabled" in _kinds(content)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'http {\n    csrf { ignoringRequestMatchers("/webhooks/**") }\n}\n',
+        "http {\n    csrf { }\n}\n",
+        "val disableCsrf = false\n",
+    ],
+)
+def test_kotlin_csrf_configuration_without_disable_not_flagged(content: str) -> None:
+    assert "csrf_disabled" not in _kinds(content)
+
+
+# ---------------------------------------------------------------------------
+# Spring Security config in Java / Kotlin (#341): a whole-repo pass, since the
+# per-file scan doesn't read .java/.kt files.
+# ---------------------------------------------------------------------------
+
+_KOTLIN_CONFIG = """package demo
+
+@Configuration
+class SecurityConfig {
+    @Bean
+    fun filterChain(http: HttpSecurity): SecurityFilterChain {
+        http {
+            csrf { disable() }
+            authorizeHttpRequests { authorize(anyRequest, authenticated) }
+        }
+        return http.build()
+    }
+}
+"""
+
+_JAVA_CONFIG = """@Configuration
+public class WebSecurityConfig {
+  @Bean
+  SecurityFilterChain chain(HttpSecurity http) throws Exception {
+    return http.csrf(csrf -> csrf.disable()).build();
+  }
+}
+"""
+
+
+def _csrf_issues(tmp_path: Path) -> list[WebHardeningIssue]:
+    return [i for i in scan_repo(tmp_path).web_hardening_issues if i.kind == "csrf_disabled"]
+
+
+def test_kotlin_dsl_csrf_disable_in_a_kt_file(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "SecurityConfig.kt").write_text(_KOTLIN_CONFIG, encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert (issue.file, issue.line, issue.severity) == ("src/SecurityConfig.kt", 8, "medium")
+    assert "csrf-disabled" in {f.rule_id for f in generate_findings(scan_repo(tmp_path))}
+
+
+def test_java_csrf_disable_in_a_java_file(tmp_path: Path) -> None:
+    (tmp_path / "WebSecurityConfig.java").write_text(_JAVA_CONFIG, encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == 5
+
+
+def test_kotlin_ignoring_matchers_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "SecurityConfig.kt").write_text(
+        _KOTLIN_CONFIG.replace("csrf { disable() }", 'csrf { ignoringRequestMatchers("/webhooks/**") }'),
+        encoding="utf-8",
+    )
+    assert _csrf_issues(tmp_path) == []
+
+
+def test_commented_out_disable_and_test_code_not_flagged(tmp_path: Path) -> None:
+    (tmp_path / "SecurityConfig.kt").write_text(
+        _KOTLIN_CONFIG.replace("csrf { disable() }", "// csrf { disable() }"), encoding="utf-8"
+    )
+    tests = tmp_path / "src" / "test" / "kotlin"
+    tests.mkdir(parents=True)
+    (tests / "TestSecurityConfig.kt").write_text(_KOTLIN_CONFIG, encoding="utf-8")
+    assert _csrf_issues(tmp_path) == []
+
+
+def test_stateless_token_api_is_reported_low(tmp_path: Path) -> None:
+    (tmp_path / "SecurityConfig.java").write_text(
+        _JAVA_CONFIG.replace(
+            "return http.csrf",
+            "http.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n    return http.csrf",
+        ),
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "low"
+    assert "stateless session policy" in (issue.evidence_text or "")
 
 
 # ---------------------------------------------------------------------------
@@ -206,3 +299,169 @@ def test_scan_repo_clean_config_no_web_findings(tmp_path: Path) -> None:
     )
     scan = scan_repo(tmp_path)
     assert scan.web_hardening_issues == []
+
+
+# ---------------------------------------------------------------------------
+# #341 review: comments, strings and context
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("block.java", "class C {\n  /*\n   * http.csrf().disable();\n   */\n  void f() {}\n}\n"),
+        ("trailing.java", "class C {\n  void f(HttpSecurity http) { http.cors(); // was: .csrf().disable()\n  }\n}\n"),
+        ("string.java", 'class C {\n  String doc = "call http.csrf().disable() to turn it off";\n}\n'),
+        ("textblock.kt", 'val doc = """\n  http { csrf { disable() } }\n"""\n'),
+        ("nested.kt", "/* outer /* inner */ http { csrf { disable() } } */\nval x = 1\n"),
+        ("unrelated.kt", "fun build() {\n    myDsl {\n        csrf { disable() }\n    }\n}\n"),
+        ("toplevel.kt", "fun f() = csrf { disable() }\n"),
+    ],
+)
+def test_jvm_csrf_ignores_comments_strings_and_unrelated_dsls(tmp_path: Path, name: str, text: str) -> None:
+    (tmp_path / name).write_text(text, encoding="utf-8")
+    assert _csrf_issues(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("@Bean\nfun chain(http: HttpSecurity): SecurityFilterChain {\n    http.csrf { it.disable() }\n    return http.build()\n}\n", 3),
+        ("fun chain(http: HttpSecurity) {\n    http.csrf { c -> c.disable() }\n}\n", 2),
+        (
+            "fun chain(http: ServerHttpSecurity) = http {\n"
+            "    authorizeExchange { authorize(anyExchange, authenticated) }\n"
+            "    csrf { disable() }\n"
+            "}\n",
+            3,
+        ),
+        ("fun chain(http: HttpSecurity) {\n    http.invoke {\n        csrf { disable() }\n    }\n}\n", 3),
+    ],
+)
+def test_kotlin_forms_in_a_security_context(tmp_path: Path, text: str, line: int) -> None:
+    (tmp_path / "Security.kt").write_text(text, encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == line
+
+
+def test_stateless_policy_elsewhere_in_the_file_does_not_downgrade(tmp_path: Path) -> None:
+    far = "\n" * 40
+    (tmp_path / "SecurityConfig.java").write_text(
+        _JAVA_CONFIG + far + "class Other { void f(HttpSecurity h) { h.sessionManagement(s -> "
+        "s.sessionCreationPolicy(SessionCreationPolicy.STATELESS)); } }\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "medium"
+
+
+def test_stateless_policy_in_the_same_chain_far_below_still_downgrades(tmp_path: Path) -> None:
+    chain = "    http.csrf(csrf -> csrf.disable())\n" + "      .cors(c -> {})\n" * 40
+    chain += "      .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n"
+    (tmp_path / "Sec.java").write_text("class Sec {\n  void f(HttpSecurity http) {\n" + chain + "  }\n}\n", encoding="utf-8")
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "low"
+
+
+def test_kotlin_dsl_stateless_in_the_same_block(tmp_path: Path) -> None:
+    (tmp_path / "Sec.kt").write_text(
+        "fun f(http: HttpSecurity) {\n    http {\n        csrf { disable() }\n"
+        "        sessionManagement { sessionCreationPolicy = SessionCreationPolicy.STATELESS }\n    }\n}\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.severity == "low"
+
+
+def test_masking_keeps_offsets_and_never_raises() -> None:
+    import random
+
+    from attackmap.webhardening import mask_jvm_comments_and_strings
+
+    text = 'a /* b "c" */ d // e\n"f\\"g" \'h\' """i\nj""" k'
+    masked = mask_jvm_comments_and_strings(text)
+    assert len(masked) == len(text) and masked.count("\n") == text.count("\n")
+    from attackmap.webhardening import _Blocks
+
+    def naive(text: str, offset: int) -> int:
+        # Reference: innermost block whose span contains the offset.
+        blocks = _Blocks(text)
+        inside = [i for i in range(len(blocks.opens)) if blocks.opens[i] < offset < blocks.closes[i]]
+        return max(inside, key=lambda i: blocks.opens[i]) if inside else -1
+
+    samples = ["", "}", "{", "{{}}}", "a { b { c } d", "}{}{{}", "a { b { c } d } e"]
+    rng = random.Random(360)
+    samples += ["".join(rng.choice("{}ab") for _ in range(rng.randint(0, 25))) for _ in range(300)]
+    for sample in samples:
+        offsets = list(range(len(sample) + 1))
+        got = _Blocks(sample).innermost_each(offsets)
+        assert got == [naive(sample, o) for o in offsets], sample
+    blocks = _Blocks("a { b { c } d } e")
+    assert blocks.innermost_each([8, 12, 16]) == [1, 0, -1]
+    assert masked.split() == ["a", "d", "k"]
+    rng = random.Random(341)
+    alphabet = "/*\"'\\\n ab{}"
+    for _ in range(2000):
+        sample = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 30)))
+        out = mask_jvm_comments_and_strings(sample)
+        assert len(out) == len(sample)
+
+
+def test_java_comments_do_not_nest(tmp_path: Path) -> None:
+    # `/api/**` inside a Javadoc must not open a second comment level and
+    # mask the rest of the file.
+    (tmp_path / "Sec.java").write_text(
+        "class Sec {\n  /** Permits /api/** without login. */\n"
+        "  void f(HttpSecurity http) { http.csrf().disable(); }\n}\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == 3
+
+
+def test_kotlin_comments_nest(tmp_path: Path) -> None:
+    (tmp_path / "Sec.kt").write_text(
+        "/* a /* b */ http { csrf { disable() } } */\n"
+        "fun f(http: HttpSecurity) {\n    http { csrf { disable() } }\n}\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == 3
+
+
+def test_jvm_csrf_pass_is_linear_on_large_files() -> None:
+    import time
+
+    from attackmap.webhardening import _jvm_csrf_issues
+
+    # ~760 KB with thousands of matches in ONE block: walking back (or
+    # forward) through the block per match was quadratic.
+    body = "fun f(http: HttpSecurity) {\n    http {\n" + "        csrf { disable() }\n" * 28_000 + "    }\n}\n"
+    start = time.perf_counter()
+    assert len(_jvm_csrf_issues(body, "Big.kt")) == 28_000
+    assert time.perf_counter() - start < 5.0
+    # Deep nesting closed just before many matches (and a stateless policy
+    # in the method, so each match needs its block): walking the parents
+    # per match was quadratic.
+    deep = "class C {\n  void f(HttpSecurity h) {\n    " + "{" * 20_000 + "}" * 20_000 + "\n"
+    deep += "    h.csrf().disable();\n" * 20_000
+    deep += "    h.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n  }\n}\n"
+    start = time.perf_counter()
+    issues = _jvm_csrf_issues(deep, "Deep.java")
+    assert len(issues) == 20_000 and all(i.severity == "low" for i in issues)
+    assert time.perf_counter() - start < 3.0
+    # Many stateless policies and many matches: checking every policy per
+    # match was quadratic.
+    many = "class C {\n" + (
+        "  void f(HttpSecurity h) { h.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS)); }\n"
+    ) * 16_000 + "  void g(HttpSecurity h) {\n" + "    h.csrf().disable();\n" * 30_000 + "  }\n}\n"
+    start = time.perf_counter()
+    issues = _jvm_csrf_issues(many, "Many.java")
+    assert len(issues) == 30_000 and all(i.severity == "medium" for i in issues)
+    assert time.perf_counter() - start < 3.0
+    java = "class C {\n  void f(HttpSecurity h) {\n" + "    h.csrf().disable();\n" * 30_000
+    java += "    h.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n  }\n}\n"
+    start = time.perf_counter()
+    issues = _jvm_csrf_issues(java, "Big.java")
+    assert len(issues) == 30_000 and all(i.severity == "low" for i in issues)
+    assert time.perf_counter() - start < 5.0
