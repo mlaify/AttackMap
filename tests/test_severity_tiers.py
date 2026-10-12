@@ -96,3 +96,43 @@ def test_kind_vocabularies_drive_the_unknown_kind_drop(monkeypatch: pytest.Monke
     assert note.error_type == "UnknownTestKind" and "privileged_container" in note.message
     assert [m.kind for m in result.cloud_misconfigs] == ["rbac_wildcard"]
     assert analyzers.drop_unknown_kinds(result, "plug") == []
+
+
+def test_winning_duplicate_brings_its_fields_and_provenance() -> None:
+    """#359: the merged record mustn't pair one analyzer's severity with
+    another's escalation path or `source_analyzer`."""
+    from attackmap.analyzers import merge_analyzer_results
+    from attackmap.models import AppSurfaceIssue
+
+    def result(analyzer: str, severity: str, confidence: float, path: str) -> ScanResult:
+        return ScanResult(
+            root=".",
+            cloud_misconfigs=[CloudMisconfig(
+                kind="host_path_mount", file="k8s/agent.yaml", line=7, resource="Deployment/agent",
+                evidence_text="hostPath mount", severity=severity, confidence=confidence,
+                escalation_path=path, context=f"{analyzer} context", source_analyzer=analyzer,
+            )],
+            app_surface_issues=[AppSurfaceIssue(
+                kind="apple_ats_insecure_loads", file="Info.plist", line=None, evidence_text="NSAllowsArbitraryLoads",
+                severity=severity, confidence=confidence, source_analyzer=analyzer,
+            )],
+        )
+
+    merged = merge_analyzer_results([
+        result("iac", "medium", 0.6, "read logs"),
+        result("terraform", "high", 0.9, "docker.sock -> host root"),
+    ])
+    (cloud,) = merged.cloud_misconfigs
+    assert (cloud.severity, cloud.confidence, cloud.escalation_path, cloud.context, cloud.source_analyzer) == (
+        "high", 0.9, "docker.sock -> host root", "terraform context", "terraform",
+    )
+    (surface,) = merged.app_surface_issues
+    assert (surface.severity, surface.source_analyzer) == ("high", "terraform")
+
+    # The weaker duplicate arriving second changes nothing.
+    merged = merge_analyzer_results([
+        result("terraform", "high", 0.9, "docker.sock -> host root"),
+        result("iac", "medium", 0.6, "read logs"),
+    ])
+    assert merged.cloud_misconfigs[0].source_analyzer == "terraform"
+    assert merged.cloud_misconfigs[0].escalation_path == "docker.sock -> host root"

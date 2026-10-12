@@ -78,13 +78,21 @@ def _rank(item: Any) -> tuple[int, float]:
 def keep_more_severe(existing: Any, duplicate: Any) -> None:
     """Upgrade hook for records with ``severity`` (and optionally a numeric or
     low/medium/high ``confidence``): on a duplicate key keep the more severe,
-    then the more confident, report (its evidence too)."""
+    then the more confident, report: its severity, confidence, descriptive
+    fields and provenance, so the merged record never pairs one analyzer's
+    severity with another's evidence or `source_analyzer` (#359)."""
     if _rank(duplicate) > _rank(existing):
         existing.severity = duplicate.severity
         if hasattr(existing, "confidence"):
             existing.confidence = duplicate.confidence
-        if hasattr(existing, "evidence_text") and getattr(duplicate, "evidence_text", None):
-            existing.evidence_text = duplicate.evidence_text
+        for name in _UPGRADE_FIELDS:
+            value = getattr(duplicate, name, None)
+            if value is not None and hasattr(existing, name):
+                setattr(existing, name, value)
+
+
+# Fields a winning duplicate carries over (when it sets them).
+_UPGRADE_FIELDS = ("evidence_text", "context", "escalation_path", "platform", "source_analyzer")
 
 
 MERGE_SCHEMA: tuple[MergeRule, ...] = (
