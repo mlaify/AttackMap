@@ -7,7 +7,8 @@
     "unauth_state_change",
     "webhook_exposure",
     "crypto",
-    "token_auth"
+    "token_auth",
+    "session_auth"
   ],
   "line_window": 4,
   "cases": [
@@ -183,6 +184,40 @@
           "line": 5,
           "severity": "high",
           "note": "Key file path built from the unverified header kid. adminKey (same file) is the clean twin: a fixed key map."
+        }
+      ]
+    },
+    {
+      "id": "express-oauth-session-demo",
+      "path": "evals/benchmark/cases/express-oauth-session-demo",
+      "expected": [
+        {
+          "category": "session_auth",
+          "file": "server.js",
+          "line": 6,
+          "severity": "high",
+          "note": "Sessions signed with express-session's documented example secret 'keyboard cat'."
+        },
+        {
+          "category": "session_auth",
+          "file": "routes/login.js",
+          "line": 9,
+          "severity": "medium",
+          "note": "User stored in the session without regenerate(): a pre-login session id stays valid after login. routes/staff-login.js is the clean twin."
+        },
+        {
+          "category": "token_auth",
+          "file": "routes/sso.js",
+          "line": 17,
+          "severity": "high",
+          "note": "Callback accepts a redirect URI by prefix: https://app.example.com.evil.net passes. routes/partner-sso.js matches exactly."
+        },
+        {
+          "category": "token_auth",
+          "file": "routes/sso.js",
+          "line": 8,
+          "severity": "medium",
+          "note": "Authorization request without state (login CSRF). routes/partner-sso.js sends one."
         }
       ]
     }
