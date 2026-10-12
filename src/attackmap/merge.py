@@ -20,6 +20,10 @@ merge / dedup behavior follows automatically.
   signal itself (e.g. `(path, method, file)` for routes). Two signals
   that hash to the same key are treated as duplicates; only the first is
   kept.
+- **Route twins** (#337): a plugin route on the same `(file, line)` as a
+  built-in route supersedes it when they are plausibly one registration
+  (the plugin joined a group prefix the built-in couldn't see). See
+  :func:`superseded_builtin_routes`.
 - **`languages`**: union, then sorted alphabetically for stable display.
 - **`files_scanned`**: summed across results.
 - **`root`**: taken from the explicit `root` argument when supplied,
@@ -28,6 +32,7 @@ merge / dedup behavior follows automatically.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -206,6 +211,90 @@ def merge_into(destination: Any, items: Iterable[Any], rule: MergeRule, seen: se
             index[k] = item
 
 
+# A path parameter in any framework's syntax: `:id`, `{id}` / `{id...}`,
+# `<int:id>`, `[id]`. Normalized to one placeholder, so `/users/:id` and
+# `/users/{id}` compare equal. Linear: each alternative stops at its closer.
+_PATH_PARAM = re.compile(r":[A-Za-z_]\w*|\{[^{}/]*\}|<[^<>/]*>|\[[^\[\]/]*\]")
+# Segments of a path considered for suffixes; a longer path only offers its
+# last ones (a twin's built-in path is the end of the plugin's).
+_MAX_SUFFIX_SEGMENTS = 32
+
+
+def _route_segments(path: str) -> tuple[str, ...]:
+    """A path's segments for twin matching: parameters normalized, empty
+    segments (leading, trailing, repeated `/`) dropped. The root is ``()``."""
+    return tuple(_PATH_PARAM.sub("{}", seg) for seg in path.strip().split("/") if seg)
+
+
+def superseded_builtin_routes(builtin_routes: Iterable[Any], plugin_routes: Iterable[Any]) -> set[int]:
+    """``id()`` of each built-in route that a plugin route on the same
+    (file, line) supersedes (#337).
+
+    Core's built-in extractors read one call at a time; a plugin that joins
+    group / router prefixes (`api := r.Group("/api")`) emits the same
+    registration under a longer path, and the `(path, method, file)` merge
+    key keeps both. A built-in route is a twin of a plugin route on its
+    (file, line) when:
+
+    - the plugin path ends with the built-in path at a segment boundary
+      (parameters compared as placeholders, so `:id` matches `{id}`), and
+    - the methods match, or the built-in said `ANY` (a plugin `ANY` never
+      supersedes a specific built-in method: it would lose the method).
+
+    The root `/` is a suffix of every path, so a built-in `/` only matches
+    a plugin `/`, or the plugin's one route when the line has exactly one
+    route of each kind. Two calls on one line whose paths end the same way
+    (`r.Get("/a", h); v1.Get("/a", h)`) can still be taken for one
+    registration; that's the residual risk, and it needs two registrations
+    of the same path and method on one line.
+
+    Only a built-in route is ever dropped, so two plugin routes, two
+    built-in routes, or different registrations on one line all survive.
+    Linear: plugin routes are indexed per site by (method, suffix).
+    """
+    # Per site: {(method, suffix)}, {suffix}, the methods of plugin roots, and
+    # the number of plugin routes.
+    sites: dict[tuple[str, int], tuple[set, set, set, list[int]]] = {}
+    for route in plugin_routes:
+        if route.line is None:
+            continue
+        by_method, any_method, roots, count = sites.setdefault((route.file, route.line), (set(), set(), set(), [0]))
+        count[0] += 1
+        segments = _route_segments(route.path)
+        method = route.method.upper()
+        if not segments:
+            roots.add(method)
+        for start in range(max(0, len(segments) - _MAX_SUFFIX_SEGMENTS), len(segments) + 1):
+            suffix = segments[start:]
+            by_method.add((method, suffix))
+            any_method.add(suffix)
+    superseded: set[int] = set()
+    if not sites:
+        return superseded
+    builtins = [route for route in builtin_routes if route.line is not None]
+    builtin_count: dict[tuple[str, int], int] = {}
+    for route in builtins:
+        key = (route.file, route.line)
+        builtin_count[key] = builtin_count.get(key, 0) + 1
+    for route in builtins:
+        site = sites.get((route.file, route.line))
+        if site is None:
+            continue
+        by_method, any_method, roots, count = site
+        segments = _route_segments(route.path)
+        method = route.method.upper()
+        if not segments and not (count[0] == 1 and builtin_count[(route.file, route.line)] == 1):
+            # A root only matches a plugin root (`()` is every path's suffix).
+            twin = bool(roots) if method == "ANY" else method in roots
+        elif method == "ANY":
+            twin = segments in any_method
+        else:
+            twin = (method, segments) in by_method
+        if twin:
+            superseded.add(id(route))
+    return superseded
+
+
 def initial_seen(destination: Any, rule: MergeRule) -> set:
     """Compute the `seen` set for items already on `destination.<rule.attr>`.
 
@@ -214,4 +303,4 @@ def initial_seen(destination: Any, rule: MergeRule) -> set:
     return {rule.key(item) for item in getattr(destination, rule.attr)}
 
 
-__all__ = ["MergeRule", "MERGE_SCHEMA", "keep_more_severe", "merge_into", "initial_seen"]
+__all__ = ["MergeRule", "MERGE_SCHEMA", "keep_more_severe", "merge_into", "initial_seen", "superseded_builtin_routes"]
