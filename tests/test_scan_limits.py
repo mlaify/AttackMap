@@ -161,10 +161,17 @@ def test_enclosing_function_is_the_innermost_one() -> None:
 
 
 
-# Per-call complexity: the same number of lookups near the end of a file 4x
-# larger must cost about the same (an O(offset) or O(functions) lookup costs
-# ~4x). Timed as best of three, with the one-off index build done first.
-_PER_CALL_MAX_RATIO = 2.0
+# Per-call complexity: the same number of lookups near the end of a file 8x
+# larger must cost about the same. A logarithmic lookup measures ~1.1-1.3x
+# (more cache misses on the bigger index); an O(offset) or O(functions)
+# lookup costs ~8x. The bound leaves room for noisy shared runners (a 4x
+# size gap with a 2x bound flaked at 2.3x on macOS) while a linear-per-call
+# regression still fails by a wide margin. Timed as best of five, with
+# enough lookups that each run takes milliseconds, and the one-off index
+# build done first.
+_PER_CALL_SIZE_FACTOR = 8
+_PER_CALL_MAX_RATIO = 3.0
+_PER_CALL_LOOKUPS = 20_000
 
 
 def _per_call_ratio(make_lookup, small: int) -> float:
@@ -172,13 +179,13 @@ def _per_call_ratio(make_lookup, small: int) -> float:
         lookup = make_lookup(n)
         lookup()  # warm: build the per-file index outside the timing
         runs = []
-        for _ in range(3):
+        for _ in range(5):
             start = time.perf_counter()
             lookup()
             runs.append(time.perf_counter() - start)
-        return max(min(runs), 1e-4)
+        return max(min(runs), 1e-3)
 
-    return best(4 * small) / best(small)
+    return best(_PER_CALL_SIZE_FACTOR * small) / best(small)
 
 
 def test_line_number_lookup_does_not_scale_with_the_offset() -> None:
@@ -189,7 +196,7 @@ def test_line_number_lookup_does_not_scale_with_the_offset() -> None:
         # A unique first line: `_line_starts` is cached by content, and an equal
         # but distinct string from an earlier run would be compared in full.
         content = f"# {time.perf_counter_ns()}\n" + "x = 1  # padding padding padding padding\n" * lines
-        offsets = [len(content) - 1 - i * 7 for i in range(3000)]
+        offsets = [len(content) - 1 - i * 7 for i in range(_PER_CALL_LOOKUPS)]
 
         def lookup() -> None:
             for offset in offsets:
@@ -208,7 +215,7 @@ def test_enclosing_lookup_does_not_scale_with_the_function_count() -> None:
 
     def make_lookup(functions: int):
         flow = _PyFlow("".join(f"def f{i}():\n    return {i}\n" for i in range(functions)))
-        lines = [2 * functions - (i % 50) * 2 for i in range(3000)]
+        lines = [2 * functions - (i % 50) * 2 for i in range(_PER_CALL_LOOKUPS)]
 
         def lookup() -> None:
             for line in lines:

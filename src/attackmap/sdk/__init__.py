@@ -108,6 +108,46 @@ time an invalid entry is skipped with a warning instead of failing the scan.
 Plugins reuse core's sink kinds (findings, CWE taxonomy and exploitability are
 keyed on them) and core still decides reachability, flow and severity.
 
+## Cloud / IaC misconfigurations
+
+IaC plugins (Terraform, Kubernetes / Helm, compose, Dockerfile) report
+misconfigurations as :class:`CloudMisconfig` records in
+``ScanResult.cloud_misconfigs``, not as auth or entrypoint hints, which core
+treats as recon (an ``AuthHint`` next to a route even counts as an auth
+signal). ``kind`` is one of :data:`CLOUD_MISCONFIG_KINDS`; each kind is a core
+rule id (``privileged_container`` → ``privileged-container``) with CWE/OWASP
+ids. Core emits one finding per (kind, severity): instances keep their own
+severity in SARIF and in the ``--fail-on-new-high`` gate, and a kind's usual
+severity keeps the plain title (other tiers add "(low-severity instances)")::
+
+    CloudMisconfig(
+        kind="host_path_mount", file="k8s/agent.yaml", line=31,
+        resource="DaemonSet/agent container agent", platform="kubernetes",
+        severity="high", confidence=0.9,
+        escalation_path="hostPath / → node root → kubelet credentials",
+        evidence_text="path: /",
+    )
+
+Set ``severity`` per instance (a ``docker.sock`` mount is worse than
+``/var/log``), lower ``confidence`` for settings you inferred from a default
+rather than read, and put ``for_each``/``count`` or module provenance in
+``context``. Report literal values only: a templated value
+(``{{ .Values.x }}``, ``var.x``) is not a misconfiguration you can see.
+
+``platform`` is one of :data:`CLOUD_MISCONFIG_PLATFORMS`. The free-text fields
+are redacted, folded to one line and capped (evidence, context and escalation
+path 300 characters, resource 200). Records merge on (kind, file, line,
+resource, evidence); for a true duplicate the more severe report wins.
+
+``kind`` is typed ``str``: core drops records with a kind it doesn't know (a
+plugin built against a newer core), keeps the rest of the result and notes the
+drop under ``analyzer_errors`` (``--strict-analyzers`` fails instead). A new kind needs a
+core release (finding spec + taxonomy entry). A plugin that must also run on
+cores older than this record should feature-detect it (``try: from
+attackmap.sdk import CloudMisconfig`` / ``hasattr(ScanResult,
+"cloud_misconfigs")``) and keep emitting its old hints there, because an older
+core ignores the records.
+
 ## Versioning
 
 The names exported below are stable across minor releases of the
@@ -131,11 +171,16 @@ from ..taint_sinks import PLUGIN_GROUP as TAINT_SINK_PLUGIN_GROUP
 from ..taint_sinks import SINK_KINDS as TAINT_SINK_KINDS
 from ..taint_sinks import validate_sink_entry as validate_taint_sink
 from .models import (
+    CLOUD_MISCONFIG_KINDS,
+    CLOUD_MISCONFIG_PLATFORMS,
     APP_SURFACE_ISSUE_KINDS,
     DEPENDENCY_ECOSYSTEMS,
     AppSurfaceIssue,
     AppSurfaceIssueKind,
     AuthHint,
+    CloudMisconfig,
+    CloudMisconfigKind,
+    CloudMisconfigPlatform,
     DatabaseHint,
     DependencyEcosystem,
     DependencyHint,
@@ -171,6 +216,13 @@ __all__ = [
     # Package ecosystems a DependencyHint may carry (#255).
     "DependencyEcosystem",
     "DEPENDENCY_ECOSYSTEMS",
+    # Cloud / IaC / container misconfigurations (terraform#4, iac#1); core
+    # turns each kind into a finding.
+    "CloudMisconfig",
+    "CloudMisconfigKind",
+    "CLOUD_MISCONFIG_KINDS",
+    "CloudMisconfigPlatform",
+    "CLOUD_MISCONFIG_PLATFORMS",
     # App attack-surface issues a platform plugin may emit (#188, #190).
     "AppSurfaceIssue",
     "AppSurfaceIssueKind",
