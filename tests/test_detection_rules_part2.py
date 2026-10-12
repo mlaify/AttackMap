@@ -320,3 +320,28 @@ def test_repository_wide_rules_differ_between_repositories(tmp_path: Path) -> No
     assert _rules(tmp_path / "service-a")["detect:workflow:workflow_run"].sigma["id"] == (
         first["detect:workflow:workflow_run"].sigma["id"]
     )
+
+
+def test_rule_files_are_injection_safe(tmp_path: Path) -> None:
+    # Repo-derived text (a hostile route) goes into the rule as data and is
+    # serialized with yaml.safe_dump: no extra documents, tags or keys.
+    from attackmap.detection_opportunities import _taint_rule
+    from attackmap.detections import template_data
+    from attackmap.models import TaintChain
+
+    hostile = "/x/:id\n---\n!!python/object/apply:os.system ['id']\nlevel: ${level}\ndetection: {}"
+    chain = TaintChain(route_path=hostile, route_method="GET", route_file="a.py", sink_kind="subprocess_shell",
+                       sink_file="a.py", sink_line=3, hops=0, source_kind="query")
+    rendered = _taint_rule("subprocess-shell", chain, template_data("injection")["payloads"]["subprocess-shell"])
+    assert rendered is not None
+    text = rule_yaml(rendered.sigma, rendered.correlation)
+    docs = list(yaml.safe_load_all(text))
+    assert len(docs) == 1 and docs[0] == rendered.sigma
+    assert docs[0]["level"] == "high" and "\n" not in docs[0]["title"]
+    assert "!!python/object/apply:os.system" in docs[0]["title"]  # kept as plain text
+    assert "${level}" in docs[0]["description"]  # not re-expanded
+    opps = [{"id": "detect:subprocess-shell:GET:" + hostile, "sigma": rendered.sigma, "related_rule_ids": []}]
+    [name] = write_detection_rules(tmp_path, opps)
+    assert RULE_FILE.fullmatch(name) and "/" not in name
+    on_disk = list(yaml.safe_load_all((tmp_path / "detections" / name).read_text(encoding="utf-8")))
+    assert on_disk == [rendered.sigma]

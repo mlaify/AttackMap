@@ -881,10 +881,15 @@ def _workflow_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
     triggers: dict[str, dict] = template_data("workflow").get("triggers", {})
     # rule id -> workflow files its (unsuppressed) finding covers
     files: dict[str, list[str]] = {}
+    covered: dict[str, set[tuple[str, int | None]]] = {}
     for issue in scan.workflow_issues:
         rule_id = issue.kind.replace("_", "-")
         finding = by_rule.get(rule_id)
-        if finding is None or (issue.file, issue.line) not in _location_keys(finding):
+        if finding is None:
+            continue
+        if rule_id not in covered:
+            covered[rule_id] = _location_keys(finding)
+        if (issue.file, issue.line) not in covered[rule_id]:
             continue
         if issue.file not in files.setdefault(rule_id, []):
             files[rule_id].append(issue.file)
@@ -1003,6 +1008,7 @@ def _weakness_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
     """App-wide request-marker rules for code weaknesses without a route."""
     markers: dict[str, dict] = template_data("weakness").get("markers", {})
     first: dict[str, str] = {}
+    covered: dict[str, set[tuple[str, int | None]]] = {}
     for weakness in scan.code_weaknesses:
         rule_id = weakness.kind.replace("_", "-")
         finding = by_rule.get(rule_id)
@@ -1011,7 +1017,9 @@ def _weakness_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> li
         suffixes = tuple(markers[rule_id].get("suffixes") or ())
         if suffixes and not weakness.file.lower().endswith(suffixes):
             continue
-        if (weakness.file, weakness.line) not in _location_keys(finding):
+        if rule_id not in covered:
+            covered[rule_id] = _location_keys(finding)
+        if (weakness.file, weakness.line) not in covered[rule_id]:
             continue
         first[rule_id] = f"{weakness.file}:{weakness.line}" if weakness.line else weakness.file
     out: list[DetectionOpportunity] = []

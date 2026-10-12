@@ -161,7 +161,9 @@ def render_rule(
     fields_required = [f for f in filled.get("fields_required", []) if isinstance(f, str) and f]
     logsource = {k: str(v) for k, v in filled["logsource"].items()}
     primary = rule_ids[0]
-    sigma: dict[str, Any] = {"title": filled["title"], "id": rule_uuid(template_id, primary, key)}
+    # Titles carry repo text (routes): one line, whitespace collapsed.
+    title = " ".join(str(filled["title"]).split())[:256]
+    sigma: dict[str, Any] = {"title": title, "id": rule_uuid(template_id, primary, key)}
     if filled.get("name"):
         sigma["name"] = filled["name"]
     sigma.update(
