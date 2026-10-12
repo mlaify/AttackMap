@@ -381,12 +381,15 @@ def test_masking_keeps_offsets_and_never_raises() -> None:
     text = 'a /* b "c" */ d // e\n"f\\"g" \'h\' """i\nj""" k'
     masked = mask_jvm_comments_and_strings(text)
     assert len(masked) == len(text) and masked.count("\n") == text.count("\n")
-    from attackmap.webhardening import _enclosing_block
+    from attackmap.webhardening import _Blocks
 
-    for sample in ("", "}", "{", "{{}}}", "a { b { c } d"):
+    for sample in ("", "}", "{", "{{}}}", "a { b { c } d", "}{}{{}"):
+        blocks = _Blocks(sample)
         for offset in range(len(sample) + 1):
-            lo, hi = _enclosing_block(sample, offset)
+            lo, hi = blocks.span(offset, len(sample))
             assert 0 <= lo <= hi <= len(sample)
+    blocks = _Blocks("a { b { c } d } e")
+    assert blocks.span(8, 17) == (6, 11) and blocks.span(12, 17) == (2, 15) and blocks.span(16, 17) == (0, 17)
     assert masked.split() == ["a", "d", "k"]
     rng = random.Random(341)
     alphabet = "/*\"'\\\n ab{}"
@@ -394,3 +397,44 @@ def test_masking_keeps_offsets_and_never_raises() -> None:
         sample = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 30)))
         out = mask_jvm_comments_and_strings(sample)
         assert len(out) == len(sample)
+
+
+def test_java_comments_do_not_nest(tmp_path: Path) -> None:
+    # `/api/**` inside a Javadoc must not open a second comment level and
+    # mask the rest of the file.
+    (tmp_path / "Sec.java").write_text(
+        "class Sec {\n  /** Permits /api/** without login. */\n"
+        "  void f(HttpSecurity http) { http.csrf().disable(); }\n}\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == 3
+
+
+def test_kotlin_comments_nest(tmp_path: Path) -> None:
+    (tmp_path / "Sec.kt").write_text(
+        "/* a /* b */ http { csrf { disable() } } */\n"
+        "fun f(http: HttpSecurity) {\n    http { csrf { disable() } }\n}\n",
+        encoding="utf-8",
+    )
+    [issue] = _csrf_issues(tmp_path)
+    assert issue.line == 3
+
+
+def test_jvm_csrf_pass_is_linear_on_large_files() -> None:
+    import time
+
+    from attackmap.webhardening import _jvm_csrf_issues
+
+    # ~760 KB with thousands of matches in ONE block: walking back (or
+    # forward) through the block per match was quadratic.
+    body = "fun f(http: HttpSecurity) {\n    http {\n" + "        csrf { disable() }\n" * 28_000 + "    }\n}\n"
+    start = time.perf_counter()
+    assert len(_jvm_csrf_issues(body, "Big.kt")) == 28_000
+    assert time.perf_counter() - start < 5.0
+    java = "class C {\n  void f(HttpSecurity h) {\n" + "    h.csrf().disable();\n" * 30_000
+    java += "    h.sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));\n  }\n}\n"
+    start = time.perf_counter()
+    issues = _jvm_csrf_issues(java, "Big.java")
+    assert len(issues) == 30_000 and all(i.severity == "low" for i in issues)
+    assert time.perf_counter() - start < 5.0

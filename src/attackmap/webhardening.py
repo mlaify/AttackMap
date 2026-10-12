@@ -23,6 +23,7 @@ off a concrete risky construct in the source.
 
 from __future__ import annotations
 
+import bisect
 import re
 
 from pathlib import Path
@@ -238,12 +239,13 @@ def find_web_hardening_issues(content: str, rel_file: str) -> list[WebHardeningI
     return out
 
 
-def mask_jvm_comments_and_strings(text: str) -> str:
+def mask_jvm_comments_and_strings(text: str, *, nested_comments: bool = False) -> str:
     """``text`` with Java/Kotlin comments, string and char literals replaced
     by spaces (newlines kept), so offsets and line numbers are unchanged.
-    Handles `//`, nested `/* */` (Kotlin nests them; Java code doesn't), `"…"`
-    with escapes, `\"\"\"…\"\"\"` text blocks and `'c'`. Never raises; an
-    unterminated construct masks to the end of the text."""
+    Handles `//`, `/* */` (nested only with ``nested_comments``, for Kotlin:
+    in Java `/** Permits /api/** … */` is one comment), `"…"` with escapes,
+    `\"\"\"…\"\"\"` text blocks and `'c'`. Never raises; an unterminated
+    construct masks to the end of the text."""
     out = list(text)
     n = len(text)
     i = 0
@@ -264,7 +266,7 @@ def mask_jvm_comments_and_strings(text: str) -> str:
         elif ch == "/" and nxt == "*":
             depth, j = 1, i + 2
             while j < n and depth:
-                if text.startswith("/*", j):
+                if nested_comments and text.startswith("/*", j):
                     depth, j = depth + 1, j + 2
                 elif text.startswith("*/", j):
                     depth, j = depth - 1, j + 2
@@ -289,48 +291,47 @@ def mask_jvm_comments_and_strings(text: str) -> str:
     return "".join(out)
 
 
-def _inside_http_dsl(masked: str, offset: int, limit: int = 20_000) -> bool:
-    """Whether ``offset`` sits inside a block opened by `http {` (walking
-    out through enclosing braces, at most ``limit`` characters back)."""
-    depth = 0
-    floor = max(0, offset - limit)
-    for k in range(offset - 1, floor - 1, -1):
-        ch = masked[k]
-        if ch == "}":
-            depth += 1
-        elif ch == "{":
-            if depth:
-                depth -= 1
-            elif _HTTP_DSL_OPENER.search(masked, max(floor, k - 40), k):
-                return True
-    return False
+class _Blocks:
+    """The `{ … }` blocks of a masked file, indexed once (#341 review): each
+    block's span, its parent, and whether it or an ancestor is an
+    `http { }` DSL block. Each query is a bisect plus a walk up the parents,
+    instead of a scan back through the text per match."""
 
+    def __init__(self, masked: str) -> None:
+        self.opens: list[int] = []
+        self.closes: list[int] = []
+        self.parents: list[int] = []
+        self.under_http: list[bool] = []
+        stack: list[int] = []
+        n = len(masked)
+        for k, ch in enumerate(masked):
+            if ch == "{":
+                index = len(self.opens)
+                parent = stack[-1] if stack else -1
+                http = _HTTP_DSL_OPENER.search(masked, max(0, k - 40), k) is not None
+                self.opens.append(k)
+                self.closes.append(n)
+                self.parents.append(parent)
+                self.under_http.append(http or (parent >= 0 and self.under_http[parent]))
+                stack.append(index)
+            elif ch == "}" and stack:
+                self.closes[stack.pop()] = k + 1
 
-def _enclosing_block(masked: str, offset: int, limit: int = 20_000) -> tuple[int, int]:
-    """Span of the innermost `{ … }` block around ``offset`` (the method
-    body or DSL block holding the CSRF call); the whole text if none is found
-    within ``limit`` characters."""
-    depth = 0
-    start = -1
-    for k in range(offset - 1, max(0, offset - limit) - 1, -1):
-        if masked[k] == "}":
-            depth += 1
-        elif masked[k] == "{":
-            if not depth:
-                start = k
-                break
-            depth -= 1
-    if start < 0:
-        return 0, len(masked)
-    depth = 0
-    for k in range(start, min(len(masked), start + 2 * limit)):
-        if masked[k] == "{":
-            depth += 1
-        elif masked[k] == "}":
-            depth -= 1
-            if not depth:
-                return start, k + 1
-    return start, len(masked)
+    def innermost(self, offset: int) -> int:
+        """Index of the innermost block containing ``offset``, or -1."""
+        index = bisect.bisect_left(self.opens, offset) - 1
+        while index >= 0 and self.closes[index] <= offset:
+            index = self.parents[index]
+        return index
+
+    def inside_http(self, offset: int) -> bool:
+        index = self.innermost(offset)
+        return index >= 0 and self.under_http[index]
+
+    def span(self, offset: int, length: int) -> tuple[int, int]:
+        """The innermost block's span (the whole text when there is none)."""
+        index = self.innermost(offset)
+        return (0, length) if index < 0 else (self.opens[index], self.closes[index])
 
 
 def find_jvm_csrf_disabled(root: str | Path) -> list[WebHardeningIssue]:
@@ -358,9 +359,10 @@ def find_jvm_csrf_disabled(root: str | Path) -> list[WebHardeningIssue]:
 
 
 def _jvm_csrf_issues(content: str, rel: str) -> list[WebHardeningIssue]:
-    masked = mask_jvm_comments_and_strings(content)
+    masked = mask_jvm_comments_and_strings(content, nested_comments=rel.endswith(".kt"))
+    blocks = _Blocks(masked)
     offsets = [m.start() for m in _SPRING_CSRF_BUILDER.finditer(masked)]
-    offsets += [m.start() for m in _KOTLIN_CSRF_DSL.finditer(masked) if _inside_http_dsl(masked, m.start())]
+    offsets += [m.start() for m in _KOTLIN_CSRF_DSL.finditer(masked) if blocks.inside_http(m.start())]
     stateless_offsets = [m.start() for m in _STATELESS_SESSION.finditer(masked)]
     out: list[WebHardeningIssue] = []
     seen: set[int] = set()
@@ -371,7 +373,7 @@ def _jvm_csrf_issues(content: str, rel: str) -> list[WebHardeningIssue]:
         seen.add(line)
         # A stateless session policy in the same config block (method body or
         # DSL block), not merely somewhere in the file.
-        lo, hi = _enclosing_block(masked, offset) if stateless_offsets else (0, 0)
+        lo, hi = blocks.span(offset, len(masked)) if stateless_offsets else (0, 0)
         stateless = any(lo <= other < hi for other in stateless_offsets)
         out.append(
             WebHardeningIssue(
