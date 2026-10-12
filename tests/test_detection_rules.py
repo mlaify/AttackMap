@@ -118,7 +118,7 @@ def test_generated_rules_are_valid_and_their_test_events_behave(root: Path) -> N
         assert sigma["author"] == "AttackMap"
         attack = [m.group(1).upper() for t in sigma["tags"] if (m := _ATTACK_TAG.fullmatch(t))]
         assert attack and all(t in ATTACK_TECHNIQUES for t in attack), opp.id
-        assert any("cwe.mitre.org" in ref for ref in sigma["references"]), opp.id
+        assert any(ref.startswith("https://cwe.mitre.org/") for ref in sigma["references"]), opp.id
         assert opp.logsource is not None and opp.logsource.model_dump(exclude_none=True) == sigma["logsource"]
         assert opp.fields_required and opp.false_positive_notes
         assert opp.related_rule_ids and opp.attack_techniques
