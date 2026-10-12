@@ -36,7 +36,10 @@ SINKS = FIXTURES / "sinks"
 IDOR = FIXTURES / "authz" / "flask_login_required_idor"
 IDOR_JS = FIXTURES / "authz" / "express_router_use_auth_idor"
 WEBHOOKS = ROOT / "evals" / "benchmark" / "cases" / "express-webhooks-demo"
-ALL_FIXTURES = [TAINT_PY, TAINT_JS, SINKS, IDOR, IDOR_JS, WEBHOOKS]
+ALL_FIXTURES = [
+    TAINT_PY, TAINT_JS, SINKS, IDOR, IDOR_JS, WEBHOOKS,
+    FIXTURES / "taint_repo", FIXTURES / "taint_callgraph_repo", FIXTURES / "mass_assignment",
+]
 
 _ATTACK_TAG = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)")
 
@@ -77,6 +80,9 @@ def test_payload_catalog_is_keyed_by_registered_rule_ids() -> None:
         assert rule_id in RULE_TAXONOMY, rule_id
         assert payload["level"] in ("low", "medium", "high", "critical")
         assert payload["contains"] and payload["sample"] and payload["benign"]
+        for marker in payload["contains"]:
+            # pySigma flags escaped wildcards; keep markers free of `*`, `?`, `\`.
+            assert not set(marker) & set("*?\\"), (rule_id, marker)
 
 
 def test_templates_ship_as_package_data() -> None:
@@ -210,17 +216,31 @@ def test_path_parameter_source_matches_the_request_path(tmp_path: Path) -> None:
     assert "cs-uri-stem|contains" in detection["selection_payload"]
     assert sigma_matches(opp.sigma, {"cs-method": "GET", "cs-uri-stem": "/orders/1%27%20or%201=1"})
     assert not sigma_matches(opp.sigma, {"cs-method": "GET", "cs-uri-stem": "/orders/42"})
-    # `contains` markers are escaped too: `/*` is literal.
-    assert sigma_matches(opp.sigma, {"cs-method": "GET", "cs-uri-stem": "/orders/1/*x"})
-    assert not sigma_matches(opp.sigma, {"cs-method": "GET", "cs-uri-stem": "/orders/1/x"})
 
 
 def test_markers_with_sigma_wildcards_are_escaped() -> None:
-    # `/*` (SQL comment) is a literal marker, not "slash then anything".
-    opp = _by_id(TAINT_JS)["detect:sql-injection:GET:/orders/search"]
-    base = {"cs-method": "GET", "cs-uri-stem": "/orders/search"}
-    assert sigma_matches(opp.sigma, {**base, "cs-uri-query": "q=1/*x*/"})
-    assert not sigma_matches(opp.sigma, {**base, "cs-uri-query": "q=a/b"})
+    from attackmap.detection_opportunities import _payload_selector
+
+    payload = {"contains": ["/*", "a?"]}
+    selection, _, _ = _payload_selector(payload, None, "query", False)
+    rule = {"detection": {"s": selection, "condition": "s"}}
+    assert selection == {"cs-uri-query|contains": ["/\\*", "a\\?"]}
+    assert sigma_matches(rule, {"cs-uri-query": "q=1/*x"})
+    assert not sigma_matches(rule, {"cs-uri-query": "q=a/b"})
+    selection, _, _ = _payload_selector(payload, "q", "query", False)
+    assert selection == {"cs-uri-query|re": "(?i)(?:^|&)q=[^&]*(?:/\\*|a\\?)"}
+
+
+def test_unknown_source_on_a_parameterized_route_checks_path_and_query() -> None:
+    from attackmap.detection_opportunities import _payload_selector
+
+    selection, where, in_stem = _payload_selector({"contains": ["%27"]}, None, None, True)
+    assert selection == [{"cs-uri-query|contains": ["%27"]}, {"cs-uri-stem|contains": ["%27"]}]
+    assert where == "query string or path" and not in_stem
+    rule = {"detection": {"s": selection, "condition": "s"}}
+    assert sigma_matches(rule, {"cs-uri-stem": "/track/1%27", "cs-uri-query": ""})
+    assert sigma_matches(rule, {"cs-uri-stem": "/track/1", "cs-uri-query": "x=%27"})
+    assert not sigma_matches(rule, {"cs-uri-stem": "/track/1", "cs-uri-query": "x=1"})
 
 
 def test_body_sources_state_the_access_log_blind_spot() -> None:

@@ -567,18 +567,25 @@ def _regex_escape(text: str) -> str:
 
 def _payload_selector(
     payload: dict, param: str | None, source_kind: str | None, path_has_params: bool
-) -> tuple[str, object, str]:
-    """(field|modifier, value(s), where-it-is) for the payload selection."""
+) -> tuple[dict | list[dict], str, bool]:
+    """The payload selection (a field map, or a list of maps = any of them),
+    where it looks (for the description), and whether the positive sample
+    belongs in the request path rather than the query string."""
     raw = [str(m) for m in payload["contains"]]
     markers = [_sigma_escape(m) for m in raw]
     prefix = payload.get("anchor") == "prefix"
     if source_kind == "path_param" and path_has_params:
-        return "cs-uri-stem|contains", markers, "path"
+        return {"cs-uri-stem|contains": markers}, "path", True
     if param and payload.get("regex", True) and source_kind in (None, "query"):
         alternatives = "|".join(_regex_escape(m) for m in raw)
         regex = f"(?i)(?:^|&){_regex_escape(param)}=" + ("" if prefix else "[^&]*") + f"(?:{alternatives})"
-        return "cs-uri-query|re", regex, f"`{param}` query parameter"
-    return "cs-uri-query|contains", ([f"={m}" for m in markers] if prefix else markers), "query string"
+        return {"cs-uri-query|re": regex}, f"`{param}` query parameter", False
+    query = {"cs-uri-query|contains": [f"={m}" for m in markers] if prefix else markers}
+    if source_kind is None and path_has_params:
+        # Reachability-only chain: the input may be the path parameter or a
+        # query parameter, so look in both.
+        return [query, {"cs-uri-stem|contains": markers}], "query string or path", False
+    return query, "query string", False
 
 
 def _route_params(path: str) -> dict[str, str]:
@@ -591,10 +598,10 @@ def _taint_rule(rule_id: str, chain: TaintChain, payload: dict) -> RenderedRule 
     method_route = _short(f"{chain.route_method} {chain.route_path}")
     param = _source_param(chain)
     in_path = has_path_params(chain.route_path)
-    field, values, where = _payload_selector(payload, param, chain.source_kind, in_path)
+    selection, where, in_stem = _payload_selector(payload, param, chain.source_kind, in_path)
     name = param or "q"
     sample, benign = str(payload["sample"]), str(payload["benign"])
-    if field.startswith("cs-uri-stem"):
+    if in_stem:
         positive_stem, positive_query = route_example(chain.route_path, sample), ""
     else:
         positive_stem = route_example(chain.route_path)
@@ -620,8 +627,7 @@ def _taint_rule(rule_id: str, chain: TaintChain, payload: dict) -> RenderedRule 
             "method_example": method or "GET",
             **_route_params(chain.route_path),
             "route_example": route_example(chain.route_path),
-            "payload_field": field,
-            "payload_values": values,
+            "payload_selection": selection,
             "payload_where": where,
             "positive_stem": positive_stem,
             "positive_query": positive_query,

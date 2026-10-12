@@ -5,7 +5,8 @@
 # Placeholders are `${name}`; the generator fills them (route glob, method,
 # the payload field and values, the sample events). A key whose value
 # renders to null is dropped (e.g. `cs-method` when the route accepts any
-# verb). Payload strings are matched case-insensitively with `contains`, or
+# verb). Payload strings are matched case-insensitively with `contains` (in
+# the query string, the path, or both when the traced source is unknown), or
 # folded into one regex anchored on the parameter when AttackMap knows which
 # query parameter carries the input. Keep them free of Sigma wildcard and
 # escape characters (`*`, `?`, `\`): a test enforces it.
@@ -26,8 +27,7 @@ templates:
       selection_route:
         "${route_field}": "${route_value}"
         cs-method: "${method}"
-      selection_payload:
-        "${payload_field}": "${payload_values}"
+      selection_payload: "${payload_selection}"
       condition: selection_route and selection_payload
     falsepositives:
       - Security scanners and penetration tests you run yourself (allow-list their source IPs)
@@ -59,7 +59,7 @@ data:
     sql-injection:
       label: SQL injection
       level: high
-      contains: ["'", "%27", "--", "%2D%2D", "/*", "%2F%2A", "union select", "union+select", "union%20select", "sleep(", "sleep%28", "waitfor delay", "waitfor+delay", "waitfor%20delay", "benchmark(", "benchmark%28"]
+      contains: ["'", "%27", "--", "%2D%2D", "%2F%2A", "union select", "union+select", "union%20select", "sleep(", "sleep%28", "waitfor delay", "waitfor+delay", "waitfor%20delay", "benchmark(", "benchmark%28"]
       sample: "1%27%20OR%201%3D1--"
       benign: "shoes"
       falsepositives:
@@ -122,7 +122,7 @@ data:
       label: NoSQL operator injection
       level: medium
       regex: false
-      contains: ["[$ne]", "%5B%24ne%5D", "[$gt]", "%5B%24gt%5D", "[$regex]", "%5B%24regex%5D", "[$where]", "%5B%24where%5D", "[$exists]", "%5B%24exists%5D", "$where", "%24where"]
+      contains: ["[$ne]", "%5B%24ne%5D", "[$gt]", "%5B%24gt%5D", "[$regex]", "%5B%24regex%5D", "[$where]", "%5B%24where%5D", "[$exists]", "%5B%24exists%5D", "$where", "%24where", "'||", "%27%7C%7C", "'%7C%7C"]
       sample: "x"
       query: "${param}%5B%24ne%5D=x"
       benign: "alice"
