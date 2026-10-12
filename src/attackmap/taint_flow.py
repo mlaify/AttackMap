@@ -193,6 +193,12 @@ def _verdict(kind: str, atoms: list[Atom], sink_line: int, sink_note: str, span:
 # after it only controls the path/query, which is not SSRF.
 # The leading lookbehind pins match starts to a scheme boundary (linear, #236).
 _FIXED_HOST_RE = re.compile(r"(?<![\w+.-])[A-Za-z][\w+.-]*://[^/\s?#{}$`'\"%]+/")
+# The same for a redirect target (#327). The literal must close the authority
+# with "/", "?" or "#", so "https://site.example${x}" (→ ".evil.com", "@evil")
+# stays tainted. Script schemes run the rest of the URL, so they never pin it.
+_FIXED_REDIRECT_HOST_RE = re.compile(
+    r"(?<![\w+.-])(?!(?i:javascript|vbscript|data):)[A-Za-z][\w+.-]*://[^/\\\s?#{}$`'\"%]+[/?#]"
+)
 # A redirect literal that pins a same-site path ("/orders/…", not "//evil").
 _FIXED_PATH_RE = re.compile(r"/[^/\\\s{}$`'\"%]")
 
@@ -203,7 +209,7 @@ def _fixed_prefix(kind: str, literal: str | None) -> bool:
     if kind == "ssrf":
         return _FIXED_HOST_RE.match(literal) is not None
     if kind == "open_redirect":
-        return _FIXED_PATH_RE.match(literal) is not None
+        return _FIXED_PATH_RE.match(literal) is not None or _FIXED_REDIRECT_HOST_RE.match(literal) is not None
     return False
 
 
