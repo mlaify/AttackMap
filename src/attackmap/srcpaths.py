@@ -24,7 +24,17 @@ import re
 JS_TS_SUFFIXES = frozenset({".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"})
 
 _TEST_DIR_SEGMENTS = frozenset(
-    {"tests", "test", "__tests__", "spec", "specs", "testing", "e2e", "__mocks__", "fixtures"}
+    {
+        "tests", "test", "__tests__", "spec", "specs", "testing", "e2e", "__mocks__", "fixtures",
+        # Test-only packages by name (#345): gitea's `models/unittest` (its mock
+        # HTTP server and test DB), civetweb's `unittest/`, Go's `testdata/`
+        # (ignored by the go tool), and helper packages only tests import.
+        # Deliberately not `mock`/`mocks`: an app can serve a real `/api/mock`
+        # route from `app/api/mock/` (dub), and mock-server products ship
+        # their engine there.
+        "unittest", "unittests", "unit_tests", "testdata",
+        "testutil", "testutils", "test_utils", "testhelpers", "test_helpers",
+    }
 )
 
 # Filename shapes across ecosystems: foo.test.ts, foo.spec.js, foo_test.go,
