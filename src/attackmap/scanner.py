@@ -104,6 +104,11 @@ FLASK_ROUTE_PATTERN = re.compile(
     r"@(\w+)\.route\(\s*['\"]([^'\"]+)['\"](?P<args>.*?)\)",
     re.IGNORECASE | re.DOTALL,
 )
+# aiohttp's `RouteTableDef.route(method, path)` takes the verb first:
+# `@routes.route("PATCH", "/users/{id}")`. Matched against the stripped
+# arguments that follow the first string in FLASK_ROUTE_PATTERN (#342).
+ROUTE_VERB_FIRST_ARGS_PATTERN = re.compile(r",\s*+['\"]([^'\"]+)['\"]")
+_ROUTE_VERBS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "*"})
 EXPRESS_DIRECT_ROUTE_PATTERN = re.compile(
     r"\b(\w+)\.(get|post|put|delete|patch|options|head|all)\(\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
@@ -525,8 +530,16 @@ def _extract_python_routes(content: str, file: str) -> list[Route]:
 
     for match in FLASK_ROUTE_PATTERN.finditer(content):
         router_name, route_path, args = match.group(1), match.group(2), match.group("args")
-        full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
         line = _line_of(content, match.start())
+        verb_first = ROUTE_VERB_FIRST_ARGS_PATTERN.match(args.lstrip())
+        if route_path.upper() in _ROUTE_VERBS and verb_first is not None:
+            # aiohttp `@routes.route("PATCH", "/x")`: the first string is the
+            # verb and the path comes second — not Flask's `GET /PATCH` (#342).
+            method = "ANY" if route_path == "*" else route_path.upper()
+            full_path = _join_route_parts(prefixes.get(router_name, ""), verb_first.group(1))
+            routes.append(Route(path=full_path, method=method, file=file, line=line))
+            continue
+        full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
         for method in _extract_methods(args, default_method="GET"):
             routes.append(Route(path=full_path, method=method, file=file, line=line))
 

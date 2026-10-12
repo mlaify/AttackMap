@@ -62,6 +62,23 @@ declared in `attackmap.merge.MERGE_SCHEMA`; the rules are:
 Two analyzers that both emit a route for the same ``(path, method, file)``
 produce one route in the merged result — whichever was emitted first.
 
+## App attack surface (#188, #190)
+
+A platform plugin (the Apple analyzers: Swift and Objective-C) reports
+app-side issues as :class:`AppSurfaceIssue` items in
+``ScanResult.app_surface_issues``: App Transport Security exceptions, custom
+URL-scheme handlers, weakening entitlements, WKWebView script built from
+strings, secrets in UserDefaults or on the pasteboard, unvalidated XPC peers,
+and classes, selectors or libraries resolved from runtime strings. The
+``kind`` should be one of :data:`APP_SURFACE_ISSUE_KINDS` (it is typed ``str``:
+a record with a kind this core doesn't know is dropped and noted under
+``analyzer_errors``, the rest of the result is kept); ``severity`` and
+``confidence`` are per instance. Records are merged by ``(kind, file, line,
+evidence_text)``; on a duplicate the more severe, then more confident, wins. Core turns each kind into one aggregated finding (rule id = the
+kind, dashed, e.g. ``apple-ats-insecure-loads``) with CWE/OWASP taxonomy.
+Entry points such as URL schemes, universal links and XPC services also go in
+``entrypoint_hints`` so they show up in the surface inventory.
+
 ## Contributing taint sinks (#240)
 
 An analyzer can teach core's taint pass new sink signatures (a framework's
@@ -114,7 +131,10 @@ from ..taint_sinks import PLUGIN_GROUP as TAINT_SINK_PLUGIN_GROUP
 from ..taint_sinks import SINK_KINDS as TAINT_SINK_KINDS
 from ..taint_sinks import validate_sink_entry as validate_taint_sink
 from .models import (
+    APP_SURFACE_ISSUE_KINDS,
     DEPENDENCY_ECOSYSTEMS,
+    AppSurfaceIssue,
+    AppSurfaceIssueKind,
     AuthHint,
     DatabaseHint,
     DependencyEcosystem,
@@ -151,6 +171,10 @@ __all__ = [
     # Package ecosystems a DependencyHint may carry (#255).
     "DependencyEcosystem",
     "DEPENDENCY_ECOSYSTEMS",
+    # App attack-surface issues a platform plugin may emit (#188, #190).
+    "AppSurfaceIssue",
+    "AppSurfaceIssueKind",
+    "APP_SURFACE_ISSUE_KINDS",
     # Repo-confined filesystem helpers (#234): walk and read the scanned repo
     # without following symlinks out of it. Plugins should use these instead
     # of Path.rglob / read_text.
