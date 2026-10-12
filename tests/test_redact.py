@@ -95,7 +95,7 @@ def test_no_raw_secret_in_any_artifact(fixture_repo: Path, tmp_path: Path) -> No
     pr = out / "pr-comment.md"
     result = runner.invoke(app, ["analyze", str(fixture_repo), "-o", str(out), "--pr-comment", str(pr)])
     assert result.exit_code == 0, result.output
-    artifacts = sorted(out.iterdir())
+    artifacts = sorted(p for p in out.rglob("*") if p.is_file())
     assert {a.name for a in artifacts} >= {"attackmap-report.json", "attackmap-report.sarif", "pr-comment.md", "review-context-pack.json"}
     for artifact in artifacts:
         assert _leaks(artifact.read_text(encoding="utf-8")) == [], artifact.name

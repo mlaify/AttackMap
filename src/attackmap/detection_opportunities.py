@@ -3,8 +3,8 @@
 For each notable observation, suggest a runtime signal a defender could
 add to catch the same condition in production. Insight-level opportunities
 are prose rule sketches. Opportunities generated per finding class (#251:
-taint/injection routes, SSRF, BOLA, webhook signatures) also carry a
-deployable Sigma rule with its log source, required fields, false-positive
+taint/injection routes, SSRF, BOLA, webhook signatures, CI workflows, leaked
+AWS keys, route-less code weaknesses) also carry a deployable Sigma rule with its log source, required fields, false-positive
 notes and sample events, rendered from the templates in
 :mod:`attackmap.detections`.
 """
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from pathlib import Path
 
 from .attack_taxonomy import techniques_for_finding, techniques_for_insight
 from .detections import (
@@ -874,17 +875,221 @@ def _webhook_rule(
     return _checked(rendered)
 
 
+def _workflow_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[DetectionOpportunity]:
+    """GitHub audit-log rules per untrusted trigger, and the CloudTrail rule
+    for OIDC tokens minted by pull-request runs."""
+    triggers: dict[str, dict] = template_data("workflow").get("triggers", {})
+    # rule id -> workflow files its (unsuppressed) finding covers
+    files: dict[str, list[str]] = {}
+    covered: dict[str, set[tuple[str, int | None]]] = {}
+    for issue in scan.workflow_issues:
+        rule_id = issue.kind.replace("_", "-")
+        finding = by_rule.get(rule_id)
+        if finding is None:
+            continue
+        if rule_id not in covered:
+            covered[rule_id] = _location_keys(finding)
+        if (issue.file, issue.line) not in covered[rule_id]:
+            continue
+        if issue.file not in files.setdefault(rule_id, []):
+            files[rule_id].append(issue.file)
+    out: list[DetectionOpportunity] = []
+    # One audit-log rule per trigger set; rule ids sharing it share the rule.
+    by_events: dict[tuple[str, ...], list[str]] = {}
+    for rule_id in files:
+        if rule_id in triggers:
+            by_events.setdefault(tuple(triggers[rule_id]["events"]), []).append(rule_id)
+    for events, rule_ids in by_events.items():
+        rule_ids = sorted(rule_ids)
+        locations = [f for r in rule_ids for f in files[r]]
+        rendered = _checked(
+            render_rule(
+                "github-untrusted-trigger-run",
+                rule_ids=rule_ids,
+                key="|".join([_repo_key(scan), *events, *sorted(locations)]),
+                params={
+                    "trigger_text": "/".join(events),
+                    "triggers": list(events),
+                    "trigger_example": events[0],
+                    "kind_label": "; ".join(triggers[r]["label"] for r in rule_ids),
+                    "location": _listed(locations),
+                    "rule_id": ", ".join(rule_ids),
+                },
+            )
+        )
+        if rendered is None:
+            continue
+        opportunity = _rule_opportunity(
+            opportunity_id=f"detect:workflow:{'+'.join(events)}",
+            finding=by_rule[rule_ids[0]],
+            rendered=rendered,
+            rationale=(
+                f"Runs triggered by {'/'.join(events)} execute attacker-influenced code in a workflow AttackMap "
+                "flagged; the audit log shows who started each run."
+            ),
+        )
+        for rule_id in rule_ids[1:]:
+            opportunity.related_rule_ids.append(rule_id)
+            opportunity.related_finding_titles.append(by_rule[rule_id].title)
+        out.append(opportunity)
+    if "oidc-on-untrusted-trigger" in files:
+        rendered = _checked(
+            render_rule(
+                "github-oidc-untrusted-trigger-cloudtrail",
+                rule_ids=["oidc-on-untrusted-trigger"],
+                key="|".join([_repo_key(scan), *sorted(files["oidc-on-untrusted-trigger"])]),
+                params={
+                    "rule_id": "oidc-on-untrusted-trigger",
+                    "location": _listed(files["oidc-on-untrusted-trigger"]),
+                },
+            )
+        )
+        if rendered is not None:
+            out.append(
+                _rule_opportunity(
+                    opportunity_id="detect:oidc-on-untrusted-trigger:cloudtrail",
+                    finding=by_rule["oidc-on-untrusted-trigger"],
+                    rendered=rendered,
+                    rationale=(
+                        "An OIDC token minted by a pull-request run is only dangerous where a cloud role trusts it; "
+                        "CloudTrail shows each such role assumption."
+                    ),
+                )
+            )
+    return out
+
+
+def _secret_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[DetectionOpportunity]:
+    """CloudTrail rule for committed AWS access keys (placeholder key id:
+    AttackMap keeps no secret values)."""
+    data = template_data("secrets")
+    kinds = set(data.get("aws_key_kinds") or [])
+    out: list[DetectionOpportunity] = []
+    for rule_id, items in (
+        ("hardcoded-secret", scan.secret_hints),
+        ("secret-in-git-history", scan.secret_history),
+    ):
+        finding = by_rule.get(rule_id)
+        if finding is None:
+            continue
+        covered = _location_keys(finding)
+        hits = [h for h in items if h.kind in kinds and (h.file, h.line) in covered]
+        if not hits:
+            continue
+        locations = [f"{h.file}:{h.line}" if h.line else h.file for h in hits]
+        rendered = _checked(
+            render_rule(
+                "aws-leaked-access-key-cloudtrail",
+                rule_ids=[rule_id],
+                key="|".join([_repo_key(scan), *sorted(locations)]),
+                params={
+                    "rule_id": rule_id,
+                    "locations": _listed(locations),
+                    "placeholder": data.get("placeholder", "REPLACE_WITH_LEAKED_ACCESS_KEY_ID"),
+                },
+            )
+        )
+        if rendered is not None:
+            out.append(
+                _rule_opportunity(
+                    opportunity_id=f"detect:{rule_id}:aws-access-key",
+                    finding=finding,
+                    rendered=rendered,
+                    rationale=(
+                        "A committed AWS key must be rotated, but the leaked key itself stays useful as a tripwire: "
+                        "kept active with no permissions, any use of it is an attacker who copied it."
+                    ),
+                )
+            )
+    return out
+
+
+def _weakness_opportunities(scan: ScanResult, by_rule: dict[str, Finding]) -> list[DetectionOpportunity]:
+    """App-wide request-marker rules for code weaknesses without a route."""
+    markers: dict[str, dict] = template_data("weakness").get("markers", {})
+    first: dict[str, str] = {}
+    covered: dict[str, set[tuple[str, int | None]]] = {}
+    for weakness in scan.code_weaknesses:
+        rule_id = weakness.kind.replace("_", "-")
+        finding = by_rule.get(rule_id)
+        if rule_id in first or rule_id not in markers or finding is None:
+            continue
+        suffixes = tuple(markers[rule_id].get("suffixes") or ())
+        if suffixes and not weakness.file.lower().endswith(suffixes):
+            continue
+        if rule_id not in covered:
+            covered[rule_id] = _location_keys(finding)
+        if (weakness.file, weakness.line) not in covered[rule_id]:
+            continue
+        first[rule_id] = f"{weakness.file}:{weakness.line}" if weakness.line else weakness.file
+    out: list[DetectionOpportunity] = []
+    for rule_id, location in first.items():
+        spec = markers[rule_id]
+        rendered = _checked(
+            render_rule(
+                "weakness-request-markers",
+                rule_ids=[rule_id],
+                key=f"{_repo_key(scan)}|{location.rsplit(':', 1)[0]}",
+                params={
+                    "label": spec["label"],
+                    "kind_label": spec["kind_label"],
+                    "level": spec["level"],
+                    "markers": [_sigma_escape(str(m)) for m in spec["contains"]],
+                    "falsepositives": list(spec.get("falsepositives") or []),
+                    "sample": spec["sample"],
+                    "benign": spec["benign"],
+                    "location": location,
+                    "rule_id": rule_id,
+                },
+            )
+        )
+        if rendered is not None:
+            out.append(
+                _rule_opportunity(
+                    opportunity_id=f"detect:{rule_id}:requests",
+                    finding=by_rule[rule_id],
+                    rendered=rendered,
+                    rationale=(
+                        f"{spec['label']} has no single route here; requests probing for it carry recognizable "
+                        "markers in the query string."
+                    ),
+                )
+            )
+    return out
+
+
+def _repo_key(scan: ScanResult) -> str:
+    """The scanned directory's name, folded into the ids of repository-wide
+    rules (workflows, keys, weaknesses) whose other inputs, such as
+    `.github/workflows/ci.yml`, repeat across repositories."""
+    try:
+        return Path(scan.root).resolve().name
+    except (OSError, RuntimeError, ValueError):
+        return Path(scan.root).name
+
+
+def _listed(items: list[str], limit: int = 3) -> str:
+    shown = ", ".join(_short(i, 80) for i in items[:limit])
+    return shown + (f" and {len(items) - limit} more" if len(items) > limit else "")
+
+
 def _finding_class_opportunities(findings: list[Finding], scan: ScanResult) -> list[DetectionOpportunity]:
     by_rule: dict[str, Finding] = {}
     for finding in findings:
         if finding.rule_id and finding.rule_id not in by_rule:
             by_rule[finding.rule_id] = finding
+    # Per-route rules share one budget (fairly across rule ids); the
+    # per-repository rules (a handful at most, one per template) are always kept.
     routes = _fair_cap(_taint_opportunities(scan, by_rule) + _bola_opportunities(scan, by_rule))
     out = [o for o in routes if not o.id.startswith("detect:bola-")]
     ssrf_finding = by_rule.get("ssrf")
     if ssrf_finding is not None:
         out += _ssrf_followups([o for o in out if "ssrf" in o.related_rule_ids], ssrf_finding, scan)
-    return out + [o for o in routes if o.id.startswith("detect:bola-")]
+    out += [o for o in routes if o.id.startswith("detect:bola-")]
+    out += _workflow_opportunities(scan, by_rule)
+    out += _secret_opportunities(scan, by_rule)
+    out += _weakness_opportunities(scan, by_rule)
+    return out
 
 
 def _fair_cap(opportunities: list[DetectionOpportunity], limit: int = _MAX_RULE_OPPORTUNITIES) -> list[DetectionOpportunity]:

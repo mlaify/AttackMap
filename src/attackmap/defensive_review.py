@@ -542,7 +542,10 @@ def _render_detection_opportunities(
             )
         if len(rules) > _MAX_RULES_SHOWN:
             lines.append(f"- …and {len(rules) - _MAX_RULES_SHOWN} more Sigma rules in JSON output.")
-        lines.append("- Each rule's `test_events` (JSON report) holds sample log lines that it must and must not match.")
+        lines.append(
+            "- The rules are written to `attackmap-detections/*.yml` (with `--format json` or `all`); each rule's "
+            "`test_events` in the JSON report holds sample log lines it must and must not match."
+        )
     coverage = detection_coverage(findings or [], opportunities)
     if coverage:
         lines += [

@@ -1,0 +1,121 @@
+# CI workflow rules (#251, part 2). A workflow that runs untrusted code with
+# secrets or a write token can't be watched from inside the job, but the
+# GitHub audit log shows every run and the cloud provider shows what the
+# run's OIDC token was used for.
+#
+# GitHub audit log field names follow the audit-log streaming schema
+# (`action`, `actor`, `repo`, and per-event keys such as `event` on
+# `workflows.created_workflow_run`). They are experimental here: confirm
+# them against a sample event from your stream before alerting.
+
+templates:
+  github-untrusted-trigger-run:
+    date: "2026-10-12"
+    title: "GitHub Actions run triggered by ${trigger_text}"
+    description: >-
+      A workflow run created by a ${trigger_text} event. AttackMap found
+      ${kind_label} in ${location} (rule ${rule_id}), so a run started from a
+      fork or by an outside actor executes attacker-controlled code with the
+      workflow's secrets and token. Review runs whose actor isn't a member of
+      the organization; scope the rule to the repository with the repo field.
+    logsource:
+      product: github
+      service: audit
+    fields_required: [action, event, actor, repo, workflow_run_id, head_branch]
+    detection:
+      selection:
+        action: workflows.created_workflow_run
+        event: "${triggers}"
+      condition: selection
+    falsepositives:
+      - Every run of this trigger matches, including maintainers' own; exclude organization members by actor, or use the rule for hunting
+      - Bots that comment on or open pull requests (dependabot, renovate)
+    level: low
+    test_events:
+      positive:
+        - action: workflows.created_workflow_run
+          event: "${trigger_example}"
+          actor: outside-contributor
+          repo: example-org/example-repo
+      negative:
+        - action: workflows.created_workflow_run
+          event: push
+          actor: maintainer
+          repo: example-org/example-repo
+        - action: workflows.completed_workflow_run
+          event: "${trigger_example}"
+          actor: outside-contributor
+          repo: example-org/example-repo
+
+  github-oidc-untrusted-trigger-cloudtrail:
+    date: "2026-10-12"
+    title: "AWS role assumed with a GitHub OIDC token from a pull-request run"
+    description: >-
+      CloudTrail AssumeRoleWithWebIdentity calls whose GitHub Actions OIDC
+      subject ends in ":pull_request", that is, the token was minted by a run
+      triggered by a pull request. AttackMap found a workflow that requests
+      an OIDC token (id-token: write) on a pull-request trigger (rule
+      ${rule_id}, ${location}). GitHub gives no OIDC token to pull_request
+      runs from forks, so the exposure is pull requests from branches in the
+      same repository: anyone who can push a branch (a contributor, a
+      compromised account or bot token) can run code holding the role. A
+      pull_request_target workflow that runs fork code with id-token: write
+      exposes it to forks as well. Restrict the role's trust policy to
+      branch or environment subjects. Blind spot: issue_comment and workflow_run runs get the
+      default branch's subject (ref:refs/heads/...), so their tokens look like
+      trusted ones here; fix those workflows instead.
+    logsource:
+      product: aws
+      service: cloudtrail
+    fields_required: [eventName, eventSource, userIdentity.type, userIdentity.identityProvider, userIdentity.userName, requestParameters.roleArn, sourceIPAddress]
+    detection:
+      selection:
+        eventSource: sts.amazonaws.com
+        eventName: AssumeRoleWithWebIdentity
+        userIdentity.identityProvider|contains: token.actions.githubusercontent.com
+        userIdentity.userName|endswith: ":pull_request"
+      condition: selection
+    falsepositives:
+      - Roles deliberately trusted for pull-request runs (read-only plan or test roles); exclude them by requestParameters.roleArn
+    level: high
+    test_events:
+      positive:
+        - eventSource: sts.amazonaws.com
+          eventName: AssumeRoleWithWebIdentity
+          userIdentity:
+            type: WebIdentityUser
+            identityProvider: arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com
+            userName: repo:example-org/example-repo:pull_request
+          requestParameters:
+            roleArn: arn:aws:iam::123456789012:role/deploy
+      negative:
+        - eventSource: sts.amazonaws.com
+          eventName: AssumeRoleWithWebIdentity
+          userIdentity:
+            type: WebIdentityUser
+            identityProvider: arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com
+            userName: repo:example-org/example-repo:ref:refs/heads/main
+          requestParameters:
+            roleArn: arn:aws:iam::123456789012:role/deploy
+
+data:
+  # Workflow rule id -> the triggers whose runs carry the risk, and a label.
+  # Kinds without an entry (unpinned actions, token permissions, curl | sh,
+  # script injection…) have no run-level signal in the audit log: the
+  # coverage table reports them as not covered.
+  triggers:
+    pr-target-checkout:
+      label: a pull_request_target workflow that checks out the pull request's code
+      events: [pull_request_target]
+    cache-poisoning-pr-target:
+      label: a pull_request_target workflow that writes a cache keyed on pull-request data
+      events: [pull_request_target]
+    issue-comment-pr-checkout:
+      label: an issue_comment workflow that checks out pull-request code
+      events: [issue_comment]
+    workflow-run-artifact-poisoning:
+      label: a workflow_run workflow that executes the triggering run's artifacts
+      events: [workflow_run]
+    self-hosted-pr:
+      label: a self-hosted runner on a pull-request trigger
+      events: [pull_request, pull_request_target]

@@ -161,7 +161,9 @@ def render_rule(
     fields_required = [f for f in filled.get("fields_required", []) if isinstance(f, str) and f]
     logsource = {k: str(v) for k, v in filled["logsource"].items()}
     primary = rule_ids[0]
-    sigma: dict[str, Any] = {"title": filled["title"], "id": rule_uuid(template_id, primary, key)}
+    # Titles carry repo text (routes): one line, whitespace collapsed.
+    title = " ".join(str(filled["title"]).split())[:256]
+    sigma: dict[str, Any] = {"title": title, "id": rule_uuid(template_id, primary, key)}
     if filled.get("name"):
         sigma["name"] = filled["name"]
     sigma.update(
@@ -225,12 +227,45 @@ def _correlation(template_id: str, rule_id: str, key: str, base: dict, spec: dic
     return rule
 
 
+# ---------------------------------------------------------------- export
+
+_FILE_SLUG = re.compile(r"[^a-z0-9]+")
+# Names `rule_filename` produces; only these are ever removed as stale.
+RULE_FILE = re.compile(r"\A[a-z0-9-]{1,100}-[0-9a-f]{8}\.yml\Z")
+
+
+def rule_filename(opportunity_id: str, sigma_id: str) -> str:
+    """``<slug of the opportunity id>-<first 8 hex of the Sigma id>.yml``."""
+    slug = _FILE_SLUG.sub("-", opportunity_id.lower().removeprefix("detect:")).strip("-")[:90].strip("-")
+    return f"{slug or 'rule'}-{sigma_id.replace('-', '')[:8]}.yml"
+
+
+def rule_yaml(sigma: dict[str, Any], correlation: dict[str, Any] | None = None) -> str:
+    """The rule as a Sigma YAML file: the detection rule, then its
+    correlation rule (if any) as a second document."""
+    docs = [sigma] + ([correlation] if correlation else [])
+    return "---\n".join(yaml.safe_dump(d, sort_keys=False, allow_unicode=True, width=120) for d in docs)
+
+
 # ---------------------------------------------------------------- routes
 
-# In-segment parameter syntaxes: <id>, {id}, [id] / [[...path]], and `*`.
-# `:name` counts only at the start of a segment (`/v1/things:batchGet` is a
-# literal), optionally with a `(regex)` constraint and an optional-marker `?`.
-_INLINE_PARAM = re.compile(r"<[^<>/]{1,80}>|\{[^{}/]{1,80}\}|\[{1,2}[^\[\]/]{1,80}\]{1,2}|\*+")
+# In-segment parameter syntaxes: <id>, {id}, [id] / [[...path]], `*`, and
+# `:name` right after `-` or `.` (Express `/flights/:from-:to`,
+# `/plantae/:genus.:species`). Elsewhere `:name` counts only at the start of
+# a segment (`/v1/things:batchGet` is a literal), optionally with an
+# optional-marker `?`.
+_INLINE_PARAM = re.compile(
+    r"<[^<>/]{1,80}>|\{[^{}/]{1,80}\}|\[{1,2}[^\[\]/]{1,80}\]{1,2}|\*+"
+    r"|(?<=[-.]):[A-Za-z_][A-Za-z0-9_]{0,63}(\?)?"
+)
+# A parameter with an inline regex: `:id(\d+)`, `{id:[0-9]{2}}`,
+# `<regex("[a-z]+"):slug>`. We can't translate those faithfully, and a
+# rule built from them would be dead, so the route gets none.
+_REGEX_PARAM = re.compile(
+    r":[A-Za-z_][A-Za-z0-9_]{0,63}\("
+    r"|\{[^{}/]{0,80}:[^{}/]{0,80}[\[\]()*+?\\|^${]"
+    r"|<[^<>/]{0,80}\("
+)
 _COLON_HEAD = re.compile(r"\A:[A-Za-z_][A-Za-z0-9_]{0,63}(?:\([^()/]{0,80}\))?(\?)?")
 _WORD = re.compile(r"[A-Za-z0-9]{2}")
 _HTTP_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
@@ -241,6 +276,9 @@ MAX_OPTIONAL_SEGMENTS = 2
 
 _PARAM = "\x00"  # a parameter part inside a segment
 _REST = "\x01"  # a final catch-all `*`
+# An optional parameter after a separator (`/a/b.:fmt?`): "\x02" + the
+# separator; both are optional together, as in Express.
+_OPT = "\x02"
 
 
 @dataclass(frozen=True)
@@ -266,9 +304,14 @@ def _parse(path: str) -> tuple[_Segment, ...]:
             text = text[head.end():]
         pos = 0
         for match in _INLINE_PARAM.finditer(text):
-            if match.start() > pos:
-                parts.append(text[pos:match.start()])
-            parts.append(_PARAM)
+            if match.lastindex and match.group(1):  # `.:fmt?` / `-:to?`
+                if match.start() - 1 > pos:
+                    parts.append(text[pos:match.start() - 1])
+                parts.append(_OPT + text[match.start() - 1])
+            else:
+                if match.start() > pos:
+                    parts.append(text[pos:match.start()])
+                parts.append(_PARAM)
             pos = match.end()
         if pos < len(text):
             parts.append(text[pos:])
@@ -284,7 +327,12 @@ def _parse(path: str) -> tuple[_Segment, ...]:
 
 
 def _is_marker(part: str) -> bool:
-    return part in (_PARAM, _REST)
+    return part in (_PARAM, _REST) or part.startswith(_OPT)
+
+
+def _marker_text(part: str, value: str) -> str:
+    """A marker filled with a sample value (for examples and globs)."""
+    return part[1] + value if part.startswith(_OPT) else value
 
 
 def _param_count(segments: tuple[_Segment, ...]) -> int:
@@ -303,13 +351,19 @@ def route_scopable(path: str) -> bool:
     - parameterized routes without a literal word of at least two letters or
       digits (``/``, ``*``, ``/:id``, ``/:a.:b``, ``*.*``), whose rule would
       match nearly any request; an exact route needs one letter or digit;
+    - routes whose parameters carry an inline regex (``:id(\\d+)``,
+      ``{id:[0-9]{2}}``);
     - routes with more than ``MAX_ROUTE_PARAMS`` parameters or
       ``MAX_OPTIONAL_SEGMENTS`` optional segments.
     """
     if not path or len(path) > MAX_ROUTE_CHARS or not path.isascii() or not path.isprintable():
         return False
+    if _REGEX_PARAM.search(path):
+        return False
     segments = _parse(path)
-    literal = "".join(part for seg in segments for part in seg.parts if not _is_marker(part))
+    # Literal pieces joined with a separator, so `/a/b` or `a{x}b` doesn't
+    # pass as the word "ab".
+    literal = "/".join(part for seg in segments for part in seg.parts if not _is_marker(part))
     params = _param_count(segments)
     if params == 0:
         return any(ch.isalnum() for ch in literal)
@@ -336,10 +390,16 @@ def _segment_body(seg: _Segment) -> str:
     for i, part in enumerate(seg.parts):
         if part == _REST:
             out.append(".*")
-        elif part == _PARAM:
+        elif part == _PARAM or part.startswith(_OPT):
             nxt = seg.parts[i + 1] if i + 1 < len(seg.parts) else None
-            stop = regex_literal(nxt[0]) if nxt and not _is_marker(nxt) else ""
-            out.append(f"[^/{stop}]+")
+            if nxt and nxt.startswith(_OPT):
+                stop = regex_literal(nxt[1])
+            else:
+                stop = regex_literal(nxt[0]) if nxt and not _is_marker(nxt) else ""
+            if part == _PARAM:
+                out.append(f"[^/{stop}]+")
+            else:
+                out.append(f"(?:{regex_literal(part[1])}[^/{stop}]+)?")
         else:
             out.append(regex_literal(part))
     return "".join(out)
@@ -361,7 +421,7 @@ def _sigma_literal(text: str) -> str:
 
 def route_glob(path: str) -> str:
     """Display form of a route: parameters become ``*``."""
-    segs = ["".join("*" if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
+    segs = ["".join(_marker_text(p, "*") if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
     return "/" + "/".join(segs)
 
 
@@ -394,7 +454,7 @@ def stem_selector(paths: list[str]) -> tuple[str, object] | None:
 def route_example(path: str, value: str = "1001") -> str:
     """A concrete URI path that matches :func:`route_selector` (parameters
     and wildcards filled with ``value``, optional segments included)."""
-    segs = ["".join(value if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
+    segs = ["".join(_marker_text(p, value) if _is_marker(p) else p for p in seg.parts) for seg in _parse(path or "/")]
     return "/" + "/".join(segs)
 
 
@@ -405,6 +465,7 @@ def sigma_method(method: str | None) -> str | None:
 
 
 __all__ = [
+    "RULE_FILE",
     "RenderedRule",
     "TemplateError",
     "has_path_params",
@@ -414,8 +475,10 @@ __all__ = [
     "route_glob",
     "route_scopable",
     "route_selector",
+    "rule_filename",
     "stem_selector",
     "rule_uuid",
+    "rule_yaml",
     "sigma_method",
     "taxonomy_references",
     "taxonomy_tags",
