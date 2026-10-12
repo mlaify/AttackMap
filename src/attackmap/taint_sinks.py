@@ -40,7 +40,9 @@ _ARG_WORDS: dict[str, tuple[int, ...] | None] = {"all": None, "receiver": RECEIV
 _FLAGS = {"ignorecase": re.IGNORECASE, "dotall": re.DOTALL}
 
 _REQUIRED = ("id", "kind", "langs", "regex", "cwe")
-_OPTIONAL = ("gate", "args", "when", "unless", "requires", "flags", "token_gate", "base_score", "note")
+_OPTIONAL = (
+    "gate", "args", "when", "unless", "receiver_unless", "requires", "flags", "token_gate", "base_score", "note",
+)
 _ID_RE = re.compile(r"[a-z0-9]+(?:[-_.][a-z0-9]+)*")
 
 
@@ -69,6 +71,7 @@ class SinkSpec(NamedTuple):
     token_gate: bool = True
     base_score: int | None = None
     source: str = "core"
+    receiver_unless: re.Pattern[str] | None = None
 
 
 def _compile(value: Any, field: str, where: str, flags: int = 0) -> re.Pattern[str]:
@@ -156,7 +159,87 @@ def validate_sink_entry(
         token_gate=token_gate,
         base_score=base,
         source=source,
+        receiver_unless=(
+            _compile(entry["receiver_unless"], "receiver_unless", where) if entry.get("receiver_unless") else None
+        ),
     )
+
+
+_RECEIVER_SCAN_LIMIT = 400
+_ASSIGN_SCAN_LIMIT = 64
+_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]{0,63}")
+_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+
+
+def call_receiver(content: str, dot: int) -> str:
+    """The receiver expression of the method call whose `.` is at ``dot``:
+    `crypto.createHmac('sha256', k)` for `crypto.createHmac('sha256', k).update(x)`,
+    across line breaks in a chain. When the receiver is a bare name, the
+    right-hand side of its nearest earlier assignment is appended
+    (`h = crypto.createHash('sha256')`), so a pattern can see what the
+    variable holds. Bounded: at most ``_RECEIVER_SCAN_LIMIT`` characters back,
+    and ``_ASSIGN_SCAN_LIMIT`` earlier mentions of the name."""
+    lo = max(0, dot - _RECEIVER_SCAN_LIMIT)
+    i = dot
+    while i > lo and content[i - 1] in " \t\r\n":
+        i -= 1
+    end = i
+    while i > lo:
+        c = content[i - 1]
+        if c in ")]":
+            opener = "(" if c == ")" else "["
+            depth = 0
+            j = i - 1
+            while j >= lo:
+                if content[j] == c:
+                    depth += 1
+                elif content[j] == opener:
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j -= 1
+            if j < lo:
+                break
+            i = j
+        elif c in _IDENT_CHARS or c == ".":
+            i -= 1
+        elif c in " \t\r\n":
+            # Whitespace inside a chain only before a `.`: `crypto\n  .createHmac(…)`.
+            k = i
+            while k > lo and content[k - 1] in " \t\r\n":
+                k -= 1
+            if content[i] != "." and (k == 0 or content[k - 1] != "."):
+                break
+            i = k
+        else:
+            break
+    receiver = content[i:end].strip()
+    if _IDENT_RE.fullmatch(receiver):
+        rhs = _assigned_value(content, receiver, i)
+        if rhs:
+            return f"{receiver} = {rhs}"
+    return receiver
+
+
+def _assigned_value(content: str, name: str, before: int) -> str:
+    """The right-hand side of the nearest `name = …` before ``before`` (to the end of its line)."""
+    pos = before
+    for _ in range(_ASSIGN_SCAN_LIMIT):
+        pos = content.rfind(name, 0, pos)
+        if pos < 0:
+            return ""
+        after = pos + len(name)
+        if (pos > 0 and (content[pos - 1] in _IDENT_CHARS or content[pos - 1] == ".")) or (
+            after < len(content) and content[after] in _IDENT_CHARS
+        ):
+            continue
+        k = after
+        while k < len(content) and content[k] in " \t":
+            k += 1
+        if content.startswith("=", k) and not content.startswith(("==", "=>"), k):
+            line_end = content.find("\n", k)
+            return content[k + 1 : line_end if line_end >= 0 else len(content)].strip()[:_RECEIVER_SCAN_LIMIT]
+    return ""
 
 
 def _load_kinds(data: dict) -> dict[str, KindMeta]:

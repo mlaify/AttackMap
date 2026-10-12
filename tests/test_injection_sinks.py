@@ -204,6 +204,63 @@ def test_mongo_find_with_request_object_is_nosql(tmp_path: Path) -> None:
     assert "nosql_injection" in _kinds(scan)
 
 
+# A hash/HMAC/cipher `.update(req.body)` digests the body (#330): webhook
+# signature checks are not Mongo updates.
+_DIGEST_UPDATES = [
+    "crypto.createHmac('sha256', process.env.SECRET).update(req.body).digest('hex')",
+    "crypto.createHash('sha256').update(req.body).digest('hex')",
+    "crypto.createHash('sha256').update('v0:').update(req.body.raw).digest('hex')",
+    "crypto\n    .createHmac('sha256', key)\n    .update(req.body)\n    .digest('base64')",
+    "createCipheriv('aes-256-gcm', key, iv).update(req.body.data)",
+]
+_MONGO_UPDATES = [
+    "User.update(req.body)",
+    "Model.findOneAndUpdate(req.body.filter, { $set: { seen: true } })",
+    "collection.update(req.query.x, { $set: { seen: true } })",
+    "db.collection('users').updateOne(req.body, { $set: { seen: true } })",
+]
+
+
+def _express(tmp_path: Path, statement: str) -> ScanResult:
+    (tmp_path / "server.js").write_text(
+        "const express = require('express');\n"
+        "const crypto = require('crypto');\n"
+        "const app = express();\n"
+        "app.post('/hook', async (req, res) => {\n"
+        f"  const out = {statement};\n"
+        "  res.json(out);\n"
+        "});\n",
+        encoding="utf-8",
+    )
+    return scan_repo(tmp_path)
+
+
+@pytest.mark.parametrize("statement", _DIGEST_UPDATES)
+def test_digest_update_of_the_body_is_not_nosql(tmp_path: Path, statement: str) -> None:
+    assert "nosql_injection" not in _kinds(_express(tmp_path, statement))
+
+
+def test_update_on_a_variable_holding_an_hmac_is_not_nosql(tmp_path: Path) -> None:
+    statement = "(() => { const h = crypto.createHmac('sha256', key);\n  h.update(req.body);\n  return h.digest('hex') })()"
+    assert "nosql_injection" not in _kinds(_express(tmp_path, statement))
+
+
+@pytest.mark.parametrize("statement", _MONGO_UPDATES)
+def test_mongo_update_with_request_data_is_still_nosql(tmp_path: Path, statement: str) -> None:
+    assert "nosql_injection" in _kinds(_express(tmp_path, statement))
+
+
+def test_mongo_update_beside_an_hmac_is_still_nosql(tmp_path: Path) -> None:
+    # The digest exemption reads the receiver, not the line or the file.
+    statement = "crypto.createHmac('sha256', key).digest('hex') && User.update(req.body)"
+    assert "nosql_injection" in _kinds(_express(tmp_path, statement))
+
+
+def test_python_hashlib_update_is_not_nosql(tmp_path: Path) -> None:
+    body = "import hashlib\ndef handle(request):\n    return hashlib.sha256().update(request['payload'])\n"
+    assert "nosql_injection" not in _kinds(scan_repo(_route_repo(tmp_path, body)))
+
+
 def test_where_operator_is_nosql(tmp_path: Path) -> None:
     body = "def handle(request):\n    return coll.find({'$where': 'this.x==' + request['v']})\n"
     scan = scan_repo(_route_repo(tmp_path, body))

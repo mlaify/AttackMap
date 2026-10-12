@@ -23,6 +23,7 @@ import re
 
 from .srcpaths import line_number
 from .models import CodeWeakness
+from .taint_sinks import call_receiver
 
 _REQ = r"(?:req|request|body|query|params|payload)"
 
@@ -36,6 +37,13 @@ _JS_BODY_BIND = _rx(
 )
 # A Sequelize field allow-list in the same call: `.update(req.body, { fields: [...] })`.
 _FIELD_ALLOWLIST = _rx(r"\bfields\s*:\s*\[")
+# A Node crypto hash/HMAC/cipher (or hashlib/CryptoJS/forge) receiver:
+# `crypto.createHmac(…).update(req.body)` digests the body, it doesn't bind it
+# (#330). Same pattern as the `mongo-filter-request` sink's `receiver_unless`.
+_DIGEST_RECEIVER = re.compile(
+    r"\bcreate(?:Hmac|Hash|Cipheriv|Decipheriv|Cipher|Decipher|Sign|Verify)\s*\(|\bhashlib\.\w+\s*\(|\bhmac\.new\s*\("
+    r"|\bCryptoJS\.|\bforge\.(?:md|hmac)\."
+)
 _CALL_SCAN_LIMIT = 2000
 
 _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
@@ -294,6 +302,12 @@ def find_code_weaknesses(content: str, rel_file: str) -> list[CodeWeakness]:
             if _in_line_comment(content, match.start()):
                 continue  # a pattern inside a `//` comment isn't real code (#94)
             if pattern is _JS_BODY_BIND and _FIELD_ALLOWLIST.search(_rest_of_call(content, match.end())):
+                continue
+            if (
+                pattern is _JS_BODY_BIND
+                and content.startswith(".", match.start())
+                and _DIGEST_RECEIVER.search(call_receiver(content, match.start()))
+            ):
                 continue
             line = line_number(content, match.start())
             key = (kind, line)
