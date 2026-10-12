@@ -22,7 +22,7 @@ merge / dedup behavior follows automatically.
   kept.
 - **Route twins** (#337): a plugin route on the same `(file, line)` as a
   built-in route supersedes it when they are plausibly one registration
-  (the plugin joined a group prefix, or parsed a raw pattern). See
+  (the plugin joined a group prefix the built-in couldn't see). See
   :func:`superseded_builtin_routes`.
 - **`languages`**: union, then sorted alphabetically for stable display.
 - **`files_scanned`**: summed across results.
@@ -164,67 +164,86 @@ def merge_into(destination: Any, items: Iterable[Any], rule: MergeRule, seen: se
             index[k] = item
 
 
-# A built-in extractor's path that is still a raw route pattern: Go 1.22
-# `"GET /items/{id}"`, a host-scoped `"example.com/x"`. Bounded: route paths
-# are short, and a longer one just isn't treated as raw.
-_RAW_ROUTE_PATTERN = re.compile(r"(?:([A-Z]{1,16})[ \t]+)?[^/\s]{0,253}(/\S{0,2048})")
+# A path parameter in any framework's syntax: `:id`, `{id}` / `{id...}`,
+# `<int:id>`, `[id]`. Normalized to one placeholder, so `/users/:id` and
+# `/users/{id}` compare equal. Linear: each alternative stops at its closer.
+_PATH_PARAM = re.compile(r":[A-Za-z_]\w*|\{[^{}/]*\}|<[^<>/]*>|\[[^\[\]/]*\]")
+# Segments of a path considered for suffixes; a longer path only offers its
+# last ones (a twin's built-in path is the end of the plugin's).
+_MAX_SUFFIX_SEGMENTS = 32
 
 
-def _route_path_key(path: str) -> str:
-    """A path compared for twin matching: a leading `/`, no repeated or
-    trailing `/` (the root is the empty string)."""
-    cleaned = "/" + path.strip().strip("/")
-    while "//" in cleaned:
-        cleaned = cleaned.replace("//", "/")
-    return cleaned.rstrip("/")
+def _route_segments(path: str) -> tuple[str, ...]:
+    """A path's segments for twin matching: parameters normalized, empty
+    segments (leading, trailing, repeated `/`) dropped. The root is ``()``."""
+    return tuple(_PATH_PARAM.sub("{}", seg) for seg in path.strip().split("/") if seg)
 
 
-def _is_route_twin(builtin: Any, plugin: Any) -> bool:
-    """Whether a built-in route and a plugin route registered on the same
-    (file, line) are plausibly the same registration (#337): the plugin's
-    path ends with the built-in's at a segment boundary (the plugin joined a
-    group prefix the built-in can't see), the built-in path is the raw form
-    the plugin parsed (`"GET /items/{id}"`), and the methods agree or the
-    built-in said `ANY`."""
-    path, method = builtin.path, builtin.method.upper()
-    raw = _RAW_ROUTE_PATTERN.fullmatch(path.strip())
-    if raw and raw.group(0).strip() != raw.group(2):
-        method = raw.group(1) or method
-        path = raw.group(2)
-    plugin_method = plugin.method.upper()
-    if method not in (plugin_method, "ANY"):
-        return False
-    built, joined = _route_path_key(path), _route_path_key(plugin.path)
-    return joined.endswith(built)  # the root ("") is a suffix of every path
-
-
-def superseded_builtin_routes(routes: Iterable[Any], builtin_names: frozenset[str]) -> set[int]:
+def superseded_builtin_routes(builtin_routes: Iterable[Any], plugin_routes: Iterable[Any]) -> set[int]:
     """``id()`` of each built-in route that a plugin route on the same
     (file, line) supersedes (#337).
 
-    The core's built-in extractors read one call at a time; a plugin that
-    joins group / router prefixes (`api := r.Group("/api")`) or parses a route
-    pattern emits the same registration under a different path, and the
-    `(path, method, file)` merge key keeps both. The plugin route wins: its
-    path, method, auth and provenance are what's left. Only a built-in route
-    is ever dropped, and only when it plausibly is the plugin's registration
-    (:func:`_is_route_twin`), so two plugin routes, two built-in routes, or
-    two different registrations on one line all survive.
+    Core's built-in extractors read one call at a time; a plugin that joins
+    group / router prefixes (`api := r.Group("/api")`) emits the same
+    registration under a longer path, and the `(path, method, file)` merge
+    key keeps both. A built-in route is a twin of a plugin route on its
+    (file, line) when:
+
+    - the plugin path ends with the built-in path at a segment boundary
+      (parameters compared as placeholders, so `:id` matches `{id}`), and
+    - the methods match, or the built-in said `ANY` (a plugin `ANY` never
+      supersedes a specific built-in method: it would lose the method).
+
+    The root `/` is a suffix of every path, so a built-in `/` only matches
+    a plugin `/`, or the plugin's one route when the line has exactly one
+    route of each kind. Two calls on one line whose paths end the same way
+    (`r.Get("/a", h); v1.Get("/a", h)`) can still be taken for one
+    registration; that's the residual risk, and it needs two registrations
+    of the same path and method on one line.
+
+    Only a built-in route is ever dropped, so two plugin routes, two
+    built-in routes, or different registrations on one line all survive.
+    Linear: plugin routes are indexed per site by (method, suffix).
     """
-    routes = list(routes)
-    plugin_by_site: dict[tuple[str, int], list[Any]] = {}
-    for route in routes:
-        source = route.source_analyzer
-        if source is not None and source not in builtin_names and route.line is not None:
-            plugin_by_site.setdefault((route.file, route.line), []).append(route)
-    superseded: set[int] = set()
-    if not plugin_by_site:
-        return superseded
-    for route in routes:
-        if route.source_analyzer not in builtin_names or route.line is None:
+    # Per site: {(method, suffix)}, {suffix}, the methods of plugin roots, and
+    # the number of plugin routes.
+    sites: dict[tuple[str, int], tuple[set, set, set, list[int]]] = {}
+    for route in plugin_routes:
+        if route.line is None:
             continue
-        plugins = plugin_by_site.get((route.file, route.line))
-        if plugins and any(_is_route_twin(route, plugin) for plugin in plugins):
+        by_method, any_method, roots, count = sites.setdefault((route.file, route.line), (set(), set(), set(), [0]))
+        count[0] += 1
+        segments = _route_segments(route.path)
+        method = route.method.upper()
+        if not segments:
+            roots.add(method)
+        for start in range(max(0, len(segments) - _MAX_SUFFIX_SEGMENTS), len(segments) + 1):
+            suffix = segments[start:]
+            by_method.add((method, suffix))
+            any_method.add(suffix)
+    superseded: set[int] = set()
+    if not sites:
+        return superseded
+    builtins = [route for route in builtin_routes if route.line is not None]
+    builtin_count: dict[tuple[str, int], int] = {}
+    for route in builtins:
+        key = (route.file, route.line)
+        builtin_count[key] = builtin_count.get(key, 0) + 1
+    for route in builtins:
+        site = sites.get((route.file, route.line))
+        if site is None:
+            continue
+        by_method, any_method, roots, count = site
+        segments = _route_segments(route.path)
+        method = route.method.upper()
+        if not segments and not (count[0] == 1 and builtin_count[(route.file, route.line)] == 1):
+            # A root only matches a plugin root (`()` is every path's suffix).
+            twin = bool(roots) if method == "ANY" else method in roots
+        elif method == "ANY":
+            twin = segments in any_method
+        else:
+            twin = (method, segments) in by_method
+        if twin:
             superseded.add(id(route))
     return superseded
 
