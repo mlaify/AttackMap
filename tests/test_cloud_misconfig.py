@@ -294,3 +294,58 @@ def test_taxonomy_ids() -> None:
 
     assert taxonomy_for("privilege-escalation-allowed").attack == ("T1548.001",)
     assert list(CWE_NAMES) == sorted(CWE_NAMES)
+
+
+def _sarif_for(tmp_path: Path, files: dict[str, str], records: list[CloudMisconfig]):
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    scan = ScanResult(root=str(tmp_path), cloud_misconfigs=records)
+    findings = translate_recon(scan).findings
+    return findings, build_sarif(findings)["runs"][0]
+
+
+def test_sarif_fingerprints_are_unique_across_severity_tiers(tmp_path: Path) -> None:
+    # Reviewer's repro: two mounts in one flow list (one line), different tiers,
+    # plus two lineless exposed services in one file at different tiers.
+    compose = 'services:\n  agent:\n    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "/var/log:/var/log"]\n'
+    records = [
+        CloudMisconfig(kind="host_path_mount", file="compose.yaml", line=3, severity="high",
+                       resource="service agent", evidence_text="/var/run/docker.sock"),
+        CloudMisconfig(kind="host_path_mount", file="compose.yaml", line=3, severity="low",
+                       resource="service agent", evidence_text="/var/log"),
+        CloudMisconfig(kind="exposed_service", file="svc.yaml", severity="low", resource="Service/a"),
+        CloudMisconfig(kind="exposed_service", file="svc.yaml", severity="medium", resource="Service/b"),
+    ]
+    _, run = _sarif_for(tmp_path, {"compose.yaml": compose, "svc.yaml": "kind: Service\n"}, records)
+    cloud = [r for r in run["results"] if r["ruleId"] in {"host-path-mount", "exposed-service"}]
+    assert len(cloud) == 4
+    prints = [(r["ruleId"], r["partialFingerprints"]["attackmapInstance/v1"]) for r in cloud]
+    assert len(set(prints)) == 4
+    levels = sorted((r["ruleId"], r["level"]) for r in cloud)
+    assert levels == [("exposed-service", "note"), ("exposed-service", "warning"),
+                      ("host-path-mount", "error"), ("host-path-mount", "note")]
+
+
+def test_sarif_rule_metadata_comes_from_the_spec_not_the_first_tier() -> None:
+    findings = _findings(
+        _issue("host_path_mount", line=1, severity="low"),
+        _issue("host_path_mount", line=2, severity="high"),
+    )
+    findings.sort(key=lambda f: f.severity != "low")  # low tier first
+    (rule,) = [r for r in build_sarif(findings)["runs"][0]["tool"]["driver"]["rules"] if r["id"] == "host-path-mount"]
+    assert rule["name"] == "Workload mounts a sensitive host path"
+    assert rule["defaultConfiguration"]["level"] == "error"
+    assert rule["properties"]["security-severity"] == "9.0"
+
+
+def test_single_location_fingerprints_are_unchanged() -> None:
+    from attackmap.fingerprint import _digest, assign_fingerprints
+    from attackmap.models import Finding, FindingLocation
+
+    finding = Finding(title="t", severity="high", mitigation="m", rule_id="hardcoded-secret",
+                      locations=[FindingLocation(file="a.py", line=None)])
+    other = Finding(title="u", severity="low", mitigation="m", rule_id="insecure-tls",
+                    locations=[FindingLocation(file="a.py", line=None)])
+    assign_fingerprints([finding, other], ".")
+    assert finding.locations[0].fingerprint == _digest("hardcoded-secret", "a.py", "", "0")
+    assert other.locations[0].fingerprint == _digest("insecure-tls", "a.py", "", "0")

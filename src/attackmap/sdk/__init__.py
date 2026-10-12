@@ -124,7 +124,7 @@ resource, evidence); for a true duplicate the more severe report wins.
 
 ``kind`` is typed ``str``: core drops records with a kind it doesn't know (a
 plugin built against a newer core), keeps the rest of the result and notes the
-drop under ``analyzer_errors`` (``--strict`` fails instead). A new kind needs a
+drop under ``analyzer_errors`` (``--strict-analyzers`` fails instead). A new kind needs a
 core release (finding spec + taxonomy entry). A plugin that must also run on
 cores older than this record should feature-detect it (``try: from
 attackmap.sdk import CloudMisconfig`` / ``hasattr(ScanResult,

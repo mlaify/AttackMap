@@ -1600,6 +1600,15 @@ def _numeric_to_confidence(value: float) -> str:
     return "low"
 
 
+def cloud_rule_defaults(rule_id: str) -> tuple[str, str, str] | None:
+    """``(title, usual severity, mitigation)`` of a CloudMisconfig rule, so
+    SARIF rule metadata doesn't depend on which severity tier comes first."""
+    spec = _CLOUD_MISCONFIG_FINDING_SPEC.get(rule_id.replace("-", "_"))
+    if spec is None:
+        return None
+    return spec["title"], spec["tier"], spec["mitigation"]
+
+
 def _cloud_locs(items: list[CloudMisconfig]) -> list[FindingLocation]:
     """One location per instance. Unlike `_locs`, two resources at the same
     (file, line) — or both without a line — stay two locations."""

@@ -12,7 +12,9 @@ The line *number* is deliberately excluded so unrelated edits above a site
 whitespace removed, string and number literals masked — so reformatting or
 changing a literal value doesn't either, while a different call or a
 different file does. Identical normalized lines in one file are told apart by
-their occurrence index.
+their occurrence index, counted per rule across all findings: one rule can
+have several findings (cloud misconfigurations split by severity), and two
+of its instances on one line must not share a fingerprint.
 """
 
 from __future__ import annotations
@@ -65,12 +67,16 @@ def assign_fingerprints(findings: list[Finding], root: str | Path) -> None:
             return f"#line-unavailable:{line}"
         return normalize_line(lines[line - 1])
 
+    # Occurrences are counted per (rule, file, line content) across every
+    # finding, not per finding. A location that was the only one of its
+    # (rule, file, content) keeps occurrence 0, so its fingerprint is
+    # unchanged.
+    seen: dict[tuple[str, str, str], int] = {}
     for finding in findings:
         rule = finding_rule_id(finding)
-        seen: dict[tuple[str, str], int] = {}
         for loc in finding.locations:
             file = loc.file.replace("\\", "/")
             content = source_line(file, loc.line)
-            occurrence = seen.get((file, content), 0)
-            seen[(file, content)] = occurrence + 1
+            occurrence = seen.get((rule, file, content), 0)
+            seen[(rule, file, content)] = occurrence + 1
             loc.fingerprint = _digest(rule, file, content, str(occurrence))

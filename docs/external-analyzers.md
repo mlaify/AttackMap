@@ -261,7 +261,7 @@ confidence.
 
 **Versions.** `kind` is typed `str`. Core drops a record whose kind it doesn't
 know (a plugin newer than the core), keeps the rest of the plugin's result and
-adds an `analyzer_errors` note (`UnknownCloudMisconfigKind`; `--strict`
+adds an `analyzer_errors` note (`UnknownCloudMisconfigKind`; `--strict-analyzers`
 fails). A new kind needs a core release (finding spec + taxonomy). A core that
 predates `CloudMisconfig` ignores the records entirely, so a plugin that
 supports such cores should feature-detect (`try: from attackmap.sdk import

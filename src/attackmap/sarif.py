@@ -125,16 +125,26 @@ def _build_rules(findings: list[Finding]) -> list[dict[str, Any]]:
         rule_id = finding_rule_id(finding)
         if rule_id in rules_by_id:
             continue
+        title, severity, confidence, mitigation = finding.title, finding.severity, finding.confidence, finding.mitigation
+        if "cloud-misconfig" in finding.tags:
+            # One rule can have a finding per severity tier: describe the
+            # rule by its spec, not by whichever tier came first.
+            from .threat_model import cloud_rule_defaults
+
+            defaults = cloud_rule_defaults(rule_id)
+            if defaults is not None:
+                title, severity, mitigation = defaults
+                confidence = "high"
         rules_by_id[rule_id] = {
             "id": rule_id,
-            "name": finding.title,
-            "shortDescription": {"text": finding.title},
-            "fullDescription": {"text": finding.title},
-            "help": {"text": finding.mitigation, "markdown": finding.mitigation},
-            "defaultConfiguration": {"level": _sarif_level(finding.severity)},
+            "name": title,
+            "shortDescription": {"text": title},
+            "fullDescription": {"text": title},
+            "help": {"text": mitigation, "markdown": mitigation},
+            "defaultConfiguration": {"level": _sarif_level(severity)},
             "properties": {
                 "tags": list(finding.tags),
-                "security-severity": _security_severity(finding.severity, finding.confidence),
+                "security-severity": _security_severity(severity, confidence),
             },
         }
         _add_rule_taxonomy(rules_by_id[rule_id], rule_id)
