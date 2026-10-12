@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Webhook signature verification (#243, part B).** A new `webhook_verification.py` reads each webhook route's handler, the helpers it calls (one hop, including imported modules) and JS `.use(...)` middleware in the same file, and sets `webhook_verification` on the attack surface: `verified`, `weak_compare`, `no_replay_guard`, `absent` or `unknown`, with the provider and the line it rests on.
+  - Recognized verifiers: Stripe `constructEvent`/`construct_event`/`ConstructEvent`, GitHub (`@octokit/webhooks` `verify`/`verifyAndReceive`), Slack `SignatureVerifier`/`NewSecretsVerifier`, Twilio `validateRequest`/`RequestValidator`/`twilio.webhook()`, Shopify `webhooks.validate`, Svix/Standard Webhooks `verify` and `sns-validator`. Hand-rolled HMACs (`createHmac`, `hmac.new`, `hmac.New`, `hash_hmac`) count as verified only with a constant-time compare (`timingSafeEqual`, `compare_digest`, `hmac.Equal`, `hash_equals`…).
+  - New rule `webhook-weak-verification` (medium): an HMAC compared with `==`/`===`/`!==`/`bytes.Equal`, or a scheme that signs a timestamp (Slack, Stripe, Svix) verified by hand without checking it.
+  - Behavior change: `public-webhook` (high) no longer fires on a webhook that verifies its signature, and says why when it does fire. A verified webhook no longer anchors the "External event spoofing" attack path, and the path's weak point now cites the verification state and line.
+  - New detection opportunity for absent or weak verification: alert on webhook requests with a missing or invalid signature, a stale timestamp, or a repeated event id.
+  - A signature computed over `JSON.stringify(req.body)` is noted on the surface: it breaks verification of genuine events.
+
+  Weak verification scores as the `webhook_exposure` benchmark class. New case: `express-webhooks-demo`.
 - **OAuth client and session checks (#243, part 2).** `auth_protocol.py` gains six rules:
   - `oauth-missing-state` (medium): a hand-built authorization request (`response_type` in a URL, object, dict, PHP array or Go `url.Values`, with a `client_id` nearby) that sends no `state`, and passport OAuth2 strategies without `state: true` or a state store.
   - `oauth-implicit-flow` (medium): `response_type=token` (including `id_token token`).

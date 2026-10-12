@@ -1,0 +1,10 @@
+{
+  "name": "express-webhooks-demo",
+  "private": true,
+  "description": "AttackMap benchmark case: webhook signature verification (#243 part B). Deliberately vulnerable; do not deploy.",
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.11.0",
+    "stripe": "^14.0.0"
+  }
+}

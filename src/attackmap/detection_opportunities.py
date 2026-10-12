@@ -348,7 +348,52 @@ def generate_detection_opportunities(
                 )
             )
 
+    webhook = _opp_for_webhook_signatures(findings)
+    if webhook is not None:
+        opportunities.append(webhook)
+
     return opportunities
+
+
+_WEBHOOK_RULES = ("public-webhook", "webhook-weak-verification")
+
+
+def _opp_for_webhook_signatures(findings: list[Finding]) -> DetectionOpportunity | None:
+    """Webhooks with absent or weak signature verification (#243, part B)."""
+    related = [f for f in findings if f.rule_id in _WEBHOOK_RULES]
+    if not related:
+        return None
+    routes: list[str] = []
+    for finding in related:
+        for line in finding.evidence:
+            route = " ".join(line.split(" in ", 1)[0].split()[:2])
+            if route and route not in routes:
+                routes.append(route)
+    listed = ", ".join(f"`{r}`" for r in routes[:3]) or "the webhook routes"
+    techniques: list[AttackTechnique] = []
+    for finding in related:
+        for tech in techniques_for_finding(finding):
+            if tech.technique_id not in {t.technique_id for t in techniques}:
+                techniques.append(tech)
+    return _opportunity(
+        opportunity_id="detect:webhook-signature",
+        title="Alert on webhook requests with missing or invalid signature headers",
+        rationale=(
+            "A webhook that doesn't verify (or weakly verifies) its signature accepts forged events. "
+            "Until verification is fixed, the requests themselves show the attempt: genuine provider "
+            "deliveries always carry a valid signature and a fresh timestamp."
+        ),
+        signal_kind="log",
+        suggested_rule=(
+            f"Log the signature header, its verification result and the signed timestamp for {listed}. "
+            "Alert when a request arrives with the signature header missing, failing verification, or a "
+            "timestamp older than 5 minutes; and when the same event/delivery id is seen twice. "
+            "A burst of failures from one source IP suggests forging or timing probes."
+        ),
+        related_finding_titles=[f.title for f in related],
+        related_rule_ids=[f.rule_id for f in related if f.rule_id],
+        attack_techniques=techniques,
+    )
 
 
 _UBIQUITOUS = frozenset({"T1190"})

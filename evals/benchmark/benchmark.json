@@ -220,6 +220,39 @@
           "note": "Authorization request without state (login CSRF). routes/partner-sso.js sends one."
         }
       ]
+    },
+    {
+      "id": "express-webhooks-demo",
+      "path": "evals/benchmark/cases/express-webhooks-demo",
+      "expected": [
+        {
+          "category": "webhook_exposure",
+          "file": "routes/payments.js",
+          "route": "/webhook/payments",
+          "method": "POST",
+          "line": 6,
+          "severity": "high",
+          "note": "Payment events are applied with no signature check; anyone can mark an invoice paid."
+        },
+        {
+          "category": "webhook_exposure",
+          "file": "routes/github.js",
+          "route": "/webhooks/github",
+          "method": "POST",
+          "line": 10,
+          "severity": "medium",
+          "note": "HMAC compared with !==, which leaks timing. routes/github-app.js uses timingSafeEqual and is the clean twin."
+        },
+        {
+          "category": "webhook_exposure",
+          "file": "routes/slack.js",
+          "route": "/webhooks/slack",
+          "method": "POST",
+          "line": 11,
+          "severity": "medium",
+          "note": "Slack signature verified, but X-Slack-Request-Timestamp is never checked, so requests can be replayed. routes/stripe.js (constructEvent) is clean."
+        }
+      ]
     }
   ]
 }
