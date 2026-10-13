@@ -99,15 +99,16 @@ _SIGNATURE_HEADERS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # Schemes whose signature covers a timestamp the receiver must check.
 _TIMESTAMPED = frozenset({"slack", "stripe", "svix"})
 
-# PayPal's verify-webhook-signature API: verified only when the call's
-# `verification_status` is checked against SUCCESS (#366).
+# PayPal's verify-webhook-signature API with a `verification_status` check:
+# `unknown` (provider `paypal`) with a note, never `verified` — whether the
+# check rejects the event isn't established (#366).
 _PAYPAL_VERIFY_API = re.compile(r"/v1/notifications/verify-webhook-signature")
 _PAYPAL_STATUS_CHECK = re.compile(r"""verification_status["'\]]?\s*!==?\s*["']SUCCESS["']""")
 
 # A shared secret sent in a header (`Authorization: Bearer …`, `X-Webhook-Token`)
-# compared in constant time with the configured secret. This authenticates the
-# sender but not the payload (no integrity, no replay protection): it is
-# `verified` with provider `shared_secret` and a note saying so (#366).
+# compared in constant time with the configured secret. Whether the compare's
+# result actually rejects the request can't be established from keywords, so
+# this is `unknown` (provider `shared_secret`) with a note, never `verified` (#366).
 # A secret header *read* into a variable: `const auth = req.headers.get("authorization")`,
 # `$token = $request->bearerToken()`, `token = request.headers["X-Webhook-Token"]`.
 _HEADER_READ = re.compile(
@@ -117,16 +118,14 @@ _HEADER_READ = re.compile(
 )
 # `token = auth.startsWith("Bearer ") ? auth.slice(7) : ""`: one derived assignment.
 _ASSIGNMENT = re.compile(r"(?<![\w$])\$?([A-Za-z_]\w{0,60}+)\s*+(?::\s*+[\w<>\[\] |]{1,60}+)?=(?![=>])\s*+([^\n]{1,300})")
-# A rejection: 401/403, an exception, `abort(...)`, `Unauthorized`.
-_REJECTION = re.compile(r"\b(?:401|403)\b|\bthrow\b|\braise\b|\babort\s*\(|Unauthori[sz]ed|Forbidden|\bdie\s*\(|\bexit\s*\(")
-_NEGATED_IF = re.compile(r"\bif\s*\(?\s*(?:!|not\s)")
-_FUNC_NAME = re.compile(
-    r"(?:\bfunction\s+([A-Za-z_$][\w$]{0,80})|\b(?:const|let|var)\s+([A-Za-z_$][\w$]{0,80})\s*=\s*(?:async\s*)?\(|\bdef\s+([A-Za-z_]\w{0,80}))"
-)
-_GATE_WINDOW = 3
+
 _SHARED_SECRET_NOTE = (
-    "authenticated by a shared secret compared in constant time, not a payload signature: "
-    "the event body has no integrity or replay protection"
+    "a header secret is compared in constant time, but whether a mismatch rejects the request isn't "
+    "established; even when it does, a shared secret authenticates the sender, not the payload"
+)
+_PAYPAL_NOTE = (
+    "PayPal's verify-webhook-signature API is called and its status checked, but whether a failed "
+    "verification rejects the event isn't established"
 )
 
 # NestJS `@UseGuards(A, B)`; Laravel `$this->middleware(X::class)` and
@@ -279,44 +278,9 @@ def _weak_compare(lines: list[_Line]) -> _Line | None:
     return None
 
 
-def _gates_rejection(lines: list[_Line], hit: _Line) -> bool:
-    """``hit`` (a check) decides a rejection: `if (!check) return 401` / `throw` /
-    `abort()` on its line or within a few lines after it; or it is the
-    `return` of a helper whose call is such a negated check."""
-    if _NEGATED_IF.search(hit.text) or re.search(r"!==?|!=|\bnot\b", hit.text):
-        if _rejects_after(lines, hit):
-            return True
-    if re.match(r"\s*return\b", hit.text):
-        name = _enclosing_function(lines, hit)
-        if name:
-            call = re.compile(rf"\bif\s*\(?\s*(?:!|not\s)\s*(?:await\s+)?(?:[\w.$]+\.)?{re.escape(name)}\s*\(")
-            return any(call.search(ln.text) and _rejects_after(lines, ln) for ln in lines)
-    return False
-
-
-def _rejects_after(lines: list[_Line], at: _Line) -> bool:
-    if _REJECTION.search(at.text):
-        return True
-    return any(
-        ln.file == at.file and 0 < ln.line - at.line <= _GATE_WINDOW and _REJECTION.search(ln.text) for ln in lines
-    )
-
-
-def _enclosing_function(lines: list[_Line], at: _Line) -> str | None:
-    best: tuple[int, str] | None = None
-    for ln in lines:
-        if ln.file != at.file or ln.line > at.line:
-            continue
-        match = _FUNC_NAME.search(ln.text)
-        if match and (best is None or ln.line > best[0]):
-            best = (ln.line, next(g for g in match.groups() if g))
-    return best[1] if best else None
-
-
 def _shared_secret_check(lines: list[_Line]) -> _Line | None:
     """A constant-time compare whose operands include the value read from a
-    secret header (directly or through one assignment), and whose result
-    gates a rejection."""
+    secret header (directly or through one assignment)."""
     tracked: dict[str, set[str]] = {}
     for ln in lines:
         match = _HEADER_READ.search(ln.text)
@@ -337,9 +301,7 @@ def _shared_secret_check(lines: list[_Line]) -> _Line | None:
         if not names or call is None:
             continue
         args = ln.text[call.end() : call.end() + 300]
-        if not any(re.search(rf"(?<![\w$]){re.escape(n)}(?![\w$])", args) for n in names):
-            continue
-        if _gates_rejection(lines, ln):
+        if any(re.search(rf"(?<![\w$]){re.escape(n)}(?![\w$])", args) for n in names):
             return ln
     return None
 
@@ -393,8 +355,10 @@ def classify(lines: list[_Line], *, imported: frozenset[str] = frozenset()) -> W
 
     paypal_api = _first(lines, _PAYPAL_VERIFY_API)
     paypal_check = _first(lines, _PAYPAL_STATUS_CHECK) if paypal_api else None
-    if paypal_check is not None and _rejects_after(lines, paypal_check):
-        return WebhookVerification(state="verified", provider="paypal", evidence=paypal_check.where())
+    if paypal_check is not None:
+        return WebhookVerification(
+            state="unknown", provider="paypal", evidence=paypal_check.where(), notes=[_PAYPAL_NOTE]
+        )
 
     hmac = _first(lines, _HMAC)
     header_provider = _provider_by_header(lines)
@@ -402,7 +366,7 @@ def classify(lines: list[_Line], *, imported: frozenset[str] = frozenset()) -> W
         shared = _shared_secret_check(lines)
         if shared is not None:
             return WebhookVerification(
-                state="verified", provider="shared_secret", evidence=shared.where(), notes=[_SHARED_SECRET_NOTE]
+                state="unknown", provider="shared_secret", evidence=shared.where(), notes=[_SHARED_SECRET_NOTE]
             )
         if header_provider is not None:
             # The signature is read but handed to something we can't see.
@@ -1089,8 +1053,6 @@ def describe(surface: AttackSurface) -> str:
         return f"{route} — {provider}HMAC signature compared with a non-constant-time equality at {v.evidence}"
     if v.state == "no_replay_guard":
         return f"{route} — {provider}signature verified at {v.evidence}, but the signed timestamp is never checked"
-    if v.provider == "shared_secret":
-        return f"{route} — shared secret checked in constant time at {v.evidence} (not a payload signature)"
     return f"{route} — {provider}signature verified at {v.evidence}"
 
 

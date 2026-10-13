@@ -200,11 +200,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Webhook verification reaches framework guards, constructor middleware, PayPal and shared secrets (#366, part 2).** Four kinds of verifying receivers came out `absent`; they are now reached:
   - NestJS `@UseGuards(Guard)` on the handler or its controller class is followed to the guard's `canActivate`.
   - A Laravel `'Controller@method'` route reaches the action and the `handle` of every middleware the constructor adds with `$this->middleware(X::class)`. When that call sits under an `if` (Laravel Cashier adds it only when a secret is configured), a verified result becomes `unknown` with a note, since verification isn't guaranteed.
-  - PayPal's `/v1/notifications/verify-webhook-signature` API counts as provider verification only when `verification_status !== "SUCCESS"` gates a rejection.
-  - A header secret (`Authorization: Bearer …`, `X-…-Token`) is `verified` with provider `shared_secret`, plus a note that it authenticates the sender, not the payload. It must meet all of these:
-    - it is read into a variable;
-    - that value (directly or through one assignment) is an operand of a constant-time compare;
-    - the compare gates a rejection (`if (!…) return 401`, `throw`, `abort`), inline or through a helper whose negated call rejects.
+  - PayPal's `/v1/notifications/verify-webhook-signature` API with a `verification_status` check is recognised, but as `unknown` (provider `paypal`), never `verified`.
+  - A header secret (`Authorization: Bearer …`, `X-…-Token`) whose value is compared in constant time is likewise `unknown` (provider `shared_secret`), never `verified`.
+
+    For both, whether a failed check actually rejects the request can't be established safely from keywords (review of #374), so they keep raising `public-webhook`. The notes say what was found.
   - Laravel `->only([...])` / `->except([...])` are honoured, and a non-statement `$this->middleware` (`&&`, ternary) counts as conditional.
   - A provider verifier inside `try` whose `catch` only logs or is empty is `unknown` (the failure is swallowed).
 
@@ -213,7 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Stripe-php's `WebhookSignature::verifyHeader` counts as a Stripe verifier.
   - `authz._block_from` ignores braces inside string and template literals, and ends a body that opens and closes on one line (`canActivate() { return true; }`).
 
-  Real world: cal.com's Vercel and PayPal receivers and dub's r2 receiver are now `verified`; cashier-stripe is `unknown` (conditional).
+  Real world: cal.com's Vercel receiver is now `verified`; cal.com PayPal, dub r2 (shared secret) and cashier-stripe (conditional middleware) are `unknown` with notes.
 - **Scan output no longer depends on the Python hash seed (#353, #369).** On a large repo, findings and taint chains changed from run to run: on zulip, `regex-injection` appeared in some runs and not others, and `scan.taint_chains` went from 13 to 110. Two places let set iteration order decide the outcome. The taint import walk took neighbours from a set, and its 40-file visit cap then decided which files it reached. The lockfile resolver seeded its BFS from a set of roots, which decided the `via` path reported for a shared transitive dependency. Both now iterate in sorted order. Directory walks in the lockfile, SBOM, authz and suggest scanners are sorted too, as are database nodes in the architecture graph and the supply-chain own-scope check.
 - **Webhook verification reaches further (#366, cheap parts).** These fixes stop real receivers that verify their payload from coming out `absent`:
   - TypeScript ESM specifiers (`from './webhook.js'`) resolve to the `.ts` source.

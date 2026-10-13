@@ -220,9 +220,10 @@ def _paypal(tmp_path: Path, check: str):
     return _verification(tmp_path, "/api/paypal/webhook", "api/webhook.ts", 2, "ANY")
 
 
-def test_paypal_verify_api_with_success_check_is_verified(tmp_path: Path) -> None:
+def test_paypal_verify_api_with_success_check_is_unknown_with_a_note(tmp_path: Path) -> None:
     v = _paypal(tmp_path, 'if (data.verification_status !== "SUCCESS") throw data;')
-    assert (v.state, v.provider, v.evidence) == ("verified", "paypal", "lib/Paypal.ts:6")
+    assert (v.state, v.provider, v.evidence) == ("unknown", "paypal", "lib/Paypal.ts:6")
+    assert "rejects" in v.notes[0]
 
 
 def test_paypal_verify_api_without_a_status_check_is_not_verified(tmp_path: Path) -> None:
@@ -249,11 +250,13 @@ export async function POST(req) {
 """
 
 
-def test_constant_time_shared_secret_is_verified_with_a_note(tmp_path: Path) -> None:
+def test_constant_time_shared_secret_is_unknown_with_a_note(tmp_path: Path) -> None:
     _write(tmp_path, {"route.ts": SECRET.replace("{COMPARE}", "timingSafeCompare(token, process.env.WORKER_SECRET)")})
     v = _verification(tmp_path, "/api/cloudflare/webhook/r2", "route.ts", 7)
-    assert (v.state, v.provider) == ("verified", "shared_secret")
-    assert v.notes and "not a payload signature" in v.notes[0]
+    # Reached and recognised, but never `verified`: whether a mismatch
+    # rejects can't be established from keywords (review of #374).
+    assert (v.state, v.provider) == ("unknown", "shared_secret")
+    assert v.notes and "authenticates the sender, not the payload" in v.notes[0]
 
 
 def test_shared_secret_compared_with_equality_is_not_verified(tmp_path: Path) -> None:
@@ -296,7 +299,7 @@ def test_paypal_class_imported_from_a_workspace_package(tmp_path: Path) -> None:
         },
     )
     v = _verification(tmp_path, "/api/integrations/paypal/webhook", "apps/web/pages/api/integrations/paypal/webhook.ts", 1, "ANY")
-    assert (v.state, v.provider) == ("verified", "paypal")
+    assert (v.state, v.provider) == ("unknown", "paypal")
 
 
 def test_instance_method_in_a_long_class_is_followed(tmp_path: Path) -> None:
@@ -320,7 +323,7 @@ def test_instance_method_in_a_long_class_is_followed(tmp_path: Path) -> None:
         },
     )
     v = _verification(tmp_path, "/api/paypal/webhook", "api/webhook.ts", 2, "ANY")
-    assert (v.state, v.provider) == ("verified", "paypal")
+    assert (v.state, v.provider) == ("unknown", "paypal")
 
 
 # ---------------------------------------------------------------------------
@@ -355,11 +358,11 @@ def test_shared_secret_probes_are_not_verified(tmp_path: Path, body: str) -> Non
     assert _verification(tmp_path, "/api/r2/webhook", "route.ts", 1).state != "verified"
 
 
-def test_inline_gated_shared_secret_is_verified(tmp_path: Path) -> None:
+def test_inline_gated_shared_secret_is_still_unknown(tmp_path: Path) -> None:
     body = "if (!timingSafeCompare(auth, process.env.WORKER_SECRET)) return new Response('', { status: 401 });"
     _write(tmp_path, {"route.ts": PROBE_HANDLER.format(BODY=body)})
     v = _verification(tmp_path, "/api/r2/webhook", "route.ts", 1)
-    assert (v.state, v.provider) == ("verified", "shared_secret")
+    assert (v.state, v.provider) == ("unknown", "shared_secret")
 
 
 @pytest.mark.parametrize(
@@ -483,3 +486,24 @@ def test_verifier_whose_catch_rejects_is_verified(tmp_path: Path) -> None:
     )
     assert _verification(tmp_path, "/stripe/webhook", "hook.js", 1).state == "verified"
     assert _verification(tmp_path, "/stripe/webhook2", "hook2.js", 1).state == "unknown"
+
+
+
+def test_reviewer_probes_are_never_verified(tmp_path: Path) -> None:
+    """Round-2 review probes (gates that log, cross branches, double-negate,
+    reassign the header): shared-secret and PayPal matches are never `verified`."""
+    bodies = [
+        "  let token = auth;\n  token = process.env.S;\n  if (!timingSafeCompare(token, process.env.S)) return new Response('', { status: 401 });",
+        "  if (!timingSafeCompare(auth, process.env.S)) console.warn('Unauthorized webhook call');",
+        "  if (!timingSafeCompare(auth, process.env.S)) {\n    log('bad');\n  }\n  if (!req.body) return new Response('', { status: 401 });",
+        "  if (timingSafeCompare(auth, process.env.S)) return new Response('', { status: 401 });",
+        "  if (!timingSafeCompare(auth, process.env.S)) {\n    console.log('mismatch');\n  } else {\n    return new Response('', { status: 403 });\n  }",
+    ]
+    for i, body in enumerate(bodies):
+        _write(tmp_path, {f"r{i}.ts": PROBE_HANDLER.format(BODY=body)})
+        assert _verification(tmp_path, "/api/r2/webhook", f"r{i}.ts", 1).state != "verified", body
+    for check in (
+        'if (data.verification_status !== "SUCCESS") console.warn("Unauthorized paypal webhook");',
+        'if (data.verification_status !== "SUCCESS") return false;\n    return true;',
+    ):
+        assert _paypal(tmp_path, check).state != "verified", check
