@@ -347,8 +347,8 @@ def analyze_taint(
     # each route file at most once.
     content_cache: dict[str, str] = {}
     import_cache: dict[str, dict[str, str]] = {}
-    py_bindings_cache: dict[str, tuple[dict[str, _PyBinding], list[int]]] = {}
-    span_cache: dict[tuple[str, str | None], tuple[int, int] | None] = {}
+    py_bindings_cache: dict[str, tuple[dict[str, _PyBinding], list[int], frozenset[str]]] = {}
+    defs_cache: dict[str, _ModuleDefs] = {}
 
     for route in scan.routes:
         route_file = _normalize_rel(route.file)
@@ -383,7 +383,7 @@ def analyze_taint(
             if handler_seeds:
                 seed_files = handler_seeds
         walk_recall = recall
-        seed_spans: dict[str, tuple[int, int] | None] = {}
+        seed_spans: dict[str, list[tuple[int, int]] | None] = {}
         if Path(route_file).suffix in _PY_SUFFIXES and route.line is not None:
             # A URLconf route (`path("x/", views.x)`) starts from its view's
             # module, not from urls.py, which imports every view (#372).
@@ -397,14 +397,19 @@ def analyze_taint(
                 if py_seeds:
                     seed_files = []
                     for module, view in py_seeds:
-                        if (module, view) not in span_cache:
+                        if module not in defs_cache:
                             try:
                                 text = files[module].read_text(encoding="utf-8")
                             except (OSError, UnicodeDecodeError):
                                 text = ""
-                            span_cache[(module, view)] = _py_def_span(text, view)
-                        seed_files.append(module)
-                        seed_spans[module] = span_cache[(module, view)]
+                            defs_cache[module] = _py_module_defs(text)
+                        spans = _py_view_spans(defs_cache[module], view)
+                        if module not in seed_files:
+                            seed_files.append(module)
+                            seed_spans[module] = spans
+                        elif seed_spans.get(module) is not None:
+                            # Two views in one module: both count, or the whole module.
+                            seed_spans[module] = None if spans is None else [*seed_spans[module], *spans]
                 else:
                     # The view is a library class (`TemplateView.as_view()`):
                     # nothing in the repo runs but the URLconf itself.
@@ -823,6 +828,8 @@ _PY_URL_REGISTRATION_RE = re.compile(
     r"\b(?:path|re_path|url|rest_path|register|add_url_rule|add_(?:get|post|put|patch|delete|head|route|view))\s*\("
 )
 _PY_STRING_RE = re.compile(r"""[rbuRBU]{0,2}(?:'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")""")
+# A module-level `name = …` (a view built in the URLconf: `hook = csrf_exempt(f)`).
+_PY_ASSIGNED_NAME_RE = re.compile(r"^([A-Za-z_]\w{0,63})[ \t]*=(?!=)", re.MULTILINE)
 _PY_DOTTED_REF_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)((?:\.[A-Za-z_]\w*)*)")
 
 
@@ -892,7 +899,7 @@ def _py_urlconf_seeds(
     content: str,
     route_file: str,
     files: dict[str, Path],
-    cache: dict[str, tuple[dict[str, _PyBinding], list[int]]],
+    cache: dict[str, tuple[dict[str, _PyBinding], list[int], frozenset[str]]],
 ) -> list[tuple[str, str | None]] | None:
     """The views a Python URL registration names, as (module, view name) (#372).
 
@@ -901,8 +908,12 @@ def _py_urlconf_seeds(
     starts from the route file as before. [] when every named view comes from
     a third-party package (`TemplateView.as_view(...)`): no repo module runs."""
     if route_file not in cache:
-        cache[route_file] = (_py_bindings(content, route_file, files), _line_starts(content))
-    bindings, starts = cache[route_file]
+        cache[route_file] = (
+            _py_bindings(content, route_file, files),
+            _line_starts(content),
+            frozenset(_py_module_defs(content)) | frozenset(_PY_ASSIGNED_NAME_RE.findall(content)),
+        )
+    bindings, starts, local_defs = cache[route_file]
     idx = (route.line or 0) - 1
     if idx < 0 or idx >= len(starts):
         return None
@@ -913,11 +924,15 @@ def _py_urlconf_seeds(
     args = _PY_STRING_RE.sub("''", _extract_call_arg(content, call.end() - 1))
     seeds: list[tuple[str, str | None]] = []
     external = False
+    local = False
     for match in _PY_DOTTED_REF_RE.finditer(args):
         name = match.group(1)
         if name == "include":
             return None  # the route's views live in the included URLconf
         if name not in bindings:
+            # A view defined in the URLconf itself, possibly wrapped by a
+            # library decorator (`csrf_exempt(hook)`): not external.
+            local = local or name in local_defs
             continue
         module, defined = bindings[name]
         if module is None:
@@ -938,24 +953,51 @@ def _py_urlconf_seeds(
             seeds.append((module, defined))
     if seeds:
         return seeds
-    return [] if external else None
+    return [] if external and not local else None
 
 
-def _py_def_span(content: str, name: str | None) -> tuple[int, int] | None:
-    """Lines of the top-level `def`/`class` ``name`` (decorators included)."""
-    if not name:
-        return None
+_VIEW_CLOSURE_LIMIT = 64
+
+# A module's top-level definitions: name → (first line, last line, the other
+# top-level names its body, decorators or bases mention).
+_ModuleDefs = dict[str, tuple[int, int, frozenset[str]]]
+
+
+def _py_module_defs(content: str) -> _ModuleDefs:
+    """Top-level `def`/`class` spans of a module, parsed once (#372)."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)  # scanned code's escapes aren't ours
             tree = ast.parse(content)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return {}
+    nodes = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    names = {n.name for n in nodes}
+    out: _ModuleDefs = {}
+    for node in nodes:
+        start = min([d.lineno for d in node.decorator_list] + [node.lineno])
+        mentioned = frozenset(
+            sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name) and sub.id in names and sub.id != node.name
+        )
+        out.setdefault(node.name, (start, node.end_lineno or node.lineno, mentioned))
+    return out
+
+
+def _py_view_spans(defs: _ModuleDefs, view: str | None) -> list[tuple[int, int]] | None:
+    """Line spans of ``view`` plus the same-module functions and base classes
+    it reaches (transitively, at most ``_VIEW_CLOSURE_LIMIT`` definitions).
+    None when ``view`` isn't a top-level definition here (a re-export): the
+    whole module then counts, as before."""
+    if not view or view not in defs:
         return None
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == name:
-            start = min([d.lineno for d in node.decorator_list] + [node.lineno])
-            return start, node.end_lineno or node.lineno
-    return None
+    seen = [view]
+    queue = [view]
+    while queue and len(seen) < _VIEW_CLOSURE_LIMIT:
+        for ref in sorted(defs[queue.pop()][2]):
+            if ref not in seen and len(seen) < _VIEW_CLOSURE_LIMIT:
+                seen.append(ref)
+                queue.append(ref)
+    return sorted((defs[name][0], defs[name][1]) for name in seen)
 
 
 def _resolve_js_target(target: Path, files: dict[str, Path], root: Path) -> str | None:
@@ -1248,7 +1290,7 @@ def _walk_from_route(
     sinks_by_file: dict[str, list[_SinkHit]],
     recall: RecallConfig = DEFAULT_RECALL,
     route_lines: list[int] | None = None,
-    handler_span: tuple[int, int] | None = None,
+    handler_span: list[tuple[int, int]] | None = None,
 ) -> list[TaintChain]:
     """BFS out from route_file, up to ``recall.max_hops``. Emit chains at each
     sink; tag as speculative any chain that only exists because a recall knob
@@ -1284,9 +1326,10 @@ def _walk_from_route(
         for hit in sinks_by_file.get(current, []):
             flow = hit.flow
             if current_hops == 0 and handler_span is not None:
-                # Seeded from the view a URLconf names (#372): only that view's
-                # own sinks are this route's; the module's other views aren't.
-                if not handler_span[0] <= hit.line <= handler_span[1]:
+                # Seeded from the view a URLconf names (#372): that view's sinks,
+                # and those of the same-module helpers and bases it reaches, are
+                # this route's; the module's other views aren't.
+                if not any(lo <= hit.line <= hi for lo, hi in handler_span):
                     continue
             elif current_hops == 0 and flow is not None and flow.span is not None:
                 lo, hi = flow.span
