@@ -779,6 +779,7 @@ _JS_REQUIRE_RE = re.compile(
     r"""(?:const|let|var)\s+(?P<clause>\{[^}]*\}|[A-Za-z_$][\w$]*)\s*=\s*require\(\s*["'](?P<spec>\.[^"']*)["']\s*\)"""
 )
 _JS_PROBE_SUFFIXES = (".js", ".ts", ".mjs", ".cjs", ".jsx", ".tsx")
+_TS_FOR_JS = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 _CALL_OR_REF_RE = re.compile(r"(?<!\s)\s*[(,)]")  # anchored: linear under search() (#236)
 _ARROW_EXPR_RE = re.compile(r"=>\s*[^\s{]")
 
@@ -823,16 +824,23 @@ def _block_from(lines: list[str], start: int) -> str:
     if "{" not in head and (_ARROW_EXPR_RE.search(head) or head.rstrip().endswith(";")):
         return head  # `const f = (id) => Doc.findById(id);` — a one-line definition
     depth = 0
+    parens = 0
     opened = False
     out = []
     for i, line in enumerate(lines[start:end]):
         out.append(line)
         depth += line.count("{") - line.count("}")
-        opened = opened or "{" in line
+        parens += line.count("(") - line.count(")")
+        # A body is open once the braces stay open past a line: braces that
+        # open and close on one line (`({ secret }: { secret: string }) =>`,
+        # a curried middleware factory's parameters) aren't the body (#366).
+        opened = opened or depth > 0
         if opened and depth <= 0:
             break
-        if not opened and i >= 3:
-            return head  # never found a body; don't swallow what follows
+        if not opened and i >= 3 and parens <= 0:
+            # Never found a body (a parameter list still open doesn't count:
+            # `const f = (\n a,\n b,\n c,\n) => {`); don't swallow what follows.
+            return head
     return "\n".join(out)
 
 
@@ -959,6 +967,9 @@ class _HopResolver:
     def _js_module(self, base: Path, spec: str) -> str | None:
         target = base / spec
         cands = [target] if target.suffix in _JS_PROBE_SUFFIXES else []
+        # TypeScript ESM imports name the emitted file: `from './webhook.js'`
+        # is `webhook.ts` in the source tree (#366).
+        cands += [target.with_suffix(sfx) for sfx in _TS_FOR_JS.get(target.suffix, ())]
         cands += [target.parent / (target.name + sfx) for sfx in _JS_PROBE_SUFFIXES]
         cands += [target / f"index{sfx}" for sfx in _JS_PROBE_SUFFIXES]
         for cand in cands:

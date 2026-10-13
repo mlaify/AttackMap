@@ -189,6 +189,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Webhook verification reaches further (#366, cheap parts).** These fixes stop real receivers that verify their payload from coming out `absent`:
+  - TypeScript ESM specifiers (`from './webhook.js'`) resolve to the `.ts` source.
+  - Curried middleware factories (`({ secret }) => (req, res, next) => {…}`) and multi-line parameter lists keep their bodies in the hop resolver (`authz._block_from`).
+  - A bounded second hop follows the helper the middleware calls.
+  - `timingSafeCompare` / `secureCompare` / `constantTimeEquals`-style helpers count as constant-time.
+  - `export { default } from "…"` route files are assessed through the module they re-export, including workspace packages found by their `package.json` name.
+  - A handler that only answers 404/410 is marked `inert` and no longer raises `public-webhook`.
+
+  Real world: atproto ×2 and cal.com btcpayserver are now `verified`; cal.com alby goes from `absent` to `unknown`; cal.com's two 404 stubs are `inert`.
 - **BFLA follows config-declared routes to their controller, and reads ACL and Symfony role checks (#343).** `bfla-privileged-route` read the route's span in `route.file` as its handler. For routes declared in configuration that span is config, never the controller.
   - Symfony YAML/XML routes are now followed to the controller method through the repo's composer PSR-4 map: `controller: App\\Controller\\X::y`, `_controller` under `defaults`, XML `controller="..."` and `<default key="_controller">`, or an invokable `X`. The usual role check then runs on the method plus the attributes on it and on its class.
   - Config routes whose controller can't be resolved (Laminas / Omeka PHP config arrays, bundle resources) are not flagged on the strength of the config alone, unless the span holds an inline closure handler. Plugin `Route.guards` with role semantics are consulted first.

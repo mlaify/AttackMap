@@ -824,6 +824,9 @@ class WebhookVerification(BaseModel):
     provider: str | None = None  # stripe, github, slack, twilio, shopify, svix, sns, hmac
     evidence: str | None = None  # file:line — the line that decided the state
     notes: list[str] = Field(default_factory=list)
+    # The handler only answers 404/410 (a stub, e.g. a feature disabled in this
+    # edition): nothing is processed, so it isn't a live receiver (#366).
+    inert: bool = False
 
 
 class AttackSurface(BaseModel):
