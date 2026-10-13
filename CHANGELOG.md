@@ -198,6 +198,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Scan output no longer depends on the Python hash seed (#353, #369).** On a large repo, findings and taint chains changed from run to run: on zulip, `regex-injection` appeared in some runs and not others, and `scan.taint_chains` went from 13 to 110. Two places let set iteration order decide the outcome. The taint import walk took neighbours from a set, and its 40-file visit cap then decided which files it reached. The lockfile resolver seeded its BFS from a set of roots, which decided the `via` path reported for a shared transitive dependency. Both now iterate in sorted order. Directory walks in the lockfile, SBOM, authz and suggest scanners are sorted too, as are database nodes in the architecture graph and the supply-chain own-scope check.
+- **Webhook verification reaches further (#366, cheap parts).** These fixes stop real receivers that verify their payload from coming out `absent`:
+  - TypeScript ESM specifiers (`from './webhook.js'`) resolve to the `.ts` source.
+  - Curried middleware factories (`({ secret }) => (req, res, next) => {…}`) and multi-line parameter lists keep their bodies in the hop resolver (`authz._block_from`).
+  - A bounded second hop follows the helper the middleware calls.
+  - `timingSafeCompare` / `secureCompare` / `constantTimeEquals`-style helpers count as constant-time.
+  - `export { default } from "…"` route files are assessed through the module they re-export, including workspace packages found by their `package.json` name.
+  - A handler that only answers 404/410 is marked `inert` and no longer raises `public-webhook`.
+
+  Real world: atproto ×2 and cal.com btcpayserver are now `verified`; cal.com alby goes from `absent` to `unknown`; cal.com's two 404 stubs are `inert`.
+- **Webhook management routes are no longer webhook receivers (#365).** Any path containing `webhook` was a `webhook` surface, so CRUD for an app's own outgoing webhooks got `webhook_verification: absent` and raised `public-webhook`. Only clear management shapes now leave the category; any doubt keeps a route a receiver. The shapes:
+  - a stored webhook addressed by an id param that is read, deleted or acted on (`GET`/`DELETE /webhooks/:webhookId`, `POST …/:id/test`);
+  - a PUT/PATCH on it only alongside such a sibling, a user-authenticated route, or a handler that persists a webhook URL with a secret or events;
+  - a GET on the collection of such members;
+  - a POST to that collection only when user-authenticated or persisting config;
+  - settings paths only for CRUD shapes;
+  - unambiguous fused words (`webhooklogs`, `add_webhook`), never on a POST;
+  - a tRPC router;
+  - a model CRUD DRF ViewSet on the webhook collection.
+
+  Tenant params (`:accountId`), provider params, shared-secret/signature guards, `hub.challenge`/`crc_token` handshakes, and any candidate whose handler reaches signature verification all stay receivers.
 - **BFLA follows config-declared routes to their controller, and reads ACL and Symfony role checks (#343).** `bfla-privileged-route` read the route's span in `route.file` as its handler. For routes declared in configuration that span is config, never the controller.
   - Symfony YAML/XML routes are now followed to the controller method through the repo's composer PSR-4 map: `controller: App\\Controller\\X::y`, `_controller` under `defaults`, XML `controller="..."` and `<default key="_controller">`, or an invokable `X`. The usual role check then runs on the method plus the attributes on it and on its class.
   - Config routes whose controller can't be resolved (Laminas / Omeka PHP config arrays, bundle resources) are not flagged on the strength of the config alone, unless the span holds an inline closure handler. Plugin `Route.guards` with role semantics are consulted first.

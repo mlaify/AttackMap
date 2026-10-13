@@ -31,6 +31,7 @@ from pathlib import Path
 from .authz import _HopResolver, _read_file_content
 from .handler_span import span_bounds
 from .models import AttackSurface, ScanResult, WebhookVerification
+from .safe_fs import walk_repo
 from .srcpaths import JS_TS_SUFFIXES
 
 # --- provider verifiers ------------------------------------------------------
@@ -116,6 +117,10 @@ _CONSTANT_TIME = re.compile(
     r"|\bMessageDigest\s*\.\s*isEqual\s*\("
     r"|\bsecure_compare\s*\("
     r"|\b(?:safe|secure|constantTime)Compare\s*\("
+    # Helpers named for what they do: `timingSafeCompare`, `constantTimeEquals`,
+    # `secureCompare`, `safeEqual` (#366).
+    r"|\b(?:timing|constantTime|constant_time)?_?[Ss]afe_?(?:Compare|Equals?|Eq|compare|equals?)\s*\("
+    r"|\b(?:secure|constantTime|constant_time)_?(?:Compare|Equals?|compare|equals?)\s*\("
     r"|\btsscmp\s*\("
     r"|\bcrypto\s*\.\s*subtle\s*\.\s*verify\s*\("
 )
@@ -149,6 +154,35 @@ _REPLAY_GUARD = re.compile(
 
 # A signature over a re-serialized body, not the raw bytes that were signed.
 _RESERIALIZED_BODY = re.compile(r"\bJSON\s*\.\s*stringify\s*\(\s*req\w*\s*\.\s*body\b|\bjson\s*\.\s*dumps\s*\(\s*request\b")
+
+# `export { default } from "…"`: the route file only re-exports its handler (#366).
+_REEXPORT_DEFAULT = re.compile(r"""^[ \t]*export[ \t]*\{[ \t]*default\b[^}\n]{0,200}\}[ \t]*from[ \t]*["']([^"'\n]{1,300})["']""", re.MULTILINE)
+# A handler that only answers "not found" / "gone": `res.status(404)`,
+# `return new Response(…, { status: 404 })`, `HttpResponseNotFound()`, `abort(404)`.
+_NOT_FOUND_RESPONSE = re.compile(
+    r"\bstatus(?:Code|_code)?\s*(?:\(|=|:)\s*(?:404|410)\b"
+    r"|\bsendStatus\s*\(\s*(?:404|410)\b"
+    r"|\bHttpResponse(?:NotFound|Gone)\b|\babort\s*\(\s*(?:404|410)\b|\bnotFound\s*\(\s*\)"
+)
+_PACKAGE_NAME = re.compile(r'"name"\s*:\s*"([^"\n]{1,200})"')
+_STUB_NOISE = re.compile(r"^\s*(?:[{}()\[\];,]+|(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b[^{\n]*\{?|(?:async\s+)?def\b.*:|return\s*;?)\s*$")
+_MAX_STUB_LINES = 3
+_STRING_LITERAL = re.compile(r"""'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""")
+_STUB_DISQUALIFIER = re.compile(
+    r"\?|&&|\|\||\bawait\b|\b(?:if|else|elif|for|while|switch|case|try|catch|unless)\b"
+    r"|^\s*(?:const|let|var)\b|^\s*[\w.\[\]]+\s*(?<![=!<>])=(?![=>])"
+)
+_CALL_NAME = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*+)\s*+\(")
+_RESPONSE_CALLS = frozenset(
+    {
+        "status", "json", "send", "end", "sendStatus", "abort", "notFound", "Response", "NextResponse",
+        "HttpResponse", "HttpResponseNotFound", "HttpResponseGone", "JsonResponse", "jsonify", "make_response",
+        "type", "set", "header", "setHeader", "writeHead", "response",
+    }
+)
+_MAX_SECOND_HOP_FUNCTIONS = 8
+_MAX_WORKSPACE_PACKAGES = 2_000
+_WORKSPACE_SKIP = frozenset({"node_modules", ".git", "dist", "build", ".next", "out", "vendor", "coverage"})
 
 # JS middleware mounted for the whole app or a path: `app.use(verifySig)`,
 # `router.use('/webhooks', verifyGithub)`.
@@ -258,10 +292,47 @@ class _Assessor:
         self.root = root
         self.cache: dict[str, str | None] = {}
         self.hop = _HopResolver(root, self.cache)
+        self._packages: dict[str, str] | None = None
         self.route_lines: dict[str, list[int]] = {}
         for r in scan.routes:
             if r.line is not None:
                 self.route_lines.setdefault(r.file, []).append(r.line)
+
+    def _resolve_spec(self, rel_file: str, spec: str) -> str | None:
+        """A relative specifier, or a workspace package (`@scope/pkg/sub/path`)
+        found by the `name` in its package.json."""
+        base = Path(rel_file).parent
+        if spec.startswith("."):
+            return self.hop._js_module(base, spec)
+        packages = self._workspace_packages()
+        parts = spec.split("/")
+        for cut in range(min(len(parts), 3), 0, -1):
+            pkg_dir = packages.get("/".join(parts[:cut]))
+            if pkg_dir is not None:
+                rest = "/".join(parts[cut:]) or "index"
+                return self.hop._js_module(Path(pkg_dir), "./" + rest)
+        return None
+
+    def _workspace_packages(self) -> dict[str, str]:
+        """Workspace package name → its directory (repo-relative), from the
+        repo's own package.json files (bounded; node_modules skipped)."""
+        if self._packages is not None:
+            return self._packages
+        packages: dict[str, str] = {}
+        seen = 0
+        for path in walk_repo(self.root, prune=_WORKSPACE_SKIP.__contains__):
+            if path.name != "package.json":
+                continue
+            seen += 1
+            if seen > _MAX_WORKSPACE_PACKAGES:
+                break
+            rel = path.relative_to(self.root).as_posix()
+            text = _read_file_content(rel, self.root, self.cache) or ""
+            match = _PACKAGE_NAME.search(text[:4096])
+            if match:
+                packages.setdefault(match.group(1), str(Path(rel).parent))
+        self._packages = packages
+        return packages
 
     def assess(self, surface: AttackSurface) -> WebhookVerification:
         content = _read_file_content(surface.file, self.root, self.cache)
@@ -273,9 +344,26 @@ class _Assessor:
         else:
             start, end = 0, len(file_lines)
         handler = "\n".join(file_lines[start:end])
+        if _is_not_found_stub(handler):
+            return WebhookVerification(
+                state="absent",
+                evidence=f"{surface.file}:{start + 1}",
+                notes=["the handler only answers 404/410; nothing is processed"],
+                inert=True,
+            )
         reach = _lines_of(surface.file, start + 1, handler)
         located: list[tuple[str, int, str]] = []
         self.hop.delegated_text(surface.file, content, handler, located)
+        if Path(surface.file).suffix.lower() in JS_TS_SUFFIXES:
+            # The route file only re-exports its handler: assess the module it names.
+            for match in _REEXPORT_DEFAULT.finditer(content):
+                target = self._resolve_spec(surface.file, match.group(1))
+                target_content = _read_file_content(target, self.root, self.cache) if target else None
+                if not target or not target_content:
+                    continue
+                reach.extend(_lines_of(target, 1, target_content))
+                self.hop.delegated_text(target, target_content, target_content, located)
+                break
         if Path(surface.file).suffix.lower() in JS_TS_SUFFIXES:
             for i, text in enumerate(file_lines):
                 if (start <= i < end) or not _USE_LINE.search(text) or _COMMENT_LINE.match(text):
@@ -285,7 +373,23 @@ class _Assessor:
                     continue
                 reach.append(_Line(surface.file, i + 1, text))
                 self.hop.delegated_text(surface.file, content, text, located)
+        # A second hop: verification usually sits in a helper the middleware
+        # or controller calls (`webhookAuth` → `validateSignature`) (#366).
+        # Bounded to _MAX_SECOND_HOP_FUNCTIONS functions in total.
+        first_hop = list(located)
+        limit = len(located) + _MAX_SECOND_HOP_FUNCTIONS
+        for file, _line, body in first_hop:
+            if len(located) >= limit:
+                break
+            source = _read_file_content(file, self.root, self.cache)
+            if source:
+                self.hop.delegated_text(file, source, body, located)
+        del located[limit:]
+        seen_bodies: set[tuple[str, int]] = set()
         for file, line, body in located:
+            if (file, line) in seen_bodies:
+                continue
+            seen_bodies.add((file, line))
             reach.extend(_lines_of(file, line, body))
 
         sources = [content, *(self.cache.get(f) or "" for f in {f for f, _, _ in located})]
@@ -305,6 +409,300 @@ class _Assessor:
             where = f"{surface.file}:{surface.line}" if surface.line is not None else surface.file
             result.evidence = where
         return result
+
+
+def _is_not_found_stub(handler: str) -> bool:
+    """A handler whose every statement is a 404/410 response. One that also
+    looks something up, assigns or awaits (and answers 404 only on a miss) is
+    a live receiver."""
+    code = [
+        ln
+        for ln in handler.splitlines()
+        if ln.strip() and not _COMMENT_LINE.match(ln) and not _STUB_NOISE.match(ln)
+    ]
+    return 0 < len(code) <= _MAX_STUB_LINES and all(_pure_not_found(ln) for ln in code)
+
+
+def _pure_not_found(line: str) -> bool:
+    """`res.status(404).json({...})`, `return new Response(null, { status: 404 })`,
+    `return HttpResponseNotFound()`: a 404/410 response and nothing else — no
+    condition, `await`, `?`, `&&`/`||`, assignment, or call other than the response."""
+    if not _NOT_FOUND_RESPONSE.search(line):
+        return False
+    code = _STRING_LITERAL.sub('""', line)
+    if _STUB_DISQUALIFIER.search(code):
+        return False
+    return all(name in _RESPONSE_CALLS for name in _CALL_NAME.findall(code))
+
+
+# --- inbound receivers vs. webhook management (#365) -------------------------
+#
+# A path containing `webhook` is usually an inbound receiver, but apps that send
+# webhooks also expose CRUD for their own webhook configuration
+# (`/settings/webhooks`, `/v2/webhooks/:webhookId`, a DRF `WebhookViewSet`).
+# Those are ordinary application routes, not receivers of provider events.
+# Precision first: a route is management only on a structural signal, and a
+# candidate whose handler reaches signature verification stays a receiver.
+
+_WEBHOOK_SEGMENT = re.compile(r"web-?hooks?", re.IGNORECASE)
+# A route parameter in any framework's syntax: `{id}`, `:id`, `<int:pk>`, `[id]`, `(?P<id>…)`.
+_PARAM_SEGMENT = re.compile(r"^(?:\{([^{}]*)\}|:([\w-]+)\??|<(?:[\w]+:)?([^<>]*)>|\[{1,2}(?:\.\.\.)?([^\[\]]*)\]{1,2}|\(\?P<([\w]+)>.*\))$")
+# Parameter names that identify a stored record (a webhook's own id), as opposed
+# to a provider name (`:provider`, `[source]`) that routes inbound events.
+_ID_PARAM = re.compile(r"^(?:id|pk|uuid|hook|webhook|webhook_?id|webhook_?uuid|\w*(?:Id|_id|ID|Uuid|_uuid|_pk))$")
+# An id that scopes a tenant, not a stored webhook: `/webhooks/:accountId` may
+# route a provider's events to a tenant.
+_TENANT_PARAM = re.compile(
+    r"^(?:account|tenant|org|organization|organisation|workspace|team|project|user|customer|shop|store|site"
+    r"|merchant|app|application|client|company|integration|installation|instance|space|channel|provider|source)"
+    r"_?(?:id|uuid|key|slug)?$",
+    re.IGNORECASE,
+)
+# Guards that are a user or session login, as opposed to a shared secret,
+# signature or token header a plugin may also declare `required`.
+_USER_GUARD = re.compile(r"(?i)session|login|user|jwt|permission|role|admin|member|apiauth|authenticated|isauth|auth_?required|login_?required")
+_SECRET_GUARD = re.compile(r"(?i)webhook|signature|secret|hmac|token|api_?key|svix|stripe|github|slack|twilio|shopify|verif|sig\b|basic")
+# A receiver's subscription handshake: Meta/WhatsApp `hub.challenge`, Twitter `crc_token`.
+_HANDSHAKE = re.compile(r"hub[._]challenge|hub[._]mode|hub[._]verify_token|crc_token")
+_ID_CONVERTERS = re.compile(r"^<(?:int|uuid|pk):", re.IGNORECASE)
+# Words that, fused with `webhook` in one segment, name a management page or
+# sub-resource: `add_webhook`, `webhooklogs`, `edit-webhook`.
+# Fused with `webhook` in one segment, only words that can't be an inbound
+# event name: `webhooklogs`, `add_webhook`, `webhook_settings`, `edit-webhook`.
+# Event-ish words (`subscription-webhook`, `new-order-webhook`,
+# `update-webhook`, `delivery_webhook`) stay receivers, and a POST never counts.
+_MANAGEMENT_WORDS = frozenset({"add", "edit", "delete", "list", "log", "logs", "setting", "settings"})
+# Actions on a stored webhook (`POST /webhooks/:id/test`). A POST to
+# `/webhooks/:id[/:token]` without one may be an incoming-webhook receiver
+# (Discord/Slack style, authenticated by the id/token in the URL), so it isn't
+# management on the id alone.
+_MANAGEMENT_ACTIONS = frozenset(
+    {
+        "test", "ping", "redeliver", "redeliveries", "deliveries", "logs", "rotate", "secret", "enable",
+        "disable", "edit", "delete", "retry", "resend", "links", "folders", "attempts", "history",
+    }
+)
+_READ_WRITE_METHODS = frozenset({"GET", "HEAD", "PUT", "PATCH", "DELETE"})
+_SETTINGS_SEGMENTS = frozenset({"settings", "preferences"})
+# CRUD actions in a settings path: `POST /settings/webhooks/create`.
+_CRUD_ACTIONS = frozenset({"create", "new", "store", "edit", "update", "delete", "destroy"})
+# `router.register(r"webhooks", WebhookViewSet)`: group 1 the prefix, group 2 the ViewSet.
+_DRF_VIEWSET_REGISTRATION = re.compile(
+    r"""\.register\(\s*r?["']([^"'\n]{0,200})["']\s*,\s*([\w.]{1,120})"""
+)
+_PY_CLASS_BASES = r"^[ \t]*class[ \t]+{name}[ \t]*\(([^)\n]{{0,400}})\)"
+# A POST that creates a stored webhook: the handler persists a target URL with
+# a secret or event list (`subscriberUrl`, `payload_url`, `events`, `secret`).
+_CONFIG_URL_FIELD = re.compile(r"(?i:subscriber_?url|payload_?url|target_?url|callback_?url|endpoint_?url)|\burl\s*[:=]")
+_CONFIG_OTHER_FIELD = re.compile(r"\b(?:secret|events|event_?types|eventTriggers|active)\b")
+_PERSIST_CALL = re.compile(r"\b(?:create|save|insert|upsert|persist|add)\w{0,40}\s*\(|\.objects\.create\s*\(")
+
+
+def _segments(path: str) -> list[str]:
+    return [seg for seg in path.split("?", 1)[0].strip("/").split("/") if seg]
+
+
+def _param_name(segment: str) -> str | None:
+    match = _PARAM_SEGMENT.match(segment)
+    if match is None:
+        return None
+    return next((g for g in match.groups() if g is not None), "")
+
+
+def _is_id_param(segment: str) -> bool:
+    name = _param_name(segment)
+    if name is None:
+        return False
+    bare = name.split(":", 1)[-1].strip()
+    if _TENANT_PARAM.match(bare):
+        return False
+    if _ID_CONVERTERS.match(segment):
+        return True
+    return _ID_PARAM.match(bare) is not None
+
+
+def _drf_model_viewset(base: Path, cache: dict[str, str | None], hop: _HopResolver, route, line: str) -> bool:  # noqa: ANN001
+    """`router.register('webhooks', WebhookViewSet)` where the prefix names the
+    webhook collection itself (not a provider: `webhooks/stripe`) and the
+    ViewSet is model CRUD (`ModelViewSet`, `NetBoxModelViewSet`, `ModelCrudViewSet`)."""
+    match = _DRF_VIEWSET_REGISTRATION.search(line)
+    if match is None:
+        return False
+    prefix = [seg.lower() for seg in match.group(1).strip("^$/").split("/") if seg]
+    if not prefix or not _WEBHOOK_SEGMENT.fullmatch(prefix[-1].replace("logs", "").replace("log", "") or "x"):
+        return False
+    ref = match.group(2)
+    module_name, _, class_name = ref.rpartition(".")
+    content = _read_file_content(route.file, base, cache) or ""
+    candidates = [route.file]
+    imports = hop._import_map(route.file, content)
+    if module_name and module_name in imports:
+        candidates = [imports[module_name]]
+    elif class_name in imports:
+        candidates = [imports[class_name], route.file]
+    pattern = re.compile(_PY_CLASS_BASES.format(name=re.escape(class_name)), re.MULTILINE)
+    for module in candidates:
+        source = _read_file_content(module, base, cache) or ""
+        found = pattern.search(source)
+        if found:
+            bases = [b.strip().rsplit(".", 1)[-1] for b in found.group(1).split(",")]
+            return any("Model" in b and b.endswith("ViewSet") for b in bases)
+    return False
+
+
+def _handler_text(base: Path, cache: dict[str, str | None], route, route_lines: list[int]) -> str:  # noqa: ANN001
+    content = _read_file_content(route.file, base, cache) or ""
+    lines = content.splitlines()
+    if route.line is None or not lines:
+        return ""
+    start, end = span_bounds(route.line, lines, route_lines)
+    return "\n".join(lines[start:end])
+
+
+def _persists_webhook_config(text: str) -> bool:
+    return bool(_CONFIG_URL_FIELD.search(text) and _CONFIG_OTHER_FIELD.search(text) and _PERSIST_CALL.search(text))
+
+
+def _fused_management_word(segment: str) -> bool:
+    rest = _WEBHOOK_SEGMENT.sub(" ", segment.lower())
+    words = [w for w in re.split(r"[\s_\-.]+", rest) if w]
+    return bool(words) and any(w in _MANAGEMENT_WORDS for w in words)
+
+
+def _member_management(method: str, segs: list[str], hook: int, *, collection_known: bool) -> str | None:
+    """`/…/webhooks/:webhookId[/…]`: a stored webhook addressed by id.
+    ``"strong"`` when it is read or deleted (GET/HEAD/DELETE), acted on
+    (`POST …/:id/test`), or a method-less bare member of a known collection;
+    ``"weak"`` for a PUT/PATCH, which needs other evidence; else None."""
+    if hook + 1 >= len(segs) or not _is_id_param(segs[hook + 1]):
+        return None
+    tail = [s.lower() for s in segs[hook + 2 :]]
+    if any(word in _MANAGEMENT_ACTIONS for word in tail if _param_name(word) is None):
+        return "strong"
+    if method in {"GET", "HEAD", "DELETE"}:
+        return "strong"
+    if method in {"PUT", "PATCH"}:
+        return "weak"
+    return "strong" if method == "ANY" and not tail and collection_known else None
+
+
+def _user_authenticated(route) -> bool:  # noqa: ANN001
+    """Required auth by a user/session guard. A plugin may also declare a
+    shared-secret or signature check `required`; that proves nothing here."""
+    if route.auth != "required" or not route.guards:
+        return False
+    return all(not _SECRET_GUARD.search(g) for g in route.guards) and any(_USER_GUARD.search(g) for g in route.guards)
+
+
+def _route_line(root: Path, cache: dict[str, str | None], route) -> str:  # noqa: ANN001
+    if route.line is None:
+        return ""
+    content = _read_file_content(route.file, root, cache) or ""
+    lines = content.splitlines()
+    return lines[route.line - 1] if 0 < route.line <= len(lines) else ""
+
+
+def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) -> dict[tuple[str, str, str], str]:
+    """Routes whose path names webhooks but which manage the app's own webhook
+    configuration, keyed ``(method, path, file)`` → the reason."""
+    base = Path(root or scan.root).resolve()
+    cache: dict[str, str | None] = {}
+    out: dict[tuple[str, str, str], str] = {}
+    # Collections that have an id-addressed member somewhere: `/v2/webhooks`
+    # when `/v2/webhooks/:webhookId` exists.
+    collections: set[str] = set()
+    # Members (`/webhooks/:id`) that something reads, deletes or acts on.
+    members_read: set[str] = set()
+    member_reads: list[tuple[str, object]] = []
+    parsed = []
+    for route in scan.routes:
+        segs = _segments(route.path)
+        hook = next((i for i, seg in enumerate(segs) if _WEBHOOK_SEGMENT.search(seg)), None)
+        parsed.append((route, segs, hook))
+        if hook is not None and _member_management(route.method.upper(), segs, hook, collection_known=True) == "strong":
+            collections.add("/".join(s.lower() for s in segs[: hook + 1]))
+            member_reads.append(("/".join(s.lower() for s in segs[: hook + 2]), route))
+    collections_paths = {"/".join(s.lower() for s in segs) for _, segs, hook in parsed if hook is not None and hook + 1 == len(segs)}
+    hop = _HopResolver(base, cache)
+    route_lines: dict[str, list[int]] = {}
+    for r in scan.routes:
+        if r.line is not None:
+            route_lines.setdefault(r.file, []).append(r.line)
+    for member, route in member_reads:
+        # A receiver's subscription handshake (`hub.challenge`, `crc_token`)
+        # on the member is no evidence that the member is managed.
+        if route.method.upper() in {"GET", "HEAD", "ANY"} and _HANDSHAKE.search(
+            _handler_text(base, cache, route, route_lines.get(route.file, []))
+        ):
+            continue
+        members_read.add(member)
+    for route, segs, hook in parsed:
+        if hook is None:
+            continue
+        method = route.method.upper()
+        lowered = [s.lower() for s in segs]
+        after = lowered[hook + 1 :]
+        authenticated = _user_authenticated(route)
+        reason = None
+        if any(s in _SETTINGS_SEGMENTS for s in lowered[:hook]) and (
+            method in _READ_WRITE_METHODS
+            or any(s in _CRUD_ACTIONS for s in after)
+            or (after and _is_id_param(segs[hook + 1]))
+            or authenticated
+        ):
+            # `POST /settings/integrations/slack/webhook` stays a receiver.
+            reason = "a settings page for the app's webhooks"
+        elif "trpc" in lowered[:hook]:
+            reason = "a tRPC procedure endpoint"
+        elif method != "POST" and _fused_management_word(segs[hook]):
+            reason = f"`{segs[hook]}` names a management page"
+        elif (
+            member := _member_management(
+                method, segs, hook, collection_known="/".join(lowered[: hook + 1]) in collections_paths
+            )
+        ) is not None:
+            if member == "strong":
+                reason = f"`{segs[hook + 1]}` addresses a stored webhook"
+            elif (
+                "/".join(lowered[: hook + 2]) in members_read
+                or authenticated
+                or _persists_webhook_config(_handler_text(base, cache, route, route_lines.get(route.file, [])))
+            ):
+                # A PUT/PATCH alone isn't management: a provider may PUT events.
+                reason = f"`{segs[hook + 1]}` updates a stored webhook"
+        elif hook + 1 == len(segs) and "/".join(lowered) in collections:
+            # The collection of id-addressed webhooks. Listing it is management;
+            # a POST (or a method-less route) may be a receiver beside an
+            # event log, so it needs positive evidence.
+            if method in _READ_WRITE_METHODS:
+                reason = "the collection of a webhook resource with id-addressed members"
+            elif authenticated:
+                reason = "an authenticated create on a webhook collection"
+            elif _persists_webhook_config(_handler_text(base, cache, route, route_lines.get(route.file, []))):
+                reason = "a create that persists a webhook's URL and settings"
+        if reason is None and _drf_model_viewset(base, cache, hop, route, _route_line(base, cache, route)):
+            reason = "a model CRUD ViewSet over the app's webhooks"
+        if reason is not None and method in {"GET", "HEAD", "ANY"} and _HANDSHAKE.search(
+            _handler_text(base, cache, route, route_lines.get(route.file, []))
+        ):
+            reason = None  # a receiver's subscription handshake (`hub.challenge`, `crc_token`)
+        if reason is not None:
+            out[(route.method, route.path, route.file)] = reason
+    return out
+
+
+def reclaim_receivers(scan: ScanResult, candidates: list[AttackSurface], root: str | Path | None = None) -> list[AttackSurface]:
+    """Of the management candidates, the ones whose handler reaches signature
+    verification after all: those are receivers and stay webhooks."""
+    if not candidates:
+        return []
+    assessor = _Assessor(scan, Path(root or scan.root).resolve())
+    reclaimed = []
+    for surface in candidates:
+        result = assessor.assess(surface)
+        if result.state != "absent" and "the handler's source could not be read" not in result.notes:
+            reclaimed.append(surface)
+    return reclaimed
 
 
 def _mount_covers(mount: str, route: str) -> bool:
@@ -343,5 +741,12 @@ def describe(surface: AttackSurface) -> str:
     return f"{route} — {provider}signature verified at {v.evidence}"
 
 
-__all__ = ["assess_webhook_surfaces", "classify", "describe", "is_mutating"]
+__all__ = [
+    "assess_webhook_surfaces",
+    "classify",
+    "describe",
+    "is_mutating",
+    "reclaim_receivers",
+    "webhook_management_routes",
+]
 
