@@ -1163,6 +1163,8 @@ def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> 
         # template literals and mixed lists
         ["restrictTo(`admin`)"],
         ["restrictTo(Roles.ADMIN, Roles.USER)"],
+        ["authorizeRole('user')"],
+        ["checkRole(GroupChat.OWNER)"],
     ],
 )
 def test_authentication_only_guards_are_not_role_checks(tmp_path: Path, guards: list[str]) -> None:
@@ -1255,18 +1257,26 @@ def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected:
         ("adminRouter.use(restrictTo('admin'));", 1),
         ("// router.use(restrictTo('admin'));", 1),
         ("/* router.use(restrictTo('admin')); */", 1),
+        ("router.use(ADMIN_PREFIX, restrictTo('admin'));", 1),
+        ("router.use(adminPath, restrictTo('admin'));", 1),
+        ("router.use(/^\\/admin/, restrictTo('admin'));", 1),
+        # a regex literal holding a backtick or `/*` doesn't blank what follows
+        ("const strip = (s) => s.replace(/`/g, '');\nrouter.use(restrictTo('admin'));", 0),
+        ("const glob = /[/*]/;\nrouter.use(restrictTo('admin'));", 0),
     ],
 )
 def test_router_use_role_call_keeps_its_arguments(tmp_path: Path, use: str, flagged: int) -> None:
     # #349 review: `router.use(restrictTo('admin'))` was cut at the first `)`.
-    (tmp_path / "admin.js").write_text(
+    content = (
         "const router = require('express').Router();\n"
         f"{use}\n"
         "router.delete('/admin/users/:id', async (req, res) => {\n"
         "  await User.deleteOne({ _id: req.params.id });\n"
         "});\n"
     )
-    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=3, auth="required", guards=["requireAuth"])
+    (tmp_path / "admin.js").write_text(content)
+    line = content.split("\n").index("router.delete('/admin/users/:id', async (req, res) => {") + 1
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=line, auth="required", guards=["requireAuth"])
     assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == flagged
 
 
@@ -1293,6 +1303,22 @@ def test_router_use_applies_only_to_later_routes_on_the_same_router() -> None:
     )
     info = _chain_roles("admin.js", content)
     lines = {2: False, 4: True, 5: False}
+    for line, expected in lines.items():
+        route = Route(path="/x", method="DELETE", file="admin.js", line=line)
+        assert _chain_role_check(route, content, info) is expected, line
+    # a registration chained across lines resolves to the router it starts on
+    content = (
+        "const router = require('express').Router();\n"
+        "router.use(restrictTo('admin'));\n"
+        "router\n"
+        "  .route('/x')\n"
+        "  .delete(del);\n"
+        "other\n"
+        "  .route('/y')\n"
+        "  .delete(del);\n"
+    )
+    info = _chain_roles("admin.js", content)
+    lines = {5: True, 8: False}
     for line, expected in lines.items():
         route = Route(path="/x", method="DELETE", file="admin.js", line=line)
         assert _chain_role_check(route, content, info) is expected, line
@@ -1351,3 +1377,34 @@ def test_fastapi_router_dependency_role_call(tmp_path: Path) -> None:
     )
     route = Route(path="/admin/users/{user_id}", method="DELETE", file="admin.py", line=2, auth="required")
     assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+def test_class_level_roles_metadata_covers_the_controller(tmp_path: Path) -> None:
+    (tmp_path / "users.controller.ts").write_text(
+        "@Controller('admin/users')\n"
+        "@UseGuards(JwtAuthGuard, RolesGuard)\n"
+        "@Roles(Role.Admin)\n"
+        "export class AdminUsersController {\n"
+        "  @Delete(':id')\n"
+        "  remove(@Param('id') id: string) {\n"
+        "    return this.users.delete(id);\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "@Controller('admin/teams')\n"
+        "@UseGuards(JwtAuthGuard, RolesGuard)\n"
+        "export class AdminTeamsController {\n"
+        "  @Delete(':id')\n"
+        "  remove(@Param('id') id: string) {\n"
+        "    return this.teams.delete(id);\n"
+        "  }\n"
+        "}\n"
+    )
+    routes = [
+        Route(path="/admin/users/:id", method="DELETE", file="users.controller.ts", line=5, auth="required", guards=["JwtAuthGuard", "RolesGuard"]),
+        Route(path="/admin/teams/:id", method="DELETE", file="users.controller.ts", line=14, auth="required", guards=["JwtAuthGuard", "RolesGuard"]),
+    ]
+    findings = _bfla_findings(ScanResult(root=str(tmp_path), routes=routes))
+    assert len(findings) == 1
+    evidence = " ".join(findings[0].evidence)
+    assert "/admin/teams/:id" in evidence and "/admin/users/:id" not in evidence

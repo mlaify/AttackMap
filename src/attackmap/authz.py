@@ -33,6 +33,7 @@ import json
 import os
 import posixpath
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from .handler_span import span_text
@@ -167,7 +168,7 @@ ROLE_MARKERS = re.compile(
     | @Secured | @RolesAllowed
     | @PreAuthorize\([^)]*(?:hasRole|hasAuthority|hasAnyRole|hasAnyAuthority|hasPermission)
     | \bpermission_required\b | \bhas_perm\b | \bhasPermission\b | \brequires?_?[pP]ermissions?\b
-    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize(?!_?roles)[!\w]*\s*\(
+    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize(?!_?roles?)[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
     | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
     | ->userIsAllowed\s*\(
@@ -259,7 +260,9 @@ _ROLE_LITERAL_RE = re.compile(r"'([^'\n]{1,80})'" r'|"([^"\n]{1,80})"')
 _ROLE_MEMBER_RE = re.compile(
     r"(?:[A-Z][\w$]{0,80}+\.)?([A-Z][\w$]{0,80}+)\.([A-Za-z_$][\w$]{0,80}+)"
 )
-_ROLE_ENUM_RE = re.compile(r"(?i)role|perm|privilege|access|authority|group|level")
+# The owner's name ends in a role word: `Role`, `UserRole`, `ROLES`,
+# `Permission`, `AccessLevel` (not `GroupChat`).
+_ROLE_ENUM_RE = re.compile(r"(?i)(?:role|perm|permission|privilege|authority|authorities|level|group)s?$")
 # A bare ALL_CAPS constant (`ADMIN`, `ROLE_ADMIN`).
 _ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 # Role-list calls in handler or chain code: `restrictTo('admin')`,
@@ -267,7 +270,7 @@ _ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 # their arguments. Metadata guards (`RolesGuard`, `PermissionsGuard`) are not
 # role checks on their own: they enforce this metadata, and allow all without it.
 _ROLE_CALL_RE = re.compile(
-    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorize_?[rR]oles\w{0,40}|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
+    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorize_?[rR]oles?\w{0,40}|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
 )
 _MAX_ROLE_ARGS = 400
 
@@ -325,12 +328,31 @@ _QUOTES = "'\"`"
 def _mask_code(text: str) -> str:
     """``text`` with comments (`//`, `/* */`, `# ` lines) and string-literal
     contents blanked, offsets and newlines kept. Language-agnostic and
-    approximate; used only to tell a call from a mention of one."""
+    approximate; used only to tell a call from a mention of one. A JS regex
+    literal (`/` after an operator or bracket) is skipped, so a quote or `/*`
+    inside it can't blank the code after it."""
     out = list(text)
     n = len(text)
     i = 0
+    prev = ""  # last non-space character outside literals
     while i < n:
         c = text[i]
+        if c == "/" and prev in _REGEX_PREV and text[i + 1 : i + 2] not in ("/", "*"):
+            j = i + 1
+            in_class = False
+            while j < n and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "[":
+                    in_class = True
+                elif text[j] == "]":
+                    in_class = False
+                elif text[j] == "/" and not in_class:
+                    break
+                j += 1
+            i, prev = j + 1, "/"
+            continue
         if c in _QUOTES:
             j = i + 1
             while j < n and text[j] != c:
@@ -342,7 +364,7 @@ def _mask_code(text: str) -> str:
             for k in range(i + 1, min(j, n)):
                 if out[k] != "\n":
                     out[k] = " "
-            i = j + 1
+            i, prev = j + 1, c
             continue
         if text.startswith("//", i) or (c == "#" and (i == 0 or text[i - 1] in " \t\n") and text[i + 1 : i + 2] in (" ", "\t")):
             j = text.find("\n", i)
@@ -359,8 +381,14 @@ def _mask_code(text: str) -> str:
                     out[k] = " "
             i = j
             continue
+        if not c.isspace():
+            prev = c
         i += 1
     return "".join(out)
+
+
+# A `/` after one of these (or at the start) begins a regex literal, not a division.
+_REGEX_PREV = frozenset(["", *"(,=:[!&|?{};+-*%<>~^"])
 
 
 def _role_call_check(text: str) -> bool:
@@ -416,7 +444,13 @@ _JS_USE_RE = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+use\s*+\(
 _JS_ROUTE_RECEIVER_RE = re.compile(
     r"(?<![\w$.])([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|del|all|options|head|route)\s*+\("
 )
-_PATH_ARG_RE = re.compile(r"(?<!\s)\s*+['\"`]")
+# A first `use` argument that is a path: a string, a regex literal, or a
+# constant / variable named for one (`router.use(ADMIN_PREFIX, …)`).
+_PATH_ARG_RE = re.compile(
+    r"(?<!\s)\s*+(?:['\"`/]|[A-Z][A-Z0-9_]{0,80}+\s*+,|[\w$]{0,40}(?i:path|prefix|route|base|mount)[\w$]{0,40}+\s*+,)"
+)
+_CHAIN_HEAD_RE = re.compile(r"\s*+([A-Za-z_$][\w$]{0,80}+)\s*+")
+_MAX_CHAIN_LINES = 8
 _MAX_ROUTER_ARGS = 2_000
 _MAX_CALLS = 200
 _PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*+\(")
@@ -652,10 +686,20 @@ def find_bfla_routes(
     return out
 
 
-def _chain_roles(file: str, content: str) -> bool | list[tuple[str, int]]:
-    """The file's router-level role checks. For JS, the ``router.use(...)``
-    calls that apply a role check, as ``(receiver, line)``; otherwise whether
-    a FastAPI router dependency or a Java class-level annotation checks a role."""
+@dataclass
+class _JsChainRoles:
+    """A JS/TS file's router- and class-level role checks."""
+
+    uses: list[tuple[str, int]]  # `receiver.use(<role check>)` as (receiver, line)
+    classes: list[tuple[int, int]]  # role-decorated classes as [first, last) lines
+    lines: list[str]
+
+
+def _chain_roles(file: str, content: str) -> bool | _JsChainRoles:
+    """The file's router-level role checks. For JS/TS, the ``router.use(...)``
+    calls that apply one and the classes decorated with one (NestJS
+    ``@Roles(Role.Admin)`` above ``export class``); otherwise whether a FastAPI
+    router dependency or a Java class-level annotation checks a role."""
     suffix = Path(file).suffix.lower()
     if suffix in JS_TS_SUFFIXES:
         code = _mask_code(content)
@@ -671,7 +715,15 @@ def _chain_roles(file: str, content: str) -> bool | list[tuple[str, int]]:
                 continue  # `router.use('/billing', …)`: scoped to another prefix
             if has_role_check(args):
                 uses.append((m.group(1), code.count("\n", 0, m.start()) + 1))
-        return uses
+        lines = content.split("\n")
+        code_lines = code.split("\n")
+        starts = [i for i, line in enumerate(code_lines) if _CLASS_DECL_RE.search(line)]
+        classes = [
+            (i + 1, (starts[k + 1] + 1) if k + 1 < len(starts) else len(lines) + 1)
+            for k, i in enumerate(starts)
+            if has_role_check("\n".join(lines[max(0, i - 6) : i + 1]))
+        ]
+        return _JsChainRoles(uses, classes, lines)
     if suffix == ".py":
         code = _mask_code(content)
         for count, m in enumerate(_PY_ROUTER_DEPS_RE.finditer(code)):
@@ -690,21 +742,39 @@ def _chain_roles(file: str, content: str) -> bool | list[tuple[str, int]]:
     return False
 
 
-def _chain_role_check(route: Route, content: str, info: bool | list[tuple[str, int]]) -> bool:
+def _route_receiver(lines: list[str], line: int) -> str | None:
+    """The router a registration on ``line`` is called on, following a
+    chain written across lines (`router\\n  .route('/x')\\n  .delete(h)`)."""
+    i = line - 1
+    for _ in range(_MAX_CHAIN_LINES):
+        if not 0 <= i < len(lines):
+            return None
+        text = lines[i]
+        registration = _JS_ROUTE_RECEIVER_RE.search(text)
+        if registration is not None:
+            return registration.group(1)
+        stripped = text.lstrip()
+        if not stripped.startswith("."):
+            head = _CHAIN_HEAD_RE.fullmatch(text)
+            return head.group(1) if head is not None and i < line - 1 else None
+        i -= 1
+    return None
+
+
+def _chain_role_check(route: Route, content: str, info: bool | _JsChainRoles) -> bool:
     """A role check on the route's router/controller (see :func:`_chain_roles`).
     A JS ``use`` counts only on the route's own router and before the route:
     Express doesn't apply middleware to routes registered earlier."""
-    if not isinstance(info, list):
+    if not isinstance(info, _JsChainRoles):
         return info
-    if not info or route.line is None:
+    if route.line is None or not 1 <= route.line <= len(info.lines):
         return False
-    lines = content.split("\n")
-    if not 1 <= route.line <= len(lines):
+    if any(first < route.line < last for first, last in info.classes):
+        return True
+    if not info.uses:
         return False
-    registration = _JS_ROUTE_RECEIVER_RE.search(lines[route.line - 1])
-    if registration is None:
-        return False
-    return any(receiver == registration.group(1) and line < route.line for receiver, line in info)
+    receiver = _route_receiver(info.lines, route.line)
+    return receiver is not None and any(r == receiver and line < route.line for r, line in info.uses)
 
 
 # GraphQL resolver files keep the original whole-file marker set (#139):
