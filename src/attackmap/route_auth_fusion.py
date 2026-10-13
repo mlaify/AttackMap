@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .handler_auth import handler_body, mask, session_gate
 from .safe_fs import read_repo_text, walk_repo
 from .srcpaths import JS_TS_SUFFIXES
 from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
@@ -103,6 +104,9 @@ def unauthenticated_routes(
         repo_has_java_global_auth(scan, root, content_cache) if has_java_routes else False
     )
 
+    line_starts: dict[str, tuple[list[int], str]] = {}
+    hop_box: list = []
+
     flagged: list[tuple[Route, str]] = []
     for route in scan.routes:
         if route.method.upper() not in _MUTATING:
@@ -123,8 +127,136 @@ def unauthenticated_routes(
         control = resolve_control(route, content, java_global_auth)
         if control is not None:
             continue  # guarded — not a finding
+        if Path(route.file).suffix.lower() in _JS_SUFFIXES and _handler_session_gate(
+            route, content, root, content_cache, line_starts, hop_box
+        ):
+            continue  # the handler rejects a request without a session (#348)
         flagged.append((route, _chain_evidence(route, content)))
     return flagged
+
+
+_REGISTRATION_CALL = re.compile(r"\.\s*(?P<verb>get|post|put|patch|delete|all|route|on)\s*\(", re.IGNORECASE)
+_NEWLINE = re.compile(r"\n")
+_READ_ONLY_MIDDLEWARE = re.compile(
+    r"(?:[A-Za-z_$][\w$]{0,40}\.)?"
+    r"(?:(?:[a-z]{1,3}V|v)alidat(?:or|e|ion)(?:Body|Query|Params|Request|Input|Schema|Json|Middleware)?"
+    r"|json|urlencoded|text|raw|cors|helmet|rateLimit(?:er)?|[A-Za-z_$]{0,20}[Ll]imiter)"
+    r"\s*\([^;]{0,400}\)"
+)
+_CHAIN_CONTINUES = re.compile(r"[ \t\r\n]{0,200}\.")
+_PATH_LITERAL = re.compile(r"(?<!\s)\s*+['\"`/]")
+_SOLE_REF = re.compile(r"([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)")
+
+
+def _top_level_args(text: str) -> list[tuple[int, str]]:
+    """``text`` split on commas outside brackets, as ``(offset, argument)``;
+    a trailing comma adds no empty argument."""
+    args: list[tuple[int, str]] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append((start, text[start:i]))
+            start = i + 1
+    if text[start:].strip():
+        args.append((start, text[start:]))
+    return args
+
+
+def _handler_session_gate(
+    route: Route,
+    content: str,
+    root: Path,
+    cache: dict[str, str | None],
+    line_starts: dict[str, tuple[list[int], str]],
+    hop_box: list,
+) -> str | None:
+    """A session check that rejects (see :mod:`handler_auth`) in the route's
+    own handler: the inline handler, clamped to its closing brace, or the one
+    function the registration passes by reference (one hop)."""
+    if route.line is None:
+        return None
+    # Route.line counts `\n` only; `splitlines()` would also split on
+    # U+2028, `\f` or a lone `\r` and shift the handler to another route.
+    # The file is masked once and shared by all its routes.
+    if route.file not in line_starts:
+        line_starts[route.file] = ([0] + [m.end() for m in _NEWLINE.finditer(content)], mask(content))
+    starts, file_code = line_starts[route.file]
+    if not 1 <= route.line <= len(starts):
+        return None
+    offset = starts[route.line - 1]
+    text = content[offset : offset + 20_000]
+    code = file_code[offset : offset + 20_000]
+    first_line = code[: code.find("\n") + 1 if "\n" in code else len(code)]
+    calls = list(_REGISTRATION_CALL.finditer(first_line))
+    if not calls:
+        if _CHAIN_CONTINUES.match(code, len(first_line)):
+            return None  # `router\n  .route('/x')\n  .post(mw, h)`: a chain we don't follow
+        # Not a call registration (a decorator, a function header): the
+        # handler body is the first function body that follows.
+        return session_gate(text, code)
+    # Several registrations on one line (`.get(a).post(b)`, `app.get(…); app.post(…)`):
+    # only the one for this route's method, and only if it is unambiguous.
+    same_method = [c for c in calls if c.group("verb").lower() == route.method.lower()]
+    if len(same_method) == 1:
+        call = same_method[0]
+    elif len(calls) == 1 and not same_method and calls[0].group("verb").lower() in ("all", "route", "on"):
+        call = calls[0]
+    else:
+        return None
+    open_paren = call.end() - 1
+    depth = 0
+    reg_close = None
+    for i in range(open_paren, len(code)):
+        if code[i] == "(":
+            depth += 1
+        elif code[i] == ")":
+            depth -= 1
+            if depth == 0:
+                reg_close = i
+                break
+    if reg_close is None:
+        return None
+    args = _top_level_args(code[open_paren + 1 : reg_close])
+    # Middleware: every argument between the path (when the first argument is
+    # one; `.route('/x').post(mw, h)` has none) and the handler. A gate in the
+    # handler runs after it (multer, a writer) has already acted. Validators,
+    # body parsers, cors and rate limiters only read the request.
+    has_path = bool(args) and _PATH_LITERAL.match(args[0][1]) is not None
+    middleware = args[1 if has_path else 0 : -1]
+    if not all(_READ_ONLY_MIDDLEWARE.fullmatch(text[open_paren + 1 + o : open_paren + 1 + o + len(a)].strip()) for o, a in middleware):
+        return None
+    # An inline handler: clamp to the registration, so a one-line route costs
+    # its own length. The body must open in the last argument, not in a
+    # callback passed to middleware (`validate({ custom: (req) => { … } })`).
+    last_start = open_paren + 1 + args[-1][0] if args else reg_close
+    inline_text, inline_code = text[: reg_close + 1], code[: reg_close + 1]
+    body = handler_body(inline_text[last_start:], inline_code[last_start:])
+    if body is not None:
+        return session_gate(inline_text[last_start:], inline_code[last_start:])
+    ref = _SOLE_REF.fullmatch(args[-1][1].strip()) if args else None
+    if ref is None:
+        return None
+    if not hop_box:
+        from .authz import _HopResolver  # local import: authz imports this module
+
+        # The resolver, and (file, function) → gate shared by every route using it.
+        hop_box.extend([_HopResolver(root, cache), {}])
+    hop, gates = hop_box
+    owner, _, func = ref.group(1).rpartition(".")
+    imports = hop._import_map(route.file, content)
+    if owner and owner not in imports:
+        return None  # `ctl.create` with `ctl` not imported: don't guess a local `create`
+    target = imports.get(owner or func, route.file)
+    key = (target, func)
+    if key not in gates:
+        definition = hop._definition(target, func)
+        gates[key] = session_gate(definition) if definition else None
+    return gates[key]
 
 
 def _in_scope(surface: AttackSurface, route: Route) -> bool:

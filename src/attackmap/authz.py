@@ -1434,7 +1434,9 @@ class _HopResolver:
     def _definition(self, rel_file: str, name: str) -> str:
         if rel_file not in self._defs:
             text = _read_file_content(rel_file, self.root, self.cache) or ""
-            self._defs[rel_file] = (text.splitlines(), _definition_index(text))
+            # `\n` only, like `_definition_index`: `splitlines()` would also split
+            # on U+2028 / `\f` / a lone `\r` and return another function's body.
+            self._defs[rel_file] = (text.split("\n"), _definition_index(text))
         lines, index = self._defs[rel_file]
         start = index.get(name)
         return _block_from(lines, start) if start is not None else ""

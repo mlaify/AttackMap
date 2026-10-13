@@ -197,6 +197,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`unauth-state-change` recognises handler-level session checks in JS/TS (#348).**
+  - A route's own handler that resolves the caller's identity and rejects when it's missing is no longer reported. The handler is either inline, clamped to its closing brace, or the function the registration passes by reference.
+  - Identity calls: `getSession(`, `getServerSession(`, a zero-argument `auth()`, `currentUser(`, `supabase.auth.getUser(`, `req.session.user`/`userId`, or the passport `req.user` / `req.isAuthenticated()`.
+  - Recognition is structural (`handler_auth.py`):
+    - Strings and comments are masked first.
+    - The `if` condition must be exactly `!session[.member]`.
+    - The `if` must be a top-level statement of the handler body: not an `else if`, not the body of a braceless `if` or loop. A `try` block, or an IIFE that is the body's last statement, still counts as top level. It must also come before any state-changing call (persistence methods, plain `createX(`/`deleteX(` calls, `$executeRaw`).
+    - The then-branch must start with `return` (not `return next()`, `return next(null)`, `return await next()` or `return void next()`) or `throw`. A bare `redirect(` doesn't count, because Remix and SvelteKit 1 return it rather than throw. `next(err)` / `res.status(401|403)` count only when followed by `return`.
+    - Any reassignment of the session variable or one of its members (`=`, `||=`, `??=`, destructuring, `session.user ||= guest`) disqualifies it. A destructured `data`/`error` is never tracked.
+    - A `try` block counts as top level only if its `catch` rethrows or returns.
+    - A lookup with a fallback (`?? {…}`, `|| x`, a ternary, `.catch(…)`) doesn't count.
+    - A handler passed as `obj.method` is followed only when `obj` is imported, and only when it is the route's sole handler (`post(path, a, b)` isn't followed).
+    - The lookup must be the initializer itself (not `!req.user` or a query mentioning `req.user`); destructured aliases bind the alias; whole `auth()` / `.auth.getUser()` results need a member test; member tests must name identity (`!session.user.isGuest` doesn't count).
+    - A rejecting `return` returns nothing, a literal, a response, a redirect or an error, not a hand-off call. More writes count before a gate (`queue.add(`, `axios.post(`, `redis.del(`, `fs.unlink(`, `fetch(`).
+    - Masking keeps template interpolations visible and skips regex literals.
+    - Before the gate, any awaited call other than the lookup or a request read (`req.json()`, `schema.parse…`), or a `return` that hands off (`return handleGuest(req, res)`), disqualifies it. `next('route')` is a hand-off, not a rejection. Inline handlers after other middleware (`upload.single('f')`) aren't trusted; validators, body parsers, cors and rate limiters before them are.
+    - Remix (`getSession(request.headers.get('Cookie'))`) and h3 (`getSession(event, …)`) sessions need a member test, as `.then(…)` and `Object.assign(session, …)` count as fallbacks.
+    - The one-hop definition lookup counts lines on `\n` only, like route lines.
+    - Async lookups must be awaited (an un-awaited `getServerSession(...)` is a Promise and never falsy). `next(...)` counts as a rejection only with an error (`next(new Error(…))`, `next(err)`, `next(createError(401))`); response returns are a fixed list of response methods. Writes named with an inner verb (`findOneAndRemove(`, `processRefund(`) count before a gate.
+    - An inline handler's body must open in the registration's last argument; validators count as read-only middleware only by name (`validateBody`, `zValidator`), not `validateAndSave`.
+    - With several registrations on one line (`.get(a).post(b)`, `app.get(…); app.post(…)`), only the route's own method is followed, and only if unambiguous.
+    - A `finally` after a `catch` is checked too; initializers wrapped over several lines are read whole (`getCurrentUser(\n  req,\n) ?? guest`); request-read awaits are exact names (`parse`, `validate`, `json`), not prefixes; a literal return must be the whole value (`return 0 || guestCheckout()` doesn't count); a callback passed to a wrapper isn't an IIFE.
+    - Middleware is checked in `.route('/x').post(mw, h)` chains too. A `try` whose `catch` or `finally` writes isn't transparent. A bare `!session.id` doesn't count (anonymous visitors have a session id too).
+    - Synchronous writes and events (`.run(`, `.emit(`, `invalidate(`) count before a gate; a boolean about the lookup (`req.user == null`) isn't a lookup; a rejection that itself writes (`return json(await db.x.deleteMany())`) doesn't count.
+    - Cost: each file is masked once, inline handlers are clamped to their registration, the first unsafe call is found once per handler, and one-hop gates are cached per function.
+    - Assigning `req.user` / `req.session…` before a direct check disqualifies that check.
+  - When in doubt the finding stays.
+  - Real world: documenso's `POST /api/ai/detect-fields` and `/detect-recipients` are no longer flagged. juice-shop's `/dataerasure` stays flagged, because its lookup is app-specific. cal.com, dub, zulip, saleor, netbox and BookStack are unchanged.
 - **BFLA recognises role-check guard names from plugins (#349).**
   - Guards named `restrictTo`, `permit`, `checkRole(s)`, `rbac`, `acl`, `allowRoles`, `@Permissions`, `@CheckPolicies`, `@MembershipRoles`, `@Pbac` or `Roles` in `Route.guards` count as role checks. The match is on the whole guard name, so generic words never count when they appear in handler code.
   - Arguments are judged by an allow-list. A role-list guard counts only when every listed role is a string literal, an enum-like member (`Role.ADMIN`, `UserRole.Admin`: a capitalised owner named for roles or permissions) or an ALL_CAPS constant naming admin, administrator, owner, superuser, superadmin, systemadmin, sysadmin, staff, root, moderator or manager (case-insensitive, `ROLE_` stripped, `_`/`-` ignored, so `SUPER_ADMIN` and `super-admin` count). Names without arguments, other identifiers, members of lower-case receivers (`doc.owner`, `req.query.admin`), spreads and `Object.values(...)` don't count. `authorizeRoles(...)` / `authorize_roles(...)` are judged by their arguments too. Role calls in strings or comments don't count.
