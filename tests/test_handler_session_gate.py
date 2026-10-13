@@ -1,8 +1,8 @@
 """Handler-level session checks for `unauth-state-change` (#348).
 
 Only a check that gates a rejection counts: the condition must be exactly a
-negated session value, and the then-branch must start with return / throw /
-redirect (or `next(err)` / `res.status(401)` followed by `return`).
+negated session value, and the then-branch must start with return / throw
+(or `next(err)` / `res.status(401)` followed by `return`).
 """
 
 from __future__ import annotations
@@ -22,7 +22,10 @@ GATED = [
     "const loggedInUser = security.authenticatedUsers.get(req.cookies.token)\nif (!loggedInUser) {\n  next(new Error('Blocked'))\n  return\n}",
     "const session = await getServerSession(req, res, authOptions);\nif (!session) return res.status(401).json({ error: 'no' });",
     "const { user } = await supabase.auth.getUser();\nif (!user) {\n  return new Response('Unauthorized', { status: 401 });\n}",
-    "const user = await currentUser();\nif (!user) redirect('/login');",
+    "const user = await currentUser();\nif (!user) return redirect('/login');",
+    "const user = await currentUser();\nif (!user) throw redirect('/login');",
+    # no semicolons (ASI)
+    "const session = await getSession(req)\nif (!session) return res.status(401).end()",
     "const session = await auth();\nif (!session?.user?.id) {\n  res.status(401).send('no');\n  return;\n}",
     "const s = await getSession(req);\nif (!s) { throw new UnauthorizedException(); }",
 ]
@@ -101,8 +104,31 @@ GATED = GATED + [
     "if (!req.isAuthenticated()) return res.sendStatus(401);",
     # inside a `try` block (documenso's shape)
     "try {\n  const session = await getSession(req);\n  if (!session.user) {\n    throw new AppError('UNAUTHORIZED');\n  }\n} catch (err) {\n  return res.status(500).end();\n}",
-    # inside an IIFE wrapping the whole body (juice-shop's shape)
+]
+NOT_GATED = NOT_GATED + [
+    # `next(null)` / `return await next()` continue the chain too
+    "const session = await getSession(req);\nif (!session) {\n  next(null)\n  return\n}",
+    "const session = await getSession(req);\nif (!session) return next(null);",
+    "const session = await getSession(req);\nif (!session) return await next();",
+    # a bare redirect() throws only in Next; Remix / SvelteKit 1 return it
+    "const user = await currentUser();\nif (!user) redirect('/login');",
+    # not a statement of the body: else-if, braceless loop or if
+    "const session = await getSession(req);\nif (req.body.public) { log(1) } else if (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nfor (const i of req.body.items) if (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nif (req.body.x) if (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nwhile (false) if (!session) return 1;",
+    # an IIFE that isn't the whole body: its return only leaves the IIFE
+    "const session = await getSession(req);\n(() => { if (!session) return res.status(401).end(); })();",
     "void (async () => {\n  const session = await getSession(req);\n  if (!session) {\n    next(new Error('no'))\n    return\n  }\n})()",
+    # a state change before the gate: plain call, raw tagged template
+    "const session = await getSession(req);\nawait deleteUser(req.params.id);\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nawait prisma.$executeRaw`DELETE FROM t`;\nif (!session) return res.status(401).end();",
+    # member reassignment before the gate
+    "const session = await getSession(req);\nsession.user ||= guest;\nif (!session.user) return res.status(401).end();",
+    # supabase v2: `data` is always an object
+    "const { data, error } = await supabase.auth.getUser();\nif (!data) return res.status(401).end();",
+    # a `.catch` fallback
+    "const session = await getSession(req).catch(() => guest);\nif (!session) return res.status(401).end();",
 ]
 
 
@@ -249,3 +275,50 @@ def test_wrapped_fallback_and_destructuring_default_are_not_gates() -> None:
     assert session_gate(wrapped) is None
     assert session_gate(default) is None
     assert session_gate(plain) is not None
+
+
+def test_iife_wrapping_the_whole_body_is_transparent() -> None:
+    # juice-shop's shape: the IIFE is the handler's last statement, so its
+    # `return` ends the handler.
+    handler = (
+        "app.post('/api/x', (req, res, next) => {\n"
+        "  void (async () => {\n"
+        "    const session = await getSession(req);\n"
+        "    if (!session) {\n      next(new Error('no'))\n      return\n    }\n"
+        "    await Order.create(req.body);\n"
+        "  })();\n"
+        "});\n"
+    )
+    assert session_gate(handler) is not None
+
+
+def test_unicode_line_separators_dont_shift_routes(tmp_path: Path) -> None:
+    # Route.line counts `\n` only: a U+2028 (or a lone `\r`) above must not
+    # make the open route borrow the gated handler above it.
+    for sep in ("\u2028", "\r", "\f"):
+        (tmp_path / "app.js").write_text(
+            "const app = require('express')();\n"
+            f"// note{sep}more\n"
+            "app.post('/api/a', async (req, res) => { const session = await getSession(req); "
+            "if (!session) return res.status(401).end(); await Order.create(req.body); });\n"
+            "app.post('/api/b', async (req, res) => { await Order.create(req.body); });\n",
+            newline="",
+        )
+        findings = _unauth_findings(tmp_path)
+        assert len(findings) == 1, sep
+        evidence = " ".join(findings[0].evidence)
+        assert "/api/b" in evidence and "/api/a" not in evidence, (sep, evidence)
+
+
+def test_unimported_object_reference_is_not_resolved_locally(tmp_path: Path) -> None:
+    # `ctl.create` with `ctl` not imported must not pick up a local `create`.
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "async function create(req, res) {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await Order.create(req.body);\n"
+        "}\n"
+        "app.post('/api/b', ctl.create);\n"
+    )
+    assert len(_unauth_findings(tmp_path)) == 1

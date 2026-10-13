@@ -22,20 +22,25 @@ doubt, the finding stays.
    (`=`, `||=`, `??=`, destructuring) of a tracked name stops tracking it.
 4. A *gate* is an `if` whose condition, parsed with balanced parentheses, is
    exactly `!name[.member…]` for a tracked name, or `!req.user`,
-   `!req.session.user[Id]`, `!req.isAuthenticated()`.
+   `!req.session.user[Id]`, `!req.isAuthenticated()`. A destructured `data`
+   or `error` is not tracked (supabase v2 always returns a `data` object).
 5. The gate must be a top-level statement of the handler body: not inside a
-   branch, loop, callback or nested function. A `try { … }` block is
-   transparent only if its `catch` rethrows or returns (or there is none);
-   an immediately-invoked function wrapping the whole body (`void (async
-   () => { … })()`) is transparent. No state-changing call may come before it.
-   A lookup with a fallback (`?? {…}`, `|| {…}`, a ternary) doesn't count,
-   and assigning `req.user` / `req.session…` before a direct check
-   disqualifies it.
+   branch, loop, callback or nested function, not an `else if`, and not the
+   body of a braceless `if` / loop. A `try { … }` block is transparent only
+   if its `catch` rethrows or returns (or there is none); an
+   immediately-invoked function that is the body's last statement (`void
+   (async () => { … })()`) is transparent. No state-changing call (a
+   persistence method, a plain `createX(` / `deleteX(` call, `$executeRaw`)
+   may come before it. A lookup with a fallback (`?? {…}`, `|| {…}`, a
+   ternary, `.catch(…)`) doesn't count, a later write to the name or one of
+   its members (`session.user ||= guest`) disqualifies it, and so does
+   assigning `req.user` / `req.session…` before a direct check.
 6. Its then-branch (a braced block or a single statement) must start with a
-   `return` (not `return next()` / `return void next()`), a `throw`, or a
-   bare `redirect(...)` (Next/Remix redirects throw). An Express-style
-   `next(err)` or `res.status(401|403)…` counts only when the next statement
-   is a `return`.
+   `return` (not `return next()`, `return next(null)`, `return await
+   next()` or `return void next()`) or a `throw`. A bare `redirect(...)`
+   doesn't count: it throws in Next, but Remix and SvelteKit 1 return it. An
+   Express-style `next(err)` or `res.status(401|403)…` counts only when the
+   next statement is a `return`.
 """
 
 from __future__ import annotations
@@ -58,25 +63,29 @@ _GATE_CONDITION = re.compile(
     r"\A\s*!\s*(?:(?P<direct>(?:req|request)\s*\.\s*(?:user|session\s*\.\s*(?:user|userId)|isAuthenticated\s*\(\s*\)))"
     r"|(?P<name>[A-Za-z_$][\w$]{0,80})(?:\s*\??\.\s*[A-Za-z_$][\w$]{0,80})*)\s*\Z"
 )
-_REJECTING_FIRST = re.compile(r"\A\s*(?:throw\b|redirect\s*\()")
+_REJECTING_FIRST = re.compile(r"\A\s*throw\b")
 _RETURN = re.compile(r"\A\s*return\b(?P<rest>.*)\Z", re.DOTALL)
-_BARE_NEXT = re.compile(r"\A\s*(?:void\s+)?next\s*\(\s*\)\s*\Z")
-_NEXT_WITH_ERROR = re.compile(r"\A\s*next\s*\(\s*\S")
+# `next()` continues the chain, as do `next(null)` / `next(undefined)`.
+_BARE_NEXT = re.compile(r"\A\s*(?:(?:void|await)\s+)?next\s*\(\s*(?:null|undefined)?\s*\)\s*\Z")
+_NEXT_WITH_ERROR = re.compile(r"\A\s*next\s*\(\s*(?!(?:null|undefined)\s*\))\S")
 _STATUS_REJECT = re.compile(r"\A\s*(?:res|response|reply|ctx)\s*\.\s*(?:status|code)\s*\(\s*(?:401|403)\s*\)")
 # The handler function's body: the first `{` after `=>` or a parameter list.
 _BODY_OPEN = re.compile(r"(?:=>|\))\s*+(?::[^{};=\n]{1,120})?\s*+\{")
 # A state-changing call: persistence or an outbound write.
 _MUTATION = re.compile(
-    r"\.\s*(?:create|createMany|update|updateMany|upsert|delete|deleteMany|insert|insertOne|insertMany"
+    r"\$(?:execute|query)Raw"
+    r"|(?:\.\s*|(?<![\w$.]))(?:create|createMany|update|updateMany|upsert|delete|deleteMany|insert|insertOne|insertMany"
     r"|save|remove|destroy|execute|exec|query|write|enqueue|publish)\w{0,40}\s*\("
 )
 _TRY_OPEN = re.compile(r"\btry\s*\Z")
-# A fallback in a session initializer: `??`, `||`, or a ternary (not `?.`).
-_FALLBACK = re.compile(r"\?\?|\|\||\?(?![.?])")
+# A fallback in a session initializer: `??`, `||`, a ternary (not `?.`), or
+# a `.catch(...)` that resolves to something.
+_FALLBACK = re.compile(r"\?\?|\|\||\?(?![.?])|\.\s*catch\s*\(")
 # Assigning the request identity directly: `req.user = …`, `req.session.user ||= …`.
 _DIRECT_ASSIGN = re.compile(
     r"(?<![\w$.])(?:req|request)\s*\.\s*(?:user|session)(?:\s*\.\s*(?:user|userId))?\s*(?:\|\||&&|\?\?)?=(?![=>])"
 )
+_ENVELOPE_NAMES = frozenset({"data", "error"})
 _IIFE_HEAD = re.compile(r"\A\s*(?:async\s+)?(?:\([^()]{0,200}\)|[A-Za-z_$][\w$]{0,80})\s*=>\s*\{|\A\s*(?:async\s+)?function\b")
 _MAX_SPAN_CHARS = 20_000
 _MAX_IFS = 200
@@ -202,26 +211,41 @@ def handler_body(text: str) -> tuple[int, int] | None:
     return (match.end() - 1, close) if close is not None else None
 
 
-def _transparent(code: str, open_at: int, pairs: dict[int, int]) -> bool:
+def _transparent(code: str, open_at: int, pairs: dict[int, int], body_close: int) -> bool:
     """A bracket an `if` may sit inside and still be top-level: a `try` block,
-    or the body (and wrapping parenthesis) of an immediately-invoked function."""
+    or the body (and wrapping parenthesis) of an immediately-invoked function
+    that is the handler's last statement (a `return` in it ends the handler)."""
     ch = code[open_at]
     if ch == "{":
         before = code[max(0, open_at - 40) : open_at]
         if _TRY_OPEN.search(before.rstrip()):
             return _catch_rejects(code, open_at, pairs)
         close = pairs.get(open_at)
-        if close is not None and re.match(r"\s*\)\s*\(", code[close + 1 : close + 20]) and re.search(r"=>\s*\Z", before):
-            return True
-        return False
+        if close is None or not re.search(r"=>\s*\Z", before):
+            return False
+        call = _IIFE_CALL.match(code, close + 1, min(body_close, close + 20))
+        return call is not None and _ends_body(code, call.end() - 1, pairs, body_close)
     if ch == "(":
         close = pairs.get(open_at)
-        return (
-            close is not None
-            and _IIFE_HEAD.match(code[open_at + 1 : open_at + 300]) is not None
-            and re.match(r"\s*\(", code[close + 1 : close + 20]) is not None
-        )
+        if close is None or _IIFE_HEAD.match(code[open_at + 1 : open_at + 300]) is None:
+            return False
+        call = _CALL_OPEN.match(code, close + 1, min(body_close, close + 20))
+        return call is not None and _ends_body(code, call.end() - 1, pairs, body_close)
     return False
+
+
+# Anchored after a non-space so a search() over hostile whitespace stays linear.
+_IIFE_CALL = re.compile(r"(?<!\s)\s*+\)\s*+\(")
+_CALL_OPEN = re.compile(r"(?<!\s)\s*+\(")
+_BODY_TAIL = re.compile(r"[\s;]*")
+
+
+def _ends_body(code: str, call_open: int, pairs: dict[int, int], body_close: int) -> bool:
+    """The call whose `(` is at ``call_open`` is the last statement of the body."""
+    call_close = pairs.get(call_open)
+    if call_close is None or call_close >= body_close:
+        return False
+    return _BODY_TAIL.match(code, call_close + 1, body_close).end() == body_close
 
 
 _CATCH_HEAD = re.compile(r"\A\s*catch\s*(?:\([^()]{0,200}\))?\s*\{")
@@ -251,16 +275,43 @@ def _catch_rejects(code: str, try_open: int, pairs: dict[int, int]) -> bool:
     return False
 
 
-def _top_level(code: str, body_open: int, pos: int, pairs: dict[int, int]) -> bool:
+def _top_level(code: str, body_open: int, body_close: int, pos: int, pairs: dict[int, int]) -> bool:
     """``pos`` sits directly in the handler body, only inside transparent brackets."""
     for open_at, close in pairs.items():
-        if body_open < open_at < pos < close and not _transparent(code, open_at, pairs):
+        if body_open < open_at < pos < close and not _transparent(code, open_at, pairs, body_close):
             return False
     return True
 
 
+_CONTROL_HEAD = re.compile(r"(?<![\w$.])(?:if|for|while|with|switch|catch)\s*\Z")
+_DANGLING_KEYWORD = re.compile(r"(?<![\w$.])(?:else|do)\s*\Z")
+
+
+def _starts_statement(code: str, pos: int, pairs: dict[int, int]) -> bool:
+    """``pos`` starts a statement of its block, not the body of a braceless
+    `if` / `for` / `while`, nor an `else if`."""
+    before = code[max(0, pos - 400) : pos]
+    stripped = before.rstrip()
+    if not stripped or stripped[-1] in "{};":
+        return True
+    if _DANGLING_KEYWORD.search(stripped):
+        return False
+    if stripped[-1] == ")":
+        close = pos - (len(before) - len(stripped)) - 1
+        opener = next((o for o, c in pairs.items() if c == close), None)
+        if opener is None or _CONTROL_HEAD.search(code[max(0, opener - 40) : opener]):
+            return False
+    # A statement ended without `;` (ASI) only at a line break.
+    return "\n" in before[len(stripped) :]
+
+
 def _reassigned(name: str, text: str) -> bool:
-    plain = re.search(rf"(?<![\w$.]){re.escape(name)}\s*(?:\|\||&&|\?\?)?=(?![=>])", text)
+    # `session = …`, `session.user ||= guest`, `session["user"] ??= …`
+    plain = re.search(
+        rf"(?<![\w$.]){re.escape(name)}(?:\s*+(?:\??\.\s*+[A-Za-z_$][\w$]{{0,80}}+|\[[^\[\]\n]{{0,80}}\]))*+"
+        rf"\s*+(?:\|\||&&|\?\?)?=(?![=>])",
+        text,
+    )
     destructured = re.search(rf"(?<![\w$.]){re.escape(name)}(?![\w$])[^;=\n]{{0,80}}?[}}\]]\s*=(?![=>])", text)
     return bool(plain or destructured)
 
@@ -294,13 +345,15 @@ def session_gate(text: str) -> str | None:
     for decl in _DECLARATION.finditer(code, body_open, body_close):
         window = code[decl.end() : min(body_close, decl.end() + 400)].split(";", 1)[0]
         rest = window.split("\n", 1)[0]
-        if not _SESSION_CALL.search(rest) or not _top_level(code, body_open, decl.start(), pairs):
+        if not _SESSION_CALL.search(rest) or not _top_level(code, body_open, body_close, decl.start(), pairs):
             continue
         if _FALLBACK.search(_initializer(window)):
             continue  # `getSession(c) ?? { user: guest }`: never empty, so the gate proves nothing
         if decl.group("names") and "=" in decl.group("names"):
             continue  # `const { user = guest } = await getSession(req)`: a default, never empty
         names = [decl.group("name")] if decl.group("name") else _IDENT.findall(decl.group("names") or "")
+        # `const { data, error } = await supabase.auth.getUser()`: `data` is always an object.
+        names = [n for n in names if n not in _ENVELOPE_NAMES or decl.group("name")]
         for name in names:
             tracked.setdefault(name, decl.end())
     for count, match in enumerate(_IF.finditer(code, body_open, body_close)):
@@ -321,8 +374,10 @@ def session_gate(text: str) -> str | None:
                 continue
         elif _DIRECT_ASSIGN.search(code, body_open, match.start()):
             continue  # `req.user = req.user || { id: 0 }` before the check
-        if not _top_level(code, body_open, match.start(), pairs):
+        if not _top_level(code, body_open, body_close, match.start(), pairs):
             continue
+        if not _starts_statement(code, match.start(), pairs):
+            continue  # `else if`, or the body of a braceless `if` / loop
         # No state change may happen before the check.
         if _MUTATION.search(code, body_open, match.start()):
             continue

@@ -104,10 +104,7 @@ def unauthenticated_routes(
         repo_has_java_global_auth(scan, root, content_cache) if has_java_routes else False
     )
 
-    route_lines: dict[str, list[int]] = {}
-    for r in scan.routes:
-        if r.line is not None:
-            route_lines.setdefault(r.file, []).append(r.line)
+    line_starts: dict[str, list[int]] = {}
     hop_box: list = []
 
     flagged: list[tuple[Route, str]] = []
@@ -131,7 +128,7 @@ def unauthenticated_routes(
         if control is not None:
             continue  # guarded — not a finding
         if Path(route.file).suffix.lower() in _JS_SUFFIXES and _handler_session_gate(
-            route, content, root, content_cache, route_lines, hop_box
+            route, content, root, content_cache, line_starts, hop_box
         ):
             continue  # the handler rejects a request without a session (#348)
         flagged.append((route, _chain_evidence(route, content)))
@@ -139,6 +136,7 @@ def unauthenticated_routes(
 
 
 _REGISTRATION_CALL = re.compile(r"\.\s*(?:get|post|put|patch|delete|all|route|on)\s*\(", re.IGNORECASE)
+_NEWLINE = re.compile(r"\n")
 _LAST_ARG_REF = re.compile(r",\s*([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)\s*\Z")
 
 
@@ -147,7 +145,7 @@ def _handler_session_gate(
     content: str,
     root: Path,
     cache: dict[str, str | None],
-    route_lines: dict[str, list[int]],
+    line_starts: dict[str, list[int]],
     hop_box: list,
 ) -> str | None:
     """A session check that rejects (see :mod:`handler_auth`) in the route's
@@ -155,9 +153,16 @@ def _handler_session_gate(
     function the registration passes by reference (one hop)."""
     if route.line is None:
         return None
-    lines = content.splitlines()
-    start = route.line - 1
-    text = "\n".join(lines[start:])[:20_000]
+    # Route.line counts `\n` only; `splitlines()` would also split on
+    # U+2028, `\f` or a lone `\r` and shift the handler to another route.
+    starts = line_starts.get(route.file)
+    if starts is None:
+        starts = [0] + [m.end() for m in _NEWLINE.finditer(content)]
+        line_starts[route.file] = starts
+    if not 1 <= route.line <= len(starts):
+        return None
+    offset = starts[route.line - 1]
+    text = content[offset : offset + 20_000]
     code = mask(text)
     call = _REGISTRATION_CALL.search(code[: code.find("\n", 0) + 1 if "\n" in code else len(code)])
     if call is None:
@@ -190,6 +195,8 @@ def _handler_session_gate(
     hop = hop_box[0]
     owner, _, func = ref.group(1).rpartition(".")
     imports = hop._import_map(route.file, content)
+    if owner and owner not in imports:
+        return None  # `ctl.create` with `ctl` not imported: don't guess a local `create`
     target = imports.get(owner or func, route.file)
     definition = hop._definition(target, func)
     return session_gate(definition) if definition else None
