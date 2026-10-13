@@ -28,10 +28,12 @@ their own signals with taint alone.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
+import warnings
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
@@ -345,6 +347,8 @@ def analyze_taint(
     # each route file at most once.
     content_cache: dict[str, str] = {}
     import_cache: dict[str, dict[str, str]] = {}
+    py_bindings_cache: dict[str, tuple[dict[str, _PyBinding], list[int], frozenset[str]]] = {}
+    defs_cache: dict[str, _ModuleDefs] = {}
 
     for route in scan.routes:
         route_file = _normalize_rel(route.file)
@@ -378,10 +382,48 @@ def analyze_taint(
             )
             if handler_seeds:
                 seed_files = handler_seeds
+        walk_recall = recall
+        seed_spans: dict[str, list[tuple[int, int]] | None] = {}
+        if Path(route_file).suffix in _PY_SUFFIXES and route.line is not None:
+            # A URLconf route (`path("x/", views.x)`) starts from its view's
+            # module, not from urls.py, which imports every view (#372).
+            if route_file not in content_cache:
+                try:
+                    content_cache[route_file] = files[route_file].read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    content_cache[route_file] = ""
+            py_seeds = _py_urlconf_seeds(route, content_cache[route_file], route_file, files, py_bindings_cache)
+            if py_seeds is not None:
+                if py_seeds:
+                    seed_files = []
+                    for module, view in py_seeds:
+                        if module not in defs_cache:
+                            try:
+                                text = files[module].read_text(encoding="utf-8")
+                            except (OSError, UnicodeDecodeError):
+                                text = ""
+                            defs_cache[module] = _py_module_defs(text)
+                        spans = _py_view_spans(defs_cache[module], view)
+                        if module not in seed_files:
+                            seed_files.append(module)
+                            seed_spans[module] = spans
+                        elif seed_spans.get(module) is not None:
+                            # Two views in one module: both count, or the whole module.
+                            seed_spans[module] = None if spans is None else [*seed_spans[module], *spans]
+                else:
+                    # The view is a library class (`TemplateView.as_view()`):
+                    # nothing in the repo runs but the URLconf itself.
+                    walk_recall = replace(recall, max_hops=0)
 
         for seed in seed_files:
             for chain in _walk_from_route(
-                route, seed, graph, sinks_by_file, recall, route_lines.get(route_file, [])
+                route,
+                seed,
+                graph,
+                sinks_by_file,
+                walk_recall,
+                route_lines.get(route_file, []),
+                handler_span=seed_spans.get(seed) if seed != route_file else None,
             ):
                 key = (
                     f"{chain.route_method} {chain.route_path}",
@@ -778,6 +820,195 @@ def _handler_seed_files(route: Route, content: str, name_to_module: dict[str, st
     return seeds
 
 
+# A URL registration whose view argument names the handler: Django `path`,
+# `re_path`, `url`, zulip's `rest_path`, DRF `router.register`, Flask
+# `add_url_rule`, aiohttp `add_get`/`add_route`/… (#372). Decorator routes
+# (`@app.route`) keep their handler in the route file and never match.
+_PY_URL_REGISTRATION_RE = re.compile(
+    r"\b(?:path|re_path|url|rest_path|register|add_url_rule|add_(?:get|post|put|patch|delete|head|route|view))\s*\("
+)
+_PY_STRING_RE = re.compile(r"""[rbuRBU]{0,2}(?:'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")""")
+# A module-level `name = …` (a view built in the URLconf: `hook = csrf_exempt(f)`).
+_PY_ASSIGNED_NAME_RE = re.compile(r"^([A-Za-z_]\w{0,63})[ \t]*=(?!=)", re.MULTILINE)
+_PY_DOTTED_REF_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)((?:\.[A-Za-z_]\w*)*)")
+
+
+def _line_starts(content: str) -> list[int]:
+    starts = [0]
+    pos = content.find("\n")
+    while pos != -1:
+        starts.append(pos + 1)
+        pos = content.find("\n", pos + 1)
+    return starts
+
+
+# An imported name: the intra-repo module it comes from (None: third-party or
+# stdlib) and, for `from mod import name`, the name defined in that module.
+_PyBinding = tuple[str | None, str | None]
+
+
+def _py_bindings(content: str, from_rel: str, files: dict[str, Path]) -> dict[str, _PyBinding]:
+    """Every name ``content`` imports → (module, defined name). `from pkg
+    import mod` binds the submodule when one exists; relative imports resolve
+    from the importing file's package."""
+    package = Path(from_rel).parent.parts
+    out: dict[str, _PyBinding] = {}
+
+    def resolve(module: str) -> str | None:
+        dots = len(module) - len(module.lstrip("."))
+        name = module.lstrip(".")
+        if not name:
+            return None
+        if dots:
+            if dots - 1 > len(package):
+                return None
+            return _resolve_py_module(name, package[: len(package) - (dots - 1)], files)
+        return _resolve_py_module(name, package, files)
+
+    for match in _PY_FROM_IMPORT_RE.finditer(content):
+        mod = match.group("mod")
+        raw = match.group("names").strip()
+        if raw == "*":
+            continue
+        raw = raw.strip("()").replace("\\", " ").replace("\n", " ")
+        sep = "" if mod.endswith(".") else "."
+        for part in raw.split(","):
+            bits = part.strip().split(" as ")
+            real, binding = bits[0].strip(), bits[-1].strip()
+            if not binding.isidentifier():
+                continue
+            submodule = resolve(f"{mod}{sep}{real}")
+            if submodule is not None:
+                out.setdefault(binding, (submodule, None))
+            else:
+                out.setdefault(binding, (resolve(mod) if mod.strip(".") else None, real))
+    for match in _PY_PLAIN_IMPORT_RE.finditer(content):
+        for item in match.group("mods").split(","):
+            bits = item.strip().split(" as ")
+            mod = bits[0].strip()
+            if not mod:
+                continue
+            binding = bits[1].strip() if len(bits) > 1 else mod.split(".")[0]
+            if binding.isidentifier():
+                out.setdefault(binding, (resolve(mod if len(bits) > 1 else mod.split(".")[0]), None))
+    return out
+
+
+def _py_urlconf_seeds(
+    route: Route,
+    content: str,
+    route_file: str,
+    files: dict[str, Path],
+    cache: dict[str, tuple[dict[str, _PyBinding], list[int], frozenset[str]]],
+) -> list[tuple[str, str | None]] | None:
+    """The views a Python URL registration names, as (module, view name) (#372).
+
+    None when the handler is unknown (not a registration line, an
+    `include()`, or a view defined in the route file itself): the walk then
+    starts from the route file as before. [] when every named view comes from
+    a third-party package (`TemplateView.as_view(...)`): no repo module runs."""
+    if route_file not in cache:
+        cache[route_file] = (
+            _py_bindings(content, route_file, files),
+            _line_starts(content),
+            frozenset(_py_module_defs(content)) | frozenset(_PY_ASSIGNED_NAME_RE.findall(content)),
+        )
+    bindings, starts, local_defs = cache[route_file]
+    idx = (route.line or 0) - 1
+    if idx < 0 or idx >= len(starts):
+        return None
+    line_end = content.find("\n", starts[idx])
+    call = _PY_URL_REGISTRATION_RE.search(content, starts[idx], len(content) if line_end < 0 else line_end)
+    if call is None:
+        return None
+    args = _PY_STRING_RE.sub("''", _extract_call_arg(content, call.end() - 1))
+    seeds: list[tuple[str, str | None]] = []
+    external = False
+    local = False
+    for match in _PY_DOTTED_REF_RE.finditer(args):
+        name = match.group(1)
+        if name == "include":
+            return None  # the route's views live in the included URLconf
+        if name not in bindings:
+            # A view defined in the URLconf itself, possibly wrapped by a
+            # library decorator (`csrf_exempt(hook)`): not external.
+            local = local or name in local_defs
+            continue
+        module, defined = bindings[name]
+        if module is None:
+            external = True
+            continue
+        rest = [p for p in match.group(2).split(".") if p]
+        if defined is None:
+            # `views.billing.page`: the deepest submodule that exists, then
+            # the first remaining name is the view.
+            base = module[: -len("/__init__.py")] if module.endswith("/__init__.py") else module[: -len(".py")]
+            for k in range(len(rest), 0, -1):
+                sub = _resolve_py_module(".".join([*base.split("/"), *rest[:k]]), (), files)
+                if sub is not None:
+                    module, rest = sub, rest[k:]
+                    break
+            defined = rest[0] if rest else None
+        if module in files and (module, defined) not in seeds:
+            seeds.append((module, defined))
+    if seeds:
+        return seeds
+    return [] if external and not local else None
+
+
+_VIEW_CLOSURE_LIMIT = 64
+
+# A module's top-level definitions: name → (first line, last line, the other
+# top-level names its body, decorators or bases mention).
+_ModuleDefs = dict[str, tuple[int, int, frozenset[str]]]
+
+
+def _py_module_defs(content: str) -> _ModuleDefs:
+    """Top-level `def`/`class` and assignment spans of a module, parsed once (#372)."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)  # scanned code's escapes aren't ours
+            tree = ast.parse(content)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return {}
+    # Definitions, plus module-level assignments the walk passes through
+    # (`HANDLERS = {'a': handler_a}`, `export = partial(_do, 'csv')`,
+    # `RUNNER = Runner()`): an assignment's mentions are its right-hand names.
+    entries: list[tuple[str, ast.AST, int, int, ast.AST]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            start = min([d.lineno for d in node.decorator_list] + [node.lineno])
+            entries.append((node.name, node, start, node.end_lineno or node.lineno, node))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for name in (t.id for t in ast.walk(target) if isinstance(t, ast.Name)):
+                    entries.append((name, node, node.lineno, node.end_lineno or node.lineno, node.value))
+    names = {name for name, *_ in entries}
+    out: _ModuleDefs = {}
+    for name, _node, start, end, body in entries:
+        mentioned = frozenset(sub.id for sub in ast.walk(body) if isinstance(sub, ast.Name) and sub.id in names and sub.id != name)
+        out.setdefault(name, (start, end, mentioned))
+    return out
+
+
+def _py_view_spans(defs: _ModuleDefs, view: str | None) -> list[tuple[int, int]] | None:
+    """Line spans of ``view`` plus the same-module functions and base classes
+    it reaches (transitively, at most ``_VIEW_CLOSURE_LIMIT`` definitions).
+    None when ``view`` isn't a top-level definition here (a re-export): the
+    whole module then counts, as before."""
+    if not view or view not in defs:
+        return None
+    seen = [view]
+    queue = [view]
+    while queue and len(seen) < _VIEW_CLOSURE_LIMIT:
+        for ref in sorted(defs[queue.pop()][2]):
+            if ref not in seen and len(seen) < _VIEW_CLOSURE_LIMIT:
+                seen.append(ref)
+                queue.append(ref)
+    return sorted((defs[name][0], defs[name][1]) for name in seen)
+
+
 def _resolve_js_target(target: Path, files: dict[str, Path], root: Path) -> str | None:
     # Direct suffixed hit.
     for suffix in _JS_TS_SUFFIXES:
@@ -1068,6 +1299,7 @@ def _walk_from_route(
     sinks_by_file: dict[str, list[_SinkHit]],
     recall: RecallConfig = DEFAULT_RECALL,
     route_lines: list[int] | None = None,
+    handler_span: list[tuple[int, int]] | None = None,
 ) -> list[TaintChain]:
     """BFS out from route_file, up to ``recall.max_hops``. Emit chains at each
     sink; tag as speculative any chain that only exists because a recall knob
@@ -1102,7 +1334,13 @@ def _walk_from_route(
 
         for hit in sinks_by_file.get(current, []):
             flow = hit.flow
-            if current_hops == 0 and flow is not None and flow.span is not None:
+            if current_hops == 0 and handler_span is not None:
+                # Seeded from the view a URLconf names (#372): that view's sinks,
+                # and those of the same-module helpers and bases it reaches, are
+                # this route's; the module's other views aren't.
+                if not any(lo <= hit.line <= hi for lo, hi in handler_span):
+                    continue
+            elif current_hops == 0 and flow is not None and flow.span is not None:
                 lo, hi = flow.span
                 in_handler = route.line is None or lo <= route.line <= hi
                 other_handler = any(lo <= ln <= hi for ln in route_lines if ln != route.line)
