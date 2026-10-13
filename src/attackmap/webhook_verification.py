@@ -102,14 +102,28 @@ _TIMESTAMPED = frozenset({"slack", "stripe", "svix"})
 # PayPal's verify-webhook-signature API: verified only when the call's
 # `verification_status` is checked against SUCCESS (#366).
 _PAYPAL_VERIFY_API = re.compile(r"/v1/notifications/verify-webhook-signature")
-_PAYPAL_STATUS_CHECK = re.compile(r"""verification_status["'\]]?\s*(?:!==?|===?)\s*["']SUCCESS["']""")
+_PAYPAL_STATUS_CHECK = re.compile(r"""verification_status["'\]]?\s*!==?\s*["']SUCCESS["']""")
 
 # A shared secret sent in a header (`Authorization: Bearer …`, `X-Webhook-Token`)
 # compared in constant time with the configured secret. This authenticates the
 # sender but not the payload (no integrity, no replay protection): it is
 # `verified` with provider `shared_secret` and a note saying so (#366).
-_SECRET_HEADER = re.compile(r"(?i)authorization|x-[\w-]*(?:token|secret|key)\b|\bbearer\b")
-_SHARED_SECRET_WINDOW = 15
+# A secret header *read* into a variable: `const auth = req.headers.get("authorization")`,
+# `$token = $request->bearerToken()`, `token = request.headers["X-Webhook-Token"]`.
+_HEADER_READ = re.compile(
+    r"""(?i)(?<![\w$])\$?([A-Za-z_]\w{0,60}+)\s*+(?::\s*+[\w<>\[\] |]{1,60}+)?=(?![=>])\s*+"""
+    r"""[^=\n]{0,200}?(?:headers?\s*+(?:\.\s*+get\s*+)?[\[(]\s*+["'](?:authorization|x-[\w-]{0,60}?(?:token|secret|key))["']"""
+    r"""|headers\s*+\.\s*+(?:authorization|x_\w{0,60}?(?:token|secret|key))\b|bearerToken\s*+\(\s*+\))"""
+)
+# `token = auth.startsWith("Bearer ") ? auth.slice(7) : ""`: one derived assignment.
+_ASSIGNMENT = re.compile(r"(?<![\w$])\$?([A-Za-z_]\w{0,60}+)\s*+(?::\s*+[\w<>\[\] |]{1,60}+)?=(?![=>])\s*+([^\n]{1,300})")
+# A rejection: 401/403, an exception, `abort(...)`, `Unauthorized`.
+_REJECTION = re.compile(r"\b(?:401|403)\b|\bthrow\b|\braise\b|\babort\s*\(|Unauthori[sz]ed|Forbidden|\bdie\s*\(|\bexit\s*\(")
+_NEGATED_IF = re.compile(r"\bif\s*\(?\s*(?:!|not\s)")
+_FUNC_NAME = re.compile(
+    r"(?:\bfunction\s+([A-Za-z_$][\w$]{0,80})|\b(?:const|let|var)\s+([A-Za-z_$][\w$]{0,80})\s*=\s*(?:async\s*)?\(|\bdef\s+([A-Za-z_]\w{0,80}))"
+)
+_GATE_WINDOW = 3
 _SHARED_SECRET_NOTE = (
     "authenticated by a shared secret compared in constant time, not a payload signature: "
     "the event body has no integrity or replay protection"
@@ -265,14 +279,97 @@ def _weak_compare(lines: list[_Line]) -> _Line | None:
     return None
 
 
+def _gates_rejection(lines: list[_Line], hit: _Line) -> bool:
+    """``hit`` (a check) decides a rejection: `if (!check) return 401` / `throw` /
+    `abort()` on its line or within a few lines after it; or it is the
+    `return` of a helper whose call is such a negated check."""
+    if _NEGATED_IF.search(hit.text) or re.search(r"!==?|!=|\bnot\b", hit.text):
+        if _rejects_after(lines, hit):
+            return True
+    if re.match(r"\s*return\b", hit.text):
+        name = _enclosing_function(lines, hit)
+        if name:
+            call = re.compile(rf"\bif\s*\(?\s*(?:!|not\s)\s*(?:await\s+)?(?:[\w.$]+\.)?{re.escape(name)}\s*\(")
+            return any(call.search(ln.text) and _rejects_after(lines, ln) for ln in lines)
+    return False
+
+
+def _rejects_after(lines: list[_Line], at: _Line) -> bool:
+    if _REJECTION.search(at.text):
+        return True
+    return any(
+        ln.file == at.file and 0 < ln.line - at.line <= _GATE_WINDOW and _REJECTION.search(ln.text) for ln in lines
+    )
+
+
+def _enclosing_function(lines: list[_Line], at: _Line) -> str | None:
+    best: tuple[int, str] | None = None
+    for ln in lines:
+        if ln.file != at.file or ln.line > at.line:
+            continue
+        match = _FUNC_NAME.search(ln.text)
+        if match and (best is None or ln.line > best[0]):
+            best = (ln.line, next(g for g in match.groups() if g))
+    return best[1] if best else None
+
+
 def _shared_secret_check(lines: list[_Line]) -> _Line | None:
-    """A constant-time compare within a few lines of reading a secret header,
-    in the same file: the token is checked against the configured secret."""
-    headers = [ln for ln in lines if _SECRET_HEADER.search(ln.text)]
-    for good in (ln for ln in lines if _CONSTANT_TIME.search(ln.text)):
-        if any(h.file == good.file and abs(h.line - good.line) <= _SHARED_SECRET_WINDOW for h in headers):
-            return good
+    """A constant-time compare whose operands include the value read from a
+    secret header (directly or through one assignment), and whose result
+    gates a rejection."""
+    tracked: dict[str, set[str]] = {}
+    for ln in lines:
+        match = _HEADER_READ.search(ln.text)
+        if match:
+            tracked.setdefault(ln.file, set()).add(match.group(1))
+    if not tracked:
+        return None
+    for ln in lines:
+        names = tracked.get(ln.file)
+        if not names:
+            continue
+        match = _ASSIGNMENT.search(ln.text)
+        if match and any(re.search(rf"(?<![\w$]){re.escape(n)}(?![\w$])", match.group(2)) for n in names):
+            names.add(match.group(1))
+    for ln in lines:
+        names = tracked.get(ln.file)
+        call = _CONSTANT_TIME.search(ln.text)
+        if not names or call is None:
+            continue
+        args = ln.text[call.end() : call.end() + 300]
+        if not any(re.search(rf"(?<![\w$]){re.escape(n)}(?![\w$])", args) for n in names):
+            continue
+        if _gates_rejection(lines, ln):
+            return ln
     return None
+
+
+# A verifier inside `try` whose `catch`/`except` only logs or is empty: the
+# failure is swallowed and the event processed anyway.
+_TRY = re.compile(r"\btry\b\s*[:{]?\s*$|\btry\s*\{")
+_CATCH = re.compile(r"\bcatch\b|\bexcept\b")
+_CATCH_EXIT = re.compile(
+    r"\bthrow\b|\braise\b|\breturn\b|\babort\s*\(|\bexit\s*\(|\bdie\s*\(|\b4\d\d\b|\breject\s*\(|\bnext\s*\(\s*\w"
+)
+_TRY_WINDOW = 25
+
+
+def _swallowed(lines: list[_Line], hit: _Line) -> bool:
+    same = sorted((ln for ln in lines if ln.file == hit.file), key=lambda ln: ln.line)
+    if not any(_TRY.search(ln.text) and 0 <= hit.line - ln.line <= _TRY_WINDOW for ln in same):
+        return False
+    catch = next((ln for ln in same if ln.line > hit.line and ln.line - hit.line <= _TRY_WINDOW and _CATCH.search(ln.text)), None)
+    if catch is None:
+        return False
+    body = []
+    for ln in same:
+        if ln.line <= catch.line:
+            continue
+        stripped = ln.text.strip()
+        if stripped.startswith("}") or ln.line - catch.line > 8:
+            break
+        body.append(ln)
+    return not any(_CATCH_EXIT.search(ln.text) for ln in [catch, *body])
 
 
 def classify(lines: list[_Line], *, imported: frozenset[str] = frozenset()) -> WebhookVerification:
@@ -281,6 +378,13 @@ def classify(lines: list[_Line], *, imported: frozenset[str] = frozenset()) -> W
     for provider, pattern in _SDK_VERIFIERS:
         hit = _first(lines, pattern)
         if hit:
+            if _swallowed(lines, hit):
+                return WebhookVerification(
+                    state="unknown",
+                    provider=provider,
+                    evidence=hit.where(),
+                    notes=["the verifier's failure is caught and only logged or ignored, so forged events are processed"],
+                )
             return WebhookVerification(state="verified", provider=provider, evidence=hit.where())
     for provider, _, call in _IMPORTED_VERIFIERS:
         hit = _first(lines, call) if provider in imported else None
@@ -289,7 +393,7 @@ def classify(lines: list[_Line], *, imported: frozenset[str] = frozenset()) -> W
 
     paypal_api = _first(lines, _PAYPAL_VERIFY_API)
     paypal_check = _first(lines, _PAYPAL_STATUS_CHECK) if paypal_api else None
-    if paypal_check is not None:
+    if paypal_check is not None and _rejects_after(lines, paypal_check):
         return WebhookVerification(state="verified", provider="paypal", evidence=paypal_check.where())
 
     hmac = _first(lines, _HMAC)
@@ -515,6 +619,9 @@ class _Assessor:
                 mw = _PHP_MIDDLEWARE.search(line)
                 if mw is None:
                     continue
+                statement = " ".join(body_lines[k : k + 4]).split(";", 1)[0]
+                if not _applies_to(statement, method):
+                    continue  # `->only([...])` / `->except([...])` exclude this action
                 ref = mw.group(1) or mw.group(2)
                 short = ref.rsplit("\\", 1)[-1]
                 mw_cls = uses.get(short, ref).rsplit("\\", 1)[-1]
@@ -523,7 +630,8 @@ class _Assessor:
                 if handle is None:
                     continue
                 out.append(handle)
-                if any(_PHP_IF.search(prev) for prev in body_lines[:k]):
+                at_statement_start = line.strip().startswith("$this")
+                if not at_statement_start or any(_PHP_IF.search(prev) for prev in body_lines[:k]):
                     notes.append(
                         f"the verifying middleware {mw_cls} is added only when a condition holds "
                         f"({rel}:{ctor[1]}); verification isn't guaranteed"
@@ -531,7 +639,7 @@ class _Assessor:
             break
         return out
 
-    def _php_class_file(self, cls: str) -> str | None:
+    def _php_class_file(self, cls: str) -> str | None:  # noqa: D401
         """The repo file declaring PHP class ``cls`` (PSR-4: `Cls.php`), skipping vendor/."""
         if self._php_index is None:
             index: dict[str, list[str]] = {}
@@ -932,6 +1040,20 @@ def reclaim_receivers(scan: ScanResult, candidates: list[AttackSurface], root: s
         if result.state != "absent" and "the handler's source could not be read" not in result.notes:
             reclaimed.append(surface)
     return reclaimed
+
+
+_PHP_ONLY_EXCEPT = re.compile(r"""->\s*(only|except)\s*\(\s*\[?([^)\]]{0,400})""")
+
+
+def _applies_to(statement: str, action: str) -> bool:
+    """Laravel `->only(['a'])` / `->except(['b'])` on a `$this->middleware(...)`."""
+    for kind, names in _PHP_ONLY_EXCEPT.findall(statement):
+        listed = set(re.findall(r"""["'](\w+)["']""", names))
+        if kind == "only" and action not in listed:
+            return False
+        if kind == "except" and action in listed:
+            return False
+    return True
 
 
 def _mount_covers(mount: str, route: str) -> bool:

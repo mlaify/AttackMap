@@ -811,6 +811,11 @@ def _definition_index(text: str) -> dict[str, int]:
 _INLINE_STRING_RE = re.compile(r"""'(?:\\.|[^'\\\n])*+'|"(?:\\.|[^"\\\n])*+"|`(?:\\.|[^`\\\n])*+`""")
 
 
+# A body that opens and closes on one line, after a parameter list or arrow:
+# `f(x): boolean { return x; }`, `function h($r) { return $next($r); }`.
+_ONE_LINE_BODY_RE = re.compile(r"(?:\)|=>)\s*+(?::\s*+[^{=;]{1,80}?)?\s*+\{[^{}]*+\}")
+
+
 def _block_from(lines: list[str], start: int) -> str:
     """The definition starting at ``lines[start]``: an indented Python block,
     or a brace-balanced block, capped at ``_MAX_HOP_LINES``."""
@@ -840,6 +845,10 @@ def _block_from(lines: list[str], start: int) -> str:
         # A body is open once the braces stay open past a line: braces that
         # open and close on one line (`({ secret }: { secret: string }) =>`,
         # a curried middleware factory's parameters) aren't the body (#366).
+        if not opened and depth <= 0 and _ONE_LINE_BODY_RE.search(code):
+            # `canActivate() { return true; }`: the body opened and closed on
+            # this line; don't run on into the next member.
+            break
         opened = opened or depth > 0
         if opened and depth <= 0:
             break

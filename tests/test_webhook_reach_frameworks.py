@@ -321,3 +321,165 @@ def test_instance_method_in_a_long_class_is_followed(tmp_path: Path) -> None:
     )
     v = _verification(tmp_path, "/api/paypal/webhook", "api/webhook.ts", 2, "ANY")
     assert (v.state, v.provider) == ("verified", "paypal")
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: no false "verified"
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+PROBE_HANDLER = """\
+export async function POST(req) {{
+  const auth = req.headers.get("authorization") || "";
+  {BODY}
+  await processUpload(await req.json());
+  return new Response("ok");
+}}
+"""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A constant-time compare that doesn't involve the header value.
+        "if (!crypto.timingSafeEqual(cfg.a, cfg.b)) return new Response('', { status: 401 });",
+        # The header value compared, but the result ignored.
+        "timingSafeCompare(auth, process.env.WORKER_SECRET);",
+        # Only a log line mentions authorization; the compare is unrelated.
+        "console.log('authorization checked'); const ok = timingSafeCompare(cfg.x, cfg.y);",
+    ],
+)
+def test_shared_secret_probes_are_not_verified(tmp_path: Path, body: str) -> None:
+    _write(tmp_path, {"route.ts": PROBE_HANDLER.format(BODY=body)})
+    assert _verification(tmp_path, "/api/r2/webhook", "route.ts", 1).state != "verified"
+
+
+def test_inline_gated_shared_secret_is_verified(tmp_path: Path) -> None:
+    body = "if (!timingSafeCompare(auth, process.env.WORKER_SECRET)) return new Response('', { status: 401 });"
+    _write(tmp_path, {"route.ts": PROBE_HANDLER.format(BODY=body)})
+    v = _verification(tmp_path, "/api/r2/webhook", "route.ts", 1)
+    assert (v.state, v.provider) == ("verified", "shared_secret")
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        'if (data.verification_status === "SUCCESS") console.log("ok");',
+        'const failed = data.verification_status !== "SUCCESS";',
+    ],
+)
+def test_paypal_status_that_gates_nothing_is_not_verified(tmp_path: Path, check: str) -> None:
+    assert _paypal(tmp_path, check).state != "verified"
+
+
+def test_block_from_ends_a_one_line_method() -> None:
+    lines = [
+        "  canActivate(context): boolean { return true; }",
+        "  other(request) {",
+        "    return crypto.timingSafeEqual(a, b);",
+        "  }",
+    ]
+    assert _block_from(lines, 0) == lines[0]
+    php = ["    public function handle($r, $next) { return $next($r); }", "    public function x() {", "      verify();", "    }"]
+    assert _block_from(php, 0) == php[0]
+
+
+def test_one_line_guard_does_not_borrow_the_next_member(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "src/open.guard.ts": (
+                "export class OpenGuard {\n"
+                "  canActivate(context): boolean { return true; }\n"
+                "  verify(request) {\n"
+                "    const expected = crypto.createHmac('sha1', s).update(request.rawBody).digest('hex');\n"
+                "    return crypto.timingSafeEqual(Buffer.from(request.headers['x-vercel-signature']), Buffer.from(expected));\n"
+                "  }\n"
+                "}\n"
+            ),
+            "src/c.controller.ts": (
+                'import { OpenGuard } from "./open.guard";\n'
+                "export class C {\n"
+                '  @Post("hooks/webhook")\n'
+                "  @UseGuards(OpenGuard)\n"
+                "  async receive(@Body() body) {\n"
+                "    await this.db.save(body);\n"
+                "  }\n"
+                "}\n"
+            ),
+        },
+    )
+    assert _verification(tmp_path, "/hooks/webhook", "src/c.controller.ts", 3).state != "verified"
+
+
+def test_one_line_laravel_middleware_handle_is_not_verified(tmp_path: Path) -> None:
+    noop = (
+        "<?php\nnamespace App\\Http\\Middleware;\nclass VerifyWebhookSignature\n{\n"
+        "    public function handle($request, $next) { return $next($request); }\n"
+        "    public function verify($request) {\n"
+        "        WebhookSignature::verifyHeader($request->getContent(), $request->header('Stripe-Signature'), 's', 300);\n"
+        "    }\n}\n"
+    )
+    _laravel(tmp_path, "$this->middleware(VerifyWebhookSignature::class);")
+    _write(tmp_path, {"app/Http/Middleware/VerifyWebhookSignature.php": noop})
+    assert _verification(tmp_path, "/stripe/webhook", "routes/web.php", 2).state != "verified"
+
+
+@pytest.mark.parametrize(
+    "ctor,state",
+    [
+        ("$this->middleware(VerifyWebhookSignature::class)->only(['handleWebhook']);", "verified"),
+        ("$this->middleware(VerifyWebhookSignature::class)->only(['other']);", "absent"),
+        ("$this->middleware(VerifyWebhookSignature::class)->except(['handleWebhook']);", "absent"),
+        ("config('x') && $this->middleware(VerifyWebhookSignature::class);", "unknown"),
+        ("$enabled ? $this->middleware(VerifyWebhookSignature::class) : null;", "unknown"),
+    ],
+)
+def test_laravel_middleware_scope_and_conditions(tmp_path: Path, ctor: str, state: str) -> None:
+    assert _laravel(tmp_path, ctor).state == state
+
+
+def test_swallowed_verifier_is_unknown(tmp_path: Path) -> None:
+    swallowing = MIDDLEWARE.replace(
+        "        WebhookSignature::verifyHeader(",
+        "        try {\n        WebhookSignature::verifyHeader(",
+    ).replace(
+        "        );\n\n        return $next($request);",
+        "        );\n        } catch (\\Exception $e) {\n            Log::warning($e->getMessage());\n        }\n\n        return $next($request);",
+    )
+    _laravel(tmp_path, "$this->middleware(VerifyWebhookSignature::class);")
+    _write(tmp_path, {"app/Http/Middleware/VerifyWebhookSignature.php": swallowing})
+    v = _verification(tmp_path, "/stripe/webhook", "routes/web.php", 2)
+    assert v.state == "unknown" and "caught" in v.notes[0]
+
+
+def test_verifier_whose_catch_rejects_is_verified(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "hook.js": (
+                "app.post('/stripe/webhook', (req, res) => {\n"
+                "  let event;\n"
+                "  try {\n"
+                "    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], secret);\n"
+                "  } catch (err) {\n"
+                "    return res.status(400).send(`Webhook Error: ${err.message}`);\n"
+                "  }\n"
+                "  handle(event);\n"
+                "})\n"
+            ),
+            "hook2.js": (
+                "app.post('/stripe/webhook2', (req, res) => {\n"
+                "  try {\n"
+                "    stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], secret);\n"
+                "  } catch (err) {\n"
+                "    console.log(err);\n"
+                "  }\n"
+                "  handle(req.body);\n"
+                "})\n"
+            ),
+        },
+    )
+    assert _verification(tmp_path, "/stripe/webhook", "hook.js", 1).state == "verified"
+    assert _verification(tmp_path, "/stripe/webhook2", "hook2.js", 1).state == "unknown"
