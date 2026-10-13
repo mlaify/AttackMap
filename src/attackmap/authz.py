@@ -808,6 +808,9 @@ def _definition_index(text: str) -> dict[str, int]:
     return index
 
 
+_INLINE_STRING_RE = re.compile(r"""'(?:\\.|[^'\\\n])*+'|"(?:\\.|[^"\\\n])*+"|`(?:\\.|[^`\\\n])*+`""")
+
+
 def _block_from(lines: list[str], start: int) -> str:
     """The definition starting at ``lines[start]``: an indented Python block,
     or a brace-balanced block, capped at ``_MAX_HOP_LINES``."""
@@ -829,8 +832,11 @@ def _block_from(lines: list[str], start: int) -> str:
     out = []
     for i, line in enumerate(lines[start:end]):
         out.append(line)
-        depth += line.count("{") - line.count("}")
-        parens += line.count("(") - line.count(")")
+        # Braces inside string and template literals don't open or close the
+        # body (`\`${s.slice(0, -1)},"k":${v}}\`` closed it early) (#366).
+        code = _INLINE_STRING_RE.sub('""', line)
+        depth += code.count("{") - code.count("}")
+        parens += code.count("(") - code.count(")")
         # A body is open once the braces stay open past a line: braces that
         # open and close on one line (`({ secret }: { secret: string }) =>`,
         # a curried middleware factory's parameters) aren't the body (#366).

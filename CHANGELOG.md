@@ -197,6 +197,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Webhook verification reaches framework guards, constructor middleware, PayPal and shared secrets (#366, part 2).** Four kinds of verifying receivers came out `absent`; they are now reached:
+  - NestJS `@UseGuards(Guard)` on the handler or its controller class is followed to the guard's `canActivate`.
+  - A Laravel `'Controller@method'` route reaches the action and the `handle` of every middleware the constructor adds with `$this->middleware(X::class)`. When that call sits under an `if` (Laravel Cashier adds it only when a secret is configured), a verified result becomes `unknown` with a note, since verification isn't guaranteed.
+  - PayPal's `/v1/notifications/verify-webhook-signature` API counts as provider verification only when `verification_status` is checked against `SUCCESS`.
+  - A header secret (`Authorization: Bearer …`, `X-…-Token`) compared in constant time within a few lines is `verified` with provider `shared_secret` and a note that it authenticates the sender, not the payload.
+
+  Supporting changes:
+  - Functions and classes imported from workspace packages are followed.
+  - Stripe-php's `WebhookSignature::verifyHeader` counts as a Stripe verifier.
+  - `authz._block_from` ignores braces inside string and template literals.
+
+  Real world: cal.com's Vercel and PayPal receivers and dub's r2 receiver are now `verified`; cashier-stripe is `unknown` (conditional).
 - **Webhook verification reaches further (#366, cheap parts).** These fixes stop real receivers that verify their payload from coming out `absent`:
   - TypeScript ESM specifiers (`from './webhook.js'`) resolve to the `.ts` source.
   - Curried middleware factories (`({ secret }) => (req, res, next) => {…}`) and multi-line parameter lists keep their bodies in the hop resolver (`authz._block_from`).
