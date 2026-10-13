@@ -161,7 +161,7 @@ ROLE_MARKERS = re.compile(
     | \bhas_?[rR]oles?\b | hasAnyRole | hasAuthority | hasAnyAuthority
     | \brequires?_?[rR]oles?\b | \broles?_required\b | \badmin_required\b | \bsuperuser_required\b
     | \brequires?_?[aA]dmin\w* | \badmin_?[oO]nly\b | \bonlyAdmin\b | \bensureAdmin\b
-    | \bcheckAdmin\b | \bverifyAdmin\b | \bisAdminMiddleware\b | \bRolesGuard\b | @Roles\s*\(
+    | \bcheckAdmin\b | \bverifyAdmin\b | \bisAdminMiddleware\b
     | \bIsAdminUser\b | @staff_member_required | \buser_passes_test\b
     | permission_classes\s*=\s*[\[(][^\])]*(?:Admin|Staff|Superuser|Perm|Role)
     | @Secured | @RolesAllowed
@@ -173,7 +173,6 @@ ROLE_MARKERS = re.compile(
     | ->userIsAllowed\s*\(
     | (?:\$|->)(?:get)?(?:acl|permissions?|authorization|authz|auth)(?:\(\))?\s*->\s*isAllowed\s*\(
     | \bRolePolicy\s*\( | \bPermissionPolicy\s*\(
-    | \bPermissionsGuard\b | \bPoliciesGuard\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -253,12 +252,12 @@ _PRIVILEGED_ROLES = frozenset(
 _ROLE_LITERAL_RE = re.compile(r"'([^'\n]{1,80})'" r'|"([^"\n]{1,80})"')
 _ROLE_MEMBER_RE = re.compile(r"[A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})*\.([A-Za-z_$][\w$]{0,80})")
 _REQUEST_PREFIXES = ("req.", "request.", "ctx.", "context.", "params.", "body.", "query.")
-# Parameterless guards that enforce role/permission metadata declared elsewhere.
-_METADATA_GUARDS = frozenset(n.lower() for n in ("PermissionsGuard", "PermissionGuard", "PoliciesGuard", "PolicyGuard", "RolesGuard", "RoleGuard"))
 # Role-list calls in handler or chain code: `restrictTo('admin')`,
-# `@MembershipRoles([MembershipRole.OWNER])`. Judged by their arguments.
+# `@MembershipRoles([MembershipRole.OWNER])`, `@Roles(Role.Admin)`. Judged by
+# their arguments. Metadata guards (`RolesGuard`, `PermissionsGuard`) are not
+# role checks on their own: they enforce this metadata, and allow all without it.
 _ROLE_CALL_RE = re.compile(
-    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac)\s*+\("
+    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
 )
 _MAX_ROLE_ARGS = 400
 
@@ -322,9 +321,12 @@ def _role_guard_name(guard: str) -> bool:
     if match is None or match.group(1).lower() not in _ROLE_GUARD_NAMES:
         return False
     if match.group(2) is None:
-        # Only the name: a metadata-driven guard class counts; a role-list
-        # call without its arguments proves nothing.
-        return match.group(1).lower() in _METADATA_GUARDS
+        # Only the name proves nothing: a role-list call needs its arguments,
+        # and a metadata-driven guard (`RolesGuard`, `PermissionsGuard`)
+        # enforces whatever `@Roles(...)` lists, and allows everyone when
+        # none is set (NestJS). The privileged `@Roles('admin')` entry counts
+        # on its own.
+        return False
     args = _call_args(guard, match.end() - 1)
     return args is not None and _privileged_args(args)
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from attackmap.authz import analyze_authz, _resource_id_param, is_config_route_file
+from attackmap.authz import analyze_authz, _resource_id_param, has_role_check, is_config_route_file
 from attackmap.models import BolaCandidate, DatabaseHint, Route, ScanResult, TaintChain
 from attackmap.scanner import scan_repo
 from attackmap.threat_model import generate_attack_paths, generate_findings
@@ -1084,12 +1084,10 @@ def test_bola_in_example_or_fixture_paths_not_reported() -> None:
         ["checkRole('ROLE_ADMIN')"],
         ["allowRoles(['superuser'])"],
         ["permit('staff')"],
-        ["JwtAuthGuard", "PermissionsGuard"],
-        ["PoliciesGuard"],
-        ["RolesGuard"],
         ["ApiAuthGuard", "@MembershipRoles(['OWNER'])"],
         ["@MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER])"],
         ["Roles('admin')"],
+        ["JwtAuthGuard", "RolesGuard", "@Roles('admin')"],
         ["role:admin"],
         ["role:ROLE_MODERATOR"],
     ],
@@ -1123,6 +1121,11 @@ def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> 
         ["@MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER, MembershipRole.MEMBER])"],
         ["allowRoles(['authenticated'])"],
         ["role:"],
+        # metadata guards alone: they enforce @Roles metadata, and allow all without it
+        ["RolesGuard"],
+        ["JwtAuthGuard", "PermissionsGuard"],
+        ["PoliciesGuard"],
+        ["JwtAuthGuard", "RolesGuard", "@Roles('user')"],
         # allow-list: names without arguments, non-privileged or unknown roles,
         # identifiers, spreads, request-derived values
         ["restrictTo"],
@@ -1202,3 +1205,18 @@ def test_membership_roles_decorator_with_member_does_not_count(tmp_path: Path) -
     )
     route = Route(path="/admin/teams/:id", method="DELETE", file="c.controller.ts", line=2, auth="required", guards=["ApiAuthGuard"])
     assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("@UseGuards(JwtAuthGuard, RolesGuard)\n@Roles('admin')\nremove() {}", True),
+        ("@UseGuards(RolesGuard)\n@Roles(Role.Admin)\nremove() {}", True),
+        ("@UseGuards(JwtAuthGuard, RolesGuard)\n@Roles('user')\nremove() {}", False),
+        ("@UseGuards(JwtAuthGuard, RolesGuard)\nremove() {}", False),
+        ("@UseGuards(PermissionsGuard, PoliciesGuard)\nremove() {}", False),
+    ],
+)
+def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected: bool) -> None:
+    # #349: RolesGuard enforces @Roles metadata and allows everyone without it.
+    assert has_role_check(code) is expected
