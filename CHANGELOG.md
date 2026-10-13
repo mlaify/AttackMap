@@ -197,6 +197,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Webhook verification reaches further (#366, cheap parts).** These fixes stop real receivers that verify their payload from coming out `absent`:
+  - TypeScript ESM specifiers (`from './webhook.js'`) resolve to the `.ts` source.
+  - Curried middleware factories (`({ secret }) => (req, res, next) => {…}`) and multi-line parameter lists keep their bodies in the hop resolver (`authz._block_from`).
+  - A bounded second hop follows the helper the middleware calls.
+  - `timingSafeCompare` / `secureCompare` / `constantTimeEquals`-style helpers count as constant-time.
+  - `export { default } from "…"` route files are assessed through the module they re-export, including workspace packages found by their `package.json` name.
+  - A handler that only answers 404/410 is marked `inert` and no longer raises `public-webhook`.
+
+  Real world: atproto ×2 and cal.com btcpayserver are now `verified`; cal.com alby goes from `absent` to `unknown`; cal.com's two 404 stubs are `inert`.
 - **Webhook management routes are no longer webhook receivers (#365).** Any path containing `webhook` was a `webhook` surface, so CRUD for an app's own outgoing webhooks got `webhook_verification: absent` and raised `public-webhook`. Only clear management shapes now leave the category; any doubt keeps a route a receiver. The shapes:
   - a stored webhook addressed by an id param that is read, deleted or acted on (`GET`/`DELETE /webhooks/:webhookId`, `POST …/:id/test`);
   - a PUT/PATCH on it only alongside such a sibling, a user-authenticated route, or a handler that persists a webhook URL with a secret or events;

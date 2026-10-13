@@ -2101,6 +2101,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             signal in {"jwt", "jwt_verified", "oauth", "authorization", "service_auth"} for signal in surface.auth_signals
         )
         and _webhook_state(surface) in {"absent", "unknown"}
+        and not (surface.webhook_verification is not None and surface.webhook_verification.inert)
     ]
     weak_webhook_surfaces = [
         surface

@@ -31,6 +31,7 @@ from pathlib import Path
 from .authz import _HopResolver, _read_file_content
 from .handler_span import span_bounds
 from .models import AttackSurface, ScanResult, WebhookVerification
+from .safe_fs import walk_repo
 from .srcpaths import JS_TS_SUFFIXES
 
 # --- provider verifiers ------------------------------------------------------
@@ -116,6 +117,10 @@ _CONSTANT_TIME = re.compile(
     r"|\bMessageDigest\s*\.\s*isEqual\s*\("
     r"|\bsecure_compare\s*\("
     r"|\b(?:safe|secure|constantTime)Compare\s*\("
+    # Helpers named for what they do: `timingSafeCompare`, `constantTimeEquals`,
+    # `secureCompare`, `safeEqual` (#366).
+    r"|\b(?:timing|constantTime|constant_time)?_?[Ss]afe_?(?:Compare|Equals?|Eq|compare|equals?)\s*\("
+    r"|\b(?:secure|constantTime|constant_time)_?(?:Compare|Equals?|compare|equals?)\s*\("
     r"|\btsscmp\s*\("
     r"|\bcrypto\s*\.\s*subtle\s*\.\s*verify\s*\("
 )
@@ -149,6 +154,35 @@ _REPLAY_GUARD = re.compile(
 
 # A signature over a re-serialized body, not the raw bytes that were signed.
 _RESERIALIZED_BODY = re.compile(r"\bJSON\s*\.\s*stringify\s*\(\s*req\w*\s*\.\s*body\b|\bjson\s*\.\s*dumps\s*\(\s*request\b")
+
+# `export { default } from "…"`: the route file only re-exports its handler (#366).
+_REEXPORT_DEFAULT = re.compile(r"""^[ \t]*export[ \t]*\{[ \t]*default\b[^}\n]{0,200}\}[ \t]*from[ \t]*["']([^"'\n]{1,300})["']""", re.MULTILINE)
+# A handler that only answers "not found" / "gone": `res.status(404)`,
+# `return new Response(…, { status: 404 })`, `HttpResponseNotFound()`, `abort(404)`.
+_NOT_FOUND_RESPONSE = re.compile(
+    r"\bstatus(?:Code|_code)?\s*(?:\(|=|:)\s*(?:404|410)\b"
+    r"|\bsendStatus\s*\(\s*(?:404|410)\b"
+    r"|\bHttpResponse(?:NotFound|Gone)\b|\babort\s*\(\s*(?:404|410)\b|\bnotFound\s*\(\s*\)"
+)
+_PACKAGE_NAME = re.compile(r'"name"\s*:\s*"([^"\n]{1,200})"')
+_STUB_NOISE = re.compile(r"^\s*(?:[{}()\[\];,]+|(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b[^{\n]*\{?|(?:async\s+)?def\b.*:|return\s*;?)\s*$")
+_MAX_STUB_LINES = 3
+_STRING_LITERAL = re.compile(r"""'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""")
+_STUB_DISQUALIFIER = re.compile(
+    r"\?|&&|\|\||\bawait\b|\b(?:if|else|elif|for|while|switch|case|try|catch|unless)\b"
+    r"|^\s*(?:const|let|var)\b|^\s*[\w.\[\]]+\s*(?<![=!<>])=(?![=>])"
+)
+_CALL_NAME = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*+)\s*+\(")
+_RESPONSE_CALLS = frozenset(
+    {
+        "status", "json", "send", "end", "sendStatus", "abort", "notFound", "Response", "NextResponse",
+        "HttpResponse", "HttpResponseNotFound", "HttpResponseGone", "JsonResponse", "jsonify", "make_response",
+        "type", "set", "header", "setHeader", "writeHead", "response",
+    }
+)
+_MAX_SECOND_HOP_FUNCTIONS = 8
+_MAX_WORKSPACE_PACKAGES = 2_000
+_WORKSPACE_SKIP = frozenset({"node_modules", ".git", "dist", "build", ".next", "out", "vendor", "coverage"})
 
 # JS middleware mounted for the whole app or a path: `app.use(verifySig)`,
 # `router.use('/webhooks', verifyGithub)`.
@@ -258,10 +292,47 @@ class _Assessor:
         self.root = root
         self.cache: dict[str, str | None] = {}
         self.hop = _HopResolver(root, self.cache)
+        self._packages: dict[str, str] | None = None
         self.route_lines: dict[str, list[int]] = {}
         for r in scan.routes:
             if r.line is not None:
                 self.route_lines.setdefault(r.file, []).append(r.line)
+
+    def _resolve_spec(self, rel_file: str, spec: str) -> str | None:
+        """A relative specifier, or a workspace package (`@scope/pkg/sub/path`)
+        found by the `name` in its package.json."""
+        base = Path(rel_file).parent
+        if spec.startswith("."):
+            return self.hop._js_module(base, spec)
+        packages = self._workspace_packages()
+        parts = spec.split("/")
+        for cut in range(min(len(parts), 3), 0, -1):
+            pkg_dir = packages.get("/".join(parts[:cut]))
+            if pkg_dir is not None:
+                rest = "/".join(parts[cut:]) or "index"
+                return self.hop._js_module(Path(pkg_dir), "./" + rest)
+        return None
+
+    def _workspace_packages(self) -> dict[str, str]:
+        """Workspace package name → its directory (repo-relative), from the
+        repo's own package.json files (bounded; node_modules skipped)."""
+        if self._packages is not None:
+            return self._packages
+        packages: dict[str, str] = {}
+        seen = 0
+        for path in walk_repo(self.root, prune=_WORKSPACE_SKIP.__contains__):
+            if path.name != "package.json":
+                continue
+            seen += 1
+            if seen > _MAX_WORKSPACE_PACKAGES:
+                break
+            rel = path.relative_to(self.root).as_posix()
+            text = _read_file_content(rel, self.root, self.cache) or ""
+            match = _PACKAGE_NAME.search(text[:4096])
+            if match:
+                packages.setdefault(match.group(1), str(Path(rel).parent))
+        self._packages = packages
+        return packages
 
     def assess(self, surface: AttackSurface) -> WebhookVerification:
         content = _read_file_content(surface.file, self.root, self.cache)
@@ -273,9 +344,26 @@ class _Assessor:
         else:
             start, end = 0, len(file_lines)
         handler = "\n".join(file_lines[start:end])
+        if _is_not_found_stub(handler):
+            return WebhookVerification(
+                state="absent",
+                evidence=f"{surface.file}:{start + 1}",
+                notes=["the handler only answers 404/410; nothing is processed"],
+                inert=True,
+            )
         reach = _lines_of(surface.file, start + 1, handler)
         located: list[tuple[str, int, str]] = []
         self.hop.delegated_text(surface.file, content, handler, located)
+        if Path(surface.file).suffix.lower() in JS_TS_SUFFIXES:
+            # The route file only re-exports its handler: assess the module it names.
+            for match in _REEXPORT_DEFAULT.finditer(content):
+                target = self._resolve_spec(surface.file, match.group(1))
+                target_content = _read_file_content(target, self.root, self.cache) if target else None
+                if not target or not target_content:
+                    continue
+                reach.extend(_lines_of(target, 1, target_content))
+                self.hop.delegated_text(target, target_content, target_content, located)
+                break
         if Path(surface.file).suffix.lower() in JS_TS_SUFFIXES:
             for i, text in enumerate(file_lines):
                 if (start <= i < end) or not _USE_LINE.search(text) or _COMMENT_LINE.match(text):
@@ -285,7 +373,23 @@ class _Assessor:
                     continue
                 reach.append(_Line(surface.file, i + 1, text))
                 self.hop.delegated_text(surface.file, content, text, located)
+        # A second hop: verification usually sits in a helper the middleware
+        # or controller calls (`webhookAuth` → `validateSignature`) (#366).
+        # Bounded to _MAX_SECOND_HOP_FUNCTIONS functions in total.
+        first_hop = list(located)
+        limit = len(located) + _MAX_SECOND_HOP_FUNCTIONS
+        for file, _line, body in first_hop:
+            if len(located) >= limit:
+                break
+            source = _read_file_content(file, self.root, self.cache)
+            if source:
+                self.hop.delegated_text(file, source, body, located)
+        del located[limit:]
+        seen_bodies: set[tuple[str, int]] = set()
         for file, line, body in located:
+            if (file, line) in seen_bodies:
+                continue
+            seen_bodies.add((file, line))
             reach.extend(_lines_of(file, line, body))
 
         sources = [content, *(self.cache.get(f) or "" for f in {f for f, _, _ in located})]
@@ -305,6 +409,30 @@ class _Assessor:
             where = f"{surface.file}:{surface.line}" if surface.line is not None else surface.file
             result.evidence = where
         return result
+
+
+def _is_not_found_stub(handler: str) -> bool:
+    """A handler whose every statement is a 404/410 response. One that also
+    looks something up, assigns or awaits (and answers 404 only on a miss) is
+    a live receiver."""
+    code = [
+        ln
+        for ln in handler.splitlines()
+        if ln.strip() and not _COMMENT_LINE.match(ln) and not _STUB_NOISE.match(ln)
+    ]
+    return 0 < len(code) <= _MAX_STUB_LINES and all(_pure_not_found(ln) for ln in code)
+
+
+def _pure_not_found(line: str) -> bool:
+    """`res.status(404).json({...})`, `return new Response(null, { status: 404 })`,
+    `return HttpResponseNotFound()`: a 404/410 response and nothing else — no
+    condition, `await`, `?`, `&&`/`||`, assignment, or call other than the response."""
+    if not _NOT_FOUND_RESPONSE.search(line):
+        return False
+    code = _STRING_LITERAL.sub('""', line)
+    if _STUB_DISQUALIFIER.search(code):
+        return False
+    return all(name in _RESPONSE_CALLS for name in _CALL_NAME.findall(code))
 
 
 # --- inbound receivers vs. webhook management (#365) -------------------------
