@@ -575,3 +575,27 @@ def test_trailing_comma_and_session_user_id_still_work(tmp_path: Path) -> None:
         "},);\n"
     )
     assert _unauth_findings(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        # a finally after a catch runs on the rejecting path too
+        "try {\n  const session = await getSession(req);\n  if (!session) return res.status(401).end();\n} catch (e) {\n  throw e;\n} finally {\n  await Audit.create({ body: req.body });\n}",
+        # a fallback after a call wrapped over several lines
+        "const user = await getCurrentUser(\n  req,\n) ?? guestUser;\nif (!user) return res.status(401).end();",
+        "const session = await getSession({\n  req,\n}).catch(() => ({ user: guest }));\nif (!session) return res.status(401).end();",
+        # a Remix session store call wrapped over lines still needs a member test
+        "const session = await getSession(\n  request.headers.get('Cookie'),\n);\nif (!session) return res.status(401).end();",
+        # awaits named like reads that also act
+        "await parseAndStore(req);\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
+        "await webhook.validateAndProcess(req);\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
+        # a literal that isn't the whole return value
+        "const session = await getSession(req);\nif (!session) return 0 || guestCheckout(req, res);",
+        "const session = await getSession(req);\nif (!session) return null\n  || guestCheckout(req, res);",
+        # a callback passed to a wrapper isn't an IIFE
+        "guestOr(async () => {\n  const session = await getSession(req);\n  if (!session) return res.status(401).end();\n  await Order.create(req.body);\n})(req, res)",
+    ],
+)
+def test_round10_false_gates(handler: str) -> None:
+    assert session_gate("app.post('/api/x', async (req, res, next) => {\n" + handler + "\n});\n") is None

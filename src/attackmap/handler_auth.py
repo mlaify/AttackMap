@@ -141,6 +141,11 @@ _TRY_OPEN = re.compile(r"\btry\s*\Z")
 _BRANCH_WRITE = re.compile(
     r"(?<![\w$.])await\s|\.\s*(?:create|update|upsert|delete|insert|save|remove|destroy|exec|execute|query|run)\w{0,40}\s*\("
 )
+_LITERAL_START = re.compile(r"(?<!\s)\s*+(?:['\"`\d]|null\b|false\b|undefined\b)")
+# A literal return and nothing else (strings are masked to spaces by now).
+_LITERAL_ONLY = re.compile(
+    r"(?<!\s)\s*+(?:(['\"`])[^'\"`]{0,4000}+\1|\d[\w.]{0,40}+|null|false|undefined)\s*+;?\s*+"
+)
 _COMPARISON = re.compile(r"[=!]=|&&|[<>]|\binstanceof\b|\bin\b|\btypeof\b")
 _FALLBACK = re.compile(r"\?\?|\|\||\?(?![.?])|\.\s*catch\s*\(|\.\s*then\s*\(")
 # Assigning the request identity directly: `req.user = …`, `req.session.user ||= …`.
@@ -300,13 +305,26 @@ def _rejects(statements: list[str]) -> bool:
         return True
     returned = _RETURN.match(first)
     if returned:
-        rest = returned.group("rest")
+        # `return null\n  || guestCheckout(…)`: no ASI before an operator.
+        rest = " ".join([returned.group("rest"), *_continuation(statements[1:])])
+        if _LITERAL_START.match(rest) and not _LITERAL_ONLY.fullmatch(rest):
+            return False  # `return 0 || guestCheckout(req, res)`
         return not _BARE_NEXT.match(rest) and _RETURN_VALUE.match(rest) is not None
     if _NEXT_WITH_ERROR.match(first) or _STATUS_REJECT.match(first):
         # `res.status(401); return` / `next(err); return`, not `return next()`.
         then = _RETURN.match(second)
         return then is not None and not _BARE_NEXT.match(then.group("rest")) and _RETURN_VALUE.match(then.group("rest")) is not None
     return False
+
+
+def _continuation(statements: list[str]) -> list[str]:
+    """Leading statements that continue the previous one (start with an operator)."""
+    out: list[str] = []
+    for stmt in statements:
+        if not stmt.lstrip().startswith(_CONTINUATION):
+            break
+        out.append(stmt)
+    return out
 
 
 def _then_branch(code: str, after_paren: int, pairs: dict[int, int]) -> list[str] | None:
@@ -320,7 +338,9 @@ def _then_branch(code: str, after_paren: int, pairs: dict[int, int]) -> list[str
         if end is None or end - i > _MAX_BRANCH_CHARS:
             return None
         return _statements(code[i + 1 : end])
-    return _statements(code[i : i + _MAX_BRANCH_CHARS])[:1]
+    statements = _statements(code[i : i + _MAX_BRANCH_CHARS])
+    # A single statement, with any lines that continue it (`return null\n  || x`).
+    return statements[:1] + _continuation(statements[1:]) if statements else []
 
 
 def handler_body(text: str, code: str | None = None) -> tuple[int, int] | None:
@@ -348,10 +368,14 @@ def _transparent(code: str, open_at: int, pairs: dict[int, int], body_close: int
         if close is None or not re.search(r"=>\s*\Z", before):
             return False
         call = _IIFE_CALL.match(code, close + 1, min(body_close, close + 20))
-        return call is not None and _ends_body(code, call.end() - 1, pairs, body_close)
+        if call is None:
+            return False
+        wrap_close = code.index(")", close + 1)
+        wrap_open = next((o for o, c in pairs.items() if c == wrap_close), None)
+        return wrap_open is not None and _wraps(code, wrap_open) and _ends_body(code, call.end() - 1, pairs, body_close)
     if ch == "(":
         close = pairs.get(open_at)
-        if close is None or _IIFE_HEAD.match(code[open_at + 1 : open_at + 300]) is None:
+        if close is None or _IIFE_HEAD.match(code[open_at + 1 : open_at + 300]) is None or not _wraps(code, open_at):
             return False
         call = _CALL_OPEN.match(code, close + 1, min(body_close, close + 20))
         return call is not None and _ends_body(code, call.end() - 1, pairs, body_close)
@@ -359,6 +383,15 @@ def _transparent(code: str, open_at: int, pairs: dict[int, int], body_close: int
 
 
 # Anchored after a non-space so a search() over hostile whitespace stays linear.
+def _wraps(code: str, open_paren: int) -> bool:
+    """The `(` at ``open_paren`` groups (`(async () => …)()`), not a call's
+    argument list (`guestOr(async () => …)(req, res)`)."""
+    before = code[max(0, open_paren - 200) : open_paren].rstrip()
+    return not before or before[-1] not in _CALLEE_END or _KEYWORD_END.search(before) is not None
+
+
+_KEYWORD_END = re.compile(r"(?<![\w$.])(?:void|await|return|yield|typeof)\Z")
+_CALLEE_END = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$)]")
 _IIFE_CALL = re.compile(r"(?<!\s)\s*+\)\s*+\(")
 _CALL_OPEN = re.compile(r"(?<!\s)\s*+\(")
 _BODY_TAIL = re.compile(r"[\s;]*")
@@ -396,6 +429,14 @@ def _catch_rejects(code: str, try_open: int, pairs: dict[int, int]) -> bool:
     catch_close = pairs.get(catch_open)
     if catch_close is None or _BRANCH_WRITE.search(code, catch_open, catch_close):
         return False  # `catch (e) { await db.log.create(…); throw e }` acts before rethrowing
+    final = _FINALLY_HEAD.match(code[catch_close + 1 : catch_close + 260])
+    if final is not None:
+        # `try {…} catch {…} finally { await Audit.create(…) }`: the finally
+        # runs on the rejecting path too.
+        final_open = catch_close + 1 + final.end() - 1
+        final_close = pairs.get(final_open)
+        if final_close is None or _BRANCH_WRITE.search(code, final_open, final_close):
+            return False
     for stmt in _statements(code[catch_open + 1 : catch_close]):
         if re.match(r"\A\s*throw\b", stmt):
             return True
@@ -451,7 +492,8 @@ def _reassigned(name: str, text: str) -> bool:
 # `cookies()` / `headers()` / `params`.
 _READ_AWAIT = re.compile(
     r"(?:[A-Za-z_$][\w$]{0,80}+\s*+\.\s*+){0,6}+"
-    r"(?:(?:json|text|formData|arrayBuffer|blob|parse\w{0,20}|safeParse\w{0,20}|validate\w{0,20})\s*+\("
+    r"(?:(?:json|text|formData|arrayBuffer|blob|parse|parseAsync|safeParse|safeParseAsync|validate|validateAsync"
+    r"|validateSync|validateBody|validateQuery|validateParams)\s*+\("
     r"|(?:cookies|headers)\s*+\(\s*+\)|(?:params|searchParams)\b)"
 )
 _AWAIT = re.compile(r"(?<![\w$.])await\s++")
@@ -496,14 +538,21 @@ _CONTINUATION = ("??", "||", "&&", "?", ":", ".", "+")
 
 def _initializer(window: str) -> str:
     """The declaration's initializer: its first line plus any lines that
-    continue it (a formatter wraps `getSession(req)\\n  ?? fallback`)."""
+    continue it, while brackets are open (`getCurrentUser(\\n  req,\\n)`)
+    or a line starts with an operator (`getSession(req)\\n  ?? fallback`)."""
     lines = window.split("\n")
     out = [lines[0]]
+    depth = _bracket_depth(lines[0])
     for line in lines[1:]:
-        if not line.lstrip().startswith(_CONTINUATION):
+        if depth <= 0 and not line.lstrip().startswith(_CONTINUATION):
             break
         out.append(line)
+        depth += _bracket_depth(line)
     return "\n".join(out)
+
+
+def _bracket_depth(line: str) -> int:
+    return sum(line.count(c) for c in "([{") - sum(line.count(c) for c in ")]}")
 
 
 def session_gate(text: str, code: str | None = None) -> str | None:
@@ -539,7 +588,7 @@ def session_gate(text: str, code: str | None = None) -> str | None:
             continue  # `const { user = guest } = await getSession(req)`: a default, never empty
         if decl.group("name"):
             names = [decl.group("name")]
-            if _ALWAYS_OBJECT.search(rest):
+            if _ALWAYS_OBJECT.search(_initializer(window)):
                 needs_member.add(decl.group("name"))
         else:
             names = _bindings(decl.group("names") or "")

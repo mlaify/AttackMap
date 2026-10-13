@@ -104,7 +104,7 @@ def unauthenticated_routes(
         repo_has_java_global_auth(scan, root, content_cache) if has_java_routes else False
     )
 
-    line_starts: dict[str, list[int]] = {}
+    line_starts: dict[str, tuple[list[int], str]] = {}
     hop_box: list = []
 
     flagged: list[tuple[Route, str]] = []
