@@ -224,3 +224,14 @@ def test_cmake_dependencies_are_inventory_only(tmp_path: Path) -> None:
     vulns, summary = query_vulnerabilities([dep], cache_dir=tmp_path, transport=transport)
     assert vulns == [] and not calls
     assert summary.inventory_only == {"cmake": 1}
+
+
+def test_unset_confidence_ranks_as_medium_in_the_merge() -> None:
+    """A report with no confidence isn't weaker than one saying "low": the
+    traced one (confidence unset, network source) must not lose to it."""
+    traced = _w("unbounded_copy", "high", 7, source="network")
+    untraced = _w("unbounded_copy", "high", 7, confidence="low")
+    for order in ([traced, untraced], [untraced, traced]):
+        merged = merge_analyzer_results([ScanResult(root=".", code_weaknesses=[w]) for w in order], root=".")
+        (w,) = merged.code_weaknesses
+        assert w.source_kind == "network", order

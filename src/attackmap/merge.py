@@ -76,10 +76,15 @@ _CONFIDENCE_RANK = {"low": 0.3, "medium": 0.6, "high": 0.9}
 
 
 def _rank(item: Any) -> tuple[int, float]:
-    confidence = getattr(item, "confidence", 0.0)
-    if isinstance(confidence, str):
-        confidence = _CONFIDENCE_RANK.get(confidence, 0.0)
-    return _SEVERITY_RANK.get(getattr(item, "severity", ""), -1), float(confidence or 0.0)
+    # An unset confidence reads as medium, the same as tiered findings do
+    # (threat_model._confidence_value): a report that didn't state one isn't
+    # weaker than one that says "low".
+    confidence = getattr(item, "confidence", None)
+    if confidence is None:
+        confidence = _CONFIDENCE_RANK["medium"]
+    elif isinstance(confidence, str):
+        confidence = _CONFIDENCE_RANK.get(confidence, _CONFIDENCE_RANK["medium"])
+    return _SEVERITY_RANK.get(getattr(item, "severity", ""), -1), float(confidence)
 
 
 def keep_more_severe(existing: Any, duplicate: Any) -> None:
