@@ -53,14 +53,52 @@ NOT_GATED = [
 ]
 
 
+def _wrap(body: str) -> str:
+    return "app.post('/api/x', async (req, res, next) => {\n" + body + "\n  await Order.create(req.body);\n});\n"
+
+
+# juice-shop's `security.authenticatedUsers.get(req.cookies.token)` is an
+# app-specific lookup, not a recognised identity call (review of #379).
+GATED = [g for g in GATED if "authenticatedUsers" not in g]
+NOT_GATED = NOT_GATED + [
+    "const loggedInUser = security.authenticatedUsers.get(req.cookies.token)\nif (!loggedInUser) {\n  next(new Error('Blocked'))\n  return\n}",
+    # a generic cookie or session value is not the caller's identity
+    "const token = req.cookies.token;\nif (!token) return res.status(401).end();",
+    "const cart = req.session.cart;\nif (!cart) return res.status(401).end();",
+    # `auth(opts)` configures; only a zero-argument `auth()` resolves the session
+    "const session = await auth(options);\nif (!session) return res.status(401).end();",
+    # reassignment forms
+    "let session = await getSession(req);\nsession ||= anon;\nif (!session) return res.status(401).end();",
+    "let session = await getSession(req);\n({ session } = fallback);\nif (!session) return res.status(401).end();",
+    # `return void next()` continues the chain
+    "const session = await getSession(req);\nif (!session) return void next();",
+    # the gate nested in a branch, a loop or a callback is not top-level
+    "const session = await getSession(req);\nif (req.body.strict) {\n  if (!session) return res.status(401).end();\n}",
+    "const session = await getSession(req);\nitems.forEach((item) => {\n  if (!session) return;\n});",
+    "const session = await getSession(req);\nfunction inner() {\n  if (!session) return res.status(401).end();\n}",
+    # a state change before the check
+    "const session = await getSession(req);\nawait Audit.create({ at: Date.now() });\nif (!session) return res.status(401).end();",
+]
+GATED = GATED + [
+    # passport / express-session identity
+    "if (!req.user) return res.status(401).end();",
+    "if (!req.session.userId) {\n  return res.redirect('/login');\n}",
+    "if (!req.isAuthenticated()) return res.sendStatus(401);",
+    # inside a `try` block (documenso's shape)
+    "try {\n  const session = await getSession(req);\n  if (!session.user) {\n    throw new AppError('UNAUTHORIZED');\n  }\n} catch (err) {\n  return res.status(500).end();\n}",
+    # inside an IIFE wrapping the whole body (juice-shop's shape)
+    "void (async () => {\n  const session = await getSession(req);\n  if (!session) {\n    next(new Error('no'))\n    return\n  }\n})()",
+]
+
+
 @pytest.mark.parametrize("handler", GATED)
 def test_rejecting_session_checks_are_gates(handler: str) -> None:
-    assert session_gate(handler) is not None
+    assert session_gate(_wrap(handler)) is not None
 
 
 @pytest.mark.parametrize("handler", NOT_GATED)
 def test_non_rejecting_or_unrelated_checks_are_not_gates(handler: str) -> None:
-    assert session_gate(handler) is None
+    assert session_gate(_wrap(handler)) is None
 
 
 def test_mask_keeps_shape() -> None:
@@ -132,3 +170,41 @@ def test_parser_never_raises_and_is_bounded() -> None:
     for payload in ("if (" * 6000, "{" * 20000, "const session = getSession(x);\n" + "if (!session) {" * 3000, "'" * 20000, "/*" * 10000):
         session_gate(payload)
     assert time.perf_counter() - start < 10.0
+
+
+def test_span_is_clamped_to_the_handler(tmp_path: Path) -> None:
+    # A gate in the *next* route's handler must not count for this one.
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "app.post('/api/orders', async (req, res) => {\n"
+        "  await Order.create(req.body);\n"
+        "  res.sendStatus(201);\n"
+        "});\n"
+        "app.post('/api/admin-note', async (req, res) => {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await Note.create(req.body);\n"
+        "});\n"
+    )
+    flagged = {loc.line for f in _unauth_findings(tmp_path) for loc in f.locations}
+    assert 2 in flagged and 6 not in flagged
+
+
+def test_only_the_routes_own_handler_reference_is_followed(tmp_path: Path) -> None:
+    # The handler calls a helper that has a gate; that helper isn't the handler.
+    (tmp_path / "helpers.js").write_text(
+        "async function requireUser(req, res) {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "}\n"
+        "module.exports = { requireUser };\n"
+    )
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "const { requireUser } = require('./helpers');\n"
+        "app.post('/api/orders', async (req, res) => {\n"
+        "  requireUser(req, res);\n"
+        "  await Order.create(req.body);\n"
+        "});\n"
+    )
+    assert len(_unauth_findings(tmp_path)) == 1

@@ -34,8 +34,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .handler_auth import session_gate
-from .handler_span import span_bounds
+from .handler_auth import handler_body, mask, session_gate
 from .safe_fs import read_repo_text, walk_repo
 from .srcpaths import JS_TS_SUFFIXES
 from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
@@ -139,6 +138,10 @@ def unauthenticated_routes(
     return flagged
 
 
+_REGISTRATION_CALL = re.compile(r"\.\s*(?:get|post|put|patch|delete|all|route|on)\s*\(", re.IGNORECASE)
+_LAST_ARG_REF = re.compile(r",\s*([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)\s*\Z")
+
+
 def _handler_session_gate(
     route: Route,
     content: str,
@@ -148,26 +151,48 @@ def _handler_session_gate(
     hop_box: list,
 ) -> str | None:
     """A session check that rejects (see :mod:`handler_auth`) in the route's
-    handler span, or in a function the handler delegates to (one hop)."""
+    own handler: the inline handler, clamped to its closing brace, or the one
+    function the registration passes by reference (one hop)."""
     if route.line is None:
         return None
     lines = content.splitlines()
-    start, end = span_bounds(route.line, lines, route_lines.get(route.file, []))
-    handler = "\n".join(lines[start:end])
-    gate = session_gate(handler)
-    if gate:
-        return gate
+    start = route.line - 1
+    text = "\n".join(lines[start:])[:20_000]
+    code = mask(text)
+    call = _REGISTRATION_CALL.search(code[: code.find("\n", 0) + 1 if "\n" in code else len(code)])
+    if call is None:
+        # Not a call registration (a decorator, a function header): the
+        # handler body is the first function body that follows.
+        return session_gate(text)
+    open_paren = call.end() - 1
+    depth = 0
+    reg_close = None
+    for i in range(open_paren, len(code)):
+        if code[i] == "(":
+            depth += 1
+        elif code[i] == ")":
+            depth -= 1
+            if depth == 0:
+                reg_close = i
+                break
+    if reg_close is None:
+        return None
+    body = handler_body(text)
+    if body is not None and body[0] < reg_close:
+        return session_gate(text)  # an inline handler
+    ref = _LAST_ARG_REF.search(code[open_paren + 1 : reg_close])
+    if ref is None:
+        return None
     if not hop_box:
         from .authz import _HopResolver  # local import: authz imports this module
 
         hop_box.append(_HopResolver(root, cache))
-    located: list[tuple[str, int, str]] = []
-    hop_box[0].delegated_text(route.file, content, handler, located)
-    for _file, _line, body in located:
-        gate = session_gate(body)
-        if gate:
-            return gate
-    return None
+    hop = hop_box[0]
+    owner, _, func = ref.group(1).rpartition(".")
+    imports = hop._import_map(route.file, content)
+    target = imports.get(owner or func, route.file)
+    definition = hop._definition(target, func)
+    return session_gate(definition) if definition else None
 
 
 def _in_scope(surface: AttackSurface, route: Route) -> bool:

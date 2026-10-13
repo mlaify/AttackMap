@@ -8,27 +8,30 @@ JS/TS handlers authenticate in their own body instead::
       throw new AppError(AppErrorCode.UNAUTHORIZED);
     }
 
-This module recognises that shape structurally, and nothing looser, because
-keyword proximity can't tell a rejecting check from a log line (the lesson of
-#374):
+This module recognises that shape structurally, and nothing looser. When in
+doubt, the finding stays.
 
 1. Strings and comments are masked before any test.
-2. A *session lookup* is a declaration whose initializer calls a session API
-   (`getSession(`, `getServerSession(`, `auth()`, `currentUser(`,
-   `supabase.auth.getUser(`, …) or looks a credential from the request up
-   (`users.get(req.cookies.token)`). Its declared names (including
-   destructured ones) are tracked. A later reassignment of a tracked name
-   stops tracking it.
-3. A *gate* is an `if` whose condition, parsed with balanced parentheses, is
-   exactly `!name` or `!name.member…` (optional chaining allowed), where
-   `name` is tracked.
-4. The gate's then-branch (a braced block or a single statement) must reject:
-   its first statement is a `return` (not `return next()`), a `throw`, or a
+2. The handler body is the brace block of the route's handler function (the
+   first `{` after `=>` or a parameter list), clamped to its closing brace.
+3. A *session lookup* is a declaration whose initializer resolves the
+   caller's identity: `getSession(`, `getServerSession(`,
+   `getServerAuthSession(`, a zero-argument `auth()`, `currentUser(` /
+   `getCurrentUser(`, `supabase.auth.getUser(`, or `req.session.user` /
+   `req.session.userId` / `req.user` (passport). A later reassignment
+   (`=`, `||=`, `??=`, destructuring) of a tracked name stops tracking it.
+4. A *gate* is an `if` whose condition, parsed with balanced parentheses, is
+   exactly `!name[.member…]` for a tracked name, or `!req.user`,
+   `!req.session.user[Id]`, `!req.isAuthenticated()`.
+5. The gate must be a top-level statement of the handler body: not inside a
+   branch, loop, callback or nested function. `try { … }` blocks and an
+   immediately-invoked function wrapping the whole body (`void (async () =>
+   { … })()`) are transparent. No state-changing call may come before it.
+6. Its then-branch (a braced block or a single statement) must start with a
+   `return` (not `return next()` / `return void next()`), a `throw`, or a
    bare `redirect(...)` (Next/Remix redirects throw). An Express-style
    `next(err)` or `res.status(401|403)…` counts only when the next statement
    is a `return`.
-
-Anything else is not a gate, so the finding stays.
 """
 
 from __future__ import annotations
@@ -36,14 +39,10 @@ from __future__ import annotations
 import re
 
 _SESSION_CALL = re.compile(
-    r"(?<![\w$.])(?:getSession|getServerSession|getServerAuthSession|getAuthSession|getUserSession"
-    r"|validateSession|validateRequest|requireSession|currentUser|getCurrentUser|getToken|auth)\s*+\("
-    r"|\.\s*auth\s*+\.\s*getUser\s*+\(|\bauthenticatedUsers\s*+\.\s*get\s*+\("
-)
-# A lookup keyed by the request's own credential (cookie, session, auth header).
-_CREDENTIAL_ARG = re.compile(
-    r"\b(?:req|request|c\s*\.\s*req)\s*\.\s*(?:cookies?|signedCookies|session)\b"
-    r"|\bheaders?\s*\.\s*authorization\b"
+    r"(?<![\w$.])(?:getSession|getServerSession|getServerAuthSession|currentUser|getCurrentUser)\s*+\("
+    r"|(?<![\w$.])auth\s*+\(\s*+\)"
+    r"|\.\s*auth\s*+\.\s*getUser\s*+\("
+    r"|(?<![\w$.])(?:req|request)\s*+\.\s*+(?:user\b|session\s*+\.\s*+(?:user|userId)\b)"
 )
 _DECLARATION = re.compile(
     r"(?<![\w$])(?:const|let|var)\s++(?:\{(?P<names>[^{}]{1,300})\}|(?P<name>[A-Za-z_$][\w$]{0,80}+))"
@@ -51,12 +50,24 @@ _DECLARATION = re.compile(
 )
 _IDENT = re.compile(r"[A-Za-z_$][\w$]{0,80}")
 _IF = re.compile(r"(?<![\w$.])if\s*+\(")
-_GATE_CONDITION = re.compile(r"\A\s*!\s*(?P<name>[A-Za-z_$][\w$]{0,80})(?:\s*\??\.\s*[A-Za-z_$][\w$]{0,80})*\s*\Z")
+_GATE_CONDITION = re.compile(
+    r"\A\s*!\s*(?:(?P<direct>(?:req|request)\s*\.\s*(?:user|session\s*\.\s*(?:user|userId)|isAuthenticated\s*\(\s*\)))"
+    r"|(?P<name>[A-Za-z_$][\w$]{0,80})(?:\s*\??\.\s*[A-Za-z_$][\w$]{0,80})*)\s*\Z"
+)
 _REJECTING_FIRST = re.compile(r"\A\s*(?:throw\b|redirect\s*\()")
 _RETURN = re.compile(r"\A\s*return\b(?P<rest>.*)\Z", re.DOTALL)
-_BARE_NEXT = re.compile(r"\A\s*next\s*\(\s*\)\s*\Z")
+_BARE_NEXT = re.compile(r"\A\s*(?:void\s+)?next\s*\(\s*\)\s*\Z")
 _NEXT_WITH_ERROR = re.compile(r"\A\s*next\s*\(\s*\S")
 _STATUS_REJECT = re.compile(r"\A\s*(?:res|response|reply|ctx)\s*\.\s*(?:status|code)\s*\(\s*(?:401|403)\s*\)")
+# The handler function's body: the first `{` after `=>` or a parameter list.
+_BODY_OPEN = re.compile(r"(?:=>|\))\s*+(?::[^{};=\n]{1,120})?\s*+\{")
+# A state-changing call: persistence or an outbound write.
+_MUTATION = re.compile(
+    r"\.\s*(?:create|createMany|update|updateMany|upsert|delete|deleteMany|insert|insertOne|insertMany"
+    r"|save|remove|destroy|execute|exec|query|write|enqueue|publish)\w{0,40}\s*\("
+)
+_TRY_OPEN = re.compile(r"\btry\s*\Z")
+_IIFE_HEAD = re.compile(r"\A\s*(?:async\s+)?(?:\([^()]{0,200}\)|[A-Za-z_$][\w$]{0,80})\s*=>\s*\{|\A\s*(?:async\s+)?function\b")
 _MAX_SPAN_CHARS = 20_000
 _MAX_IFS = 200
 _MAX_CONDITION_CHARS = 400
@@ -102,17 +113,20 @@ def mask(text: str) -> str:
     return "".join(out)
 
 
-def _balanced(text: str, start: int, open_ch: str, close_ch: str, limit: int) -> int | None:
-    """Index of the ``close_ch`` matching ``text[start] == open_ch``, within ``limit`` chars."""
-    depth = 0
-    for i in range(start, min(len(text), start + limit)):
-        if text[i] == open_ch:
-            depth += 1
-        elif text[i] == close_ch:
-            depth -= 1
-            if depth == 0:
-                return i
-    return None
+def _matches(code: str) -> dict[int, int]:
+    """Opening bracket offset → its closing offset (unbalanced ones omitted)."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    closer = {")": "(", "]": "[", "}": "{"}
+    for i, ch in enumerate(code):
+        if ch in "([{":
+            stack.append(i)
+        elif ch in closer:
+            while stack and code[stack[-1]] != closer[ch]:
+                stack.pop()
+            if stack:
+                pairs[stack.pop()] = i
+    return pairs
 
 
 def _statements(block: str) -> list[str]:
@@ -153,60 +167,112 @@ def _rejects(statements: list[str]) -> bool:
     return False
 
 
-def _then_branch(code: str, after_paren: int) -> list[str] | None:
+def _then_branch(code: str, after_paren: int, pairs: dict[int, int]) -> list[str] | None:
     i = after_paren
     while i < len(code) and code[i] in " \t\r\n":
         i += 1
     if i >= len(code):
         return None
     if code[i] == "{":
-        end = _balanced(code, i, "{", "}", _MAX_BRANCH_CHARS)
-        if end is None:
+        end = pairs.get(i)
+        if end is None or end - i > _MAX_BRANCH_CHARS:
             return None
         return _statements(code[i + 1 : end])
-    # A single statement: up to `;` or a newline at depth 0.
     return _statements(code[i : i + _MAX_BRANCH_CHARS])[:1]
 
 
-def session_gate(handler: str) -> str | None:
-    """The gate line (masked text) if ``handler`` rejects a request whose
+def handler_body(text: str) -> tuple[int, int] | None:
+    """``(open, close)`` offsets of the handler function's body braces in
+    ``text`` (which starts at the route registration or function header)."""
+    code = mask(text[:_MAX_SPAN_CHARS])
+    match = _BODY_OPEN.search(code)
+    if match is None:
+        return None
+    close = _matches(code).get(match.end() - 1)
+    return (match.end() - 1, close) if close is not None else None
+
+
+def _transparent(code: str, open_at: int, pairs: dict[int, int]) -> bool:
+    """A bracket an `if` may sit inside and still be top-level: a `try` block,
+    or the body (and wrapping parenthesis) of an immediately-invoked function."""
+    ch = code[open_at]
+    if ch == "{":
+        before = code[max(0, open_at - 40) : open_at]
+        if _TRY_OPEN.search(before.rstrip()):
+            return True
+        close = pairs.get(open_at)
+        if close is not None and re.match(r"\s*\)\s*\(", code[close + 1 : close + 20]) and re.search(r"=>\s*\Z", before):
+            return True
+        return False
+    if ch == "(":
+        close = pairs.get(open_at)
+        return (
+            close is not None
+            and _IIFE_HEAD.match(code[open_at + 1 : open_at + 300]) is not None
+            and re.match(r"\s*\(", code[close + 1 : close + 20]) is not None
+        )
+    return False
+
+
+def _top_level(code: str, body_open: int, pos: int, pairs: dict[int, int]) -> bool:
+    """``pos`` sits directly in the handler body, only inside transparent brackets."""
+    for open_at, close in pairs.items():
+        if body_open < open_at < pos < close and not _transparent(code, open_at, pairs):
+            return False
+    return True
+
+
+def _reassigned(name: str, text: str) -> bool:
+    plain = re.search(rf"(?<![\w$.]){re.escape(name)}\s*(?:\|\||&&|\?\?)?=(?![=>])", text)
+    destructured = re.search(rf"(?<![\w$.]){re.escape(name)}(?![\w$])[^;=\n]{{0,80}}?[}}\]]\s*=(?![=>])", text)
+    return bool(plain or destructured)
+
+
+def session_gate(text: str) -> str | None:
+    """The gate line if the handler in ``text`` rejects a request whose
     session lookup comes back empty; else None."""
-    code = mask(handler[:_MAX_SPAN_CHARS])
-    tracked: dict[str, int] = {}  # name → offset where it became a session value
-    for decl in _DECLARATION.finditer(code):
-        rest = code[decl.end() : decl.end() + 400].split(";", 1)[0]
-        raw_rest = handler[decl.end() : decl.end() + 400].split(";", 1)[0]
-        if not (_SESSION_CALL.search(rest) or _CREDENTIAL_ARG.search(raw_rest)):
+    text = text[:_MAX_SPAN_CHARS]
+    code = mask(text)
+    body = handler_body(text)
+    if body is None:
+        return None
+    body_open, body_close = body
+    pairs = _matches(code)
+    tracked: dict[str, int] = {}
+    for decl in _DECLARATION.finditer(code, body_open, body_close):
+        rest = code[decl.end() : min(body_close, decl.end() + 400)].split(";", 1)[0].split("\n", 1)[0]
+        if not _SESSION_CALL.search(rest) or not _top_level(code, body_open, decl.start(), pairs):
             continue
         names = [decl.group("name")] if decl.group("name") else _IDENT.findall(decl.group("names") or "")
         for name in names:
-            if name not in tracked:
-                tracked[name] = decl.end()
-    if not tracked:
-        return None
-    for count, match in enumerate(_IF.finditer(code)):
+            tracked.setdefault(name, decl.end())
+    for count, match in enumerate(_IF.finditer(code, body_open, body_close)):
         if count >= _MAX_IFS:
             break
         open_paren = match.end() - 1
-        close = _balanced(code, open_paren, "(", ")", _MAX_CONDITION_CHARS)
-        if close is None:
+        close = pairs.get(open_paren)
+        if close is None or close - open_paren > _MAX_CONDITION_CHARS:
             continue
         condition = _GATE_CONDITION.match(code[open_paren + 1 : close])
         if condition is None:
             continue
         name = condition.group("name")
-        if name not in tracked or tracked[name] > match.start():
+        if name is not None:
+            if name not in tracked or tracked[name] > match.start():
+                continue
+            if _reassigned(name, code[tracked[name] : match.start()]):
+                continue
+        if not _top_level(code, body_open, match.start(), pairs):
             continue
-        # A reassignment between the lookup and the gate stops tracking it.
-        between = code[tracked[name] : match.start()]
-        if re.search(rf"(?<![\w$.]){re.escape(name)}\s*=(?![=>])", between):
+        # No state change may happen before the check.
+        if _MUTATION.search(code, body_open, match.start()):
             continue
-        branch = _then_branch(code, close + 1)
+        branch = _then_branch(code, close + 1, pairs)
         if branch is not None and _rejects(branch):
             line_start = code.rfind("\n", 0, match.start()) + 1
             line_end = code.find("\n", match.start())
-            return handler[line_start : line_end if line_end >= 0 else len(handler)].strip()
+            return text[line_start : line_end if line_end >= 0 else len(text)].strip()
     return None
 
 
-__all__ = ["mask", "session_gate"]
+__all__ = ["handler_body", "mask", "session_gate"]
