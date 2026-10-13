@@ -262,7 +262,7 @@ _ROLE_MEMBER_RE = re.compile(
 )
 # The owner's name ends in a role word: `Role`, `UserRole`, `ROLES`,
 # `Permission`, `AccessLevel` (not `GroupChat`).
-_ROLE_ENUM_RE = re.compile(r"(?i)(?:role|perm|permission|privilege|authority|authorities|level|group)s?$")
+_ROLE_ENUM_RE = re.compile(r"(?i)(?:role|perm|permission|privilege|authority|authorities|accesslevel|usergroup)s?$")
 # A bare ALL_CAPS constant (`ADMIN`, `ROLE_ADMIN`).
 _ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 # Role-list calls in handler or chain code: `restrictTo('admin')`,
@@ -388,7 +388,8 @@ def _mask_code(text: str, *, python: bool = False) -> str:
 
 
 # A `/` after one of these (or at the start) begins a regex literal, not a division.
-_REGEX_PREV = frozenset(["", *"(,=:[!&|?{};+-*%<>~^"])
+# (Not `<` / `>`: in JSX `</p>` is a closing tag.)
+_REGEX_PREV = frozenset(["", *"(,=:[!&|?{};+-*%~^"])
 
 
 def _role_call_check(text: str) -> bool:
@@ -440,9 +441,11 @@ def _guards_role_check(route: Route) -> bool:
 
 # The `(` of `router.use(`; its arguments are read with balanced parentheses,
 # so `router.use(restrictTo('admin'))` keeps its inner call.
-_JS_USE_RE = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+use\s*+\(")
+# `router.use(` or `this.router.use(` (class-based controllers); the receiver
+# is the name after any `this.`.
+_JS_USE_RE = re.compile(r"(?<![\w$.])(?:this\s*+\.\s*+)?+([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+use\s*+\(")
 _JS_ROUTE_RECEIVER_RE = re.compile(
-    r"(?<![\w$.])([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|del|all|options|head|route)\s*+\("
+    r"(?<![\w$.])(?:this\s*+\.\s*+)?+([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|del|all|options|head|route)\s*+\("
 )
 # A first `use` argument that is a path: a string, a regex literal, or a
 # constant / variable named for one (`router.use(ADMIN_PREFIX, …)`).
@@ -454,13 +457,19 @@ _MAX_CHAIN_LINES = 8
 _MAX_ROUTER_ARGS = 2_000
 _MAX_CALLS = 200
 _PY_ROUTER_DEPS_RE = re.compile(
-    r"(?:(?<![\w.])(?P<router>[A-Za-z_]\w{0,80}+)\s*+(?::[^=\n]{0,80}+)?=\s*+(?:fastapi\s*+\.\s*+)?APIRouter|include_router)\s*+\("
+    r"(?<![\w.])(?P<router>[A-Za-z_]\w{0,80}+)\s*+(?::[^=\n]{0,80}+)?=\s*+(?:fastapi\s*+\.\s*+)?APIRouter\s*+\("
 )
 _PY_ROUTE_DECORATOR_RE = re.compile(r"(?<!\s)\s*+@([A-Za-z_]\w{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|api_route|route|head|options)\s*+\(")
 _FIRST_NAME_ARG_RE = re.compile(r"([A-Za-z_$][\w$]{0,80}+(?:\s*+\.\s*+[A-Za-z_$][\w$]{0,80}+){0,4}+)\s*+,")
-_AUTH_MIDDLEWARE_NAME_RE = re.compile(r"(?i)auth|protect|login|session|passport|jwt|guard|verify|require|ensure|check|token")
+_AUTH_MIDDLEWARE_NAME_RE = re.compile(
+    r"(?i)auth|protect|login|session|passport|jwt|guard|verify|require|ensure|check|token"
+    r"|admin|role|staff|perm|owner|super|rbac|acl|polic|restrict|only|allow"
+)
 _METHOD_ROLE_META_RE = re.compile(r"@(?:Roles|Permissions|CheckPolicies|MembershipRoles|Pbac)\s*+\(")
 _MAX_DECORATOR_LINES = 12
+_METHOD_SIGNATURE_RE = re.compile(
+    r"(?:(?:public|private|protected|static|async|readonly)\s++){0,4}+[A-Za-z_$][\w$]{0,80}+\s*+(?:<[^>\n]{0,80}+>)?+\s*+\("
+)
 _CLASS_DECL_RE = re.compile(r"\b(?:class|interface)\s+\w+")
 # Route declarations that live in configuration rather than code (#343):
 # data formats, and PHP files that are a returned config array (Laminas /
@@ -724,13 +733,16 @@ def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
             if has_role_check(args):
                 info.uses.append((m.group(1), code.count("\n", 0, m.start()) + 1))
         code_lines = code.split("\n")
+        braces: dict[int, int] | None = None
         for count, i in enumerate(i for i, line in enumerate(code_lines) if _CLASS_DECL_RE.search(line)):
             if count >= _MAX_CALLS:
                 break
-            decorators = _decorators_above(info.lines, i)
+            decorators = _decorators_above(info.lines, code_lines, i)
             if not has_role_check(decorators):
                 continue
-            last = _block_end_line(code, code_lines, i)
+            if braces is None:
+                braces = _brace_pairs(code)
+            last = _block_end_line(code, code_lines, i, braces)
             if last is not None:
                 info.classes.append((i + 1, last))
         return info
@@ -742,11 +754,10 @@ def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
                 break
             close = _call_close(code, m.end() - 1, _MAX_ROUTER_ARGS)
             args = content[m.end() : close] if close is not None else ""
-            if "dependencies" not in args or not has_role_check(args):
-                continue
-            if m.group("router") is None:
-                return True  # `app.include_router(r, dependencies=[…])`: everything mounted here
-            info.routers.add(m.group("router"))
+            # `include_router(r, dependencies=[…])` covers the included router's
+            # routes, which live in another file: it says nothing about this one's.
+            if "dependencies" in args and has_role_check(args):
+                info.routers.add(m.group("router"))
         return info
     if suffix in _JAVA_SUFFIXES:
         lines = content.splitlines()
@@ -756,36 +767,42 @@ def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
     return False
 
 
-def _decorators_above(lines: list[str], i: int) -> str:
+def _decorators_above(lines: list[str], code_lines: list[str], i: int) -> str:
     """The class line and the decorator lines directly above it (a multi-line
     decorator's argument lines included); stops at code that ends a statement
-    or block, so the previous class's method decorators are never read."""
+    or block, so the previous class's method decorators are never read.
+    Comment-only lines (blank once masked) are skipped, not read."""
     out = [lines[i]]
     for j in range(i - 1, max(-1, i - _MAX_DECORATOR_LINES), -1):
-        stripped = lines[j].strip()
-        if not stripped or stripped.endswith((";", "{")) or (stripped.endswith("}") and not stripped.startswith("}")):
+        stripped = code_lines[j].strip()
+        if not stripped:
+            if lines[j].strip():
+                continue  # `// @Roles('admin') -- removed`
             break
-        if stripped == "}":
+        if stripped.endswith((";", "{", "}")):
             break
         out.append(lines[j])
     return "\n".join(reversed(out))
 
 
-def _block_end_line(code: str, code_lines: list[str], i: int) -> int | None:
+def _brace_pairs(code: str) -> dict[int, int]:
+    """`{` offset → its `}` offset, in one pass (unbalanced ones omitted)."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for k, ch in enumerate(code):
+        if ch == "{":
+            stack.append(k)
+        elif ch == "}" and stack:
+            pairs[stack.pop()] = k
+    return pairs
+
+
+def _block_end_line(code: str, code_lines: list[str], i: int, braces: dict[int, int]) -> int | None:
     """1-based line of the `}` closing the class declared on line ``i``."""
     offset = sum(len(line) + 1 for line in code_lines[:i])
     open_at = code.find("{", offset)
-    if open_at < 0:
-        return None
-    depth = 0
-    for k in range(open_at, len(code)):
-        if code[k] == "{":
-            depth += 1
-        elif code[k] == "}":
-            depth -= 1
-            if depth == 0:
-                return code.count("\n", 0, k) + 1
-    return None
+    close = braces.get(open_at) if open_at >= 0 else None
+    return code.count("\n", 0, close) + 1 if close is not None else None
 
 
 def _path_scoped(masked_args: str) -> bool:
@@ -830,9 +847,7 @@ def _chain_role_check(route: Route, content: str, info: bool | _ChainRoles) -> b
         return False
     for first, last in info.classes:
         if first < route.line <= last:
-            # The method's own decorators: below the class line, just around the route.
-            near = "\n".join(info.lines[max(first, route.line - 1 - _MAX_DECORATOR_LINES) : route.line + 2])
-            if not _METHOD_ROLE_META_RE.search(near):
+            if not _METHOD_ROLE_META_RE.search(_method_decorators(info.lines, route.line, first)):
                 return True
     if info.routers:
         decorator = _py_route_receiver(info.lines, route.line)
@@ -842,6 +857,22 @@ def _chain_role_check(route: Route, content: str, info: bool | _ChainRoles) -> b
         return False
     receiver = _route_receiver(info.lines, route.line)
     return receiver is not None and any(r == receiver and line < route.line for r, line in info.uses)
+
+
+def _method_decorators(lines: list[str], line: int, class_line: int) -> str:
+    """The decorator block around the route's decorator on ``line``: up to
+    the previous member, down to the method signature (inside the class)."""
+    out: list[str] = []
+    for j in range(line - 2, max(class_line - 1, line - 2 - _MAX_DECORATOR_LINES), -1):
+        if not lines[j].strip().startswith("@"):
+            break  # the previous member (or a blank line) ends this block
+        out.append(lines[j])
+    for j in range(line - 1, min(len(lines), line - 1 + _MAX_DECORATOR_LINES)):
+        out.append(lines[j])
+        stripped = lines[j].strip()
+        if not stripped.startswith("@") and _METHOD_SIGNATURE_RE.match(stripped):
+            break
+    return "\n".join(out)
 
 
 def _py_route_receiver(lines: list[str], line: int) -> str | None:

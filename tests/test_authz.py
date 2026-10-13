@@ -1165,6 +1165,7 @@ def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> 
         ["restrictTo(Roles.ADMIN, Roles.USER)"],
         ["authorizeRole('user')"],
         ["checkRole(GroupChat.OWNER)"],
+        ["checkRole(LogLevel.ADMIN)"],
     ],
 )
 def test_authentication_only_guards_are_not_role_checks(tmp_path: Path, guards: list[str]) -> None:
@@ -1262,6 +1263,7 @@ def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected:
         ("router.use(/^\\/admin/, restrictTo('admin'));", 1),
         ("router.use(apiV1, restrictTo('admin'));", 1),
         ("router.use(requireAuth, restrictTo('admin'));", 0),
+        ("router.use(isAdmin, logger);", 0),
         # a regex literal holding a backtick or `/*` doesn't blank what follows
         ("const strip = (s) => s.replace(/`/g, '');\nrouter.use(restrictTo('admin'));", 0),
         ("const glob = /[/*]/;\nrouter.use(restrictTo('admin'));", 0),
@@ -1487,3 +1489,77 @@ def test_fastapi_role_dependency_covers_only_its_router() -> None:
     info = _chain_roles("r.py", content)
     assert _chain_role_check(Route(path="/x", method="DELETE", file="r.py", line=3), content, info) is True
     assert _chain_role_check(Route(path="/x", method="DELETE", file="r.py", line=5), content, info) is False
+
+
+def test_this_router_in_class_controllers() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "class UsersRoutes {\n"
+        "  init() {\n"
+        "    this.router.use(restrictTo('admin'));\n"
+        "    this.router.delete('/u/:id', h);\n"
+        "  }\n"
+        "}\n"
+    )
+    info = _chain_roles("r.js", content)
+    assert _chain_role_check(Route(path="/u/:id", method="DELETE", file="r.js", line=4), content, info) is True
+
+
+def test_include_router_dependency_does_not_cover_app_routes() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "app.include_router(admin_router, dependencies=[Depends(check_roles('admin'))])\n"
+        "@app.delete('/users/{id}')\n"
+        "def delete_user(id: int): ...\n"
+    )
+    info = _chain_roles("main.py", content)
+    assert _chain_role_check(Route(path="/users/{id}", method="DELETE", file="main.py", line=2), content, info) is False
+
+
+def test_class_roles_masking_and_method_blocks() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    # a commented-out decorator is not the class's metadata
+    content = "// @Roles(Role.Admin) -- removed\nexport class A {\n  @Delete(':id')\n  remove() {}\n}\n"
+    info = _chain_roles("a.ts", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="a.ts", line=3), content, info) is False
+    # a method's @Roles a few decorators below the route decorator still overrides
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class B {\n"
+        "  @Delete(':id')\n"
+        "  @ApiOperation({ summary: 'x' })\n"
+        "  @ApiResponse({ status: 200 })\n"
+        "  @Roles(Role.User)\n"
+        "  remove() {}\n"
+        "  @Roles(Role.User)\n"
+        "  other() {}\n"
+        "\n"
+        "  @Delete('all')\n"
+        "  removeAll() {}\n"
+        "}\n"
+    )
+    info = _chain_roles("b.ts", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="b.ts", line=3), content, info) is False
+    # a sibling method's @Roles above doesn't drop the class roles
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="b.ts", line=11), content, info) is True
+
+
+def test_jsx_closing_tag_is_not_a_regex() -> None:
+    from attackmap.authz import _mask_code
+
+    masked = _mask_code("const a = <p>x</p>; const s = `\nrestrictTo('admin')`;\n")
+    assert "restrictTo" not in masked
+
+
+def test_many_unclosed_role_classes_stay_linear() -> None:
+    import time
+
+    from attackmap.authz import _chain_roles
+
+    content = "@Roles(Role.Admin)\nexport class A {\n" * 200 + "x\n" * 200_000
+    started = time.perf_counter()
+    _chain_roles("a.ts", content)
+    assert time.perf_counter() - started < 3.0
