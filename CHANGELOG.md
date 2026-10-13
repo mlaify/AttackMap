@@ -197,6 +197,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Webhook verification reaches framework guards, constructor middleware, PayPal and shared secrets (#366, part 2).** Four kinds of verifying receivers came out `absent`; they are now reached:
+  - NestJS `@UseGuards(Guard)` on the handler or its controller class is followed to the guard's `canActivate`.
+  - A Laravel `'Controller@method'` route reaches the action and the `handle` of every middleware the constructor adds with `$this->middleware(X::class)`. When that call sits under an `if` (Laravel Cashier adds it only when a secret is configured), a verified result becomes `unknown` with a note, since verification isn't guaranteed.
+  - PayPal's `/v1/notifications/verify-webhook-signature` API with a `verification_status` check is recognised, but as `unknown` (provider `paypal`), never `verified`.
+  - A header secret (`Authorization: Bearer …`, `X-…-Token`) whose value is compared in constant time is likewise `unknown` (provider `shared_secret`), never `verified`.
+
+    For both, whether a failed check actually rejects the request can't be established safely from keywords (review of #374), so they keep raising `public-webhook`. The notes say what was found.
+  - Laravel `->only([...])` / `->except([...])` are honoured, and a non-statement `$this->middleware` (`&&`, ternary) counts as conditional.
+  - A provider verifier inside `try` whose `catch` only logs or is empty is `unknown` (the failure is swallowed).
+
+  Supporting changes:
+  - Functions and classes imported from workspace packages are followed.
+  - Stripe-php's `WebhookSignature::verifyHeader` counts as a Stripe verifier.
+  - `authz._block_from` ignores braces inside string and template literals, and ends a body that opens and closes on one line (`canActivate() { return true; }`).
+
+  Real world: cal.com's Vercel receiver is now `verified`; cal.com PayPal, dub r2 (shared secret) and cashier-stripe (conditional middleware) are `unknown` with notes.
 - **A Python URLconf route's taint walk starts at its own view (#372).** `urls.py` imports every view module, so walking from it gave every route every view's sinks at hop 1. On zulip, 95 routes reached `cursor.execute` in `corporate/views/installation_activity.py`, which fed `bola-read`. A registration that names its view now starts the walk from that view's module, and at hop 0 only that view's `def`/`class` counts. Recognized registrations: `path`, `re_path`, `url`, `rest_path`, DRF `register`, Flask `add_url_rule`, aiohttp `add_get`/`add_route`/…. Relative imports and dotted references (`views.Export.as_view()`) resolve. A third-party view (`TemplateView.as_view()`) runs no repo code, so only sinks in the URLconf itself count. An `include()` or a view defined in the URLconf keeps the old walk. zulip: 110 → 60 chains, `bola-read` 48 → 21 routes. JS/TS already starts from the handler's module (#107).
 - **Scan output no longer depends on the Python hash seed (#353, #369).** On a large repo, findings and taint chains changed from run to run: on zulip, `regex-injection` appeared in some runs and not others, and `scan.taint_chains` went from 13 to 110. Two places let set iteration order decide the outcome. The taint import walk took neighbours from a set, and its 40-file visit cap then decided which files it reached. The lockfile resolver seeded its BFS from a set of roots, which decided the `via` path reported for a shared transitive dependency. Both now iterate in sorted order. Directory walks in the lockfile, SBOM, authz and suggest scanners are sorted too, as are database nodes in the architecture graph and the supply-chain own-scope check.
 - **Webhook verification reaches further (#366, cheap parts).** These fixes stop real receivers that verify their payload from coming out `absent`:

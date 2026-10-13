@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .authz import _HopResolver, _read_file_content
+from .authz import _block_from, _HopResolver, _read_file_content
 from .handler_span import span_bounds
 from .models import AttackSurface, ScanResult, WebhookVerification
 from .safe_fs import walk_repo
@@ -45,6 +45,7 @@ _SDK_VERIFIERS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\bconstructEvent(?:Async)?\s*\("  # stripe-node, stripe-php
             r"|\bWebhook\s*\.\s*construct_event\s*\("  # stripe-python
             r"|\bwebhook\s*\.\s*ConstructEvent\w*\s*\("  # stripe-go
+            r"|\bWebhookSignature\s*(?:::|\.)\s*verify_?[Hh]eader\s*\("  # stripe-php, stripe-python
         ),
     ),
     (
@@ -97,6 +98,50 @@ _SIGNATURE_HEADERS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 # Schemes whose signature covers a timestamp the receiver must check.
 _TIMESTAMPED = frozenset({"slack", "stripe", "svix"})
+
+# PayPal's verify-webhook-signature API with a `verification_status` check:
+# `unknown` (provider `paypal`) with a note, never `verified` — whether the
+# check rejects the event isn't established (#366).
+_PAYPAL_VERIFY_API = re.compile(r"/v1/notifications/verify-webhook-signature")
+_PAYPAL_STATUS_CHECK = re.compile(r"""verification_status["'\]]?\s*!==?\s*["']SUCCESS["']""")
+
+# A shared secret sent in a header (`Authorization: Bearer …`, `X-Webhook-Token`)
+# compared in constant time with the configured secret. Whether the compare's
+# result actually rejects the request can't be established from keywords, so
+# this is `unknown` (provider `shared_secret`) with a note, never `verified` (#366).
+# A secret header *read* into a variable: `const auth = req.headers.get("authorization")`,
+# `$token = $request->bearerToken()`, `token = request.headers["X-Webhook-Token"]`.
+_HEADER_READ = re.compile(
+    r"""(?i)(?<![\w$])\$?([A-Za-z_]\w{0,60}+)\s*+(?::\s*+[\w<>\[\] |]{1,60}+)?=(?![=>])\s*+"""
+    r"""[^=\n]{0,200}?(?:headers?\s*+(?:\.\s*+get\s*+)?[\[(]\s*+["'](?:authorization|x-[\w-]{0,60}?(?:token|secret|key))["']"""
+    r"""|headers\s*+\.\s*+(?:authorization|x_\w{0,60}?(?:token|secret|key))\b|bearerToken\s*+\(\s*+\))"""
+)
+# `token = auth.startsWith("Bearer ") ? auth.slice(7) : ""`: one derived assignment.
+_ASSIGNMENT = re.compile(r"(?<![\w$])\$?([A-Za-z_]\w{0,60}+)\s*+(?::\s*+[\w<>\[\] |]{1,60}+)?=(?![=>])\s*+([^\n]{1,300})")
+
+_SHARED_SECRET_NOTE = (
+    "a header secret is compared in constant time, but whether a mismatch rejects the request isn't "
+    "established; even when it does, a shared secret authenticates the sender, not the payload"
+)
+_PAYPAL_NOTE = (
+    "PayPal's verify-webhook-signature API is called and its status checked, but whether a failed "
+    "verification rejects the event isn't established"
+)
+
+# NestJS `@UseGuards(A, B)`; Laravel `$this->middleware(X::class)` and
+# `'XController@method'` / `[XController::class, 'method']` actions;
+# `x = new Cls(...)` then `x.method(...)`.
+_NEW_INSTANCE = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*+)\s*+=\s*+new\s++([A-Za-z_$][\w$]*+)\s*+\(")
+_USE_GUARDS = re.compile(r"@UseGuards\(\s*([^)\n]{1,300})\)")
+_JS_IMPORT_ANY = re.compile(r"""import\s+(?:type\s+)?(?P<clause>[^;'"]{1,400}?)\s+from\s+["'](?P<spec>[^"'\n]{1,300})["']""")
+_PHP_MIDDLEWARE = re.compile(r"""\$this\s*->\s*middleware\s*\(\s*(?:\\?([\w\\]{1,200})::class|["']([\w\\]{1,200})["'])""")
+_LARAVEL_ACTION = re.compile(
+    r"""["']([A-Z][\w\\]{0,200}Controller)@(\w{1,100})["']|\[\s*\\?([\w\\]{1,200}Controller)::class\s*,\s*["'](\w{1,100})["']\s*\]"""
+)
+_PHP_USE = re.compile(r"^[ \t]*use[ \t]+\\?([\w\\]{1,300}?)(?:[ \t]+as[ \t]+(\w{1,100}))?[ \t]*;", re.MULTILINE)
+_PHP_IF = re.compile(r"\bif\s*\(")
+_MAX_EXTRA_BODIES = 8
+_MAX_PHP_FILES = 20_000
 
 # --- manual HMAC -------------------------------------------------------------
 
@@ -233,21 +278,96 @@ def _weak_compare(lines: list[_Line]) -> _Line | None:
     return None
 
 
+def _shared_secret_check(lines: list[_Line]) -> _Line | None:
+    """A constant-time compare whose operands include the value read from a
+    secret header (directly or through one assignment)."""
+    tracked: dict[str, set[str]] = {}
+    for ln in lines:
+        match = _HEADER_READ.search(ln.text)
+        if match:
+            tracked.setdefault(ln.file, set()).add(match.group(1))
+    if not tracked:
+        return None
+    for ln in lines:
+        names = tracked.get(ln.file)
+        if not names:
+            continue
+        match = _ASSIGNMENT.search(ln.text)
+        if match and any(re.search(rf"(?<![\w$]){re.escape(n)}(?![\w$])", match.group(2)) for n in names):
+            names.add(match.group(1))
+    for ln in lines:
+        names = tracked.get(ln.file)
+        call = _CONSTANT_TIME.search(ln.text)
+        if not names or call is None:
+            continue
+        args = ln.text[call.end() : call.end() + 300]
+        if any(re.search(rf"(?<![\w$]){re.escape(n)}(?![\w$])", args) for n in names):
+            return ln
+    return None
+
+
+# A verifier inside `try` whose `catch`/`except` only logs or is empty: the
+# failure is swallowed and the event processed anyway.
+_TRY = re.compile(r"\btry\b\s*[:{]?\s*$|\btry\s*\{")
+_CATCH = re.compile(r"\bcatch\b|\bexcept\b")
+_CATCH_EXIT = re.compile(
+    r"\bthrow\b|\braise\b|\breturn\b|\babort\s*\(|\bexit\s*\(|\bdie\s*\(|\b4\d\d\b|\breject\s*\(|\bnext\s*\(\s*\w"
+)
+_TRY_WINDOW = 25
+
+
+def _swallowed(lines: list[_Line], hit: _Line) -> bool:
+    same = sorted((ln for ln in lines if ln.file == hit.file), key=lambda ln: ln.line)
+    if not any(_TRY.search(ln.text) and 0 <= hit.line - ln.line <= _TRY_WINDOW for ln in same):
+        return False
+    catch = next((ln for ln in same if ln.line > hit.line and ln.line - hit.line <= _TRY_WINDOW and _CATCH.search(ln.text)), None)
+    if catch is None:
+        return False
+    body = []
+    for ln in same:
+        if ln.line <= catch.line:
+            continue
+        stripped = ln.text.strip()
+        if stripped.startswith("}") or ln.line - catch.line > 8:
+            break
+        body.append(ln)
+    return not any(_CATCH_EXIT.search(ln.text) for ln in [catch, *body])
+
+
 def classify(lines: list[_Line], *, imported: frozenset[str] = frozenset()) -> WebhookVerification:
     """Decide the verification state from the lines a handler reaches.
     ``imported`` names the providers whose library the handler's files import."""
     for provider, pattern in _SDK_VERIFIERS:
         hit = _first(lines, pattern)
         if hit:
+            if _swallowed(lines, hit):
+                return WebhookVerification(
+                    state="unknown",
+                    provider=provider,
+                    evidence=hit.where(),
+                    notes=["the verifier's failure is caught and only logged or ignored, so forged events are processed"],
+                )
             return WebhookVerification(state="verified", provider=provider, evidence=hit.where())
     for provider, _, call in _IMPORTED_VERIFIERS:
         hit = _first(lines, call) if provider in imported else None
         if hit:
             return WebhookVerification(state="verified", provider=provider, evidence=hit.where())
 
+    paypal_api = _first(lines, _PAYPAL_VERIFY_API)
+    paypal_check = _first(lines, _PAYPAL_STATUS_CHECK) if paypal_api else None
+    if paypal_check is not None:
+        return WebhookVerification(
+            state="unknown", provider="paypal", evidence=paypal_check.where(), notes=[_PAYPAL_NOTE]
+        )
+
     hmac = _first(lines, _HMAC)
     header_provider = _provider_by_header(lines)
     if hmac is None:
+        shared = _shared_secret_check(lines)
+        if shared is not None:
+            return WebhookVerification(
+                state="unknown", provider="shared_secret", evidence=shared.where(), notes=[_SHARED_SECRET_NOTE]
+            )
         if header_provider is not None:
             # The signature is read but handed to something we can't see.
             hit = _first(lines, dict(_SIGNATURE_HEADERS)[header_provider])
@@ -293,6 +413,7 @@ class _Assessor:
         self.cache: dict[str, str | None] = {}
         self.hop = _HopResolver(root, self.cache)
         self._packages: dict[str, str] | None = None
+        self._php_index: dict[str, list[str]] | None = None
         self.route_lines: dict[str, list[int]] = {}
         for r in scan.routes:
             if r.line is not None:
@@ -334,6 +455,174 @@ class _Assessor:
         self._packages = packages
         return packages
 
+    # -- framework reach (#366 part 2) -----------------------------------
+
+    def _framework_reach(
+        self,
+        rel: str,
+        content: str,
+        file_lines: list[str],
+        start: int,
+        end: int,
+        handler: str,
+        located: list[tuple[str, int, str]],
+        notes: list[str],
+        reexported: list[tuple[str, str]] = (),  # type: ignore[assignment]
+    ) -> list[tuple[str, int, str]]:
+        out: list[tuple[str, int, str]] = []
+        suffix = Path(rel).suffix.lower()
+        if suffix in JS_TS_SUFFIXES:
+            # NestJS guards on the handler or on its controller class.
+            guard_text = handler + "\n" + "\n".join(self._class_decorators(file_lines, start))
+            for match in _USE_GUARDS.finditer(guard_text):
+                for name in re.findall(r"[A-Za-z_$][\w$]*", match.group(1)):
+                    if name == "new":
+                        continue
+                    module = self._js_symbol_module(rel, content, name)
+                    member = self._class_member(module, name, "canActivate") if module else None
+                    if member:
+                        out.append(member)
+            # The handler, a module it re-exports, and what they reached.
+            texts = [(rel, content, handler)] + [(f, src, src) for f, src in reexported] + [
+                (f, _read_file_content(f, self.root, self.cache) or "", body) for f, _, body in located[:_MAX_EXTRA_BODIES]
+            ]
+            for file, source, text in texts:
+                # Functions imported from a workspace package (`@scope/pkg/lib/x`),
+                # which the relative-only hop resolver doesn't follow.
+                for match in _JS_IMPORT_ANY.finditer(source):
+                    if match.group("spec").startswith("."):
+                        continue
+                    for name in re.findall(r"[A-Za-z_$][\w$]*", match.group("clause").replace(" as ", " ")):
+                        if name in {"type", "as"} or not re.search(rf"(?<![\w$.]){re.escape(name)}\s*\(", text):
+                            continue
+                        module = self._resolve_spec(file, match.group("spec"))
+                        body = self.hop._definition(module, name) if module else ""
+                        if body:
+                            out.append((module, self.hop._defs[module][1][name] + 1, body))
+                # `x = new Cls(...)` then `x.method(...)`: the method's own body
+                # (a long class is cut off by the hop's line cap).
+                for var, cls in _NEW_INSTANCE.findall(text):
+                    for method in sorted(set(re.findall(rf"(?<![\w$]){re.escape(var)}\s*\.\s*([A-Za-z_$][\w$]*)\s*\(", text))):
+                        module = self._js_symbol_module(file, source, cls)
+                        member = self._class_member(module, cls, method) if module else None
+                        if member:
+                            out.append(member)
+        elif suffix == ".php":
+            out.extend(self._laravel_reach(handler, notes))
+        return out
+
+    @staticmethod
+    def _class_decorators(file_lines: list[str], start: int) -> list[str]:
+        """The decorator lines right above the class declaring the handler."""
+        for i in range(start - 1, -1, -1):
+            if re.match(r"\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s", file_lines[i]):
+                decorators = []
+                j = i - 1
+                while j >= 0 and i - j <= 20:
+                    line = file_lines[j].strip()
+                    if not line or line.startswith(("@", "}", ")", "{", "//", "*", "/*")) or line.endswith((",", "(", "{")):
+                        decorators.append(file_lines[j])
+                        j -= 1
+                        continue
+                    break
+                return decorators
+        return []
+
+    def _js_symbol_module(self, rel: str, content: str, name: str) -> str | None:
+        target = self.hop._import_map(rel, content).get(name)
+        if target:
+            return target
+        for match in _JS_IMPORT_ANY.finditer(content):
+            if re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", match.group("clause")):
+                return self._resolve_spec(rel, match.group("spec"))
+        return None
+
+    def _class_member(self, rel: str | None, cls: str, member: str) -> tuple[str, int, str] | None:
+        """``(file, 1-based line, body)`` of ``cls.member`` declared in ``rel``."""
+        if not rel:
+            return None
+        source = _read_file_content(rel, self.root, self.cache)
+        if not source:
+            return None
+        lines = source.splitlines()
+        decl = re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+|final\s+)?class\s+{re.escape(cls)}\b")
+        head = re.compile(
+            rf"^\s*(?:(?:public|private|protected|static|async|override|readonly|final)\s+)*(?:function\s+)?{re.escape(member)}\s*\("
+        )
+        start = next((i for i, line in enumerate(lines) if decl.match(line)), None)
+        if start is None:
+            return None
+        for i in range(start + 1, min(len(lines), start + 2000)):
+            if decl.match(lines[i]) is None and re.match(r"\s*(?:export\s+)?(?:abstract\s+|final\s+)?class\s", lines[i]):
+                return None  # the next class: the member isn't in this one
+            if head.match(lines[i]):
+                return rel, i + 1, _block_from(lines, i)
+        return None
+
+    def _laravel_reach(self, handler: str, notes: list[str]) -> list[tuple[str, int, str]]:
+        """`Route::post('webhook', 'WebhookController@handleWebhook')`: the action,
+        and the `handle` of every middleware the controller's constructor adds."""
+        out: list[tuple[str, int, str]] = []
+        for match in _LARAVEL_ACTION.finditer(handler):
+            fqcn, method = (match.group(1), match.group(2)) if match.group(1) else (match.group(3), match.group(4))
+            cls = fqcn.rsplit("\\", 1)[-1]
+            rel = self._php_class_file(cls)
+            if rel is None:
+                continue
+            action = self._class_member(rel, cls, method)
+            if action:
+                out.append(action)
+            ctor = self._class_member(rel, cls, "__construct")
+            if ctor is None:
+                continue
+            out.append(ctor)
+            source = _read_file_content(rel, self.root, self.cache) or ""
+            uses = {(alias or name.rsplit("\\", 1)[-1]): name for name, alias in _PHP_USE.findall(source)}
+            body_lines = ctor[2].splitlines()
+            for k, line in enumerate(body_lines):
+                mw = _PHP_MIDDLEWARE.search(line)
+                if mw is None:
+                    continue
+                statement = " ".join(body_lines[k : k + 4]).split(";", 1)[0]
+                if not _applies_to(statement, method):
+                    continue  # `->only([...])` / `->except([...])` exclude this action
+                ref = mw.group(1) or mw.group(2)
+                short = ref.rsplit("\\", 1)[-1]
+                mw_cls = uses.get(short, ref).rsplit("\\", 1)[-1]
+                mw_rel = self._php_class_file(mw_cls)
+                handle = self._class_member(mw_rel, mw_cls, "handle") if mw_rel else None
+                if handle is None:
+                    continue
+                out.append(handle)
+                at_statement_start = line.strip().startswith("$this")
+                if not at_statement_start or any(_PHP_IF.search(prev) for prev in body_lines[:k]):
+                    notes.append(
+                        f"the verifying middleware {mw_cls} is added only when a condition holds "
+                        f"({rel}:{ctor[1]}); verification isn't guaranteed"
+                    )
+            break
+        return out
+
+    def _php_class_file(self, cls: str) -> str | None:  # noqa: D401
+        """The repo file declaring PHP class ``cls`` (PSR-4: `Cls.php`), skipping vendor/."""
+        if self._php_index is None:
+            index: dict[str, list[str]] = {}
+            seen = 0
+            for path in walk_repo(self.root, prune=_WORKSPACE_SKIP.__contains__):
+                if path.suffix != ".php":
+                    continue
+                seen += 1
+                if seen > _MAX_PHP_FILES:
+                    break
+                index.setdefault(path.stem, []).append(path.relative_to(self.root).as_posix())
+            self._php_index = index
+        decl = re.compile(rf"^\s*(?:abstract\s+|final\s+)?class\s+{re.escape(cls)}\b", re.MULTILINE)
+        for rel in sorted(self._php_index.get(cls, []), key=lambda r: ("test" in r.lower(), len(r))):
+            source = _read_file_content(rel, self.root, self.cache) or ""
+            if decl.search(source):
+                return rel
+        return None
+
     def assess(self, surface: AttackSurface) -> WebhookVerification:
         content = _read_file_content(surface.file, self.root, self.cache)
         if not content:
@@ -353,6 +642,7 @@ class _Assessor:
             )
         reach = _lines_of(surface.file, start + 1, handler)
         located: list[tuple[str, int, str]] = []
+        reexported: list[tuple[str, str]] = []
         self.hop.delegated_text(surface.file, content, handler, located)
         if Path(surface.file).suffix.lower() in JS_TS_SUFFIXES:
             # The route file only re-exports its handler: assess the module it names.
@@ -363,6 +653,7 @@ class _Assessor:
                     continue
                 reach.extend(_lines_of(target, 1, target_content))
                 self.hop.delegated_text(target, target_content, target_content, located)
+                reexported.append((target, target_content))
                 break
         if Path(surface.file).suffix.lower() in JS_TS_SUFFIXES:
             for i, text in enumerate(file_lines):
@@ -373,6 +664,11 @@ class _Assessor:
                     continue
                 reach.append(_Line(surface.file, i + 1, text))
                 self.hop.delegated_text(surface.file, content, text, located)
+        notes: list[str] = []
+        extra = self._framework_reach(
+            surface.file, content, file_lines, start, end, handler, located, notes, reexported
+        )
+        located.extend(extra[:_MAX_EXTRA_BODIES])
         # A second hop: verification usually sits in a helper the middleware
         # or controller calls (`webhookAuth` → `validateSignature`) (#366).
         # Bounded to _MAX_SECOND_HOP_FUNCTIONS functions in total.
@@ -397,6 +693,11 @@ class _Assessor:
             provider for provider, lib, _ in _IMPORTED_VERIFIERS if any(lib.search(text) for text in sources)
         )
         result = classify(reach, imported=imported)
+        if result.state == "verified" and notes:
+            # Verification applied only when something is configured: not guaranteed.
+            return WebhookVerification(
+                state="unknown", provider=result.provider, evidence=result.evidence, notes=[*result.notes, *notes]
+            )
         if result.state == "absent":
             # Verification code elsewhere in the file that we can't connect to
             # this handler (a decorator, a framework hook): don't call it absent.
@@ -703,6 +1004,20 @@ def reclaim_receivers(scan: ScanResult, candidates: list[AttackSurface], root: s
         if result.state != "absent" and "the handler's source could not be read" not in result.notes:
             reclaimed.append(surface)
     return reclaimed
+
+
+_PHP_ONLY_EXCEPT = re.compile(r"""->\s*(only|except)\s*\(\s*\[?([^)\]]{0,400})""")
+
+
+def _applies_to(statement: str, action: str) -> bool:
+    """Laravel `->only(['a'])` / `->except(['b'])` on a `$this->middleware(...)`."""
+    for kind, names in _PHP_ONLY_EXCEPT.findall(statement):
+        listed = set(re.findall(r"""["'](\w+)["']""", names))
+        if kind == "only" and action not in listed:
+            return False
+        if kind == "except" and action in listed:
+            return False
+    return True
 
 
 def _mount_covers(mount: str, route: str) -> bool:
