@@ -560,22 +560,32 @@ def _extract_python_routes(content: str, file: str) -> list[Route]:
 
 
 def _express_prefixes(content: str) -> dict[str, str]:
-    local_prefixes: dict[str, str] = {}
-    prefixes: dict[str, str] = {}
+    """Mount prefix of each router: `app.use('/api', apiRouter)` → `/api`,
+    following nested mounts (`api.use('/v1', v1)` → `/api/v1`).
 
-    updated = True
-    while updated:
+    The first mount of a router wins. A name mounted at several paths
+    (`app.use('/api/auth/*', csrf); app.use('/api/trpc/*', csrf)`, usually
+    middleware) used to make the fixpoint below flip between its mounts
+    forever, hanging the scan; mount cycles grew the prefix forever. Each
+    router now has one mount, self-mounts are skipped, and the propagation is
+    bounded by the number of mounts.
+    """
+    mounts: dict[str, tuple[str, str]] = {}
+    for match in EXPRESS_USE_PATTERN.finditer(content):
+        parent_name, mount_path, child_name = match.groups()
+        if child_name != parent_name:
+            mounts.setdefault(child_name, (parent_name, mount_path))
+
+    prefixes: dict[str, str] = {}
+    for _ in range(len(mounts) + 1):
         updated = False
-        for match in EXPRESS_USE_PATTERN.finditer(content):
-            parent_name, mount_path, child_name = match.groups()
-            parent_prefix = prefixes.get(parent_name, "")
-            child_prefix = local_prefixes.get(child_name, "")
-            local_prefixes[child_name] = child_prefix
-            combined = _join_route_parts(parent_prefix, _join_route_parts(mount_path, child_prefix))
+        for child_name, (parent_name, mount_path) in mounts.items():
+            combined = _join_route_parts(prefixes.get(parent_name, ""), _join_route_parts(mount_path, ""))
             if prefixes.get(child_name) != combined:
                 prefixes[child_name] = combined
                 updated = True
-
+        if not updated:
+            break
     return prefixes
 
 
