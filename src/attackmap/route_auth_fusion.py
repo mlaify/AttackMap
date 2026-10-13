@@ -200,15 +200,15 @@ def _handler_session_gate(
                 break
     if reg_close is None:
         return None
+    args = _top_level_args(code[open_paren + 1 : reg_close])
+    if len(args) > 2:
+        # Only `post(path, handler)`: with `post(path, a, b)` a gate in `b`
+        # runs after `a` (multer, a writer) has already acted.
+        return None
     body = handler_body(text)
     if body is not None and body[0] < reg_close:
         return session_gate(text)  # an inline handler
-    args = _top_level_args(code[open_paren + 1 : reg_close])
-    if len(args) != 2:
-        # Only `post(path, handler)`: with `post(path, a, b)` a gate in `b`
-        # runs after `a` has already written.
-        return None
-    ref = _SOLE_REF.fullmatch(args[1].strip())
+    ref = _SOLE_REF.fullmatch(args[-1].strip()) if args else None
     if ref is None:
         return None
     if not hop_box:

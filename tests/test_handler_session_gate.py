@@ -35,6 +35,11 @@ GATED = [
     "const session = await getSession(req);\nif (!session) return sendUnauthorized(res);",
     "const session = await getSession(req);\nif (!session) return c.json({ error: 'no' }, 401);",
     "const session = await getSession(req);\nif (!session) return;",
+    # request reads before the gate are fine
+    "const body = await req.json();\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
+    "const input = await schema.parseAsync(req.body);\nconst session = await getServerSession(req, res, authOptions);\nif (!session) return res.status(401).end();",
+    "if (!req.body) return res.status(400).end();\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nif (!session) return createError({ statusCode: 401 });",
 ]
 
 NOT_GATED = [
@@ -159,6 +164,24 @@ NOT_GATED = NOT_GATED + [
     # code after a regex literal holding a backtick, or inside an interpolation
     "const session = await getSession(req);\nconst re = /`/;\nawait db.user.deleteMany();\nconst s = /`/;\nif (!session) return res.status(401).end();",
     "const session = await getSession(req);\nlog(`${await db.user.deleteMany()}`);\nif (!session) return res.status(401).end();",
+    # any other awaited call, or an earlier hand-off, before the gate
+    "await processOrder(req.body);\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
+    "if (req.query.guest) return handleGuest(req, res);\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
+    # hand-off calls whose names merely contain a response word
+    "const session = await getSession(req);\nif (!session) return updateOrderStatus(req, res);",
+    "const session = await getSession(req);\nif (!session) return saveJson(req.body);",
+    # `data` is never falsy; Remix / h3 session stores always return a session
+    "const r = await supabase.auth.getUser();\nif (!r.data) return res.status(401).end();",
+    "const session = await getSession(request.headers.get('Cookie'));\nif (!session) return redirect('/login');",
+    "const session = await getSession(event, config);\nif (!session) return res.status(401).end();",
+    # next('route') hands off to the next matching route
+    "const session = await getSession(req);\nif (!session) return next('route');",
+    "const session = await getSession(req);\nif (!session) {\n  next('route')\n  return\n}",
+    # a catch that hands off makes the try opaque
+    "try {\n  const session = await getSession(req);\n  if (!session) throw new Error('no');\n} catch (e) {\n  return handleGuest(req, res);\n}",
+    # more fallbacks
+    "const session = await getSession(req).then((s) => s, () => ({ user: guest }));\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nObject.assign(session, { user: guest });\nif (!session.user) return res.status(401).end();",
 ]
 
 
@@ -370,5 +393,41 @@ def test_only_a_sole_handler_reference_is_followed(tmp_path: Path) -> None:
         "  if (!session) return res.status(401).end();\n"
         "}\n"
         "app.post('/api/wipe', wipe, onError);\n"
+    )
+    assert len(_unauth_findings(tmp_path)) == 1
+
+
+def test_inline_handler_after_middleware_is_not_trusted(tmp_path: Path) -> None:
+    # multer has written the upload before the handler's gate runs.
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "app.post('/api/up', upload.single('f'), async (req, res) => {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await File.create({ name: req.file.filename });\n"
+        "});\n"
+    )
+    assert len(_unauth_findings(tmp_path)) == 1
+
+
+def test_hop_definition_lines_count_newlines_only(tmp_path: Path) -> None:
+    # U+2028 above the definitions must not make `open` borrow `gated`'s body.
+    (tmp_path / "handlers.js").write_text(
+        "// a\u2028b\u2028c\u2028d\u2028e\u2028f\n"
+        "async function gated(req, res) {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await Order.create(req.body);\n"
+        "}\n"
+        "async function open(req, res) {\n"
+        "  await Order.deleteMany({});\n"
+        "}\n"
+        "module.exports = { gated, open };\n",
+        newline="",
+    )
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "const { open } = require('./handlers');\n"
+        "app.post('/api/open', open);\n"
     )
     assert len(_unauth_findings(tmp_path)) == 1

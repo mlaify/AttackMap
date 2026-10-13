@@ -27,7 +27,8 @@ doubt, the finding stays.
    exactly `!name[.member…]` for a tracked name, or `!req.user`,
    `!req.session.user[Id]`, `!req.isAuthenticated()`. A destructured `data`
    or `error` is not tracked (supabase v2 always returns a `data` object),
-   and a whole `auth()` / `.auth.getUser()` result needs a member test. A
+   and a whole `auth()` / `.auth.getUser()` / Remix or h3 `getSession(…)`
+   result needs a member test (`data` alone doesn't count). A
    member test must name identity (`user`, `id`, `email`, …), not a property
    of it (`!session.user.isGuest`).
 5. The gate must be a top-level statement of the handler body: not inside a
@@ -35,9 +36,11 @@ doubt, the finding stays.
    body of a braceless `if` / loop. A `try { … }` block is transparent only
    if its `catch` rethrows or returns (or there is none); an
    immediately-invoked function that is the body's last statement (`void
-   (async () => { … })()`) is transparent. No state-changing call (a
-   persistence method, a plain `createX(` / `deleteX(` call, `$executeRaw`)
-   may come before it. A lookup with a fallback (`?? {…}`, `|| {…}`, a
+   (async () => { … })()`) is transparent. Nothing that may act for an
+   anonymous caller may come before it: a state-changing call (a persistence
+   method, a plain `createX(` / `deleteX(` call, `$executeRaw`), an awaited
+   call other than the lookup or a request read (`req.json()`, `parse…`), or
+   a `return` that hands off rather than responds. A lookup with a fallback (`?? {…}`, `|| {…}`, a
    ternary, `.catch(…)`) doesn't count, a later write to the name or one of
    its members (`session.user ||= guest`) disqualifies it, and so does
    assigning `req.user` / `req.session…` before a direct check.
@@ -72,12 +75,20 @@ _GATE_CONDITION = re.compile(
 )
 # Members a gate may test: identity, not a property of it (`!session.user.isGuest`).
 _IDENTITY_MEMBERS = frozenset(
-    {"user", "id", "userid", "uid", "sub", "email", "account", "accountid", "session", "sessionid", "identity", "profile", "data"}
+    {"user", "id", "userid", "uid", "sub", "email", "account", "accountid", "session", "sessionid", "identity", "profile"}
 )
+# `data` is an envelope (supabase `{ data: { user } }`): fine on the way to an
+# identity member, never as the member tested.
+_ENVELOPE_MEMBERS = frozenset({"data"})
 _MEMBER_NAME = re.compile(r"[A-Za-z_$][\w$]{0,80}")
 # Lookups that never come back falsy as a whole: supabase's `{ data, error }`,
 # Clerk's `auth()` object. A bare `!x` on them never fires; a member test does.
-_ALWAYS_OBJECT = re.compile(r"(?<![\w$.])auth\s*+\(\s*+\)|\.\s*auth\s*+\.\s*getUser\s*+\(")
+# Remix (`getSession(request.headers.get("Cookie"))`) and h3 (`getSession(event, …)`)
+# session stores always return a session object too.
+_ALWAYS_OBJECT = re.compile(
+    r"(?<![\w$.])auth\s*+\(\s*+\)|\.\s*auth\s*+\.\s*getUser\s*+\("
+    r"|(?<![\w$.])getSession\s*+\(\s*+(?:event\b|[^()\n]{0,200}(?:\([^()\n]{0,200}\))?[^()\n]{0,200}(?i:cookie|headers))"
+)
 # The initializer is the lookup itself (`await getSession(req)`,
 # `supabase.auth.getUser()`), not an expression that mentions one.
 # Only a member lookup (`.auth.getUser(`) may have a receiver before it.
@@ -91,12 +102,16 @@ _RETURN_VALUE = re.compile(
     r"\A\s*+(?:\Z|[;{\['\"`\d]|null\b|false\b|undefined\b|new\s++\w{0,40}(?:Response|Error|Exception)\b"
     r"|(?:void\s++)?(?:res|response|reply|ctx|c|context|h|event)\s*+\."
     r"|(?:Next)?Response\s*+\.|NextResponse\b"
-    r"|(?:await\s++)?\w{0,40}(?i:redirect|unauthori[sz]ed|forbidden|denied|reject|error|fail|json|login|signin|status|respond|abort)\w{0,40}\s*+\("
-    r"|next\s*+\(\s*+[^\s)])"
+    r"|(?:await\s++)?(?i:(?:send|respond(?:with)?|make|create|throw|to)?_?"
+    r"(?:unauthori[sz]ed|forbidden|error|json|redirect|status|login|sign_?in|abort|den(?:y|ied)|reject(?:ed)?"
+    r"|fail(?:ure|ed)?|not_?allowed)(?:_?(?:response|error|page))?)\s*+\("
+    r"|next\s*+\(\s*+(?!['\"`])[^\s)])"
 )
 # `next()` continues the chain, as do `next(null)` / `next(undefined)`.
 _BARE_NEXT = re.compile(r"\A\s*(?:(?:void|await)\s+)?next\s*\(\s*(?:null|undefined)?\s*\)\s*\Z")
-_NEXT_WITH_ERROR = re.compile(r"\A\s*next\s*\(\s*(?!(?:null|undefined)\s*\))\S")
+# `next('route')` / `next('router')` skip to the next route: a hand-off, not a
+# rejection. Strings are masked by then, so no string argument counts.
+_NEXT_WITH_ERROR = re.compile(r"\A\s*next\s*\(\s*(?!(?:null|undefined)\s*\)|['\"`])\S")
 _STATUS_REJECT = re.compile(r"\A\s*(?:res|response|reply|ctx)\s*\.\s*(?:status|code)\s*\(\s*(?:401|403)\s*\)")
 # The handler function's body: the first `{` after `=>` or a parameter list.
 _BODY_OPEN = re.compile(r"(?:=>|\))\s*+(?::[^{};=\n]{1,120})?\s*+\{")
@@ -110,7 +125,7 @@ _MUTATION = re.compile(
 _TRY_OPEN = re.compile(r"\btry\s*\Z")
 # A fallback in a session initializer: `??`, `||`, a ternary (not `?.`), or
 # a `.catch(...)` that resolves to something.
-_FALLBACK = re.compile(r"\?\?|\|\||\?(?![.?])|\.\s*catch\s*\(")
+_FALLBACK = re.compile(r"\?\?|\|\||\?(?![.?])|\.\s*catch\s*\(|\.\s*then\s*\(")
 # Assigning the request identity directly: `req.user = …`, `req.session.user ||= …`.
 _DIRECT_ASSIGN = re.compile(
     r"(?<![\w$.])(?:req|request)\s*\.\s*(?:user|session)(?:\s*\.\s*(?:user|userId))?\s*(?:\|\||&&|\?\?)?=(?![=>])"
@@ -357,7 +372,7 @@ def _catch_rejects(code: str, try_open: int, pairs: dict[int, int]) -> bool:
         if re.match(r"\A\s*throw\b", stmt):
             return True
         returned = _RETURN.match(stmt)
-        if returned and not _BARE_NEXT.match(returned.group("rest")):
+        if returned and not _BARE_NEXT.match(returned.group("rest")) and _RETURN_VALUE.match(returned.group("rest")):
             return True
     return False
 
@@ -400,7 +415,42 @@ def _reassigned(name: str, text: str) -> bool:
         text,
     )
     destructured = re.search(rf"(?<![\w$.]){re.escape(name)}(?![\w$])[^;=\n]{{0,80}}?[}}\]]\s*=(?![=>])", text)
-    return bool(plain or destructured)
+    assigned = re.search(rf"\bObject\s*\.\s*assign\s*\(\s*{re.escape(name)}(?![\w$])", text)
+    return bool(plain or destructured or assigned)
+
+
+# Awaits that only read the request: body parsing and validation, Next's
+# `cookies()` / `headers()` / `params`.
+_READ_AWAIT = re.compile(
+    r"(?:[A-Za-z_$][\w$]{0,80}+\s*+\.\s*+){0,6}+"
+    r"(?:(?:json|text|formData|arrayBuffer|blob|parse\w{0,20}|safeParse\w{0,20}|validate\w{0,20})\s*+\("
+    r"|(?:cookies|headers)\s*+\(\s*+\)|(?:params|searchParams)\b)"
+)
+_AWAIT = re.compile(r"(?<![\w$.])await\s++")
+_EARLY_RETURN = re.compile(r"(?<![\w$.])return\b")
+
+
+def _unsafe_before(code: str, body_open: int, gate: int) -> bool:
+    """Anything before the gate that may act for an anonymous caller: a write
+    (`_MUTATION`), any awaited call other than the session lookup or a request
+    read (`await processOrder(req.body)`), or an earlier `return` that hands
+    off (`if (req.query.guest) return handleGuest(req, res)`)."""
+    if _MUTATION.search(code, body_open, gate):
+        return True
+    for match in _AWAIT.finditer(code, body_open, gate):
+        after = code[match.end() : min(gate, match.end() + 300)]
+        lookup = _SESSION_CALL.search(after)
+        if lookup is not None:
+            prefix = _RECEIVER_PREFIX if after[lookup.start()] == "." else _LOOKUP_PREFIX
+            if prefix.fullmatch(after, 0, lookup.start()) is None:
+                lookup = None
+        if lookup is None and _READ_AWAIT.match(after) is None:
+            return True
+    for match in _EARLY_RETURN.finditer(code, body_open, gate):
+        stmt = _statements(code[match.end() : min(gate, match.end() + 400)])
+        if not _RETURN_VALUE.match(stmt[0] if stmt else ""):
+            return True
+    return False
 
 
 _CONTINUATION = ("??", "||", "&&", "?", ":", ".", "+")
@@ -466,7 +516,9 @@ def session_gate(text: str) -> str | None:
             if name not in tracked or tracked[name] > match.start():
                 continue
             members = [m.lower() for m in _MEMBER_NAME.findall(condition.group("members") or "")]
-            if any(m not in _IDENTITY_MEMBERS for m in members):
+            if any(m not in _IDENTITY_MEMBERS | _ENVELOPE_MEMBERS for m in members) or (
+                members and members[-1] in _ENVELOPE_MEMBERS
+            ):
                 continue  # `!session.user.isGuest`: a property of the identity, not its absence
             if name in needs_member and not members:
                 continue  # `!res` on supabase's `{ data, error }`: never falsy
@@ -478,8 +530,8 @@ def session_gate(text: str) -> str | None:
             continue
         if not _starts_statement(code, match.start(), pairs):
             continue  # `else if`, or the body of a braceless `if` / loop
-        # No state change may happen before the check.
-        if _MUTATION.search(code, body_open, match.start()):
+        # Nothing may act for an anonymous caller before the check.
+        if _unsafe_before(code, body_open, match.start()):
             continue
         branch = _then_branch(code, close + 1, pairs)
         if branch is not None and _rejects(branch):
