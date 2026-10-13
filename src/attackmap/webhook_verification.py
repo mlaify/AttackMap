@@ -325,13 +325,11 @@ _ID_PARAM = re.compile(r"^(?:id|pk|uuid|hook|webhook|webhook_?id|webhook_?uuid|\
 _ID_CONVERTERS = re.compile(r"^<(?:int|uuid|pk):", re.IGNORECASE)
 # Words that, fused with `webhook` in one segment, name a management page or
 # sub-resource: `add_webhook`, `webhooklogs`, `edit-webhook`.
-_MANAGEMENT_WORDS = frozenset(
-    {
-        "add", "new", "create", "edit", "update", "delete", "remove", "list", "log", "logs",
-        "delivery", "deliveries", "setting", "settings", "config", "configs", "test", "ping",
-        "manage", "management", "subscription", "subscriptions",
-    }
-)
+# Fused with `webhook` in one segment, only words that can't be an inbound
+# event name: `webhooklogs`, `add_webhook`, `webhook_settings`, `edit-webhook`.
+# Event-ish words (`subscription-webhook`, `new-order-webhook`,
+# `update-webhook`, `delivery_webhook`) stay receivers, and a POST never counts.
+_MANAGEMENT_WORDS = frozenset({"add", "edit", "delete", "list", "log", "logs", "setting", "settings"})
 # Actions on a stored webhook (`POST /webhooks/:id/test`). A POST to
 # `/webhooks/:id[/:token]` without one may be an incoming-webhook receiver
 # (Discord/Slack style, authenticated by the id/token in the URL), so it isn't
@@ -344,9 +342,18 @@ _MANAGEMENT_ACTIONS = frozenset(
 )
 _READ_WRITE_METHODS = frozenset({"GET", "HEAD", "PUT", "PATCH", "DELETE"})
 _SETTINGS_SEGMENTS = frozenset({"settings", "preferences"})
+# CRUD actions in a settings path: `POST /settings/webhooks/create`.
+_CRUD_ACTIONS = frozenset({"create", "new", "store", "edit", "update", "delete", "destroy"})
+# `router.register(r"webhooks", WebhookViewSet)`: group 1 the prefix, group 2 the ViewSet.
 _DRF_VIEWSET_REGISTRATION = re.compile(
-    r"""\.register\(\s*r?["'][^"']*web-?hooks?[^"']*["']\s*,\s*[\w.]*ViewSet\b""", re.IGNORECASE
+    r"""\.register\(\s*r?["']([^"'\n]{0,200})["']\s*,\s*([\w.]{1,120})"""
 )
+_PY_CLASS_BASES = r"^[ \t]*class[ \t]+{name}[ \t]*\(([^)\n]{{0,400}})\)"
+# A POST that creates a stored webhook: the handler persists a target URL with
+# a secret or event list (`subscriberUrl`, `payload_url`, `events`, `secret`).
+_CONFIG_URL_FIELD = re.compile(r"(?i:subscriber_?url|payload_?url|target_?url|callback_?url|endpoint_?url)|\burl\s*[:=]")
+_CONFIG_OTHER_FIELD = re.compile(r"\b(?:secret|events|event_?types|eventTriggers|active)\b")
+_PERSIST_CALL = re.compile(r"\b(?:create|save|insert|upsert|persist|add)\w{0,40}\s*\(|\.objects\.create\s*\(")
 
 
 def _segments(path: str) -> list[str]:
@@ -367,6 +374,48 @@ def _is_id_param(segment: str) -> bool:
     if _ID_CONVERTERS.match(segment):
         return True
     return _ID_PARAM.match(name.split(":", 1)[-1].strip()) is not None
+
+
+def _drf_model_viewset(base: Path, cache: dict[str, str | None], hop: _HopResolver, route, line: str) -> bool:  # noqa: ANN001
+    """`router.register('webhooks', WebhookViewSet)` where the prefix names the
+    webhook collection itself (not a provider: `webhooks/stripe`) and the
+    ViewSet is model CRUD (`ModelViewSet`, `NetBoxModelViewSet`, `ModelCrudViewSet`)."""
+    match = _DRF_VIEWSET_REGISTRATION.search(line)
+    if match is None:
+        return False
+    prefix = [seg.lower() for seg in match.group(1).strip("^$/").split("/") if seg]
+    if not prefix or not _WEBHOOK_SEGMENT.fullmatch(prefix[-1].replace("logs", "").replace("log", "") or "x"):
+        return False
+    ref = match.group(2)
+    module_name, _, class_name = ref.rpartition(".")
+    content = _read_file_content(route.file, base, cache) or ""
+    candidates = [route.file]
+    imports = hop._import_map(route.file, content)
+    if module_name and module_name in imports:
+        candidates = [imports[module_name]]
+    elif class_name in imports:
+        candidates = [imports[class_name], route.file]
+    pattern = re.compile(_PY_CLASS_BASES.format(name=re.escape(class_name)), re.MULTILINE)
+    for module in candidates:
+        source = _read_file_content(module, base, cache) or ""
+        found = pattern.search(source)
+        if found:
+            bases = [b.strip().rsplit(".", 1)[-1] for b in found.group(1).split(",")]
+            return any("Model" in b and b.endswith("ViewSet") for b in bases)
+    return False
+
+
+def _handler_text(base: Path, cache: dict[str, str | None], route, route_lines: list[int]) -> str:  # noqa: ANN001
+    content = _read_file_content(route.file, base, cache) or ""
+    lines = content.splitlines()
+    if route.line is None or not lines:
+        return ""
+    start, end = span_bounds(route.line, lines, route_lines)
+    return "\n".join(lines[start:end])
+
+
+def _persists_webhook_config(text: str) -> bool:
+    return bool(_CONFIG_URL_FIELD.search(text) and _CONFIG_OTHER_FIELD.search(text) and _PERSIST_CALL.search(text))
 
 
 def _fused_management_word(segment: str) -> bool:
@@ -415,25 +464,47 @@ def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) 
         if hook is not None and _member_management(route.method.upper(), segs, hook, collection_known=True):
             collections.add("/".join(s.lower() for s in segs[: hook + 1]))
     collections_paths = {"/".join(s.lower() for s in segs) for _, segs, hook in parsed if hook is not None and hook + 1 == len(segs)}
+    hop = _HopResolver(base, cache)
+    route_lines: dict[str, list[int]] = {}
+    for r in scan.routes:
+        if r.line is not None:
+            route_lines.setdefault(r.file, []).append(r.line)
     for route, segs, hook in parsed:
         if hook is None:
             continue
+        method = route.method.upper()
         lowered = [s.lower() for s in segs]
+        after = lowered[hook + 1 :]
+        authenticated = route.auth == "required"
         reason = None
-        if any(s in _SETTINGS_SEGMENTS for s in lowered[:hook]):
+        if any(s in _SETTINGS_SEGMENTS for s in lowered[:hook]) and (
+            method in _READ_WRITE_METHODS
+            or any(s in _CRUD_ACTIONS for s in after)
+            or (after and _is_id_param(segs[hook + 1]))
+            or authenticated
+        ):
+            # `POST /settings/integrations/slack/webhook` stays a receiver.
             reason = "a settings page for the app's webhooks"
         elif "trpc" in lowered[:hook]:
             reason = "a tRPC procedure endpoint"
-        elif _fused_management_word(segs[hook]):
+        elif method != "POST" and _fused_management_word(segs[hook]):
             reason = f"`{segs[hook]}` names a management page"
         elif _member_management(
-            route.method.upper(), segs, hook, collection_known="/".join(lowered[: hook + 1]) in collections_paths
+            method, segs, hook, collection_known="/".join(lowered[: hook + 1]) in collections_paths
         ):
             reason = f"`{segs[hook + 1]}` addresses a stored webhook"
         elif hook + 1 == len(segs) and "/".join(lowered) in collections:
-            reason = "the collection of a webhook resource with id-addressed members"
-        elif _DRF_VIEWSET_REGISTRATION.search(_route_line(base, cache, route)):
-            reason = "a REST ViewSet over the app's webhook model"
+            # The collection of id-addressed webhooks. Listing it is management;
+            # a POST (or a method-less route) may be a receiver beside an
+            # event log, so it needs positive evidence.
+            if method in _READ_WRITE_METHODS:
+                reason = "the collection of a webhook resource with id-addressed members"
+            elif authenticated:
+                reason = "an authenticated create on a webhook collection"
+            elif _persists_webhook_config(_handler_text(base, cache, route, route_lines.get(route.file, []))):
+                reason = "a create that persists a webhook's URL and settings"
+        if reason is None and _drf_model_viewset(base, cache, hop, route, _route_line(base, cache, route)):
+            reason = "a model CRUD ViewSet over the app's webhooks"
         if reason is not None:
             out[(route.method, route.path, route.file)] = reason
     return out
