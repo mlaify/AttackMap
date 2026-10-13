@@ -1264,6 +1264,10 @@ def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected:
         ("router.use(apiV1, restrictTo('admin'));", 1),
         ("router.use(requireAuth, restrictTo('admin'));", 0),
         ("router.use(isAdmin, logger);", 0),
+        ("router.use(protectRoute, restrictTo('admin'));", 0),
+        ("router.use(firebaseAuth, restrictTo('admin'));", 0),
+        ("router.use(cors, restrictTo('admin'));", 0),
+        ("router.use('/', restrictTo('admin'));", 0),
         # a regex literal holding a backtick or `/*` doesn't blank what follows
         ("const strip = (s) => s.replace(/`/g, '');\nrouter.use(restrictTo('admin'));", 0),
         ("const glob = /[/*]/;\nrouter.use(restrictTo('admin'));", 0),
@@ -1563,3 +1567,58 @@ def test_many_unclosed_role_classes_stay_linear() -> None:
     started = time.perf_counter()
     _chain_roles("a.ts", content)
     assert time.perf_counter() - started < 3.0
+
+
+def test_round9_chain_scoping_cases() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    def check(file: str, content: str, line: int) -> bool:
+        return _chain_role_check(Route(path="/x", method="DELETE", file=file, line=line), content, _chain_roles(file, content))
+
+    # braces inside a regex literal don't end (or extend) a class
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class A {\n"
+        "  f() { return x.replace(/{/g, ''); }\n"
+        "}\n"
+        "export class B {\n"
+        "  g() { return y.replace(/}/g, ''); }\n"
+        "  @Delete(':id')\n"
+        "  remove() {}\n"
+        "}\n"
+    )
+    assert check("c.ts", content, 7) is False
+    # a class head with object type arguments
+    content = "@Roles(Role.Admin)\nexport class A extends B<{ x: string }> {\n  @Delete(':id')\n  remove() {}\n}\n"
+    assert check("c.ts", content, 3) is True
+    # Python: `#` comments without a space and docstrings don't register routers
+    content = (
+        "#admin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n"
+        "\"\"\"\nadmin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n\"\"\"\n"
+        "admin = APIRouter()\n"
+        "@admin.delete('/u/{id}')\n"
+        "def d(id): ...\n"
+    )
+    assert check("r.py", content, 6) is False
+    # an unrecognised decorator isn't attributed to the router above it
+    content = (
+        "admin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n"
+        "@admin.get('/a')\n"
+        "def a(): ...\n"
+        "@pub.websocket('/b')\n"
+        "def b(): ...\n"
+    )
+    assert check("r.py", content, 4) is False
+    # a chained registration whose handler calls `db.delete(`
+    content = "router.use(restrictTo('admin'));\nrouter\n  .route('/x')\n  .delete(auth, (q, s) => s.json(db.delete(id)));\n"
+    assert check("r.js", content, 4) is True
+    # a router mounted on the app after the app's role `use`
+    content = (
+        "const adminRouter = express.Router();\n"
+        "adminRouter.delete('/u/:id', h);\n"
+        "app.use(restrictTo('admin'));\n"
+        "app.use('/admin', adminRouter);\n"
+        "otherRouter.delete('/v/:id', h);\n"
+    )
+    assert check("r.js", content, 2) is True
+    assert check("r.js", content, 5) is False
