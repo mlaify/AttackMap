@@ -1103,7 +1103,7 @@ def _iter_graphql_files(root: Path):
     def walk(directory: Path, depth: int):
         nonlocal count
         try:
-            entries = list(directory.iterdir())
+            entries = sorted(directory.iterdir())
         except (OSError, PermissionError):
             return
         for entry in entries:

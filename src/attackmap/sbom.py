@@ -97,7 +97,7 @@ def _iter_manifests(root: Path):
 
     def walk(directory: Path, depth: int):
         try:
-            entries = list(directory.iterdir())
+            entries = sorted(directory.iterdir())
         except (OSError, PermissionError):
             return
         for entry in entries:
