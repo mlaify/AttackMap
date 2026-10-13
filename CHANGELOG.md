@@ -217,7 +217,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - The one-hop definition lookup counts lines on `\n` only, like route lines.
     - Async lookups must be awaited (an un-awaited `getServerSession(...)` is a Promise and never falsy). `next(...)` counts as a rejection only with an error (`next(new Error(…))`, `next(err)`, `next(createError(401))`); response returns are a fixed list of response methods. Writes named with an inner verb (`findOneAndRemove(`, `processRefund(`) count before a gate.
     - An inline handler's body must open in the registration's last argument; validators count as read-only middleware only by name (`validateBody`, `zValidator`), not `validateAndSave`.
-    - Cost: the first unsafe call is found once per handler, and one-hop gates are cached per function, so many routes sharing a hostile handler stay linear.
+    - With several registrations on one line (`.get(a).post(b)`, `app.get(…); app.post(…)`), only the route's own method is followed, and only if unambiguous.
+    - Synchronous writes and events (`.run(`, `.emit(`, `invalidate(`) count before a gate; a boolean about the lookup (`req.user == null`) isn't a lookup; a rejection that itself writes (`return json(await db.x.deleteMany())`) doesn't count.
+    - Cost: each file is masked once, inline handlers are clamped to their registration, the first unsafe call is found once per handler, and one-hop gates are cached per function.
     - Assigning `req.user` / `req.session…` before a direct check disqualifies that check.
   - When in doubt the finding stays.
   - Real world: documenso's `POST /api/ai/detect-fields` and `/detect-recipients` are no longer flagged. juice-shop's `/dataerasure` stays flagged, because its lookup is app-specific. cal.com, dub, zulip, saleor, netbox and BookStack are unchanged.

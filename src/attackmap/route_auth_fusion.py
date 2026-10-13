@@ -135,11 +135,11 @@ def unauthenticated_routes(
     return flagged
 
 
-_REGISTRATION_CALL = re.compile(r"\.\s*(?:get|post|put|patch|delete|all|route|on)\s*\(", re.IGNORECASE)
+_REGISTRATION_CALL = re.compile(r"\.\s*(?P<verb>get|post|put|patch|delete|all|route|on)\s*\(", re.IGNORECASE)
 _NEWLINE = re.compile(r"\n")
 _READ_ONLY_MIDDLEWARE = re.compile(
     r"(?:[A-Za-z_$][\w$]{0,40}\.)?"
-    r"(?:[A-Za-z_$]{0,20}[Vv]alidat(?:or|e|ion)(?:Body|Query|Params|Request|Input|Schema|Json|Middleware)?"
+    r"(?:(?:[a-z]{1,3}V|v)alidat(?:or|e|ion)(?:Body|Query|Params|Request|Input|Schema|Json|Middleware)?"
     r"|json|urlencoded|text|raw|cors|helmet|rateLimit(?:er)?|[A-Za-z_$]{0,20}[Ll]imiter)"
     r"\s*\([^;]{0,400}\)"
 )
@@ -169,7 +169,7 @@ def _handler_session_gate(
     content: str,
     root: Path,
     cache: dict[str, str | None],
-    line_starts: dict[str, list[int]],
+    line_starts: dict[str, tuple[list[int], str]],
     hop_box: list,
 ) -> str | None:
     """A session check that rejects (see :mod:`handler_auth`) in the route's
@@ -179,20 +179,30 @@ def _handler_session_gate(
         return None
     # Route.line counts `\n` only; `splitlines()` would also split on
     # U+2028, `\f` or a lone `\r` and shift the handler to another route.
-    starts = line_starts.get(route.file)
-    if starts is None:
-        starts = [0] + [m.end() for m in _NEWLINE.finditer(content)]
-        line_starts[route.file] = starts
+    # The file is masked once and shared by all its routes.
+    if route.file not in line_starts:
+        line_starts[route.file] = ([0] + [m.end() for m in _NEWLINE.finditer(content)], mask(content))
+    starts, file_code = line_starts[route.file]
     if not 1 <= route.line <= len(starts):
         return None
     offset = starts[route.line - 1]
     text = content[offset : offset + 20_000]
-    code = mask(text)
-    call = _REGISTRATION_CALL.search(code[: code.find("\n", 0) + 1 if "\n" in code else len(code)])
-    if call is None:
+    code = file_code[offset : offset + 20_000]
+    first_line = code[: code.find("\n") + 1 if "\n" in code else len(code)]
+    calls = list(_REGISTRATION_CALL.finditer(first_line))
+    if not calls:
         # Not a call registration (a decorator, a function header): the
         # handler body is the first function body that follows.
-        return session_gate(text)
+        return session_gate(text, code)
+    # Several registrations on one line (`.get(a).post(b)`, `app.get(…); app.post(…)`):
+    # only the one for this route's method, and only if it is unambiguous.
+    same_method = [c for c in calls if c.group("verb").lower() == route.method.lower()]
+    if len(same_method) == 1:
+        call = same_method[0]
+    elif len(calls) == 1 and not same_method and calls[0].group("verb").lower() in ("all", "route", "on"):
+        call = calls[0]
+    else:
+        return None
     open_paren = call.end() - 1
     depth = 0
     reg_close = None
@@ -212,12 +222,14 @@ def _handler_session_gate(
         # (multer, a writer) has already acted. Validators, body parsers,
         # cors and rate limiters only read the request.
         return None
-    body = handler_body(text)
-    if body is not None and body[0] < reg_close:
-        # An inline handler: its body must open in the last argument, not in a
-        # callback passed to middleware (`validate({ custom: (req) => { … } })`).
-        last_start = reg_close - len(args[-1]) if args else reg_close
-        return session_gate(text) if body[0] >= last_start else None
+    # An inline handler: clamp to the registration, so a one-line route costs
+    # its own length. The body must open in the last argument, not in a
+    # callback passed to middleware (`validate({ custom: (req) => { … } })`).
+    last_start = reg_close - len(args[-1]) if args else reg_close
+    inline_text, inline_code = text[: reg_close + 1], code[: reg_close + 1]
+    body = handler_body(inline_text[last_start:], inline_code[last_start:])
+    if body is not None:
+        return session_gate(inline_text[last_start:], inline_code[last_start:])
     ref = _SOLE_REF.fullmatch(args[-1].strip()) if args else None
     if ref is None:
         return None

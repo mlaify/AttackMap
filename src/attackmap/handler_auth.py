@@ -128,11 +128,18 @@ _MUTATION = re.compile(
     r"|(?:\.\s*|(?<![\w$.]))[a-z_$][A-Za-z_$]{0,40}(?:Remove|Delete|Update|Create|Insert|Save|Destroy|Upsert|Refund|Charge|Write)\w{0,20}\s*\("
     r"|(?:\.\s*|(?<![\w$.]))(?:create(?![A-Za-z]{0,40}Client\s*\()|createMany|update|updateMany|upsert|delete|deleteMany|insert|insertOne|insertMany"
     r"|save|remove|destroy|execute|exec|query|write|enqueue|publish|add|set|del|unlink|rm|post|put|patch"
-    r"|send|push|append|incr|decr|hset|lpush|rpush|sadd|zadd|expire|rename|copy|mkdir|fetch|charge|transfer)\w{0,40}\s*\("
+    r"|send|push|append|incr|decr|hset|lpush|rpush|sadd|zadd|expire|rename|copy|mkdir|fetch|charge|transfer"
+    r"|run|emit|dispatch|invalidate|revalidate\w{0,20})\w{0,40}\s*\("
 )
 _TRY_OPEN = re.compile(r"\btry\s*\Z")
 # A fallback in a session initializer: `??`, `||`, a ternary (not `?.`), or
 # a `.catch(...)` that resolves to something.
+# A write inside the rejecting statement: an awaited call or a persistence
+# method (`res.status(401).send(…)` and `createError(…)` are responses).
+_BRANCH_WRITE = re.compile(
+    r"(?<![\w$.])await\s|\.\s*(?:create|update|upsert|delete|insert|save|remove|destroy|exec|execute|query|run)\w{0,40}\s*\("
+)
+_COMPARISON = re.compile(r"[=!]=|&&|[<>]|\binstanceof\b|\bin\b|\btypeof\b")
 _FALLBACK = re.compile(r"\?\?|\|\||\?(?![.?])|\.\s*catch\s*\(|\.\s*then\s*\(")
 # Assigning the request identity directly: `req.user = …`, `req.session.user ||= …`.
 _DIRECT_ASSIGN = re.compile(
@@ -285,6 +292,8 @@ def _rejects(statements: list[str]) -> bool:
         return False
     first = statements[0]
     second = statements[1] if len(statements) > 1 else ""
+    if _BRANCH_WRITE.search(first) or _BRANCH_WRITE.search(second):
+        return False  # `return json(await db.item.deleteMany())`: the rejection writes
     if _REJECTING_FIRST.match(first):
         return True
     returned = _RETURN.match(first)
@@ -312,10 +321,11 @@ def _then_branch(code: str, after_paren: int, pairs: dict[int, int]) -> list[str
     return _statements(code[i : i + _MAX_BRANCH_CHARS])[:1]
 
 
-def handler_body(text: str) -> tuple[int, int] | None:
+def handler_body(text: str, code: str | None = None) -> tuple[int, int] | None:
     """``(open, close)`` offsets of the handler function's body braces in
-    ``text`` (which starts at the route registration or function header)."""
-    code = mask(text[:_MAX_SPAN_CHARS])
+    ``text`` (which starts at the route registration or function header).
+    ``code`` is ``text`` already masked, when the caller has it."""
+    code = (mask(text[:_MAX_SPAN_CHARS]) if code is None else code)[:_MAX_SPAN_CHARS]
     match = _BODY_OPEN.search(code)
     if match is None:
         return None
@@ -488,12 +498,13 @@ def _initializer(window: str) -> str:
     return "\n".join(out)
 
 
-def session_gate(text: str) -> str | None:
+def session_gate(text: str, code: str | None = None) -> str | None:
     """The gate line if the handler in ``text`` rejects a request whose
-    session lookup comes back empty; else None."""
+    session lookup comes back empty; else None. ``code`` is ``text`` already
+    masked (same offsets), when the caller has it."""
     text = text[:_MAX_SPAN_CHARS]
-    code = mask(text)
-    body = handler_body(text)
+    code = mask(text) if code is None else code[:_MAX_SPAN_CHARS]
+    body = handler_body(text, code)
     if body is None:
         return None
     body_open, body_close = body
@@ -512,6 +523,8 @@ def session_gate(text: str) -> str | None:
             continue  # `!req.user`, `typeof req.user`, `findFirst({ authorId: req.user.id })`
         if lookup.group(0).endswith("(") and not _AWAITED.match(rest):
             continue  # `!req.user`, `typeof req.user`, `findFirst({ authorId: req.user.id })`
+        if _COMPARISON.search(_initializer(window), lookup.end()):
+            continue  # `const isAnon = req.user == null`: a boolean about the lookup, not the lookup
         if _FALLBACK.search(_initializer(window)):
             continue  # `getSession(c) ?? { user: guest }`: never empty, so the gate proves nothing
         if decl.group("names") and "=" in decl.group("names"):

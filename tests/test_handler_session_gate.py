@@ -197,6 +197,13 @@ NOT_GATED = NOT_GATED + [
     # un-awaited writes whose verb sits inside the name
     "const session = await getSession(req);\nOrder.findOneAndRemove({ _id: id }, cb);\nif (!session) return res.status(401).end();",
     "const session = await getSession(req);\nprocessRefund(req.body);\nif (!session) return res.status(401).end();",
+    # synchronous writes and events before the gate
+    "db.prepare('DELETE FROM t WHERE id = ?').run(req.params.id);\nif (!req.user) return res.sendStatus(401);",
+    "bus.emit('order', req.body);\nif (!req.user) return res.sendStatus(401);",
+    # a boolean about the lookup, inverted
+    "const isAnon = req.user == null;\nif (!isAnon) return res.redirect('/');",
+    # the rejection itself writes
+    "const session = await getSession(req);\nif (!session) return json(await db.item.deleteMany());",
 ]
 
 
@@ -462,18 +469,20 @@ def test_inline_handler_after_a_validator_is_trusted(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "middleware",
+    ("middleware", "handler"),
     [
-        "validateBody({ custom: (req) => { if (!req.user) throw new Error('x') } })",
-        "validateAndSave(Order)",
+        # the gate sits in a middleware callback, the handler has none
+        ("validateBody({ custom: (req) => { if (!req.user) throw new Error('x') } })", "  await Order.create(req.body);\n"),
+        # middleware that writes before the handler's gate
+        ("validateAndSave(Order)", "  const session = await getSession(req);\n  if (!session) return res.status(401).end();\n"),
+        ("invalidate('posts')", "  const session = await getSession(req);\n  if (!session) return res.status(401).end();\n"),
     ],
 )
-def test_middleware_before_inline_handler_is_not_its_gate(tmp_path: Path, middleware: str) -> None:
+def test_middleware_before_inline_handler_is_not_its_gate(tmp_path: Path, middleware: str, handler: str) -> None:
     (tmp_path / "app.js").write_text(
         "const app = require('express')();\n"
         f"app.post('/api/orders', {middleware}, async (req, res) => {{\n"
-        "  const session = await getSession(req);\n"
-        "  if (!session) return res.status(401).end();\n"
+        f"{handler}"
         "  await Order.create(req.body);\n"
         "});\n"
     )
@@ -492,3 +501,36 @@ def test_many_routes_sharing_a_hostile_handler_stay_fast(tmp_path: Path) -> None
     started = time.perf_counter()
     _unauth_findings(tmp_path)
     assert time.perf_counter() - started < 10.0
+
+
+@pytest.mark.parametrize(
+    "registration",
+    [
+        "router.route('/items')\n  .get(getItem).post(addItem);\n",
+        "app.get('/items', getItem); app.post('/items', addItem);\n",
+    ],
+)
+def test_the_routes_own_registration_is_used(tmp_path: Path, registration: str) -> None:
+    # The POST route must not inherit the GET handler's gate from the same line.
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\nconst router = app;\n"
+        "async function getItem(req, res) {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  res.json(await Item.find());\n"
+        "}\n"
+        "async function addItem(req, res) {\n"
+        "  await Item.create(req.body);\n"
+        "}\n" + registration
+    )
+    assert len(_unauth_findings(tmp_path)) == 1
+
+
+def test_many_one_line_routes_stay_fast(tmp_path: Path) -> None:
+    import time
+
+    routes = "".join(f"app.post('/a{i}', async (req, res) => {{ await Order.create(req.body); }});\n" for i in range(1000))
+    (tmp_path / "app.js").write_text("const app = require('express')();\n" + routes)
+    started = time.perf_counter()
+    _unauth_findings(tmp_path)
+    assert time.perf_counter() - started < 6.0
