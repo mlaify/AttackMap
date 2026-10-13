@@ -167,7 +167,7 @@ _NOT_FOUND_RESPONSE = re.compile(
 _PACKAGE_NAME = re.compile(r'"name"\s*:\s*"([^"\n]{1,200})"')
 _STUB_NOISE = re.compile(r"^\s*(?:[{}()\[\];,]+|export\s+default\s+function\b.*|(?:async\s+)?function\b.*\{|def\b.*:|return\s*;?)\s*$")
 _MAX_STUB_LINES = 3
-_MAX_SECOND_HOP_SOURCES = 8
+_MAX_SECOND_HOP_FUNCTIONS = 8
 _MAX_WORKSPACE_PACKAGES = 2_000
 _WORKSPACE_SKIP = frozenset({"node_modules", ".git", "dist", "build", ".next", "out", "vendor", "coverage"})
 
@@ -362,10 +362,16 @@ class _Assessor:
                 self.hop.delegated_text(surface.file, content, text, located)
         # A second hop: verification usually sits in a helper the middleware
         # or controller calls (`webhookAuth` → `validateSignature`) (#366).
-        for file, _line, body in list(located)[:_MAX_SECOND_HOP_SOURCES]:
+        # Bounded to _MAX_SECOND_HOP_FUNCTIONS functions in total.
+        first_hop = list(located)
+        limit = len(located) + _MAX_SECOND_HOP_FUNCTIONS
+        for file, _line, body in first_hop:
+            if len(located) >= limit:
+                break
             source = _read_file_content(file, self.root, self.cache)
             if source:
                 self.hop.delegated_text(file, source, body, located)
+        del located[limit:]
         seen_bodies: set[tuple[str, int]] = set()
         for file, line, body in located:
             if (file, line) in seen_bodies:
@@ -393,13 +399,15 @@ class _Assessor:
 
 
 def _is_not_found_stub(handler: str) -> bool:
-    """A handler of at most a few statements whose answer is 404/410."""
+    """A handler whose every statement is a 404/410 response. One that also
+    looks something up, assigns or awaits (and answers 404 only on a miss) is
+    a live receiver."""
     code = [
         ln
         for ln in handler.splitlines()
         if ln.strip() and not _COMMENT_LINE.match(ln) and not _STUB_NOISE.match(ln)
     ]
-    return 0 < len(code) <= _MAX_STUB_LINES and any(_NOT_FOUND_RESPONSE.search(ln) for ln in code)
+    return 0 < len(code) <= _MAX_STUB_LINES and all(_NOT_FOUND_RESPONSE.search(ln) for ln in code)
 
 
 def _mount_covers(mount: str, route: str) -> bool:

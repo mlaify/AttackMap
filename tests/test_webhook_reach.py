@@ -181,3 +181,58 @@ def test_handler_that_sometimes_answers_404_is_not_a_stub(tmp_path: Path) -> Non
     _, surface = _webhook(tmp_path, "/orders/webhook", "hook.js", 1)
     assert surface.webhook_verification.inert is False
     assert surface.webhook_verification.state == "absent"
+
+
+def test_handler_returning_404_on_a_lookup_miss_is_live(tmp_path: Path) -> None:
+    # Short handlers that 404 on a miss but otherwise process the payload.
+    _write(
+        tmp_path,
+        {
+            "hook.js": (
+                "app.post('/acme/webhook', async (req, res) => {\n"
+                "  const hook = await Hook.findByToken(req.query.token)\n"
+                "  if (!hook) return res.status(404).end()\n"
+                "})\n"
+            ),
+            "hook2.py": (
+                "@app.route('/stripe/webhook', methods=['POST'])\n"
+                "def stripe_webhook():\n"
+                "    if not handle(request.get_json()):\n"
+                "        return abort(404)\n"
+            ),
+        },
+    )
+    _, js = _webhook(tmp_path, "/acme/webhook", "hook.js", 1)
+    _, py = _webhook(tmp_path, "/stripe/webhook", "hook2.py", 1)
+    assert js.webhook_verification.inert is False
+    assert py.webhook_verification.inert is False
+
+
+def test_second_hop_is_bounded_to_eight_functions(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    # Three middlewares, each calling six helpers: an unbounded second hop
+    # would pull in 18 helper bodies.
+    helpers = "".join(f"export function h{i}(x) {{\n  return x + {i}\n}}\n" for i in range(18))
+    mws = "".join(
+        f"export function mw{m}(req, res, next) {{\n" + "".join(f"  h{m * 6 + i}(1)\n" for i in range(6)) + "  next()\n}\n"
+        for m in range(3)
+    )
+    _write(
+        tmp_path,
+        {
+            "lib.ts": helpers + mws,
+            "app.ts": "import { mw0, mw1, mw2 } from './lib.js'\napp.post('/x/webhook', mw0, mw1, mw2, (req, res) => res.end())\n",
+        },
+    )
+    from attackmap import webhook_verification as wv
+
+    captured: list[list] = []
+    real = wv.classify
+
+    def spy(lines, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        captured.append(lines)
+        return real(lines, **kwargs)
+
+    monkeypatch.setattr(wv, "classify", spy)
+    _webhook(tmp_path, "/x/webhook", "app.ts", 2)
+    helper_bodies = {ln.line for ln in captured[0] if "return x +" in ln.text}
+    assert 1 <= len(helper_bodies) <= 8
