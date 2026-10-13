@@ -1154,6 +1154,15 @@ def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> 
         ["restrictTo(event.body.admin)"],
         ["restrictTo(this.req.query.admin)"],
         ["authorizeRoles('user')"],
+        ["authorize_roles('user')"],
+        ["authorizeRolesFor('user')"],
+        # capitalised receivers that aren't role enums
+        ["restrictTo(User.admin)"],
+        ["restrictTo(Request.query.admin)"],
+        ["checkRoles(Config.roles.owner)"],
+        # template literals and mixed lists
+        ["restrictTo(`admin`)"],
+        ["restrictTo(Roles.ADMIN, Roles.USER)"],
     ],
 )
 def test_authentication_only_guards_are_not_role_checks(tmp_path: Path, guards: list[str]) -> None:
@@ -1241,6 +1250,11 @@ def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected:
         ("router.use(requireAuth, restrictTo('admin', 'owner'));", 0),
         ("router.use(authController.restrictTo('user'));", 1),
         ("router.use(requireAuth);", 1),
+        # scoped to another prefix, another router, or commented out
+        ("router.use('/billing', restrictTo('admin'));", 1),
+        ("adminRouter.use(restrictTo('admin'));", 1),
+        ("// router.use(restrictTo('admin'));", 1),
+        ("/* router.use(restrictTo('admin')); */", 1),
     ],
 )
 def test_router_use_role_call_keeps_its_arguments(tmp_path: Path, use: str, flagged: int) -> None:
@@ -1264,3 +1278,76 @@ def test_guard_name_parser_is_linear_on_whitespace(tmp_path: Path) -> None:
     started = time.perf_counter()
     _bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))
     assert time.perf_counter() - started < 2.0
+
+
+def test_router_use_applies_only_to_later_routes_on_the_same_router() -> None:
+    # Express applies `use` middleware only to routes registered after it.
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "const router = require('express').Router();\n"
+        "router.delete('/a/:id', del);\n"
+        "router.use(restrictTo('admin'));\n"
+        "router.delete('/b/:id', del);\n"
+        "other.delete('/c/:id', del);\n"
+    )
+    info = _chain_roles("admin.js", content)
+    lines = {2: False, 4: True, 5: False}
+    for line, expected in lines.items():
+        route = Route(path="/x", method="DELETE", file="admin.js", line=line)
+        assert _chain_role_check(route, content, info) is expected, line
+
+
+@pytest.mark.parametrize(
+    ("line", "flagged"),
+    [
+        ("  log(\"TODO restrictTo('admin')\");", 1),
+        ("  // restrictTo('admin')", 1),
+        ("  restrictTo('admin')(req, res, () => {});", 0),
+    ],
+)
+def test_role_calls_in_strings_or_comments_dont_count(tmp_path: Path, line: str, flagged: int) -> None:
+    (tmp_path / "admin.js").write_text(
+        "const router = require('express').Router();\n"
+        "router.delete('/admin/users/:id', async (req, res) => {\n"
+        f"{line}\n"
+        "  await User.deleteOne({ _id: req.params.id });\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=2, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == flagged
+
+
+@pytest.mark.parametrize(
+    ("decorator", "bola"),
+    [
+        ("@Roles(Role.Admin)", 0),  # a privileged role-gated route reaches any object by design
+        ("@Roles(Role.Editor)", 1),  # any editor: still needs an object-level check
+        ("", 1),  # RolesGuard alone enforces nothing
+    ],
+)
+def test_role_metadata_and_bola(tmp_path: Path, decorator: str, bola: int) -> None:
+    (tmp_path / "users.controller.ts").write_text(
+        "@Controller('users')\n"
+        "export class UsersController {\n"
+        "  @UseGuards(JwtAuthGuard, RolesGuard)\n"
+        f"  {decorator}\n"
+        "  @Delete(':id')\n"
+        "  remove(@Param('id') id: string) {\n"
+        "    return this.users.delete(id);\n"
+        "  }\n"
+        "}\n"
+    )
+    route = Route(path="/users/:id", method="DELETE", file="users.controller.ts", line=5, auth="required")
+    assert len(analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path)) == bola
+
+
+def test_fastapi_router_dependency_role_call(tmp_path: Path) -> None:
+    (tmp_path / "admin.py").write_text(
+        "router = APIRouter(prefix='/admin', dependencies=[Depends(check_roles('admin'))])\n"
+        "@router.delete('/users/{user_id}')\n"
+        "def delete_user(user_id: int):\n"
+        "    db.delete(User, user_id)\n"
+    )
+    route = Route(path="/admin/users/{user_id}", method="DELETE", file="admin.py", line=2, auth="required")
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []

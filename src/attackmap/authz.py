@@ -167,7 +167,7 @@ ROLE_MARKERS = re.compile(
     | @Secured | @RolesAllowed
     | @PreAuthorize\([^)]*(?:hasRole|hasAuthority|hasAnyRole|hasAnyAuthority|hasPermission)
     | \bpermission_required\b | \bhas_perm\b | \bhasPermission\b | \brequires?_?[pP]ermissions?\b
-    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize(?!roles\b)[!\w]*\s*\(
+    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize(?!_?roles)[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
     | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
     | ->userIsAllowed\s*\(
@@ -253,9 +253,13 @@ _PRIVILEGED_ROLES = frozenset(
     }
 )
 _ROLE_LITERAL_RE = re.compile(r"'([^'\n]{1,80})'" r'|"([^"\n]{1,80})"')
-# An enum-like member (`Role.ADMIN`, `UserRole.Admin`, `ROLES.OWNER`): the
-# receiver starts with a capital, so `doc.owner` or `req.query.admin` don't count.
-_ROLE_MEMBER_RE = re.compile(r"[A-Z][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})*\.([A-Za-z_$][\w$]{0,80})")
+# An enum-like member (`Role.ADMIN`, `UserRole.Admin`, `ROLES.OWNER`,
+# `Prisma.Role.ADMIN`): the member's owner is a capitalised name about roles
+# or permissions, so `doc.owner`, `User.admin` or `Config.roles.owner` don't count.
+_ROLE_MEMBER_RE = re.compile(
+    r"(?:[A-Z][\w$]{0,80}+\.)?([A-Z][\w$]{0,80}+)\.([A-Za-z_$][\w$]{0,80}+)"
+)
+_ROLE_ENUM_RE = re.compile(r"(?i)role|perm|privilege|access|authority|group|level")
 # A bare ALL_CAPS constant (`ADMIN`, `ROLE_ADMIN`).
 _ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 # Role-list calls in handler or chain code: `restrictTo('admin')`,
@@ -263,7 +267,7 @@ _ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 # their arguments. Metadata guards (`RolesGuard`, `PermissionsGuard`) are not
 # role checks on their own: they enforce this metadata, and allow all without it.
 _ROLE_CALL_RE = re.compile(
-    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorizeRoles|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
+    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorize_?[rR]oles\w{0,40}|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
 )
 _MAX_ROLE_ARGS = 400
 
@@ -284,8 +288,8 @@ def _privileged_args(args: str) -> bool:
         member = _ROLE_MEMBER_RE.fullmatch(element) if literal is None else None
         if literal is not None:
             value = literal.group(1) or literal.group(2)
-        elif member is not None:
-            value = member.group(1)
+        elif member is not None and _ROLE_ENUM_RE.search(member.group(1)):
+            value = member.group(2)
         elif _ROLE_CONSTANT_RE.fullmatch(element):
             value = element
         else:
@@ -302,23 +306,72 @@ def _normalized_role(value: str) -> str:
     return value.replace("_", "").replace("-", "").replace(" ", "")
 
 
-def _call_args(text: str, open_paren: int) -> str | None:
-    """The argument text of the call whose `(` is at ``open_paren`` (bounded)."""
+def _call_close(code: str, open_paren: int, limit: int = _MAX_ROLE_ARGS) -> int | None:
+    """Offset of the `)` closing the call whose `(` is at ``open_paren`` (bounded)."""
     depth = 0
-    for i in range(open_paren, min(len(text), open_paren + _MAX_ROLE_ARGS)):
-        if text[i] == "(":
+    for i in range(open_paren, min(len(code), open_paren + limit)):
+        if code[i] == "(":
             depth += 1
-        elif text[i] == ")":
+        elif code[i] == ")":
             depth -= 1
             if depth == 0:
-                return text[open_paren + 1 : i]
+                return i
     return None
 
 
+_QUOTES = "'\"`"
+
+
+def _mask_code(text: str) -> str:
+    """``text`` with comments (`//`, `/* */`, `# ` lines) and string-literal
+    contents blanked, offsets and newlines kept. Language-agnostic and
+    approximate; used only to tell a call from a mention of one."""
+    out = list(text)
+    n = len(text)
+    i = 0
+    while i < n:
+        c = text[i]
+        if c in _QUOTES:
+            j = i + 1
+            while j < n and text[j] != c:
+                if text[j] == "\\":
+                    j += 1
+                elif text[j] == "\n" and c != "`":
+                    break
+                j += 1
+            for k in range(i + 1, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j + 1
+            continue
+        if text.startswith("//", i) or (c == "#" and (i == 0 or text[i - 1] in " \t\n") and text[i + 1 : i + 2] in (" ", "\t")):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            for k in range(i, j):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+            continue
+        i += 1
+    return "".join(out)
+
+
 def _role_call_check(text: str) -> bool:
-    for match in _ROLE_CALL_RE.finditer(text):
-        args = _call_args(text, match.end() - 1)
-        if args is not None and _privileged_args(args):
+    # Matched on masked code (a call in a string or comment doesn't count);
+    # the arguments, string literals included, are read from the original.
+    code = _mask_code(text)
+    for count, match in enumerate(_ROLE_CALL_RE.finditer(code)):
+        if count >= _MAX_CALLS:
+            break
+        close = _call_close(code, match.end() - 1)
+        if close is not None and _privileged_args(text[match.end() : close]):
             return True
     return False
 
@@ -338,8 +391,8 @@ def _role_guard_name(guard: str) -> bool:
         # none is set (NestJS). The privileged `@Roles('admin')` entry counts
         # on its own.
         return False
-    args = _call_args(guard, match.end() - 1)
-    return args is not None and _privileged_args(args)
+    close = _call_close(guard, match.end() - 1)
+    return close is not None and _privileged_args(guard[match.end() : close])
 
 
 def _guards_role_check(route: Route) -> bool:
@@ -359,8 +412,14 @@ def _guards_role_check(route: Route) -> bool:
 
 # The `(` of `router.use(`; its arguments are read with balanced parentheses,
 # so `router.use(restrictTo('admin'))` keeps its inner call.
-_JS_USE_RE = re.compile(r"\b(?:app|router|server|\w+Router)\s*\.\s*use\s*\(")
-_PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*\(([^)]*)\)", re.DOTALL)
+_JS_USE_RE = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+use\s*+\(")
+_JS_ROUTE_RECEIVER_RE = re.compile(
+    r"(?<![\w$.])([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|del|all|options|head|route)\s*+\("
+)
+_PATH_ARG_RE = re.compile(r"(?<!\s)\s*+['\"`]")
+_MAX_ROUTER_ARGS = 2_000
+_MAX_CALLS = 200
+_PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*+\(")
 _CLASS_DECL_RE = re.compile(r"\b(?:class|interface)\s+\w+")
 # Route declarations that live in configuration rather than code (#343):
 # data formats, and PHP files that are a returned config array (Laminas /
@@ -527,7 +586,7 @@ def find_bfla_routes(
             route_lines.setdefault(r.file, []).append(r.line)
     java_global_auth: bool | None = None
     lines_cache: dict[str, list[str]] = {}
-    chain_role_cache: dict[str, bool] = {}
+    chain_role_cache: dict[str, bool | list[tuple[str, int]]] = {}
     config_cache: dict[str, bool] = {}
     controllers = _ConfigControllerResolver(root_path, content_cache)
     out: list[tuple[Route, str]] = []
@@ -558,7 +617,7 @@ def find_bfla_routes(
             continue  # the plugin resolved a role check
         if route.file not in lines_cache:
             lines_cache[route.file] = content.splitlines()
-            chain_role_cache[route.file] = _chain_role_check(route, content)
+            chain_role_cache[route.file] = _chain_roles(route.file, content)
         handler = span_text(
             route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
         )
@@ -582,7 +641,7 @@ def find_bfla_routes(
             )
             continue
         if (
-            chain_role_cache[route.file]
+            _chain_role_check(route, content, chain_role_cache[route.file])
             or has_role_check(handler)
             or has_role_check(hop.delegated_text(route.file, content, handler))
         ):
@@ -593,27 +652,59 @@ def find_bfla_routes(
     return out
 
 
-def _chain_role_check(route: Route, content: str) -> bool:
-    """A role check on the route's router/controller rather than the handler:
-    a JS ``router.use(requireRole(...))``, a FastAPI router dependency, or a
-    Java class-level annotation."""
-    suffix = Path(route.file).suffix.lower()
+def _chain_roles(file: str, content: str) -> bool | list[tuple[str, int]]:
+    """The file's router-level role checks. For JS, the ``router.use(...)``
+    calls that apply a role check, as ``(receiver, line)``; otherwise whether
+    a FastAPI router dependency or a Java class-level annotation checks a role."""
+    suffix = Path(file).suffix.lower()
     if suffix in JS_TS_SUFFIXES:
-        return any(
-            args is not None and has_role_check(args)
-            for args in (_call_args(content, m.end() - 1) for m in _JS_USE_RE.finditer(content))
-        )
+        code = _mask_code(content)
+        uses: list[tuple[str, int]] = []
+        for count, m in enumerate(_JS_USE_RE.finditer(code)):
+            if count >= _MAX_CALLS:
+                break
+            close = _call_close(code, m.end() - 1)
+            if close is None:
+                continue
+            args = content[m.end() : close]
+            if _PATH_ARG_RE.match(args):
+                continue  # `router.use('/billing', …)`: scoped to another prefix
+            if has_role_check(args):
+                uses.append((m.group(1), code.count("\n", 0, m.start()) + 1))
+        return uses
     if suffix == ".py":
-        return any(
-            "dependencies" in m.group(1) and ROLE_MARKERS.search(m.group(1))
-            for m in _PY_ROUTER_DEPS_RE.finditer(content)
-        )
+        code = _mask_code(content)
+        for count, m in enumerate(_PY_ROUTER_DEPS_RE.finditer(code)):
+            if count >= _MAX_CALLS:
+                break
+            close = _call_close(code, m.end() - 1, _MAX_ROUTER_ARGS)
+            args = content[m.end() : close] if close is not None else ""
+            if "dependencies" in args and has_role_check(args):
+                return True
+        return False
     if suffix in _JAVA_SUFFIXES:
         lines = content.splitlines()
         for i, line in enumerate(lines):
             if _CLASS_DECL_RE.search(line):
                 return bool(ROLE_MARKERS.search("\n".join(lines[max(0, i - 6) : i])))
     return False
+
+
+def _chain_role_check(route: Route, content: str, info: bool | list[tuple[str, int]]) -> bool:
+    """A role check on the route's router/controller (see :func:`_chain_roles`).
+    A JS ``use`` counts only on the route's own router and before the route:
+    Express doesn't apply middleware to routes registered earlier."""
+    if not isinstance(info, list):
+        return info
+    if not info or route.line is None:
+        return False
+    lines = content.split("\n")
+    if not 1 <= route.line <= len(lines):
+        return False
+    registration = _JS_ROUTE_RECEIVER_RE.search(lines[route.line - 1])
+    if registration is None:
+        return False
+    return any(receiver == registration.group(1) and line < route.line for receiver, line in info)
 
 
 # GraphQL resolver files keep the original whole-file marker set (#139):
@@ -676,7 +767,7 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
     content_cache: dict[str, str | None] = {}
     query_param_cache: dict[str, str | None] = {}
     lines_cache: dict[str, list[str]] = {}
-    chain_role_cache: dict[str, bool] = {}
+    chain_role_cache: dict[str, bool | list[tuple[str, int]]] = {}
     hop = _HopResolver(root_path, content_cache)
 
     # Handler spans end at the next route declared in the same file.
@@ -736,8 +827,10 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
             # Object-level authorization is (probably) enforced — not a candidate.
             continue
         if content and route.file not in chain_role_cache:
-            chain_role_cache[route.file] = _chain_role_check(route, content)
-        if has_role_check(scope) or chain_role_cache.get(route.file, False):
+            chain_role_cache[route.file] = _chain_roles(route.file, content)
+        if has_role_check(scope) or (
+            content and _chain_role_check(route, content, chain_role_cache[route.file])
+        ):
             # A role-gated route (admin tooling) reaches any object by design.
             continue
 
