@@ -84,8 +84,9 @@ def _fill(node: Any, params: dict[str, Any]) -> Any:
     """Substitute ``${name}`` placeholders. A string that is exactly one
     placeholder becomes the parameter's value (any type); otherwise values are
     interpolated as text, in one pass, so text from the scanned repository is
-    never re-expanded. Mapping entries whose key or value fills to ``None``
-    are dropped, as are ``None`` list items."""
+    never re-expanded. Mapping entries whose key or value is a placeholder
+    that fills to ``None`` are dropped, as are such list items; a literal
+    ``null`` in the template stays (Sigma's "field is absent")."""
     if isinstance(node, str):
         whole = _PLACEHOLDER.fullmatch(node)
         if whole:
@@ -96,11 +97,12 @@ def _fill(node: Any, params: dict[str, Any]) -> Any:
         for key, value in node.items():
             k = _fill(key, params)
             v = _fill(value, params)
-            if k is not None and v is not None:
-                out[k] = v
+            if k is None or (v is None and value is not None):
+                continue
+            out[k] = v
         return out
     if isinstance(node, list):
-        return [v for v in (_fill(item, params) for item in node) if v is not None]
+        return [v for v, item in ((_fill(item, params), item) for item in node) if v is not None or item is None]
     return node
 
 
@@ -160,7 +162,9 @@ def render_rule(
     falsepositives = [*filled["falsepositives"], *(extra_falsepositives or [])]
     fields_required = [f for f in filled.get("fields_required", []) if isinstance(f, str) and f]
     logsource = {k: str(v) for k, v in filled["logsource"].items()}
-    primary = rule_ids[0]
+    # The id hashes a fixed primary (the smallest rule id), so it doesn't
+    # depend on the order the rule ids arrive in (plugin/record order).
+    primary = min(rule_ids)
     # Titles carry repo text (routes): one line, whitespace collapsed.
     title = " ".join(str(filled["title"]).split())[:256]
     sigma: dict[str, Any] = {"title": title, "id": rule_uuid(template_id, primary, key)}

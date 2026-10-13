@@ -35,6 +35,7 @@ _RECORDS = [
     CloudMisconfig(kind="public_network_access", file="tf/db.tf", line=4, platform="aws", resource="aws_db_instance.main"),
     CloudMisconfig(kind="public_network_access", file="tf/vm.tf", line=5, platform="aws", resource="aws_instance.bastion"),
     CloudMisconfig(kind="public_data_access", file="tf/s3.tf", line=6, platform="aws", resource="aws_s3_bucket_acl.site"),
+    CloudMisconfig(kind="public_data_access", file="tf/s3.tf", line=16, platform="aws", resource="aws_s3_bucket_policy.site"),
     CloudMisconfig(kind="public_cluster_endpoint", file="tf/eks.tf", line=7, platform="aws", resource="aws_eks_cluster.main"),
 ]
 
@@ -195,3 +196,83 @@ def test_cloud_rules_validate_with_pysigma_when_installed() -> None:
                     and cls.__module__ == module.__name__ and name not in ("ATTACKTagValidator", "D3FENDTagValidator")):
                 validators.append(cls)
     assert list(SigmaValidator(validators).validate_rules(collection)) == []
+
+
+def test_cronjob_init_and_ephemeral_containers_are_covered() -> None:
+    rules = _cloud(_opps(_RECORDS)[1])
+    priv = rules["k8s-privileged-workload"].sigma
+    esc = rules["k8s-privilege-escalation-workload"].sigma
+    host = rules["k8s-host-access-workload"].sigma
+    base = {"verb": "create", "objectRef.resource": "cronjobs"}
+    assert sigma_matches(priv, {**base, "requestObject.spec.jobTemplate.spec.template.spec.containers.securityContext.privileged": True})
+    assert sigma_matches(priv, {**base, "verb": "patch", "objectRef.resource": "pods",
+                                "requestObject.spec.ephemeralContainers.securityContext.privileged": True})
+    assert sigma_matches(priv, {"verb": "create", "objectRef.resource": "deployments",
+                                "requestObject.spec.template.spec.initContainers.securityContext.privileged": True})
+    assert sigma_matches(esc, {**base, "requestObject.spec.jobTemplate.spec.template.spec.initContainers.securityContext.capabilities.add": "SYS_ADMIN"})
+    assert sigma_matches(host, {**base, "requestObject.spec.jobTemplate.spec.template.spec.hostPID": True})
+    assert sigma_matches(host, {**base, "requestObject.spec.jobTemplate.spec.template.spec.volumes.hostPath.path": "/etc"})
+
+
+def test_s3_public_access_block_and_wildcard_policy() -> None:
+    rules = _cloud(_opps(_RECORDS)[1])
+    s3 = rules["aws-s3-made-public"].sigma
+    flags = ["BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets"]
+    for off in flags:
+        event = {"eventSource": "s3.amazonaws.com", "eventName": "PutBucketPublicAccessBlock"}
+        event |= {f"requestParameters.PublicAccessBlockConfiguration.{f}": f != off for f in flags}
+        assert sigma_matches(s3, event), off
+    policy = rules["aws-s3-public-policy"].sigma
+    put = {"eventSource": "s3.amazonaws.com", "eventName": "PutBucketPolicy"}
+    assert sigma_matches(policy, {**put, "requestParameters.bucketPolicy.Statement.Principal.AWS": "*"})
+    assert not sigma_matches(policy, {**put, "requestParameters.bucketPolicy.Statement.Principal.AWS": "arn:aws:iam::1:root"})
+    assert not sigma_matches(policy, {**put, "requestParameters.bucketPolicy.Statement.Principal": "*x"})
+
+
+def test_coverage_follows_the_mapping() -> None:
+    # A bucket policy resource maps to the policy rule only; a launch
+    # template maps to nothing (its public-IP flag isn't in RunInstances).
+    records = [
+        CloudMisconfig(kind="public_data_access", file="s3.tf", line=1, platform="aws", resource="aws_s3_bucket_policy.p"),
+        CloudMisconfig(kind="public_network_access", file="lt.tf", line=1, platform="aws", resource="aws_launch_template.lt"),
+    ]
+    findings, opps = _opps(records)
+    assert set(_cloud(opps)) == {"aws-s3-public-policy"}
+    rows = {r["rule_id"]: r["sigma_rules"] for r in detection_coverage(findings, opps)}
+    assert rows == {"public-data-access": 1, "public-network-access": 0}
+
+
+def test_eks_create_is_public_by_default() -> None:
+    eks = _cloud(_opps(_RECORDS)[1])["aws-eks-public-endpoint"].sigma
+    create = {"eventSource": "eks.amazonaws.com", "eventName": "CreateCluster", "requestParameters.name": "main"}
+    assert sigma_matches(eks, create)
+    assert not sigma_matches(eks, {**create, "requestParameters.resourcesVpcConfig.endpointPublicAccess": False})
+    # An update that doesn't touch the endpoint is not a change to public.
+    assert not sigma_matches(eks, {**create, "eventName": "UpdateClusterConfig"})
+    assert not sigma_matches(eks, {**create, "eventSource": "ec2.amazonaws.com"})
+
+
+def test_pod_exec_matches_websocket_get() -> None:
+    exec_rule = _cloud(_opps(_RECORDS)[1])["k8s-pod-exec"].sigma
+    event = {"objectRef.resource": "pods", "objectRef.subresource": "exec", "user.username": "system:serviceaccount:a:b"}
+    assert sigma_matches(exec_rule, {**event, "verb": "get"})
+    assert sigma_matches(exec_rule, {**event, "verb": "create"})
+    assert not sigma_matches(exec_rule, {**event, "verb": "get", "user.username": "alice"})
+    assert "WebSocket" in exec_rule["description"]
+
+
+def test_rule_ids_and_text_do_not_depend_on_record_order() -> None:
+    forward = _cloud(_opps(_RECORDS)[1])
+    backward = _cloud(_opps(list(reversed(_RECORDS)))[1])
+    assert forward.keys() == backward.keys()
+    for name in forward:
+        assert forward[name].sigma == backward[name].sigma, name
+
+
+def test_render_rule_id_ignores_rule_id_order() -> None:
+    from attackmap.detections import render_rule
+
+    params = {"locations": "x", "rule_id": "y"}
+    a = render_rule("k8s-pod-exec", rule_ids=["rbac-wildcard", "rbac-escalation"], key="k", params=params)
+    b = render_rule("k8s-pod-exec", rule_ids=["rbac-escalation", "rbac-wildcard"], key="k", params=params)
+    assert a.sigma["id"] == b.sigma["id"]

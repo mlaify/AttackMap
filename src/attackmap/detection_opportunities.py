@@ -1111,7 +1111,10 @@ def _cloud_opportunities(scan: ScanResult, findings: list[Finding]) -> list[Dete
             if where not in locations:
                 locations.append(where)
     out: list[DetectionOpportunity] = []
-    for template_id, (rule_ids, locations) in plan.items():
+    # Sorted, so neither the rule text nor the id depends on record order.
+    for template_id, (rule_ids, locations) in sorted(plan.items()):
+        rule_ids = sorted(rule_ids)
+        locations = sorted(locations)
         rendered = _checked(
             render_rule(
                 template_id,
