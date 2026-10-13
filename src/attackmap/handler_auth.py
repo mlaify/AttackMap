@@ -265,6 +265,21 @@ def _reassigned(name: str, text: str) -> bool:
     return bool(plain or destructured)
 
 
+_CONTINUATION = ("??", "||", "&&", "?", ":", ".", "+")
+
+
+def _initializer(window: str) -> str:
+    """The declaration's initializer: its first line plus any lines that
+    continue it (a formatter wraps `getSession(req)\\n  ?? fallback`)."""
+    lines = window.split("\n")
+    out = [lines[0]]
+    for line in lines[1:]:
+        if not line.lstrip().startswith(_CONTINUATION):
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
 def session_gate(text: str) -> str | None:
     """The gate line if the handler in ``text`` rejects a request whose
     session lookup comes back empty; else None."""
@@ -277,11 +292,14 @@ def session_gate(text: str) -> str | None:
     pairs = _matches(code)
     tracked: dict[str, int] = {}
     for decl in _DECLARATION.finditer(code, body_open, body_close):
-        rest = code[decl.end() : min(body_close, decl.end() + 400)].split(";", 1)[0].split("\n", 1)[0]
+        window = code[decl.end() : min(body_close, decl.end() + 400)].split(";", 1)[0]
+        rest = window.split("\n", 1)[0]
         if not _SESSION_CALL.search(rest) or not _top_level(code, body_open, decl.start(), pairs):
             continue
-        if _FALLBACK.search(rest):
+        if _FALLBACK.search(_initializer(window)):
             continue  # `getSession(c) ?? { user: guest }`: never empty, so the gate proves nothing
+        if decl.group("names") and "=" in decl.group("names"):
+            continue  # `const { user = guest } = await getSession(req)`: a default, never empty
         names = [decl.group("name")] if decl.group("name") else _IDENT.findall(decl.group("names") or "")
         for name in names:
             tracked.setdefault(name, decl.end())

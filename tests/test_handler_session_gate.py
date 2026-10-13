@@ -223,3 +223,29 @@ def test_only_the_routes_own_handler_reference_is_followed(tmp_path: Path) -> No
         "});\n"
     )
     assert len(_unauth_findings(tmp_path)) == 1
+
+
+def test_wrapped_fallback_and_destructuring_default_are_not_gates() -> None:
+    """Review round 3: a fallback on the next line (formatter wrapping) or a
+    destructuring default means the lookup is never empty."""
+    from attackmap.handler_auth import session_gate
+
+    wrapped = (
+        "app.post('/x', async (req, res) => {\n"
+        "  const session = await getSession(req)\n"
+        "    ?? { user: guest };\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await db.delete(x);\n"
+        "})\n"
+    )
+    default = (
+        "app.post('/x', async (req, res) => {\n"
+        "  const { user = guest } = await getSession(req);\n"
+        "  if (!user) return res.status(401).end();\n"
+        "  await db.delete(x);\n"
+        "})\n"
+    )
+    plain = wrapped.replace("\n    ?? { user: guest };", ";")
+    assert session_gate(wrapped) is None
+    assert session_gate(default) is None
+    assert session_gate(plain) is not None
