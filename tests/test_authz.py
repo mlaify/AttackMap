@@ -1260,6 +1260,8 @@ def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected:
         ("router.use(ADMIN_PREFIX, restrictTo('admin'));", 1),
         ("router.use(adminPath, restrictTo('admin'));", 1),
         ("router.use(/^\\/admin/, restrictTo('admin'));", 1),
+        ("router.use(apiV1, restrictTo('admin'));", 1),
+        ("router.use(requireAuth, restrictTo('admin'));", 0),
         # a regex literal holding a backtick or `/*` doesn't blank what follows
         ("const strip = (s) => s.replace(/`/g, '');\nrouter.use(restrictTo('admin'));", 0),
         ("const glob = /[/*]/;\nrouter.use(restrictTo('admin'));", 0),
@@ -1408,3 +1410,80 @@ def test_class_level_roles_metadata_covers_the_controller(tmp_path: Path) -> Non
     assert len(findings) == 1
     evidence = " ".join(findings[0].evidence)
     assert "/admin/teams/:id" in evidence and "/admin/users/:id" not in evidence
+
+
+def _route_lines(content: str, marker: str) -> list[int]:
+    return [i + 1 for i, line in enumerate(content.split("\n")) if marker in line]
+
+
+def test_class_roles_stay_inside_the_class(tmp_path: Path) -> None:
+    # A method-level @Roles at the end of class A is not class B's metadata,
+    # and a class's range ends at its closing brace.
+    content = (
+        "export class AdminController {\n"
+        "  @Roles(Role.Admin)\n"
+        "  @Delete(':id')\n"
+        "  remove() {}\n"
+        "}\n"
+        "\n"
+        "@Controller('public')\n"
+        "export class PublicController {\n"
+        "  @Delete(':id')\n"
+        "  removeAny() {}\n"
+        "}\n"
+        "\n"
+        "@Roles(Role.Admin)\n"
+        "export class A {}\n"
+        "router.delete('/users/:id', h);\n"
+    )
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    info = _chain_roles("c.ts", content)
+    public_delete, after_class = 9, 15
+    for line in (public_delete, after_class):
+        assert _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=line), content, info) is False, line
+
+
+def test_method_roles_override_class_roles() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class UsersController {\n"
+        "  @Roles(Role.User)\n"
+        "  @Delete(':id')\n"
+        "  remove() {}\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "  @Delete('all')\n"
+        "  removeAll() {}\n"
+        "}\n"
+    )
+    info = _chain_roles("c.ts", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=4), content, info) is False
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=17), content, info) is True
+
+
+def test_fastapi_role_dependency_covers_only_its_router() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "x = a // b; admin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n"
+        "public = APIRouter()\n"
+        "@admin.delete('/users/{id}')\n"
+        "def delete_user(id: int): ...\n"
+        "@public.delete('/posts/{id}')\n"
+        "def delete_post(id: int): ...\n"
+    )
+    info = _chain_roles("r.py", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="r.py", line=3), content, info) is True
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="r.py", line=5), content, info) is False
