@@ -232,9 +232,8 @@ def has_role_check(text: str) -> bool:
 # count as a guard, never as a word in handler code (`params.permit(...)`).
 # A plugin can also mark any guard explicitly with a `role:` prefix.
 #
-# Arguments matter: `Roles()` / `Permissions()` (empty), a `*` wildcard, or a
-# list that admits a baseline role (`user`, `member`, `authenticated`, …) is
-# not a role check — every signed-in user passes it. `guard.check(...)` and
+# Arguments matter (an allow-list): a role-list guard counts only when every
+# listed role is a literal naming a privileged role (`_PRIVILEGED_ROLES`). `guard.check(...)` and
 # `require(d)Scopes(...)` are left out: in common frameworks they check token
 # scopes any authenticated client may hold.
 _ROLE_GUARD_NAMES = frozenset(
@@ -246,10 +245,16 @@ _ROLE_GUARD_NAMES = frozenset(
     )
 )
 _GUARD_NAME_RE = re.compile(r"^\s*@?\s*([\w.$]{1,120})\s*(\()?")
-_BASELINE_ROLES = frozenset(
-    {"user", "users", "member", "members", "authenticated", "everyone", "anyone", "any", "guest", "guests",
-     "public", "anonymous", "loggedin", "logged_in", "all"}
+# Role names that exclude ordinary signed-in users (case-insensitive, `ROLE_`
+# prefix stripped). An allow-list: anything else is not proof of a role check.
+_PRIVILEGED_ROLES = frozenset(
+    {"admin", "administrator", "owner", "superuser", "superadmin", "staff", "root", "moderator", "manager"}
 )
+_ROLE_LITERAL_RE = re.compile(r"'([^'\n]{1,80})'" r'|"([^"\n]{1,80})"')
+_ROLE_MEMBER_RE = re.compile(r"[A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})*\.([A-Za-z_$][\w$]{0,80})")
+_REQUEST_PREFIXES = ("req.", "request.", "ctx.", "context.", "params.", "body.", "query.")
+# Parameterless guards that enforce role/permission metadata declared elsewhere.
+_METADATA_GUARDS = frozenset(n.lower() for n in ("PermissionsGuard", "PermissionGuard", "PoliciesGuard", "PolicyGuard", "RolesGuard", "RoleGuard"))
 # Role-list calls in handler or chain code: `restrictTo('admin')`,
 # `@MembershipRoles([MembershipRole.OWNER])`. Judged by their arguments.
 _ROLE_CALL_RE = re.compile(
@@ -259,11 +264,32 @@ _MAX_ROLE_ARGS = 400
 
 
 def _privileged_args(args: str) -> bool:
-    """A role/permission argument list that excludes ordinary signed-in users."""
-    if not args.strip() or "*" in args:
+    """An allow-list: every listed role is a string literal (or a member like
+    `Role.ADMIN`) naming a privileged role. Bare identifiers, constants,
+    spreads, `Object.values(...)` and request-derived values don't count."""
+    inner = args.strip()
+    while inner.startswith("[") and inner.endswith("]"):
+        inner = inner[1:-1].strip()
+    elements = [e.strip() for e in inner.split(",") if e.strip()]
+    if not elements:
         return False
-    tokens = [t.rsplit(".", 1)[-1].lower() for t in re.findall(r"[A-Za-z_][\w.:-]{0,80}", args)]
-    return bool(tokens) and not any(t in _BASELINE_ROLES for t in tokens)
+    for element in elements:
+        literal = _ROLE_LITERAL_RE.fullmatch(element)
+        member = _ROLE_MEMBER_RE.fullmatch(element) if literal is None else None
+        if literal is not None:
+            value = literal.group(1) or literal.group(2)
+        elif member is not None and not member.group(0).startswith(_REQUEST_PREFIXES):
+            value = member.group(1)
+        else:
+            return False
+        if _normalized_role(value) not in _PRIVILEGED_ROLES:
+            return False
+    return True
+
+
+def _normalized_role(value: str) -> str:
+    value = value.strip().lower()
+    return value[5:] if value.startswith("role_") else value
 
 
 def _call_args(text: str, open_paren: int) -> str | None:
@@ -290,12 +316,15 @@ def _role_call_check(text: str) -> bool:
 def _role_guard_name(guard: str) -> bool:
     stripped = guard.strip()
     if stripped.lower().startswith("role:"):
-        return bool(stripped[5:].strip())
+        # `role:admin`: an explicit privileged role name.
+        return _normalized_role(stripped[5:]) in _PRIVILEGED_ROLES
     match = _GUARD_NAME_RE.match(guard)
     if match is None or match.group(1).lower() not in _ROLE_GUARD_NAMES:
         return False
     if match.group(2) is None:
-        return True  # the plugin gave only the name
+        # Only the name: a metadata-driven guard class counts; a role-list
+        # call without its arguments proves nothing.
+        return match.group(1).lower() in _METADATA_GUARDS
     args = _call_args(guard, match.end() - 1)
     return args is not None and _privileged_args(args)
 
