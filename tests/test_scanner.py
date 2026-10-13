@@ -1208,3 +1208,87 @@ def test_gated_jwt_verification_never_raises_on_garbage() -> None:
         _gated_jwt_verification(text)
     hostile = "const { verify } = require('jsonwebtoken')\n" + "xverify(" * 20_000
     assert _gated_jwt_verification(hostile) is None
+
+
+# ---------------------------------------------------------------------------
+# Express/Hono mount prefixes terminate (found on documenso: the scan hung, #363)
+# ---------------------------------------------------------------------------
+
+
+def _within(seconds: float, fn, *args):  # noqa: ANN001, ANN202
+    """Run ``fn`` but fail (instead of hanging the suite) after ``seconds``."""
+    import signal
+
+    def _expired(*_):  # noqa: ANN002, ANN202
+        raise TimeoutError(f"{fn.__name__} did not finish within {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return fn(*args)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_express_prefixes_terminate_when_a_name_is_mounted_twice() -> None:
+    import time
+
+    from attackmap.scanner import _express_prefixes
+
+    # Hono middleware mounted on several paths (documenso apps/remix/server/router.ts):
+    # the fixpoint used to flip between the mounts forever.
+    content = "\n".join(
+        [
+            "app.use('*', appMiddleware);",
+            "app.use('/api/auth/*', csrfMiddleware);",
+            "app.use('/api/trpc/*', csrfMiddleware);",
+            "app.use('/api/v2/*', csrfMiddleware);",
+            "app.use('/api', apiRouter);",
+            "apiRouter.use('/v1', v1Router);",
+        ]
+    )
+    start = time.perf_counter()
+    prefixes = _within(5.0, _express_prefixes, content)
+    assert time.perf_counter() - start < 1.0
+    assert prefixes["csrfMiddleware"] == "/api/auth/*"  # first mount wins
+    assert prefixes["v1Router"] == "/api/v1"
+
+
+def test_express_prefixes_terminate_on_mount_cycles_and_self_mounts() -> None:
+    from attackmap.scanner import _express_prefixes
+
+    content = "a.use('/x', b);\nb.use('/y', a);\napp.use('/self', app);\n"
+    prefixes = _within(5.0, _express_prefixes, content)
+    assert "app" not in prefixes
+    assert set(prefixes) == {"a", "b"}
+    # Cycle members get no prefix (no request path reaches them), not a
+    # prefix that grew around the cycle.
+    assert prefixes == {"a": "", "b": ""}
+
+
+def test_express_prefixes_are_linear_on_long_cycles_and_chains() -> None:
+    import time
+
+    from attackmap.scanner import _express_prefixes
+
+    n = 3000
+    cycle = "\n".join(f"n{i}.use('/s{i}', n{(i + 1) % n});" for i in range(n))
+    # A chain declared leaf-first (each line mounts the next name's parent).
+    chain = "\n".join(f"c{i}.use('/s{i}', c{i + 1});" for i in reversed(range(n)))
+    tail = "app.use('/t', n5);\n"  # a mount into the cycle from outside: the cycle keeps no prefix
+    start = time.perf_counter()
+    cyc = _within(10.0, _express_prefixes, cycle + "\n" + tail)
+    chn = _within(10.0, _express_prefixes, chain)
+    assert time.perf_counter() - start < 2.0
+    assert set(cyc.values()) == {""}
+    assert chn["c1"] == "/s0"
+    assert chn[f"c{n}"] == "/" + "/".join(f"s{i}" for i in range(n))
+
+
+def test_routes_still_get_their_mount_prefix() -> None:
+    from attackmap.scanner import _extract_javascript_routes
+
+    content = "app.use('/api', router);\nrouter.use('/v1', v1);\nv1.post('/users', handler);\n"
+    routes = _extract_javascript_routes(content, "server.js")
+    assert ("/api/v1/users", "POST") in {(r.path, r.method) for r in routes}
