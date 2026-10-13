@@ -1090,6 +1090,11 @@ def test_bola_in_example_or_fixture_paths_not_reported() -> None:
         ["JwtAuthGuard", "RolesGuard", "@Roles('admin')"],
         ["role:admin"],
         ["role:ROLE_MODERATOR"],
+        # separators and constants: SUPER_ADMIN, super-admin, ADMIN
+        ["@Roles(Role.SUPER_ADMIN)"],
+        ["@Roles('super-admin')"],
+        ["@Roles(ADMIN)"],
+        ["authorizeRoles('admin')"],
     ],
 )
 def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> None:
@@ -1143,6 +1148,12 @@ def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> 
         ["Roles(Role.Viewer)"],
         ["restrictTo(req.body.role)"],
         ["restrictTo('admin', role)"],
+        # members of lower-case receivers are data, not role constants
+        ["restrictTo(doc.owner)"],
+        ["checkRole(user.admin)"],
+        ["restrictTo(event.body.admin)"],
+        ["restrictTo(this.req.query.admin)"],
+        ["authorizeRoles('user')"],
     ],
 )
 def test_authentication_only_guards_are_not_role_checks(tmp_path: Path, guards: list[str]) -> None:
@@ -1220,3 +1231,36 @@ def test_membership_roles_decorator_with_member_does_not_count(tmp_path: Path) -
 def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected: bool) -> None:
     # #349: RolesGuard enforces @Roles metadata and allows everyone without it.
     assert has_role_check(code) is expected
+
+
+@pytest.mark.parametrize(
+    ("use", "flagged"),
+    [
+        ("router.use(authController.restrictTo('admin'));", 0),
+        ("router.use(checkRole('admin'));", 0),
+        ("router.use(requireAuth, restrictTo('admin', 'owner'));", 0),
+        ("router.use(authController.restrictTo('user'));", 1),
+        ("router.use(requireAuth);", 1),
+    ],
+)
+def test_router_use_role_call_keeps_its_arguments(tmp_path: Path, use: str, flagged: int) -> None:
+    # #349 review: `router.use(restrictTo('admin'))` was cut at the first `)`.
+    (tmp_path / "admin.js").write_text(
+        "const router = require('express').Router();\n"
+        f"{use}\n"
+        "router.delete('/admin/users/:id', async (req, res) => {\n"
+        "  await User.deleteOne({ _id: req.params.id });\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=3, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == flagged
+
+
+def test_guard_name_parser_is_linear_on_whitespace(tmp_path: Path) -> None:
+    import time
+
+    route = Route(path="/admin/x", method="DELETE", file="admin.js", line=1, auth="required", guards=[" " * 80_000 + "!"])
+    (tmp_path / "admin.js").write_text("// x\n")
+    started = time.perf_counter()
+    _bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))
+    assert time.perf_counter() - started < 2.0

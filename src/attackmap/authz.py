@@ -167,7 +167,7 @@ ROLE_MARKERS = re.compile(
     | @Secured | @RolesAllowed
     | @PreAuthorize\([^)]*(?:hasRole|hasAuthority|hasAnyRole|hasAnyAuthority|hasPermission)
     | \bpermission_required\b | \bhas_perm\b | \bhasPermission\b | \brequires?_?[pP]ermissions?\b
-    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize[!\w]*\s*\(
+    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize(?!roles\b)[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
     | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
     | ->userIsAllowed\s*\(
@@ -243,29 +243,36 @@ _ROLE_GUARD_NAMES = frozenset(
         "CheckPolicies", "MembershipRoles", "Pbac", "Roles", "RolesGuard", "RoleGuard",
     )
 )
-_GUARD_NAME_RE = re.compile(r"^\s*@?\s*([\w.$]{1,120})\s*(\()?")
+_GUARD_NAME_RE = re.compile(r"^\s*+@?\s*+([\w.$]{1,120}+)\s*+(\()?")
 # Role names that exclude ordinary signed-in users (case-insensitive, `ROLE_`
 # prefix stripped). An allow-list: anything else is not proof of a role check.
 _PRIVILEGED_ROLES = frozenset(
-    {"admin", "administrator", "owner", "superuser", "superadmin", "staff", "root", "moderator", "manager"}
+    {
+        "admin", "administrator", "owner", "superuser", "superadmin", "systemadmin", "sysadmin",
+        "staff", "root", "moderator", "manager",
+    }
 )
 _ROLE_LITERAL_RE = re.compile(r"'([^'\n]{1,80})'" r'|"([^"\n]{1,80})"')
-_ROLE_MEMBER_RE = re.compile(r"[A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})*\.([A-Za-z_$][\w$]{0,80})")
-_REQUEST_PREFIXES = ("req.", "request.", "ctx.", "context.", "params.", "body.", "query.")
+# An enum-like member (`Role.ADMIN`, `UserRole.Admin`, `ROLES.OWNER`): the
+# receiver starts with a capital, so `doc.owner` or `req.query.admin` don't count.
+_ROLE_MEMBER_RE = re.compile(r"[A-Z][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})*\.([A-Za-z_$][\w$]{0,80})")
+# A bare ALL_CAPS constant (`ADMIN`, `ROLE_ADMIN`).
+_ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 # Role-list calls in handler or chain code: `restrictTo('admin')`,
 # `@MembershipRoles([MembershipRole.OWNER])`, `@Roles(Role.Admin)`. Judged by
 # their arguments. Metadata guards (`RolesGuard`, `PermissionsGuard`) are not
 # role checks on their own: they enforce this metadata, and allow all without it.
 _ROLE_CALL_RE = re.compile(
-    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
+    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorizeRoles|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
 )
 _MAX_ROLE_ARGS = 400
 
 
 def _privileged_args(args: str) -> bool:
-    """An allow-list: every listed role is a string literal (or a member like
-    `Role.ADMIN`) naming a privileged role. Bare identifiers, constants,
-    spreads, `Object.values(...)` and request-derived values don't count."""
+    """An allow-list: every listed role is a string literal, an enum-like
+    member (`Role.ADMIN`) or an ALL_CAPS constant (`ADMIN`) naming a
+    privileged role. Other identifiers, members of lower-case receivers
+    (`doc.owner`, `req.query.admin`), spreads and `Object.values(...)` don't count."""
     inner = args.strip()
     while inner.startswith("[") and inner.endswith("]"):
         inner = inner[1:-1].strip()
@@ -277,8 +284,10 @@ def _privileged_args(args: str) -> bool:
         member = _ROLE_MEMBER_RE.fullmatch(element) if literal is None else None
         if literal is not None:
             value = literal.group(1) or literal.group(2)
-        elif member is not None and not member.group(0).startswith(_REQUEST_PREFIXES):
+        elif member is not None:
             value = member.group(1)
+        elif _ROLE_CONSTANT_RE.fullmatch(element):
+            value = element
         else:
             return False
         if _normalized_role(value) not in _PRIVILEGED_ROLES:
@@ -287,8 +296,10 @@ def _privileged_args(args: str) -> bool:
 
 
 def _normalized_role(value: str) -> str:
+    """Lower-case, `ROLE_` stripped, separators dropped (`SUPER_ADMIN`, `super-admin`)."""
     value = value.strip().lower()
-    return value[5:] if value.startswith("role_") else value
+    value = value[5:] if value.startswith("role_") else value
+    return value.replace("_", "").replace("-", "").replace(" ", "")
 
 
 def _call_args(text: str, open_paren: int) -> str | None:
@@ -346,7 +357,9 @@ def _guards_role_check(route: Route) -> bool:
     )
 
 
-_JS_USE_RE = re.compile(r"\b(?:app|router|server|\w+Router)\s*\.\s*use\s*\(([^)]*)\)")
+# The `(` of `router.use(`; its arguments are read with balanced parentheses,
+# so `router.use(restrictTo('admin'))` keeps its inner call.
+_JS_USE_RE = re.compile(r"\b(?:app|router|server|\w+Router)\s*\.\s*use\s*\(")
 _PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*\(([^)]*)\)", re.DOTALL)
 _CLASS_DECL_RE = re.compile(r"\b(?:class|interface)\s+\w+")
 # Route declarations that live in configuration rather than code (#343):
@@ -586,7 +599,10 @@ def _chain_role_check(route: Route, content: str) -> bool:
     Java class-level annotation."""
     suffix = Path(route.file).suffix.lower()
     if suffix in JS_TS_SUFFIXES:
-        return any(has_role_check(m.group(1)) for m in _JS_USE_RE.finditer(content))
+        return any(
+            args is not None and has_role_check(args)
+            for args in (_call_args(content, m.end() - 1) for m in _JS_USE_RE.finditer(content))
+        )
     if suffix == ".py":
         return any(
             "dependencies" in m.group(1) and ROLE_MARKERS.search(m.group(1))
