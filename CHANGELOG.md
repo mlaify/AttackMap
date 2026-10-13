@@ -198,10 +198,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **BFLA recognises role-check guard names from plugins (#349).**
-  - Guards named `restrictTo`, `permit`, `checkRole(s)`, `rbac`, `acl`, `allowRoles`, `guard.check`, `require(d)Scopes`, `PermissionsGuard`, `PoliciesGuard`, `@Permissions`, `@CheckPolicies`, `@MembershipRoles` or `@Pbac` in `Route.guards` count as role checks. The match is on the whole guard name, so generic words like `permit` and `acl` never count when they appear in handler code.
-  - A plugin can mark any guard as a role check with a `role:` prefix.
-  - Call forms (`restrictTo('admin')`, `checkRole(…)`, `requiredScopes(…)`, `guard.check(…)`) count in a route's chain too.
-  - Authentication-only guards (`requireAuth`, `JwtAuthGuard`, `ApiAuthGuard`, `passport.authenticate`) still don't.
+  - Guards named `restrictTo`, `permit`, `checkRole(s)`, `rbac`, `acl`, `allowRoles`, `PermissionsGuard`, `PoliciesGuard`, `@Permissions`, `@CheckPolicies`, `@MembershipRoles`, `@Pbac` or `Roles` in `Route.guards` count as role checks. The match is on the whole guard name, so generic words never count when they appear in handler code.
+  - A plugin can also mark a guard with a non-empty `role:` prefix.
+  - Arguments matter: empty arguments (`Roles()`), a `*` wildcard, or a role list admitting a baseline role (`user`, `member`, `authenticated`, …) is not a role check. That applies to the guard name and to the same calls in handler or chain code (e.g. `@MembershipRoles([ADMIN, OWNER, MEMBER])`).
+  - Token-scope checks (`guard.check`, `require(d)Scopes`) and authentication-only guards (`requireAuth`, `JwtAuthGuard`, `ApiAuthGuard`) don't count.
 - **Webhook verification reaches framework guards, constructor middleware, PayPal and shared secrets (#366, part 2).** Four kinds of verifying receivers came out `absent`; they are now reached:
   - NestJS `@UseGuards(Guard)` on the handler or its controller class is followed to the guard's `canActivate`.
   - A Laravel `'Controller@method'` route reaches the action and the `handle` of every middleware the constructor adds with `$this->middleware(X::class)`. When that call sits under an `if` (Laravel Cashier adds it only when a secret is configured), a verified result becomes `unknown` with a note, since verification isn't guaranteed.

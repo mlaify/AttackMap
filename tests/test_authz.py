@@ -1086,13 +1086,12 @@ def test_bola_in_example_or_fixture_paths_not_reported() -> None:
         ["rbac"],
         ["acl"],
         ["allowRoles"],
-        ["guard.check"],
-        ["requiredScopes"],
-        ["requireScopes"],
         ["JwtAuthGuard", "PermissionsGuard"],
         ["PoliciesGuard"],
         ["ApiAuthGuard", "@MembershipRoles(['OWNER'])"],
+        ["@MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER])"],
         ["@Pbac(['team.update'])"],
+        ["Roles('admin')"],
         ["role:canManageUsers"],
     ],
 )
@@ -1113,6 +1112,18 @@ def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> 
         ["passport.authenticate"],
         ["permitted"],  # not the `permit` guard
         ["aclCache"],
+        # token-scope checks any authenticated client may pass
+        ["guard.check"],
+        ["requiredScopes"],
+        ["requireScopes('read:messages')"],
+        # arguments that admit every signed-in user, or nothing at all
+        ["Roles()"],
+        ["@Permissions()"],
+        ["restrictTo('*')"],
+        ["restrictTo('admin', 'user')"],
+        ["@MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER, MembershipRole.MEMBER])"],
+        ["allowRoles(['authenticated'])"],
+        ["role:"],
     ],
 )
 def test_authentication_only_guards_are_not_role_checks(tmp_path: Path, guards: list[str]) -> None:
@@ -1136,7 +1147,7 @@ def test_generic_guard_words_in_handler_code_are_not_role_checks(tmp_path: Path)
 
 @pytest.mark.parametrize(
     "call",
-    ["restrictTo('admin')", "checkRole('admin')", "allowRoles('admin')", "requiredScopes('write:users')", "guard.check(['admin'])"],
+    ["restrictTo('admin')", "checkRole('admin')", "allowRoles('admin')"],
 )
 def test_role_check_calls_in_the_chain_count(tmp_path: Path, call: str) -> None:
     (tmp_path / "admin.js").write_text(
@@ -1146,3 +1157,32 @@ def test_role_check_calls_in_the_chain_count(tmp_path: Path, call: str) -> None:
     )
     route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=["requireAuth"])
     assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["restrictTo('admin', 'user')", "restrictTo('*')", "checkRole()", "requiredScopes('write:users')", "guard.check(['admin'])"],
+)
+def test_weak_role_calls_in_the_chain_do_not_count(tmp_path: Path, call: str) -> None:
+    (tmp_path / "admin.js").write_text(
+        f"app.delete('/admin/users/:id', requireAuth, {call}, async (req, res) => {{\n"
+        "  await User.remove(req.params.id);\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+def test_membership_roles_decorator_with_member_does_not_count(tmp_path: Path) -> None:
+    # cal.com: `@MembershipRoles([ADMIN, OWNER, MEMBER])` admits every member.
+    (tmp_path / "c.controller.ts").write_text(
+        "export class C {\n"
+        '  @Delete("/admin/teams/:id")\n'
+        "  @MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER, MembershipRole.MEMBER])\n"
+        "  async remove(@Param('id') id: string) {\n"
+        "    await this.teams.delete(id);\n"
+        "  }\n"
+        "}\n"
+    )
+    route = Route(path="/admin/teams/:id", method="DELETE", file="c.controller.ts", line=2, auth="required", guards=["ApiAuthGuard"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1

@@ -173,10 +173,7 @@ ROLE_MARKERS = re.compile(
     | ->userIsAllowed\s*\(
     | (?:\$|->)(?:get)?(?:acl|permissions?|authorization|authz|auth)(?:\(\))?\s*->\s*isAllowed\s*\(
     | \bRolePolicy\s*\( | \bPermissionPolicy\s*\(
-    | \brestrictTo\s*\( | \bcheck_?[rR]oles?\s*\( | \ballow(?:ed)?_?[rR]oles\s*\(
-    | \brequire[ds]?_?[sS]copes?\s*\( | \bPermissionsGuard\b | \bPoliciesGuard\b
-    | @Permissions\s*\( | @CheckPolicies\s*\( | @MembershipRoles\s*\( | @Pbac\s*\(
-    | \bguard\s*\.\s*check\s*\(
+    | \bPermissionsGuard\b | \bPoliciesGuard\b
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -226,7 +223,7 @@ def _symfony_role_check(text: str) -> bool:
 
 def has_role_check(text: str) -> bool:
     """A role or permission check in ``text`` (handler code or guards)."""
-    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text)
+    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text) or _role_call_check(text)
 
 
 # Guard *names* (as plugins put them in Route.guards, #349) that are a role or
@@ -234,23 +231,73 @@ def has_role_check(text: str) -> bool:
 # arguments stripped, so these generic words (`permit`, `acl`, `rbac`) only
 # count as a guard, never as a word in handler code (`params.permit(...)`).
 # A plugin can also mark any guard explicitly with a `role:` prefix.
+#
+# Arguments matter: `Roles()` / `Permissions()` (empty), a `*` wildcard, or a
+# list that admits a baseline role (`user`, `member`, `authenticated`, …) is
+# not a role check — every signed-in user passes it. `guard.check(...)` and
+# `require(d)Scopes(...)` are left out: in common frameworks they check token
+# scopes any authenticated client may hold.
 _ROLE_GUARD_NAMES = frozenset(
     name.lower()
     for name in (
         "restrictTo", "permit", "checkRole", "checkRoles", "rbac", "acl", "allowRoles", "allowedRoles",
-        "authorizeRoles", "guard.check", "requireScopes", "requiredScopes", "requireScope", "requiredScope",
-        "PermissionsGuard", "PermissionGuard", "PoliciesGuard", "PolicyGuard", "Permissions", "CheckPolicies",
-        "MembershipRoles", "Pbac", "Roles", "RolesGuard", "RoleGuard",
+        "authorizeRoles", "PermissionsGuard", "PermissionGuard", "PoliciesGuard", "PolicyGuard", "Permissions",
+        "CheckPolicies", "MembershipRoles", "Pbac", "Roles", "RolesGuard", "RoleGuard",
     )
 )
-_GUARD_NAME_RE = re.compile(r"^\s*@?\s*([\w.$]{1,120})")
+_GUARD_NAME_RE = re.compile(r"^\s*@?\s*([\w.$]{1,120})\s*(\()?")
+_BASELINE_ROLES = frozenset(
+    {"user", "users", "member", "members", "authenticated", "everyone", "anyone", "any", "guest", "guests",
+     "public", "anonymous", "loggedin", "logged_in", "all"}
+)
+# Role-list calls in handler or chain code: `restrictTo('admin')`,
+# `@MembershipRoles([MembershipRole.OWNER])`. Judged by their arguments.
+_ROLE_CALL_RE = re.compile(
+    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac)\s*+\("
+)
+_MAX_ROLE_ARGS = 400
+
+
+def _privileged_args(args: str) -> bool:
+    """A role/permission argument list that excludes ordinary signed-in users."""
+    if not args.strip() or "*" in args:
+        return False
+    tokens = [t.rsplit(".", 1)[-1].lower() for t in re.findall(r"[A-Za-z_][\w.:-]{0,80}", args)]
+    return bool(tokens) and not any(t in _BASELINE_ROLES for t in tokens)
+
+
+def _call_args(text: str, open_paren: int) -> str | None:
+    """The argument text of the call whose `(` is at ``open_paren`` (bounded)."""
+    depth = 0
+    for i in range(open_paren, min(len(text), open_paren + _MAX_ROLE_ARGS)):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren + 1 : i]
+    return None
+
+
+def _role_call_check(text: str) -> bool:
+    for match in _ROLE_CALL_RE.finditer(text):
+        args = _call_args(text, match.end() - 1)
+        if args is not None and _privileged_args(args):
+            return True
+    return False
 
 
 def _role_guard_name(guard: str) -> bool:
-    if guard.strip().lower().startswith("role:"):
-        return True
+    stripped = guard.strip()
+    if stripped.lower().startswith("role:"):
+        return bool(stripped[5:].strip())
     match = _GUARD_NAME_RE.match(guard)
-    return match is not None and match.group(1).lower() in _ROLE_GUARD_NAMES
+    if match is None or match.group(1).lower() not in _ROLE_GUARD_NAMES:
+        return False
+    if match.group(2) is None:
+        return True  # the plugin gave only the name
+    args = _call_args(guard, match.end() - 1)
+    return args is not None and _privileged_args(args)
 
 
 def _guards_role_check(route: Route) -> bool:
@@ -508,7 +555,7 @@ def _chain_role_check(route: Route, content: str) -> bool:
     Java class-level annotation."""
     suffix = Path(route.file).suffix.lower()
     if suffix in JS_TS_SUFFIXES:
-        return any(ROLE_MARKERS.search(m.group(1)) for m in _JS_USE_RE.finditer(content))
+        return any(has_role_check(m.group(1)) for m in _JS_USE_RE.finditer(content))
     if suffix == ".py":
         return any(
             "dependencies" in m.group(1) and ROLE_MARKERS.search(m.group(1))
