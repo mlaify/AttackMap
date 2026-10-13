@@ -14,6 +14,7 @@ from attackmap.analyzers import (
     discover_installed_analyzers,
     get_analyzer_metadata,
     get_available_modules,
+    analyzer_install_url,
     get_available_repository_modules,
     get_builtin_repository_analyzers,
     get_registered_analyzers,
@@ -370,6 +371,19 @@ def test_get_available_repository_modules_filters_and_normalizes() -> None:
 
     assert [module.analyzer_name for module in modules] == ["node-express", "php-web"]
     assert [module.repo_name for module in modules] == ["attackmap-analyzer-node-express", "attackmap-analyzer-php-web"]
+
+
+def test_official_repo_outside_the_naming_convention_is_listed() -> None:
+    # #259: the omeka-s repo is `attack-map-analyzer-omeka-s`; it must list as
+    # `omeka-s`, the name `-m` and the pinned installer resolve.
+    modules = get_available_repository_modules(
+        fetcher=lambda _url: [
+            {"name": "attack-map-analyzer-omeka-s", "html_url": "https://github.com/mlaify/attack-map-analyzer-omeka-s"},
+            {"name": "attack-map-analyzer-unofficial", "html_url": "https://github.com/mlaify/attack-map-analyzer-unofficial"},
+        ]
+    )
+    assert [(m.analyzer_name, m.repo_name) for m in modules] == [("omeka-s", "attack-map-analyzer-omeka-s")]
+    assert "attack-map-analyzer-omeka-s.git@" in analyzer_install_url(modules[0].analyzer_name)
 
 
 def test_get_available_repository_modules_passes_through_fetch_errors() -> None:
