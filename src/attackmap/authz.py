@@ -463,11 +463,6 @@ _JS_USE_RE = re.compile(r"(?<![\w$.])(?:this\s*+\.\s*+)?+([A-Za-z_$][\w$]{0,80}+
 _JS_ROUTE_RECEIVER_RE = re.compile(
     r"(?<![\w$.])(?:this\s*+\.\s*+)?+([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|del|all|options|head|route)\s*+\("
 )
-# A first `use` argument that is a path: a string, a regex literal, or a
-# constant / variable named for one (`router.use(ADMIN_PREFIX, …)`).
-_PATH_ARG_RE = re.compile(
-    r"(?<!\s)\s*+(?:['\"`/]|[A-Z][A-Z0-9_]{0,80}+\s*+,)"
-)
 _CHAIN_HEAD_RE = re.compile(r"\s*+([A-Za-z_$][\w$]{0,80}+)\s*+")
 _MAX_CHAIN_LINES = 8
 _MAX_ROUTER_ARGS = 2_000
@@ -476,7 +471,6 @@ _PY_ROUTER_DEPS_RE = re.compile(
     r"(?<![\w.])(?P<router>[A-Za-z_]\w{0,80}+)\s*+(?::[^=\n]{0,80}+)?=\s*+(?:fastapi\s*+\.\s*+)?APIRouter\s*+\("
 )
 _PY_ROUTE_DECORATOR_RE = re.compile(r"(?<!\s)\s*+@([A-Za-z_]\w{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|api_route|route|head|options)\s*+\(")
-_FIRST_NAME_ARG_RE = re.compile(r"([A-Za-z_$][\w$]{0,80}+(?:\s*+\.\s*+[A-Za-z_$][\w$]{0,80}+){0,4}+)\s*+,")
 _AUTH_MIDDLEWARE_NAME_RE = re.compile(
     r"(?i)auth|protect|login|session|passport|jwt|guard|verify|require|ensure|check|token"
     r"|admin|role|staff|perm|owner|super|rbac|acl|polic|restrict|only|allow"
@@ -486,6 +480,9 @@ _AUTH_MIDDLEWARE_NAME_RE = re.compile(
 _PATH_NAME_RE = re.compile(r"(?i)(?:path|prefix|base|baseurl|url|mount|mountpoint)$")
 # The last `use` argument when it is a bare router name: `app.use('/admin', adminRouter)`.
 _MOUNTED_ROUTER_RE = re.compile(r"[,(]\s*+([A-Za-z_$][\w$]{0,80}+)\s*+\)")
+# A middleware-shaped `use` argument: a (dotted) name, optionally called.
+_MIDDLEWARE_ARG_RE = re.compile(r"([A-Za-z_$][\w$]{0,80}+(?:\s*+\.\s*+[A-Za-z_$][\w$]{0,80}+){0,4}+)\s*+(?:\([^()]{0,400}+\))?+")
+_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}+")
 _ROOT_PATH_RE = re.compile(r"(?<!\s)\s*+(['\"`])/\1\s*+,")
 _METHOD_ROLE_META_RE = re.compile(r"@(?:Roles|Permissions|CheckPolicies|MembershipRoles|Pbac)\s*+\(")
 _MAX_DECORATOR_LINES = 12
@@ -691,8 +688,9 @@ def find_bfla_routes(
         if route.file not in lines_cache:
             lines_cache[route.file] = content.splitlines()
             chain_role_cache[route.file] = _chain_roles(route.file, content)
-        handler = span_text(
-            route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
+        handler = _own_span(
+            route.file,
+            span_text(route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN),
         )
         where = f"{route.file}:{route.line}" if route.line else route.file
         if route.file not in config_cache:
@@ -824,6 +822,7 @@ def _decorator_block(lines: list[str], code_lines: list[str], i: int, stop: int)
     it. Blank and comment-only lines are skipped. Anything else (`remove() {}`,
     `}`, `const x = restrictTo('admin')`) ends the block."""
     out: list[str] = []
+    tentative: list[str] = []  # lines inside a multi-line decorator, kept once its `@` is reached
     pending = 0  # `)` seen below that no `(` has matched yet
     for j in range(i - 1, max(stop, i - 1 - _MAX_DECORATOR_LINES), -1):
         code = code_lines[j].strip()
@@ -833,7 +832,12 @@ def _decorator_block(lines: list[str], code_lines: list[str], i: int, stop: int)
         if not (code.startswith("@") or pending > 0 or net > 0):
             break
         pending = max(0, pending + net)
-        out.append(lines[j])
+        tentative.append(lines[j])
+        if code.startswith("@") and pending == 0:
+            out.extend(tentative)
+            tentative = []
+    # A `)`-heavy tail that never reached its `@` is the end of a statement
+    # (`const x = configure(\n  restrictTo('admin'))`), not a decorator.
     return list(reversed(out))
 
 
@@ -873,20 +877,61 @@ def _block_end_line(code: str, code_lines: list[str], i: int, braces: dict[int, 
 
 
 def _path_scoped(masked_args: str, original_args: str) -> bool:
-    """`use(path, …)`: a first argument that is a path (string, regex, a
-    constant or variable) rather than middleware. A bare name counts as a path
-    unless it reads as auth middleware (`requireAuth`, `protect`)."""
-    args = masked_args.lstrip()
-    first = _FIRST_NAME_ARG_RE.match(args)
-    if first is not None and _PATH_NAME_RE.search(first.group(1)):
-        return True  # `ADMIN_PREFIX`, `adminPath`, `apiBaseUrl`
-    if first is not None and _AUTH_MIDDLEWARE_NAME_RE.search(first.group(1)):
-        return False  # `protectRoute`, `firebaseAuth`, `cors`: middleware
+    """`use(path, …)`: the first of several arguments is a path rather than
+    middleware. Only a name (or call) that reads as middleware (`requireAuth`,
+    `protect`, `cors()`) and `'/'` are unscoped; anything else (strings,
+    arrays, `API_PREFIX + '/x'`, `path.join(…)`, `PATHS.ADMIN`, `apiV1`) is
+    taken as a path. When in doubt the `use` doesn't count, and the finding stays."""
+    if len(_split_top_level(masked_args)) < 2:
+        return False  # `router.use(restrictTo('admin'))`: no path
+    first = _split_top_level(masked_args)[0].strip()
     if _ROOT_PATH_RE.match(original_args):
         return False  # `use('/', …)` covers every route
-    if _PATH_ARG_RE.match(args):
+    callee = _MIDDLEWARE_ARG_RE.fullmatch(first)
+    if callee is None:
         return True
-    return first is not None
+    name = callee.group(1)
+    last = name.rsplit(".", 1)[-1]
+    if _CONSTANT_RE.fullmatch(last) or _PATH_NAME_RE.search(last):
+        return True  # `ADMIN_ROUTE`, `PATHS.BILLING_ADMIN`, `adminPath`
+    return not _AUTH_MIDDLEWARE_NAME_RE.search(name)
+
+
+def _split_top_level(text: str) -> list[str]:
+    """``text`` split on commas outside brackets."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for k, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:k])
+            start = k + 1
+    parts.append(text[start:])
+    return [part for part in parts if part.strip()]
+
+
+def _own_span(file: str, handler: str) -> str:
+    """A JS/TS handler span without the next member's decorators: in a NestJS
+    class the span runs to the next route line, past the next method's
+    `@Permissions('admin')`, which isn't this route's check."""
+    if Path(file).suffix.lower() not in JS_TS_SUFFIXES:
+        return handler
+    lines = handler.split("\n")
+    seen_code = False
+    for k, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("@"):
+            if seen_code:
+                return "\n".join(lines[:k])
+        elif stripped and not stripped.startswith(("//", "*", "/*")) and not seen_code:
+            # The first non-decorator line (the signature) starts the body;
+            # lines inside a multi-line decorator start with `)`/`}` or args.
+            seen_code = _METHOD_SIGNATURE_RE.match(stripped) is not None or stripped.endswith("{")
+    return handler
 
 
 def _route_receiver(lines: list[str], line: int) -> str | None:
@@ -939,11 +984,13 @@ def _method_decorators(lines: list[str], code_lines: list[str], line: int, class
     """The decorator block around the route's decorator on ``line``: up to
     the previous member, down to the method signature (inside the class)."""
     out = _decorator_block(lines, code_lines, line - 1, stop=class_line - 1)
+    depth = 0  # open parentheses of a multi-line decorator (`@UseInterceptors(\n  FileInterceptor('f'),\n)`)
     for j in range(line - 1, min(len(lines), line - 1 + _MAX_DECORATOR_LINES)):
         out.append(lines[j])
-        stripped = lines[j].strip()
-        if not stripped.startswith("@") and _METHOD_SIGNATURE_RE.match(stripped):
+        code = code_lines[j].strip() if j < len(code_lines) else lines[j].strip()
+        if depth == 0 and not code.startswith("@") and _METHOD_SIGNATURE_RE.match(code):
             break
+        depth = max(0, depth + code.count("(") - code.count(")"))
     return "\n".join(out)
 
 
@@ -1070,8 +1117,9 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         if content:
             if route.file not in lines_cache:
                 lines_cache[route.file] = content.splitlines()
-            handler = span_text(
-                route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
+            handler = _own_span(
+                route.file,
+                span_text(route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN),
             )
         delegated = hop.delegated_text(route.file, content, handler) if handler else ""
         scope = handler + "\n" + delegated

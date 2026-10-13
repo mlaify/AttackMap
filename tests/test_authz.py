@@ -1268,6 +1268,13 @@ def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected:
         ("router.use(firebaseAuth, restrictTo('admin'));", 0),
         ("router.use(cors, restrictTo('admin'));", 0),
         ("router.use('/', restrictTo('admin'));", 0),
+        # first arguments that are paths, however they're built
+        ("router.use(API_PREFIX + '/billing', restrictTo('admin'));", 1),
+        ("router.use(['/billing', '/ops'], restrictTo('admin'));", 1),
+        ("router.use(path.join(base, 'billing'), restrictTo('admin'));", 1),
+        ("router.use(ADMIN_ROUTE, restrictTo('admin'));", 1),
+        ("router.use(PATHS.BILLING_ADMIN, restrictTo('admin'));", 1),
+        ("router.use(cors(), restrictTo('admin'));", 0),
         # a regex literal holding a backtick or `/*` doesn't blank what follows
         ("const strip = (s) => s.replace(/`/g, '');\nrouter.use(restrictTo('admin'));", 0),
         ("const glob = /[/*]/;\nrouter.use(restrictTo('admin'));", 0),
@@ -1650,3 +1657,45 @@ def test_round10_mounts_decorator_blocks_and_python_masking(tmp_path: Path) -> N
     assert has_role_check("def d():\n    \"\"\"check_roles('admin')\"\"\"\n    pass\n", python=True) is False
     assert has_role_check("def d():\n    #restrictTo('admin')\n    pass\n", python=True) is False
     assert has_role_check("def d():\n    check_roles('admin')\n", python=True) is True
+
+
+def test_round11_sibling_decorators_and_decorator_blocks(tmp_path: Path) -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    # the next method's @Permissions isn't this route's check (its own span runs past it)
+    content = (
+        "export class C {\n"
+        "  @Delete(':id')\n"
+        "  remove() { return this.svc.remove(); }\n"
+        "\n"
+        "  @Permissions('admin')\n"
+        "  @Post('purge')\n"
+        "  purge() {}\n"
+        "}\n"
+    )
+    (tmp_path / "c.controller.ts").write_text(content)
+    routes = [
+        Route(path="/admin/c/:id", method="DELETE", file="c.controller.ts", line=2, auth="required", guards=["JwtAuthGuard"]),
+    ]
+    evidence = " ".join(e for f in _bfla_findings(ScanResult(root=str(tmp_path), routes=routes)) for e in f.evidence)
+    assert "DELETE /admin/c/:id" in evidence
+
+    def check(content: str, line: int) -> bool:
+        return _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=line), content, _chain_roles("c.ts", content))
+
+    # a multi-line decorator below the route decorator doesn't hide the method's own @Roles
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class C {\n"
+        "  @Delete(':id')\n"
+        "  @UseInterceptors(\n"
+        "    FileInterceptor('file'),\n"
+        "  )\n"
+        "  @Roles(Role.User)\n"
+        "  remove() {}\n"
+        "}\n"
+    )
+    assert check(content, 3) is False
+    # the tail of a statement above a class isn't its decorator
+    content = "const x = configure(\n  restrictTo('admin'))\nexport class PublicController {\n  @Delete(':id')\n  remove() {}\n}\n"
+    assert check(content, 4) is False
