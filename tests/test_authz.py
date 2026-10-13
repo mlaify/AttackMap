@@ -1622,3 +1622,31 @@ def test_round9_chain_scoping_cases() -> None:
     )
     assert check("r.js", content, 2) is True
     assert check("r.js", content, 5) is False
+
+
+def test_round10_mounts_decorator_blocks_and_python_masking(tmp_path: Path) -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles, has_role_check
+
+    def check(file: str, content: str, line: int) -> bool:
+        return _chain_role_check(Route(path="/x", method="DELETE", file=file, line=line), content, _chain_roles(file, content))
+
+    # a role check passed inline when mounting a router covers it
+    for mount in ("app.use('/admin', requireAdmin, adminRouter);", "app.use(restrictTo('admin'), adminRouter);"):
+        content = f"const adminRouter = express.Router();\n{mount}\nadminRouter.delete('/users/:id', h);\n"
+        assert check("r.js", content, 3) is True, mount
+    # a method's own @Roles behind a multi-line decorator, a multi-line @Roles, a blank line
+    for block in (
+        "  @Roles(Role.User)\n  @ApiResponse({\n    status: 200,\n  })\n",
+        "  @Roles(\n    Role.User,\n  )\n",
+        "  @Roles(Role.User)\n\n",
+    ):
+        content = f"@Roles(Role.Admin)\nexport class C {{\n{block}  @Delete(':id')\n  remove() {{}}\n}}\n"
+        line = content.split("\n").index("  @Delete(':id')") + 1
+        assert check("c.ts", content, line) is False, block
+    # code (no semicolon) directly above a class is not its decorator
+    content = "const requireAdmin = restrictTo('admin')\nexport class UserController {\n  @Delete(':id')\n  remove() {}\n}\n"
+    assert check("c.ts", content, 3) is False
+    # Python comments and docstrings in handler text aren't role calls
+    assert has_role_check("def d():\n    \"\"\"check_roles('admin')\"\"\"\n    pass\n", python=True) is False
+    assert has_role_check("def d():\n    #restrictTo('admin')\n    pass\n", python=True) is False
+    assert has_role_check("def d():\n    check_roles('admin')\n", python=True) is True

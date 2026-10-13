@@ -221,9 +221,10 @@ def _symfony_role_check(text: str) -> bool:
     return False
 
 
-def has_role_check(text: str) -> bool:
-    """A role or permission check in ``text`` (handler code or guards)."""
-    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text) or _role_call_check(text)
+def has_role_check(text: str, *, python: bool = False) -> bool:
+    """A role or permission check in ``text`` (handler code or guards);
+    ``python`` masks Python comments and docstrings for the role-call check."""
+    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text) or _role_call_check(text, python=python)
 
 
 # Guard *names* (as plugins put them in Route.guards, #349) that are a role or
@@ -404,13 +405,13 @@ def _mask_code(text: str, *, python: bool = False) -> str:
 _REGEX_PREV = frozenset(["", *"(,=:[!&|?{};+-*%~^"])
 
 
-def _role_call_check(text: str) -> bool:
+def _role_call_check(text: str, *, python: bool = False) -> bool:
     # Matched on masked code (a call in a string or comment doesn't count);
     # the arguments, string literals included, are read from the original.
     # Most text has no role call at all: mask only when there is one.
     if _ROLE_CALL_RE.search(text) is None:
         return False
-    code = _mask_code(text)
+    code = _mask_code(text, python=python)
     for count, match in enumerate(_ROLE_CALL_RE.finditer(code)):
         if count >= _MAX_CALLS:
             break
@@ -714,8 +715,8 @@ def find_bfla_routes(
             continue
         if (
             _chain_role_check(route, content, chain_role_cache[route.file])
-            or has_role_check(handler)
-            or has_role_check(hop.delegated_text(route.file, content, handler))
+            or has_role_check(handler, python=route.file.endswith(".py"))
+            or has_role_check(hop.delegated_text(route.file, content, handler), python=route.file.endswith(".py"))
         ):
             continue
         out.append(
@@ -729,10 +730,12 @@ class _ChainRoles:
     """A file's router- and class-level role checks, scoped to the routes they cover."""
 
     lines: list[str]
+    code_lines: list[str] = field(default_factory=list)  # ``lines`` masked
     uses: list[tuple[str, int]] = field(default_factory=list)  # JS `receiver.use(<role check>)`: (receiver, line)
     classes: list[tuple[int, int]] = field(default_factory=list)  # role-decorated classes: [first, last] lines
     routers: set[str] = field(default_factory=set)  # FastAPI `name = APIRouter(dependencies=[<role check>])`
     mounts: list[tuple[str, str, int]] = field(default_factory=list)  # JS `parent.use([path,] child)`: (child, parent, line)
+    covered: set[str] = field(default_factory=set)  # JS routers mounted behind a role check
 
 
 def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
@@ -756,11 +759,22 @@ def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
             mounted = _MOUNTED_ROUTER_RE.search(code, max(m.end() - 1, close - 90), close + 1)
             if mounted is not None and mounted.end() == close + 1 and not has_role_check(mounted.group(1)):
                 info.mounts.append((mounted.group(1), m.group(1), line))
+                if has_role_check(args):
+                    # `app.use('/admin', requireAdmin, adminRouter)`: the check guards the mount.
+                    info.covered.add(mounted.group(1))
             if _path_scoped(code[m.end() : close], args):
                 continue  # `router.use('/billing', …)`: scoped to a prefix
             if has_role_check(args):
                 info.uses.append((m.group(1), line))
-        code_lines = code.split("\n")
+        # A router mounted on a parent after the parent's role `use`:
+        # `app.use(restrictTo('admin')); app.use('/admin', adminRouter)`.
+        first_use: dict[str, int] = {}
+        for receiver, line in info.uses:
+            first_use[receiver] = min(line, first_use.get(receiver, line))
+        for child, parent, mounted_at in info.mounts:
+            if first_use.get(parent, mounted_at) < mounted_at:
+                info.covered.add(child)
+        code_lines = info.code_lines = code.split("\n")
         braces: dict[int, int] | None = None
         for count, i in enumerate(i for i, line in enumerate(code_lines) if _CLASS_DECL_RE.search(line)):
             if count >= _MAX_CALLS:
@@ -798,21 +812,29 @@ def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
 
 
 def _decorators_above(lines: list[str], code_lines: list[str], i: int) -> str:
-    """The class line and the decorator lines directly above it (a multi-line
-    decorator's argument lines included); stops at code that ends a statement
-    or block, so the previous class's method decorators are never read.
-    Comment-only lines (blank once masked) are skipped, not read."""
-    out = [lines[i]]
-    for j in range(i - 1, max(-1, i - _MAX_DECORATOR_LINES), -1):
-        stripped = code_lines[j].strip()
-        if not stripped:
-            if lines[j].strip():
-                continue  # `// @Roles('admin') -- removed`
+    """The class line and the decorators directly above it."""
+    return "\n".join([*_decorator_block(lines, code_lines, i, stop=-1), lines[i]])
+
+
+def _decorator_block(lines: list[str], code_lines: list[str], i: int, stop: int) -> list[str]:
+    """The decorator lines directly above line ``i`` (0-based), not past
+    ``stop``. A line belongs to the block if it starts with `@`, or if it
+    closes more parentheses than it opens (the tail of a multi-line
+    decorator, `})`), or while a decorator's arguments are still open below
+    it. Blank and comment-only lines are skipped. Anything else (`remove() {}`,
+    `}`, `const x = restrictTo('admin')`) ends the block."""
+    out: list[str] = []
+    pending = 0  # `)` seen below that no `(` has matched yet
+    for j in range(i - 1, max(stop, i - 1 - _MAX_DECORATOR_LINES), -1):
+        code = code_lines[j].strip()
+        if not code:
+            continue  # blank, or a comment (`// @Roles('admin') -- removed`)
+        net = code.count(")") - code.count("(")
+        if not (code.startswith("@") or pending > 0 or net > 0):
             break
-        if stripped.endswith((";", "{", "}")):
-            break
+        pending = max(0, pending + net)
         out.append(lines[j])
-    return "\n".join(reversed(out))
+    return list(reversed(out))
 
 
 def _class_body_open(code: str, offset: int) -> int:
@@ -899,35 +921,24 @@ def _chain_role_check(route: Route, content: str, info: bool | _ChainRoles) -> b
         return False
     for first, last in info.classes:
         if first < route.line <= last:
-            if not _METHOD_ROLE_META_RE.search(_method_decorators(info.lines, route.line, first)):
+            if not _METHOD_ROLE_META_RE.search(_method_decorators(info.lines, info.code_lines, route.line, first)):
                 return True
     if info.routers:
         decorator = _py_route_receiver(info.lines, route.line)
         if decorator is not None and decorator in info.routers:
             return True
-    if not info.uses:
+    if not info.uses and not info.covered:
         return False
     receiver = _route_receiver(info.lines, route.line)
     if receiver is None:
         return False
-    if any(r == receiver and line < route.line for r, line in info.uses):
-        return True
-    # A router mounted on a parent after the parent's role `use`:
-    # `app.use(restrictTo('admin')); app.use('/admin', adminRouter)`.
-    return any(
-        child == receiver and any(r == parent and line < mounted_at for r, line in info.uses)
-        for child, parent, mounted_at in info.mounts
-    )
+    return receiver in info.covered or any(r == receiver and line < route.line for r, line in info.uses)
 
 
-def _method_decorators(lines: list[str], line: int, class_line: int) -> str:
+def _method_decorators(lines: list[str], code_lines: list[str], line: int, class_line: int) -> str:
     """The decorator block around the route's decorator on ``line``: up to
     the previous member, down to the method signature (inside the class)."""
-    out: list[str] = []
-    for j in range(line - 2, max(class_line - 1, line - 2 - _MAX_DECORATOR_LINES), -1):
-        if not lines[j].strip().startswith("@"):
-            break  # the previous member (or a blank line) ends this block
-        out.append(lines[j])
+    out = _decorator_block(lines, code_lines, line - 1, stop=class_line - 1)
     for j in range(line - 1, min(len(lines), line - 1 + _MAX_DECORATOR_LINES)):
         out.append(lines[j])
         stripped = lines[j].strip()
@@ -1069,7 +1080,7 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
             continue
         if content and route.file not in chain_role_cache:
             chain_role_cache[route.file] = _chain_roles(route.file, content)
-        if has_role_check(scope) or (
+        if has_role_check(scope, python=route.file.endswith(".py")) or (
             content and _chain_role_check(route, content, chain_role_cache[route.file])
         ):
             # A role-gated route (admin tooling) reaches any object by design.
