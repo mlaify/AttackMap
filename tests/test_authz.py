@@ -803,6 +803,141 @@ def test_bfla_handler_role_id_column_is_not_a_role_check(tmp_path: Path) -> None
     assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
 
 
+def _php_admin_route(tmp_path: Path, body: str, attrs: str = "") -> list:
+    (tmp_path / "web.php").write_text(
+        "<?php\nRoute::post('/admin/users/{id}', function ($id) {\n" + attrs + body + "\n});\n"
+    )
+    route = Route(path="/admin/users/{id}", method="POST", file="web.php", line=2, auth="required", guards=["auth"])
+    return _bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))
+
+
+@pytest.mark.parametrize(
+    ("body", "flagged"),
+    [
+        # Promoting a user is the BFLA case itself, not a role check.
+        ("    $user->setRoles(['ROLE_ADMIN']);", True),
+        ("    $user->roles = 'ROLE_SUPER_ADMIN';", True),
+        ("    $this->denyAccessUnlessGranted('ROLE_ANONYMOUS');", True),
+        ("    $this->denyAccessUnlessGranted('ROLE_PREVIOUS_ADMIN');", True),
+        ("    $this->denyAccessUnlessGranted( 'ROLE_USER' );", True),
+        ("    $this->denyAccessUnlessGranted(attribute: 'IS_AUTHENTICATED_FULLY');", True),
+        ("    if (!$security->isGranted(\"IS_AUTHENTICATED_REMEMBERED\")) { abort(403); }", True),
+        ("    $this->denyAccessUnlessGranted('ROLE_ADMIN');", False),
+        ("    $this->denyAccessUnlessGranted( attribute: User::ROLE_ADMIN );", False),
+        ("    if (!$this->isGranted('edit', $post)) { abort(403); }", False),
+        ("    $this->denyAccessUnlessGranted($attribute);", False),  # not statically known: an authz call
+    ],
+)
+def test_bfla_symfony_grants_in_handler(tmp_path: Path, body: str, flagged: bool) -> None:
+    assert len(_php_admin_route(tmp_path, body)) == (1 if flagged else 0)
+
+
+@pytest.mark.parametrize(
+    ("attr", "flagged"),
+    [
+        ("    #[Security(\"is_granted('ROLE_ADMIN')\")]\n", False),
+        ("    #[Security(\"is_granted('ROLE_USER')\")]\n", True),
+        ("    #[IsGranted( 'ROLE_USER' )]\n", True),
+        ("    #[Security(\"'ROLE_ADMIN' in role_names\")]\n", False),
+        ("    #[Security(\"'ROLE_USER' in role_names\")]\n", True),
+        ("    #[\\Sensio\\Bundle\\FrameworkExtraBundle\\Configuration\\Security(\"'ROLE_EDITOR' in role_names\")]\n", False),
+        ("    #[IsGranted(attribute: 'IS_AUTHENTICATED_FULLY')]\n", True),
+    ],
+)
+def test_bfla_symfony_grant_attributes(tmp_path: Path, attr: str, flagged: bool) -> None:
+    assert len(_php_admin_route(tmp_path, "    User::destroy($id);", attr)) == (1 if flagged else 0)
+
+
+@pytest.mark.parametrize(
+    ("body", "flagged"),
+    [
+        ("    if (!$limiter->isAllowed($ip)) { abort(429); }", True),  # a rate limiter
+        ("    if (!$validator->isAllowed($value)) { abort(422); }", True),
+        ("    if (!$this->acl->isAllowed($role, 'users', 'delete')) { abort(403); }", False),
+        ("    if (!$this->getAcl()->isAllowed($role, 'users')) { abort(403); }", False),
+        ("    if (!$permissions->isAllowed('users.delete')) { abort(403); }", False),
+        ("    if (!$user->userIsAllowed('delete')) { abort(403); }", False),
+    ],
+)
+def test_bfla_is_allowed_needs_an_acl_receiver(tmp_path: Path, body: str, flagged: bool) -> None:
+    assert len(_php_admin_route(tmp_path, body + "\n    User::destroy($id);")) == (1 if flagged else 0)
+
+
+_COMPOSER = '{"autoload": {"psr-4": {"App\\\\": "src/"}}}'
+
+
+def _symfony_repo(tmp_path: Path, routes_file: str, routes: str, controller: str) -> list:
+    (tmp_path / "composer.json").write_text(_COMPOSER)
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / routes_file).write_text(routes)
+    (tmp_path / "src" / "Controller").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "Controller" / "AdminController.php").write_text(controller)
+    route = Route(path="/admin/purge", method="POST", file=routes_file, line=2, auth="required", guards=["access_control ^/: IS_AUTHENTICATED_FULLY"])
+    return _bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))
+
+
+_YAML = "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\AdminController::purge\n"
+_CONTROLLER = (
+    "<?php\nnamespace App\\Controller;\n\n{class_attr}final class AdminController\n{{\n"
+    "    #[IsGranted('ROLE_ADMIN')]\n    public function other(): void {{}}\n\n"
+    "{method_attr}    public function purge(): void\n    {{\n{body}        $this->repo->purgeAll();\n    }}\n}}\n"
+)
+
+
+def _controller(class_attr: str = "", method_attr: str = "", body: str = "") -> str:
+    return _CONTROLLER.format(class_attr=class_attr, method_attr=method_attr, body=body)
+
+
+def test_bfla_follows_a_symfony_yaml_route_to_its_controller(tmp_path: Path) -> None:
+    findings = _symfony_repo(tmp_path, "config/routes.yaml", _YAML, _controller())
+    assert len(findings) == 1
+    # The neighbouring action's #[IsGranted] doesn't leak into purge().
+    assert "(handler App\\Controller\\AdminController::purge)" in findings[0].evidence[0]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"method_attr": "    #[IsGranted('ROLE_ADMIN')]\n"},
+        {"class_attr": "#[IsGranted('ROLE_ADMIN')]\n"},
+        {"body": "        $this->denyAccessUnlessGranted('ROLE_ADMIN');\n"},
+    ],
+)
+def test_bfla_symfony_yaml_route_controller_role_check(tmp_path: Path, kwargs: dict) -> None:
+    assert _symfony_repo(tmp_path, "config/routes.yaml", _YAML, _controller(**kwargs)) == []
+
+
+@pytest.mark.parametrize(
+    ("routes_file", "routes"),
+    [
+        ("config/routes.xml", '<routes>\n<route id="p" path="/admin/purge" controller="App\\Controller\\AdminController::purge"/>\n</routes>\n'),
+        ("config/routes.yaml", "admin_purge:\n    path: /admin/purge\n    defaults: { _controller: 'App\\Controller\\AdminController::purge' }\n"),
+        ("config/routes.xml", '<routes>\n<route id="p" path="/admin/purge"><default key="_controller">App\\Controller\\AdminController::purge</default></route>\n</routes>\n'),
+    ],
+)
+def test_bfla_symfony_controller_reference_forms(tmp_path: Path, routes_file: str, routes: str) -> None:
+    assert len(_symfony_repo(tmp_path, routes_file, routes, _controller())) == 1
+
+
+@pytest.mark.parametrize(
+    "routes",
+    [
+        "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\Missing::purge\n",
+        "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\AdminController::missing\n",
+        "admin_purge:\n    path: /admin/purge\n    controller: Vendor\\Bundle\\X::purge\n",
+        "admin_purge:\n    path: /admin/purge\n    resource: '@AdminBundle/routes.yaml'\n",
+    ],
+)
+def test_bfla_unresolvable_config_controller_is_skipped(tmp_path: Path, routes: str) -> None:
+    assert _symfony_repo(tmp_path, "config/routes.yaml", routes, _controller()) == []
+
+
+def test_bfla_invokable_symfony_controller(tmp_path: Path) -> None:
+    routes = "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\AdminController\n"
+    controller = "<?php\nfinal class AdminController\n{\n    public function __invoke(): void { $this->repo->purgeAll(); }\n}\n"
+    assert len(_symfony_repo(tmp_path, "config/routes.yaml", routes, controller)) == 1
+
+
 @pytest.mark.parametrize(
     ("file", "content", "expected"),
     [
