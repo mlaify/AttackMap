@@ -80,6 +80,8 @@ _IDENTITY_MEMBERS = frozenset(
 # `data` is an envelope (supabase `{ data: { user } }`): fine on the way to an
 # identity member, never as the member tested.
 _ENVELOPE_MEMBERS = frozenset({"data"})
+_SESSION_ID_MEMBERS = frozenset({"id", "sessionid"})
+_USER_MEMBERS = frozenset({"user", "account", "identity", "profile"})
 _MEMBER_NAME = re.compile(r"[A-Za-z_$][\w$]{0,80}")
 # Lookups that never come back falsy as a whole: supabase's `{ data, error }`,
 # Clerk's `auth()` object. A bare `!x` on them never fires; a member test does.
@@ -383,11 +385,17 @@ def _catch_rejects(code: str, try_open: int, pairs: dict[int, int]) -> bool:
     after = code[try_close + 1 : try_close + 260]
     head = _CATCH_HEAD.match(after)
     if head is None:
-        return _FINALLY_HEAD.match(after) is not None  # try/finally doesn't swallow
+        final = _FINALLY_HEAD.match(after)
+        if final is None:
+            return False
+        # try/finally doesn't swallow, unless the finally acts for the caller.
+        final_open = try_close + final.end()
+        final_close = pairs.get(final_open)
+        return final_close is not None and not _BRANCH_WRITE.search(code, final_open, final_close)
     catch_open = try_close + head.end()
     catch_close = pairs.get(catch_open)
-    if catch_close is None:
-        return False
+    if catch_close is None or _BRANCH_WRITE.search(code, catch_open, catch_close):
+        return False  # `catch (e) { await db.log.create(…); throw e }` acts before rethrowing
     for stmt in _statements(code[catch_open + 1 : catch_close]):
         if re.match(r"\A\s*throw\b", stmt):
             return True
@@ -556,6 +564,8 @@ def session_gate(text: str, code: str | None = None) -> str | None:
                 members and members[-1] in _ENVELOPE_MEMBERS
             ):
                 continue  # `!session.user.isGuest`: a property of the identity, not its absence
+            if members and members[-1] in _SESSION_ID_MEMBERS and not set(members[:-1]) & _USER_MEMBERS:
+                continue  # `!session.id`: anonymous visitors have a session id too
             if name in needs_member and not members:
                 continue  # `!res` on supabase's `{ data, error }`: never falsy
             if _reassigned(name, code[tracked[name] : match.start()]):

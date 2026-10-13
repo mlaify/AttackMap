@@ -143,12 +143,15 @@ _READ_ONLY_MIDDLEWARE = re.compile(
     r"|json|urlencoded|text|raw|cors|helmet|rateLimit(?:er)?|[A-Za-z_$]{0,20}[Ll]imiter)"
     r"\s*\([^;]{0,400}\)"
 )
+_CHAIN_CONTINUES = re.compile(r"[ \t\r\n]{0,200}\.")
+_PATH_LITERAL = re.compile(r"(?<!\s)\s*+['\"`/]")
 _SOLE_REF = re.compile(r"([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)")
 
 
-def _top_level_args(text: str) -> list[str]:
-    """``text`` split on commas outside brackets."""
-    args: list[str] = []
+def _top_level_args(text: str) -> list[tuple[int, str]]:
+    """``text`` split on commas outside brackets, as ``(offset, argument)``;
+    a trailing comma adds no empty argument."""
+    args: list[tuple[int, str]] = []
     depth = 0
     start = 0
     for i, ch in enumerate(text):
@@ -157,10 +160,10 @@ def _top_level_args(text: str) -> list[str]:
         elif ch in ")]}":
             depth -= 1
         elif ch == "," and depth == 0:
-            args.append(text[start:i])
+            args.append((start, text[start:i]))
             start = i + 1
     if text[start:].strip():
-        args.append(text[start:])
+        args.append((start, text[start:]))
     return args
 
 
@@ -191,6 +194,8 @@ def _handler_session_gate(
     first_line = code[: code.find("\n") + 1 if "\n" in code else len(code)]
     calls = list(_REGISTRATION_CALL.finditer(first_line))
     if not calls:
+        if _CHAIN_CONTINUES.match(code, len(first_line)):
+            return None  # `router\n  .route('/x')\n  .post(mw, h)`: a chain we don't follow
         # Not a call registration (a decorator, a function header): the
         # handler body is the first function body that follows.
         return session_gate(text, code)
@@ -217,20 +222,23 @@ def _handler_session_gate(
     if reg_close is None:
         return None
     args = _top_level_args(code[open_paren + 1 : reg_close])
-    if len(args) > 2 and not all(_READ_ONLY_MIDDLEWARE.fullmatch(a.strip()) for a in args[1:-1]):
-        # `post(path, a, handler)`: a gate in the handler runs after `a`
-        # (multer, a writer) has already acted. Validators, body parsers,
-        # cors and rate limiters only read the request.
+    # Middleware: every argument between the path (when the first argument is
+    # one; `.route('/x').post(mw, h)` has none) and the handler. A gate in the
+    # handler runs after it (multer, a writer) has already acted. Validators,
+    # body parsers, cors and rate limiters only read the request.
+    has_path = bool(args) and _PATH_LITERAL.match(args[0][1]) is not None
+    middleware = args[1 if has_path else 0 : -1]
+    if not all(_READ_ONLY_MIDDLEWARE.fullmatch(text[open_paren + 1 + o : open_paren + 1 + o + len(a)].strip()) for o, a in middleware):
         return None
     # An inline handler: clamp to the registration, so a one-line route costs
     # its own length. The body must open in the last argument, not in a
     # callback passed to middleware (`validate({ custom: (req) => { … } })`).
-    last_start = reg_close - len(args[-1]) if args else reg_close
+    last_start = open_paren + 1 + args[-1][0] if args else reg_close
     inline_text, inline_code = text[: reg_close + 1], code[: reg_close + 1]
     body = handler_body(inline_text[last_start:], inline_code[last_start:])
     if body is not None:
         return session_gate(inline_text[last_start:], inline_code[last_start:])
-    ref = _SOLE_REF.fullmatch(args[-1].strip()) if args else None
+    ref = _SOLE_REF.fullmatch(args[-1][1].strip()) if args else None
     if ref is None:
         return None
     if not hop_box:

@@ -534,3 +534,44 @@ def test_many_one_line_routes_stay_fast(tmp_path: Path) -> None:
     started = time.perf_counter()
     _unauth_findings(tmp_path)
     assert time.perf_counter() - started < 6.0
+
+
+@pytest.mark.parametrize(
+    "registration",
+    [
+        "router.route('/x').post(upload.single('f'), async (req, res) => {\n",
+    ],
+)
+def test_middleware_in_a_route_chain_is_checked(tmp_path: Path, registration: str) -> None:
+    (tmp_path / "app.js").write_text(
+        "const router = require('express').Router();\n" + registration +
+        "  if (!req.user) return res.sendStatus(401);\n"
+        "  await File.create({ name: req.file.filename });\n"
+        "});\n"
+    )
+    assert len(_unauth_findings(tmp_path)) == 1
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        "try {\n  const session = await getServerSession(req);\n  if (!session) throw new Error('no');\n} finally {\n  await db.audit.create({ data: req.body });\n}",
+        "try {\n  const session = await getServerSession(req);\n  if (!session) throw new Error('no');\n} catch (e) {\n  await db.log.create({ data: req.body });\n  throw e;\n}",
+        "const session = await getSession(req, res);\nif (!session.id) return res.status(401).end();",
+    ],
+)
+def test_try_blocks_that_act_and_session_ids_are_not_gates(handler: str) -> None:
+    assert session_gate(_wrap(handler)) is None
+
+
+def test_trailing_comma_and_session_user_id_still_work(tmp_path: Path) -> None:
+    assert session_gate(_wrap("const session = await getSession(req, res);\nif (!session.user.id) return res.status(401).end();")) is not None
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "app.post('/x', async (req, res) => {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await Order.create(req.body);\n"
+        "},);\n"
+    )
+    assert _unauth_findings(tmp_path) == []
