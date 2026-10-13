@@ -247,6 +247,8 @@ def test_one_line_handlers_that_do_more_than_answer_404_are_live(tmp_path: Path)
         # Only one rule catches each of these:
         "h.ts": "export default async function handler(req, res) {\n  return ok ? res.status(404).end() : res.end()\n}\n",  # `?`
         "i.js": "app.post('/i/webhook', (req, res) => res.status(404).json(load(req.body)))\n",  # another call
+        # Work on the function header line itself (review round 3).
+        "j.ts": "export default async function handler(req, res) { await db.query('INSERT', [req.body]);\n  res.status(404).end();\n}\n",
     }
     _write(tmp_path, cases)
     for name in cases:

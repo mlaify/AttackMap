@@ -165,7 +165,7 @@ _NOT_FOUND_RESPONSE = re.compile(
     r"|\bHttpResponse(?:NotFound|Gone)\b|\babort\s*\(\s*(?:404|410)\b|\bnotFound\s*\(\s*\)"
 )
 _PACKAGE_NAME = re.compile(r'"name"\s*:\s*"([^"\n]{1,200})"')
-_STUB_NOISE = re.compile(r"^\s*(?:[{}()\[\];,]+|(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b.*|(?:async\s+)?def\b.*:|return\s*;?)\s*$")
+_STUB_NOISE = re.compile(r"^\s*(?:[{}()\[\];,]+|(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b[^{\n]*\{?|(?:async\s+)?def\b.*:|return\s*;?)\s*$")
 _MAX_STUB_LINES = 3
 _STRING_LITERAL = re.compile(r"""'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""")
 _STUB_DISQUALIFIER = re.compile(
