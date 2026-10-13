@@ -28,6 +28,13 @@ GATED = [
     "const session = await getSession(req)\nif (!session) return res.status(401).end()",
     "const session = await auth();\nif (!session?.user?.id) {\n  res.status(401).send('no');\n  return;\n}",
     "const s = await getSession(req);\nif (!s) { throw new UnauthorizedException(); }",
+    # destructuring aliases, members of an always-object lookup
+    "const { user: me } = await getSession(req);\nif (!me) return res.status(401).end();",
+    "const r = await supabase.auth.getUser();\nif (!r.data.user) return res.status(401).end();",
+    # rejecting return values
+    "const session = await getSession(req);\nif (!session) return sendUnauthorized(res);",
+    "const session = await getSession(req);\nif (!session) return c.json({ error: 'no' }, 401);",
+    "const session = await getSession(req);\nif (!session) return;",
 ]
 
 NOT_GATED = [
@@ -129,6 +136,29 @@ NOT_GATED = NOT_GATED + [
     "const { data, error } = await supabase.auth.getUser();\nif (!data) return res.status(401).end();",
     # a `.catch` fallback
     "const session = await getSession(req).catch(() => guest);\nif (!session) return res.status(401).end();",
+    # the initializer mentions a lookup but isn't one
+    "const anonymous = !req.user;\nif (!anonymous) return res.redirect('/');",
+    "const anonymous = typeof req.user === 'undefined';\nif (!anonymous) return res.redirect('/');",
+    "const post = await db.post.findFirst({ where: { id, authorId: req.user?.id } });\nif (!post) return res.status(404).end();",
+    # a destructuring key isn't a binding
+    "const user = await db.user.findUnique({ where: { id } });\nconst { user: me } = await getSession(req);\nif (!user) return res.status(404).end();",
+    "const { data: d } = await supabase.auth.getUser();\nif (!d) return res.status(401).end();",
+    # lookups that are never falsy as a whole
+    "const r = await supabase.auth.getUser();\nif (!r) return res.status(401).end();",
+    "const a = auth();\nif (!a) return res.status(401).end();",
+    # a return that hands off to a writing flow
+    "const session = await getSession(req);\nif (!session) return createGuestOrder(req, res);",
+    # writes the mutation list now covers
+    "const session = await getSession(req);\nawait queue.add('job', req.body);\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nawait axios.post(url, req.body);\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nawait redis.del(req.params.key);\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nawait fs.unlink(req.query.path);\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nawait fetch(url, { method: 'POST' });\nif (!session) return res.status(401).end();",
+    # a property of the identity, not its absence
+    "const session = await getSession(req);\nif (!session.user.isGuest) return res.json({ ok: 1 });",
+    # code after a regex literal holding a backtick, or inside an interpolation
+    "const session = await getSession(req);\nconst re = /`/;\nawait db.user.deleteMany();\nconst s = /`/;\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nlog(`${await db.user.deleteMany()}`);\nif (!session) return res.status(401).end();",
 ]
 
 
@@ -140,6 +170,12 @@ def test_rejecting_session_checks_are_gates(handler: str) -> None:
 @pytest.mark.parametrize("handler", NOT_GATED)
 def test_non_rejecting_or_unrelated_checks_are_not_gates(handler: str) -> None:
     assert session_gate(_wrap(handler)) is None
+
+
+def test_mask_keeps_interpolations_and_skips_regex_literals() -> None:
+    masked = mask("a(`x ${b(`y`)} z`); const r = /['`]/g; c()")
+    assert "b(" in masked and "x" not in masked and "z" not in masked and masked.endswith("c()")
+    assert len(masked) == len("a(`x ${b(`y`)} z`); const r = /['`]/g; c()")
 
 
 def test_mask_keeps_shape() -> None:
@@ -320,5 +356,19 @@ def test_unimported_object_reference_is_not_resolved_locally(tmp_path: Path) -> 
         "  await Order.create(req.body);\n"
         "}\n"
         "app.post('/api/b', ctl.create);\n"
+    )
+    assert len(_unauth_findings(tmp_path)) == 1
+
+
+def test_only_a_sole_handler_reference_is_followed(tmp_path: Path) -> None:
+    # `post(path, wipe, onError)`: a gate in the last function runs after `wipe` wrote.
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "async function wipe(req, res, next) { await Order.deleteMany({}); next(); }\n"
+        "async function onError(req, res) {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "}\n"
+        "app.post('/api/wipe', wipe, onError);\n"
     )
     assert len(_unauth_findings(tmp_path)) == 1

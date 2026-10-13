@@ -18,12 +18,18 @@ doubt, the finding stays.
    caller's identity: `getSession(`, `getServerSession(`,
    `getServerAuthSession(`, a zero-argument `auth()`, `currentUser(` /
    `getCurrentUser(`, `supabase.auth.getUser(`, or `req.session.user` /
-   `req.session.userId` / `req.user` (passport). A later reassignment
+   `req.session.userId` / `req.user` (passport). The initializer must be the
+   lookup itself (after an optional `await`), not an expression mentioning
+   one (`!req.user`, `findFirst({ authorId: req.user.id })`); a destructured
+   alias binds its alias (`{ user: me }` tracks `me`). A later reassignment
    (`=`, `||=`, `??=`, destructuring) of a tracked name stops tracking it.
 4. A *gate* is an `if` whose condition, parsed with balanced parentheses, is
    exactly `!name[.member…]` for a tracked name, or `!req.user`,
    `!req.session.user[Id]`, `!req.isAuthenticated()`. A destructured `data`
-   or `error` is not tracked (supabase v2 always returns a `data` object).
+   or `error` is not tracked (supabase v2 always returns a `data` object),
+   and a whole `auth()` / `.auth.getUser()` result needs a member test. A
+   member test must name identity (`user`, `id`, `email`, …), not a property
+   of it (`!session.user.isGuest`).
 5. The gate must be a top-level statement of the handler body: not inside a
    branch, loop, callback or nested function, not an `else if`, and not the
    body of a braceless `if` / loop. A `try { … }` block is transparent only
@@ -36,7 +42,8 @@ doubt, the finding stays.
    its members (`session.user ||= guest`) disqualifies it, and so does
    assigning `req.user` / `req.session…` before a direct check.
 6. Its then-branch (a braced block or a single statement) must start with a
-   `return` (not `return next()`, `return next(null)`, `return await
+   `return` of nothing, a literal, a response, a redirect or an error (not a
+   hand-off like `return createGuestOrder(req, res)`, and not `return next()`, `return next(null)`, `return await
    next()` or `return void next()`) or a `throw`. A bare `redirect(...)`
    doesn't count: it throws in Next, but Remix and SvelteKit 1 return it. An
    Express-style `next(err)` or `res.status(401|403)…` counts only when the
@@ -61,10 +68,32 @@ _IDENT = re.compile(r"[A-Za-z_$][\w$]{0,80}")
 _IF = re.compile(r"(?<![\w$.])if\s*+\(")
 _GATE_CONDITION = re.compile(
     r"\A\s*!\s*(?:(?P<direct>(?:req|request)\s*\.\s*(?:user|session\s*\.\s*(?:user|userId)|isAuthenticated\s*\(\s*\)))"
-    r"|(?P<name>[A-Za-z_$][\w$]{0,80})(?:\s*\??\.\s*[A-Za-z_$][\w$]{0,80})*)\s*\Z"
+    r"|(?P<name>[A-Za-z_$][\w$]{0,80})(?P<members>(?:\s*\??\.\s*[A-Za-z_$][\w$]{0,80})*))\s*\Z"
 )
+# Members a gate may test: identity, not a property of it (`!session.user.isGuest`).
+_IDENTITY_MEMBERS = frozenset(
+    {"user", "id", "userid", "uid", "sub", "email", "account", "accountid", "session", "sessionid", "identity", "profile", "data"}
+)
+_MEMBER_NAME = re.compile(r"[A-Za-z_$][\w$]{0,80}")
+# Lookups that never come back falsy as a whole: supabase's `{ data, error }`,
+# Clerk's `auth()` object. A bare `!x` on them never fires; a member test does.
+_ALWAYS_OBJECT = re.compile(r"(?<![\w$.])auth\s*+\(\s*+\)|\.\s*auth\s*+\.\s*getUser\s*+\(")
+# The initializer is the lookup itself (`await getSession(req)`,
+# `supabase.auth.getUser()`), not an expression that mentions one.
+# Only a member lookup (`.auth.getUser(`) may have a receiver before it.
+_LOOKUP_PREFIX = re.compile(r"\s*+(?:await\s++)?")
+_RECEIVER_PREFIX = re.compile(r"\s*+(?:await\s++)?[A-Za-z_$][\w$]{0,80}+(?:\s*+\??\.\s*+[A-Za-z_$][\w$]{0,80}+){0,6}+\s*+")
 _REJECTING_FIRST = re.compile(r"\A\s*throw\b")
 _RETURN = re.compile(r"\A\s*return\b(?P<rest>.*)\Z", re.DOTALL)
+# What a rejecting `return` may return: nothing, a literal, a response, a
+# redirect or an error. `return createGuestOrder(req, res)` doesn't count.
+_RETURN_VALUE = re.compile(
+    r"\A\s*+(?:\Z|[;{\['\"`\d]|null\b|false\b|undefined\b|new\s++\w{0,40}(?:Response|Error|Exception)\b"
+    r"|(?:void\s++)?(?:res|response|reply|ctx|c|context|h|event)\s*+\."
+    r"|(?:Next)?Response\s*+\.|NextResponse\b"
+    r"|(?:await\s++)?\w{0,40}(?i:redirect|unauthori[sz]ed|forbidden|denied|reject|error|fail|json|login|signin|status|respond|abort)\w{0,40}\s*+\("
+    r"|next\s*+\(\s*+[^\s)])"
+)
 # `next()` continues the chain, as do `next(null)` / `next(undefined)`.
 _BARE_NEXT = re.compile(r"\A\s*(?:(?:void|await)\s+)?next\s*\(\s*(?:null|undefined)?\s*\)\s*\Z")
 _NEXT_WITH_ERROR = re.compile(r"\A\s*next\s*\(\s*(?!(?:null|undefined)\s*\))\S")
@@ -75,7 +104,8 @@ _BODY_OPEN = re.compile(r"(?:=>|\))\s*+(?::[^{};=\n]{1,120})?\s*+\{")
 _MUTATION = re.compile(
     r"\$(?:execute|query)Raw"
     r"|(?:\.\s*|(?<![\w$.]))(?:create|createMany|update|updateMany|upsert|delete|deleteMany|insert|insertOne|insertMany"
-    r"|save|remove|destroy|execute|exec|query|write|enqueue|publish)\w{0,40}\s*\("
+    r"|save|remove|destroy|execute|exec|query|write|enqueue|publish|add|set|del|unlink|rm|post|put|patch"
+    r"|send|push|append|incr|decr|hset|lpush|rpush|sadd|zadd|expire|rename|copy|mkdir|fetch|charge|transfer)\w{0,40}\s*\("
 )
 _TRY_OPEN = re.compile(r"\btry\s*\Z")
 # A fallback in a session initializer: `??`, `||`, a ternary (not `?.`), or
@@ -86,6 +116,22 @@ _DIRECT_ASSIGN = re.compile(
     r"(?<![\w$.])(?:req|request)\s*\.\s*(?:user|session)(?:\s*\.\s*(?:user|userId))?\s*(?:\|\||&&|\?\?)?=(?![=>])"
 )
 _ENVELOPE_NAMES = frozenset({"data", "error"})
+
+
+def _bindings(pattern: str) -> list[str]:
+    """Names bound by a flat object pattern: `{ user: me, session }` binds
+    `me` and `session`. Keys of the response envelope (`data`, `error`, which
+    supabase always returns) and `...rest` objects are not tracked."""
+    names: list[str] = []
+    for element in pattern.split(","):
+        key, _, alias = element.partition(":")
+        key = key.strip()
+        if not key or key.startswith("...") or key in _ENVELOPE_NAMES:
+            continue
+        bound = (alias or key).strip()
+        if _IDENT.fullmatch(bound):
+            names.append(bound)
+    return names
 _IIFE_HEAD = re.compile(r"\A\s*(?:async\s+)?(?:\([^()]{0,200}\)|[A-Za-z_$][\w$]{0,80})\s*=>\s*\{|\A\s*(?:async\s+)?function\b")
 _MAX_SPAN_CHARS = 20_000
 _MAX_IFS = 200
@@ -94,42 +140,82 @@ _MAX_BRANCH_CHARS = 4_000
 
 
 def mask(text: str) -> str:
-    """``text`` with string literals and comments replaced by spaces (same length)."""
+    """``text`` with string literals and comments replaced by spaces (same length).
+
+    Template-literal interpolations (`${…}`) stay visible as code. A regex
+    literal is skipped unmasked, so a quote or backtick inside it can't start
+    a string that hides the code after it."""
     out = list(text)
-    i = 0
     n = len(text)
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    stack: list[int] = []  # brace depth inside each open `${`
+    prev = ""  # last code character that isn't whitespace
+    i = 0
     while i < n:
         c = text[i]
-        if c in "'\"`":
+        if c == "`" or (c == "}" and stack and stack[-1] == 0):
+            if c == "}":
+                stack.pop()
             j = i + 1
-            while j < n and text[j] != c:
-                if text[j] == "\\":
-                    j += 1
-                elif text[j] == "\n" and c != "`":
-                    break
-                j += 1
-            for k in range(i + 1, min(j, n)):
-                if out[k] != "\n":
-                    out[k] = " "
-            i = j + 1
+            while j < n and text[j] != "`" and not text.startswith("${", j):
+                j += 2 if text[j] == "\\" else 1
+            blank(i + 1, j)
+            if text.startswith("${", j):
+                stack.append(0)
+                i, prev = j + 2, "{"
+            else:
+                i, prev = j + 1, "`"
+            continue
+        if stack and c in "{}":
+            stack[-1] += 1 if c == "{" else -1
+        if c in "'\"":
+            j = i + 1
+            while j < n and text[j] != c and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            blank(i + 1, j)
+            i, prev = j + 1, c
             continue
         if text.startswith("//", i):
             j = text.find("\n", i)
             j = n if j < 0 else j
-            for k in range(i, j):
-                out[k] = " "
+            blank(i, j)
             i = j
             continue
         if text.startswith("/*", i):
             j = text.find("*/", i + 2)
             j = n if j < 0 else j + 2
-            for k in range(i, j):
-                if out[k] != "\n":
-                    out[k] = " "
+            blank(i, j)
             i = j
             continue
+        if c == "/" and prev in _REGEX_PREV:
+            j = i + 1
+            in_class = False
+            while j < n and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "[":
+                    in_class = True
+                elif text[j] == "]":
+                    in_class = False
+                elif text[j] == "/" and not in_class:
+                    break
+                j += 1
+            i, prev = j + 1, "/"
+            continue
+        if not c.isspace():
+            prev = c
         i += 1
     return "".join(out)
+
+
+# A `/` after one of these (or at the start) begins a regex literal, not a division.
+_REGEX_PREV = frozenset(["", *"(,=:[!&|?{};+-*%<>~^"])
 
 
 def _matches(code: str) -> dict[int, int]:
@@ -180,7 +266,8 @@ def _rejects(statements: list[str]) -> bool:
         return True
     returned = _RETURN.match(first)
     if returned:
-        return not _BARE_NEXT.match(returned.group("rest"))
+        rest = returned.group("rest")
+        return not _BARE_NEXT.match(rest) and _RETURN_VALUE.match(rest) is not None
     if (_NEXT_WITH_ERROR.match(first) or _STATUS_REJECT.match(first)) and re.match(r"\A\s*return\b", second):
         return True
     return False
@@ -342,18 +429,26 @@ def session_gate(text: str) -> str | None:
     body_open, body_close = body
     pairs = _matches(code)
     tracked: dict[str, int] = {}
+    needs_member: set[str] = set()
     for decl in _DECLARATION.finditer(code, body_open, body_close):
         window = code[decl.end() : min(body_close, decl.end() + 400)].split(";", 1)[0]
         rest = window.split("\n", 1)[0]
-        if not _SESSION_CALL.search(rest) or not _top_level(code, body_open, body_close, decl.start(), pairs):
+        lookup = _SESSION_CALL.search(rest)
+        if lookup is None or not _top_level(code, body_open, body_close, decl.start(), pairs):
             continue
+        prefix = _RECEIVER_PREFIX if rest[lookup.start()] == "." else _LOOKUP_PREFIX
+        if prefix.fullmatch(rest, 0, lookup.start()) is None:
+            continue  # `!req.user`, `typeof req.user`, `findFirst({ authorId: req.user.id })`
         if _FALLBACK.search(_initializer(window)):
             continue  # `getSession(c) ?? { user: guest }`: never empty, so the gate proves nothing
         if decl.group("names") and "=" in decl.group("names"):
             continue  # `const { user = guest } = await getSession(req)`: a default, never empty
-        names = [decl.group("name")] if decl.group("name") else _IDENT.findall(decl.group("names") or "")
-        # `const { data, error } = await supabase.auth.getUser()`: `data` is always an object.
-        names = [n for n in names if n not in _ENVELOPE_NAMES or decl.group("name")]
+        if decl.group("name"):
+            names = [decl.group("name")]
+            if _ALWAYS_OBJECT.search(rest):
+                needs_member.add(decl.group("name"))
+        else:
+            names = _bindings(decl.group("names") or "")
         for name in names:
             tracked.setdefault(name, decl.end())
     for count, match in enumerate(_IF.finditer(code, body_open, body_close)):
@@ -370,6 +465,11 @@ def session_gate(text: str) -> str | None:
         if name is not None:
             if name not in tracked or tracked[name] > match.start():
                 continue
+            members = [m.lower() for m in _MEMBER_NAME.findall(condition.group("members") or "")]
+            if any(m not in _IDENTITY_MEMBERS for m in members):
+                continue  # `!session.user.isGuest`: a property of the identity, not its absence
+            if name in needs_member and not members:
+                continue  # `!res` on supabase's `{ data, error }`: never falsy
             if _reassigned(name, code[tracked[name] : match.start()]):
                 continue
         elif _DIRECT_ASSIGN.search(code, body_open, match.start()):

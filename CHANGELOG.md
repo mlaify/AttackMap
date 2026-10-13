@@ -208,7 +208,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Any reassignment of the session variable or one of its members (`=`, `||=`, `??=`, destructuring, `session.user ||= guest`) disqualifies it. A destructured `data`/`error` is never tracked.
     - A `try` block counts as top level only if its `catch` rethrows or returns.
     - A lookup with a fallback (`?? {…}`, `|| x`, a ternary, `.catch(…)`) doesn't count.
-    - A handler passed as `obj.method` is followed only when `obj` is imported.
+    - A handler passed as `obj.method` is followed only when `obj` is imported, and only when it is the route's sole handler (`post(path, a, b)` isn't followed).
+    - The lookup must be the initializer itself (not `!req.user` or a query mentioning `req.user`); destructured aliases bind the alias; whole `auth()` / `.auth.getUser()` results need a member test; member tests must name identity (`!session.user.isGuest` doesn't count).
+    - A rejecting `return` returns nothing, a literal, a response, a redirect or an error, not a hand-off call. More writes count before a gate (`queue.add(`, `axios.post(`, `redis.del(`, `fs.unlink(`, `fetch(`).
+    - Masking keeps template interpolations visible and skips regex literals.
     - Assigning `req.user` / `req.session…` before a direct check disqualifies that check.
   - When in doubt the finding stays.
   - Real world: documenso's `POST /api/ai/detect-fields` and `/detect-recipients` are no longer flagged. juice-shop's `/dataerasure` stays flagged, because its lookup is app-specific. cal.com, dub, zulip, saleor, netbox and BookStack are unchanged.

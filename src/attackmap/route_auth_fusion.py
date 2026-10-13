@@ -137,7 +137,25 @@ def unauthenticated_routes(
 
 _REGISTRATION_CALL = re.compile(r"\.\s*(?:get|post|put|patch|delete|all|route|on)\s*\(", re.IGNORECASE)
 _NEWLINE = re.compile(r"\n")
-_LAST_ARG_REF = re.compile(r",\s*([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)\s*\Z")
+_SOLE_REF = re.compile(r"([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)")
+
+
+def _top_level_args(text: str) -> list[str]:
+    """``text`` split on commas outside brackets."""
+    args: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(text[start:i])
+            start = i + 1
+    if text[start:].strip():
+        args.append(text[start:])
+    return args
 
 
 def _handler_session_gate(
@@ -185,7 +203,12 @@ def _handler_session_gate(
     body = handler_body(text)
     if body is not None and body[0] < reg_close:
         return session_gate(text)  # an inline handler
-    ref = _LAST_ARG_REF.search(code[open_paren + 1 : reg_close])
+    args = _top_level_args(code[open_paren + 1 : reg_close])
+    if len(args) != 2:
+        # Only `post(path, handler)`: with `post(path, a, b)` a gate in `b`
+        # runs after `a` has already written.
+        return None
+    ref = _SOLE_REF.fullmatch(args[1].strip())
     if ref is None:
         return None
     if not hop_box:
