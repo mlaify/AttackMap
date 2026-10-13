@@ -34,6 +34,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .handler_auth import session_gate
+from .handler_span import span_bounds
 from .safe_fs import read_repo_text, walk_repo
 from .srcpaths import JS_TS_SUFFIXES
 from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
@@ -103,6 +105,12 @@ def unauthenticated_routes(
         repo_has_java_global_auth(scan, root, content_cache) if has_java_routes else False
     )
 
+    route_lines: dict[str, list[int]] = {}
+    for r in scan.routes:
+        if r.line is not None:
+            route_lines.setdefault(r.file, []).append(r.line)
+    hop_box: list = []
+
     flagged: list[tuple[Route, str]] = []
     for route in scan.routes:
         if route.method.upper() not in _MUTATING:
@@ -123,8 +131,43 @@ def unauthenticated_routes(
         control = resolve_control(route, content, java_global_auth)
         if control is not None:
             continue  # guarded — not a finding
+        if Path(route.file).suffix.lower() in _JS_SUFFIXES and _handler_session_gate(
+            route, content, root, content_cache, route_lines, hop_box
+        ):
+            continue  # the handler rejects a request without a session (#348)
         flagged.append((route, _chain_evidence(route, content)))
     return flagged
+
+
+def _handler_session_gate(
+    route: Route,
+    content: str,
+    root: Path,
+    cache: dict[str, str | None],
+    route_lines: dict[str, list[int]],
+    hop_box: list,
+) -> str | None:
+    """A session check that rejects (see :mod:`handler_auth`) in the route's
+    handler span, or in a function the handler delegates to (one hop)."""
+    if route.line is None:
+        return None
+    lines = content.splitlines()
+    start, end = span_bounds(route.line, lines, route_lines.get(route.file, []))
+    handler = "\n".join(lines[start:end])
+    gate = session_gate(handler)
+    if gate:
+        return gate
+    if not hop_box:
+        from .authz import _HopResolver  # local import: authz imports this module
+
+        hop_box.append(_HopResolver(root, cache))
+    located: list[tuple[str, int, str]] = []
+    hop_box[0].delegated_text(route.file, content, handler, located)
+    for _file, _line, body in located:
+        gate = session_gate(body)
+        if gate:
+            return gate
+    return None
 
 
 def _in_scope(surface: AttackSurface, route: Route) -> bool:

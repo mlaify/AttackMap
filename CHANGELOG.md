@@ -197,6 +197,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`unauth-state-change` recognises handler-level session checks in JS/TS (#348).**
+  - A handler (or the function it delegates to, one hop) that looks a session up and then rejects when it's empty is no longer reported. Lookups include `getSession(`, `getServerSession(`, `auth()`, `currentUser(`, `supabase.auth.getUser(`, or a lookup keyed by `req.cookies` / `req.session`.
+  - Recognition is structural (`handler_auth.py`): strings and comments are masked, and the `if` condition must be exactly `!session` or `!session.user` (optional chaining allowed). The then-branch must start with `return` (not `return next()`), `throw` or `redirect(`. `next(err)` or `res.status(401|403)` counts only when followed by `return`. A session variable reassigned before the check stops counting.
+  - A bare mention of `session`/`user`, a gate that only logs, or a compound condition still leaves the finding.
+  - Real world: documenso `POST /api/ai/detect-fields` and `/detect-recipients`, and juice-shop `POST /dataerasure`, are no longer flagged; zulip, saleor, netbox, BookStack, cal.com and dub are unchanged.
 - **Webhook verification reaches framework guards, constructor middleware, PayPal and shared secrets (#366, part 2).** Four kinds of verifying receivers came out `absent`; they are now reached:
   - NestJS `@UseGuards(Guard)` on the handler or its controller class is followed to the guard's `canActivate`.
   - A Laravel `'Controller@method'` route reaches the action and the `handle` of every middleware the constructor adds with `$this->middleware(X::class)`. When that call sits under an `if` (Laravel Cashier adds it only when a secret is configured), a verified result becomes `unknown` with a note, since verification isn't guaranteed.
