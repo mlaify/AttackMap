@@ -209,6 +209,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `authz._block_from` ignores braces inside string and template literals.
 
   Real world: cal.com's Vercel and PayPal receivers and dub's r2 receiver are now `verified`; cashier-stripe is `unknown` (conditional).
+- **Scan output no longer depends on the Python hash seed (#353, #369).** On a large repo, findings and taint chains changed from run to run: on zulip, `regex-injection` appeared in some runs and not others, and `scan.taint_chains` went from 13 to 110. Two places let set iteration order decide the outcome. The taint import walk took neighbours from a set, and its 40-file visit cap then decided which files it reached. The lockfile resolver seeded its BFS from a set of roots, which decided the `via` path reported for a shared transitive dependency. Both now iterate in sorted order. Directory walks in the lockfile, SBOM, authz and suggest scanners are sorted too, as are database nodes in the architecture graph and the supply-chain own-scope check.
 - **Webhook verification reaches further (#366, cheap parts).** These fixes stop real receivers that verify their payload from coming out `absent`:
   - TypeScript ESM specifiers (`from './webhook.js'`) resolve to the `.ts` source.
   - Curried middleware factories (`({ secret }) => (req, res, next) => {…}`) and multi-line parameter lists keep their bodies in the hop resolver (`authz._block_from`).

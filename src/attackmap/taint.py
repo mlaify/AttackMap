@@ -1157,7 +1157,9 @@ def _walk_from_route(
 
         if current_hops >= recall.max_hops:
             continue
-        for neighbor in graph.get(current, ()):  # noqa: SIM118
+        # Sorted: `graph` values are sets, and the visit cap decides which
+        # files are reached, so set order would change the chains per run (#353).
+        for neighbor in sorted(graph.get(current, ())):
             if neighbor in visited:
                 continue
             visited[neighbor] = current_hops + 1
@@ -1181,7 +1183,7 @@ def _reachable_files(
         processed.add(current)
         if visited[current] >= max_hops:
             continue
-        for neighbor in graph.get(current, ()):  # noqa: SIM118
+        for neighbor in sorted(graph.get(current, ())):  # same order as _walk_from_route
             if neighbor in visited:
                 continue
             visited[neighbor] = visited[current] + 1
