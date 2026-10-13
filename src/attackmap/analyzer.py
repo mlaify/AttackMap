@@ -6,7 +6,7 @@ from collections import Counter
 import networkx as nx
 
 from .models import AttackSurface, AuthHint, Route, ScanResult
-from .webhook_verification import assess_webhook_surfaces
+from .webhook_verification import assess_webhook_surfaces, reclaim_receivers, webhook_management_routes
 
 
 # Bounded line window used to attribute auth hints to a specific route
@@ -161,8 +161,12 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
     for hint in all_supporting_hints:
         supporting_hints_by_file.setdefault(hint.file, set()).add(hint.hint)
 
+    management = webhook_management_routes(scan)
+    management_surfaces: list[tuple[AttackSurface, str]] = []
+
     for route in scan.routes:
         path_lower = route.path.lower()
+        management_reason = management.get((route.method, route.path, route.file))
         # A plugin-declared route auth state (#256) beats the ±40-line file
         # window, which lets a route inherit its neighbour's guard.
         if route.auth == "required":
@@ -187,7 +191,13 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
         has_internal_handler_hint = any(marker in supporting_signals for marker in internal_handler_markers) and not has_explicit_public_visibility
 
         admin_path = any(segment in path_lower for segment in ("/admin", "/manage", "/root"))
-        if "webhook" in path_lower:
+        if management_reason is not None:
+            # CRUD for the app's own outgoing webhooks is an ordinary route (#365).
+            rationale.append(
+                f"Manages the application's own webhook configuration ({management_reason}); "
+                "not an inbound event receiver."
+            )
+        if "webhook" in path_lower and management_reason is None:
             category = "webhook"
             risk = "high"
             rationale.append("Webhook endpoints commonly accept attacker-controlled input from the internet.")
@@ -234,21 +244,33 @@ def identify_attack_surfaces(scan: ScanResult) -> list[AttackSurface]:
         if scan.external_calls:
             rationale.append("Outbound HTTP calls were detected, creating trust boundaries to third-party systems.")
 
-        surfaces.append(
-            AttackSurface(
-                route=route.path,
-                method=route.method,
-                file=route.file,
-                line=route.line,
-                category=category,
-                exposure=exposure,
-                risk=risk,
-                auth_signals=auth_signals,
-                data_store_interaction=bool(scan.databases),
-                outbound_integration=bool(scan.external_calls),
-                rationale=rationale,
+        surface = AttackSurface(
+            route=route.path,
+            method=route.method,
+            file=route.file,
+            line=route.line,
+            category=category,
+            exposure=exposure,
+            risk=risk,
+            auth_signals=auth_signals,
+            data_store_interaction=bool(scan.databases),
+            outbound_integration=bool(scan.external_calls),
+            rationale=rationale,
             )
-        )
+        surfaces.append(surface)
+        if management_reason is not None:
+            management_surfaces.append((surface, category))
+
+    # Precision first: a management candidate whose handler reaches signature
+    # verification is a receiver after all.
+    for surface in reclaim_receivers(scan, [s for s, _ in management_surfaces]):
+        surface.category = "webhook"
+        surface.risk = "high"
+        surface.exposure = "public"
+        surface.rationale = [
+            r for r in surface.rationale if not r.startswith("Manages the application's own webhook")
+        ]
+        surface.rationale.insert(0, "Webhook endpoints commonly accept attacker-controlled input from the internet.")
 
     assess_webhook_surfaces(scan, surfaces)
     return surfaces
