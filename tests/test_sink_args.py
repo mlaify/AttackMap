@@ -62,3 +62,45 @@ def test_request_data_outside_the_dangerous_argument_is_not_a_sink(tmp_path: Pat
 )
 def test_request_data_in_the_dangerous_argument_is_still_a_sink(tmp_path: Path, body: str, kind: str) -> None:
     assert kind in _kinds(tmp_path, body)
+
+
+# With no parsed flow (Python 2 source: `print 'x'`), only the token gate
+# decides. Positions can't be trusted for keyword or `*` arguments, a call
+# cut at the 400-character extraction cap, or text the splitter can't
+# parse, so the gate falls back to the whole call there.
+
+
+def _py2_kinds(tmp_path: Path, body: str) -> set[str]:
+    (tmp_path / "legacy.py").write_text(
+        "import re\nimport requests\n\nprint 'python 2'\n\n\n"
+        "def view(request):\n"
+        f"    {body}\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/l", method="GET", file="legacy.py", line=7)])
+    return {c.sink_kind for c in analyze_taint(scan, tmp_path) if not c.sanitized}
+
+
+@pytest.mark.parametrize(
+    "body, kind",
+    [
+        ("return re.compile(flags=re.I, pattern=request.GET['p'])", "regex_injection"),
+        ("return requests.get(timeout=5, url=request.GET['u'])", "ssrf"),
+        ("return requests.get(**request.GET)", "ssrf"),
+        ("return re.compile('''it's''' + request.GET['p'])", "regex_injection"),
+        ("return re.compile('" + "a" * 420 + "' + request.GET['p'])", "regex_injection"),
+    ],
+)
+def test_no_flow_fallback_keeps_keyword_spread_and_long_calls(tmp_path: Path, body: str, kind: str) -> None:
+    assert kind in _py2_kinds(tmp_path, body)
+
+
+@pytest.mark.parametrize(
+    "body, kind",
+    [
+        ("return getattr(request.user, 'ldap_username', None)", "code_injection"),
+        (r"return re.split(r'\s*,\s*', request.GET['q'])", "regex_injection"),
+    ],
+)
+def test_no_flow_positional_arguments_still_narrow(tmp_path: Path, body: str, kind: str) -> None:
+    assert kind not in _py2_kinds(tmp_path, body)

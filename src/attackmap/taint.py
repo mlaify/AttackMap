@@ -1070,32 +1070,43 @@ _INTERNAL_URL_CALL_RE = re.compile(
 )
 
 
-def _top_level_args(text: str) -> list[tuple[int, int]]:
+_KEYWORD_ARG_RE = re.compile(r"[A-Za-z_]\w{0,63}[ \t]*=(?!=)")
+
+
+def _top_level_args(text: str) -> list[tuple[int, int]] | None:
     """Offsets of each top-level comma-separated argument in ``text`` (a
-    call's argument text), skipping brackets and quoted strings."""
+    call's argument text), skipping brackets and quoted strings (triple
+    quotes included). None when the text doesn't parse cleanly: an
+    unterminated string or unbalanced brackets."""
     spans: list[tuple[int, int]] = []
     depth = 0
-    quote = ""
     start = 0
     i = 0
-    while i < len(text):
+    n = len(text)
+    while i < n:
         c = text[i]
-        if quote:
-            if c == "\\":
-                i += 1
-            elif c == quote:
-                quote = ""
-        elif c in "'\"`":
-            quote = c
-        elif c in "([{":
+        if c in "'\"`":
+            delim = text[i : i + 3] if text[i : i + 3] in ("'''", '"""') else c
+            j = i + len(delim)
+            while j < n and not text.startswith(delim, j):
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                return None
+            i = j + len(delim)
+            continue
+        if c in "([{":
             depth += 1
         elif c in ")]}":
             depth -= 1
+            if depth < 0:
+                return None
         elif c == "," and depth == 0:
             spans.append((start, i))
             start = i + 1
         i += 1
-    spans.append((start, len(text)))
+    if depth != 0:
+        return None
+    spans.append((start, n))
     return spans
 
 
@@ -1103,17 +1114,28 @@ def _token_in_dangerous_args(
     content: str, arg_lo: int, token_hi: int, arg_text: str, args: tuple[int, ...] | None, kind: str
 ) -> bool:
     """The legacy request-token gate, limited to the sink's dangerous
-    argument(s) when it names them by position (#375). `all`, receiver and
-    rest-of-statement sinks keep the old span (paren to first `)`)."""
+    argument(s) when it names them by position (#375). Falls back to the old
+    span (paren to first `)`) for `all`/receiver/rest sinks, and whenever the
+    positions can't be trusted: keyword or `*`/`**` arguments, a call text
+    cut at the extraction cap, or one that doesn't parse."""
+    whole = _TAINTED_RE.search(content, arg_lo, token_hi) is not None
     if args is None or any(index < 0 for index in args):
-        return _TAINTED_RE.search(content, arg_lo, token_hi) is not None
-    spans = _top_level_args(arg_text)
-    for index in args:
-        if not 0 <= index < len(spans):
-            continue
-        lo, hi = spans[index]
+        return whole
+    complete = content.startswith(")", arg_lo + len(arg_text))
+    spans = _top_level_args(arg_text) if complete else None
+    if spans is None:
+        return whole
+    stripped = []
+    for lo, hi in spans:
         while lo < hi and arg_text[lo].isspace():
             lo += 1
+        if arg_text.startswith("*", lo) or _KEYWORD_ARG_RE.match(arg_text, lo, hi):
+            return whole
+        stripped.append((lo, hi))
+    for index in args:
+        if not 0 <= index < len(stripped):
+            continue
+        lo, hi = stripped[index]
         if kind == "open_redirect" and _INTERNAL_URL_CALL_RE.match(arg_text, lo, hi):
             continue
         if _TAINTED_RE.search(arg_text, lo, hi) is not None:
