@@ -485,6 +485,7 @@ def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) 
     collections: set[str] = set()
     # Members (`/webhooks/:id`) that something reads, deletes or acts on.
     members_read: set[str] = set()
+    member_reads: list[tuple[str, object]] = []
     parsed = []
     for route in scan.routes:
         segs = _segments(route.path)
@@ -492,13 +493,21 @@ def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) 
         parsed.append((route, segs, hook))
         if hook is not None and _member_management(route.method.upper(), segs, hook, collection_known=True) == "strong":
             collections.add("/".join(s.lower() for s in segs[: hook + 1]))
-            members_read.add("/".join(s.lower() for s in segs[: hook + 2]))
+            member_reads.append(("/".join(s.lower() for s in segs[: hook + 2]), route))
     collections_paths = {"/".join(s.lower() for s in segs) for _, segs, hook in parsed if hook is not None and hook + 1 == len(segs)}
     hop = _HopResolver(base, cache)
     route_lines: dict[str, list[int]] = {}
     for r in scan.routes:
         if r.line is not None:
             route_lines.setdefault(r.file, []).append(r.line)
+    for member, route in member_reads:
+        # A receiver's subscription handshake (`hub.challenge`, `crc_token`)
+        # on the member is no evidence that the member is managed.
+        if route.method.upper() in {"GET", "HEAD", "ANY"} and _HANDSHAKE.search(
+            _handler_text(base, cache, route, route_lines.get(route.file, []))
+        ):
+            continue
+        members_read.add(member)
     for route, segs, hook in parsed:
         if hook is None:
             continue

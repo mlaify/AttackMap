@@ -266,3 +266,21 @@ def test_get_with_subscription_handshake_stays_a_receiver(tmp_path: Path) -> Non
     scan = _scan(tmp_path, [("GET", "/webhooks"), ("GET", "/webhooks/:webhookId")], file="s.js", body=body)
     scan.routes[1].line = 5
     assert {(m, p) for m, p, _ in webhook_management_routes(scan)} == {("GET", "/webhooks/:webhookId")}
+
+
+def test_member_handshake_get_is_no_evidence_for_a_put(tmp_path: Path) -> None:
+    """Review round 3: a receiver's subscription handshake on the member
+    (GET hub.challenge) must not make the member's PUT look managed."""
+    body = (
+        "app.get('/webhooks/:connectorId', (req, res) => {\n"
+        "  if (req.query['hub.mode'] === 'subscribe') return res.send(req.query['hub.challenge'])\n"
+        "  res.sendStatus(403)\n"
+        "})\n"
+        "app.put('/webhooks/:connectorId', async (req, res) => {\n"
+        "  await db.query('INSERT INTO events VALUES ($1)', [req.body])\n"
+        "  res.sendStatus(200)\n"
+        "})\n"
+    )
+    scan = _scan(tmp_path, [("GET", "/webhooks/:connectorId"), ("PUT", "/webhooks/:connectorId")], file="s.js", body=body)
+    scan.routes[1].line = 5
+    assert ("PUT", "/webhooks/:connectorId") not in {(m, p) for m, p, _ in webhook_management_routes(scan)}
