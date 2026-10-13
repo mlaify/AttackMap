@@ -895,6 +895,18 @@ def test_bfla_follows_a_symfony_yaml_route_to_its_controller(tmp_path: Path) -> 
     assert "(handler App\\Controller\\AdminController::purge)" in findings[0].evidence[0]
 
 
+def test_bfla_next_methods_attributes_dont_leak_into_the_route_method(tmp_path: Path) -> None:
+    """A role-gated action written *after* the unchecked one: its attribute
+    and docblock sit above its own `function` line, not in purge()'s body."""
+    controller = (
+        "<?php\nnamespace App\\Controller;\n\nfinal class AdminController\n{\n"
+        "    public function purge(): void\n    {\n        $this->repo->purgeAll();\n    }\n\n"
+        "    /** Admins only. */\n    #[IsGranted('ROLE_ADMIN')]\n    public function other(): void {}\n}\n"
+    )
+    findings = _symfony_repo(tmp_path, "config/routes.yaml", _YAML, controller)
+    assert len(findings) == 1
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

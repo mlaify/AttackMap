@@ -332,7 +332,13 @@ class _ConfigControllerResolver:
         if index is None:
             return None
         first = starts[index][0]
-        last = starts[index + 1][0] if index + 1 < len(starts) else len(lines)
+        if index + 1 < len(starts):
+            # Stop above the next method's own attributes / docblock: they
+            # describe it, not this one.
+            last = starts[index + 1][0]
+            last -= len(_leading_attributes(lines, last))
+        else:
+            last = len(lines)
         body = _leading_attributes(lines, first) + lines[first : min(last, first + _AUTHZ_SPAN)]
         class_line = next((i for i, line in enumerate(lines[:first]) if _CLASS_DECL_RE.search(line)), None)
         class_attrs = _leading_attributes(lines, class_line) if class_line is not None else []
