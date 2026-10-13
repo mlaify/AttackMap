@@ -160,7 +160,9 @@ taxonomy for each kind. For the native kinds (``unbounded_copy``,
 ``alloc_size_overflow``) set ``severity`` and ``confidence`` per instance
 from whether an input reaches the sink in the same function, and name that
 input in ``source_kind`` / ``source_line``. Core groups the instances into
-one finding per severity tier.
+one finding per (kind, severity tier), like :class:`CloudMisconfig`. ``kind``
+(and ``DependencyHint.ecosystem``) is typed ``str``: core drops a record with
+a value it doesn't know and notes it under ``analyzer_errors``.
 
 Manifest-level supply-chain risks an analyzer understands better than core
 (a CMake ``FetchContent`` ``GIT_TAG`` on a branch) go in

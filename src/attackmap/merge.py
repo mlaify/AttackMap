@@ -37,6 +37,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .models import NATIVE_WEAKNESS_KINDS
+
 
 @dataclass(frozen=True)
 class MergeRule:
@@ -94,10 +96,22 @@ def keep_more_severe(existing: Any, duplicate: Any) -> None:
             value = getattr(duplicate, name, None)
             if value is not None and hasattr(existing, name):
                 setattr(existing, name, value)
+        for name in _UPGRADE_FIELDS_PAIRED:
+            if hasattr(existing, name):
+                setattr(existing, name, getattr(duplicate, name, None))
 
 
 # Fields a winning duplicate carries over (when it sets them).
 _UPGRADE_FIELDS = ("evidence_text", "context", "escalation_path", "platform", "source_analyzer")
+# Fields that describe the winner's report as a pair and are carried over even
+# when unset, so a merged record never pairs one analyzer's severity with
+# another analyzer's traced input.
+_UPGRADE_FIELDS_PAIRED = ("source_kind", "source_line")
+
+
+def _upgrade_native_weakness(existing: Any, duplicate: Any) -> None:
+    if existing.kind in NATIVE_WEAKNESS_KINDS:
+        keep_more_severe(existing, duplicate)
 
 
 MERGE_SCHEMA: tuple[MergeRule, ...] = (
@@ -147,9 +161,17 @@ MERGE_SCHEMA: tuple[MergeRule, ...] = (
         "web_hardening_issues",
         lambda item: (item.kind, item.file, item.line),
     ),
+    # Native C/C++ kinds (#189) carry evidence in the identity (two sinks of
+    # one kind on a line are two instances), and a true duplicate keeps the
+    # more severe report with its traced input. Other kinds keep the
+    # (kind, file, line) identity and the first report.
     MergeRule(
         "code_weaknesses",
-        lambda item: (item.kind, item.file, item.line),
+        lambda item: (
+            item.kind, item.file, item.line,
+            item.evidence_text if item.kind in NATIVE_WEAKNESS_KINDS else None,
+        ),
+        upgrade=_upgrade_native_weakness,
     ),
     MergeRule(
         "workflow_issues",

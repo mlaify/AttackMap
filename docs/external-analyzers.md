@@ -336,8 +336,15 @@ reachability, the intra-procedural flow, sanitizers and severity.
 Some bug classes are decided inside a single function and don't fit core's
 route-seeded taint pass, such as C/C++ memory-safety sinks. An analyzer may
 emit those as `attackmap.sdk.CodeWeakness` records in `result.code_weaknesses`
-(#189). `kind` must be one of `attackmap.sdk.CODE_WEAKNESS_KINDS`. Core owns
-each kind's title, mitigation and CWE/OWASP mapping.
+(#189). `kind` is one of `attackmap.sdk.CODE_WEAKNESS_KINDS`. Core owns
+each kind's title, mitigation and CWE/OWASP mapping. `kind` is typed `str`:
+core drops a record with a kind it doesn't know (a plugin built against a
+newer core), keeps the rest of the result and notes the drop under
+`analyzer_errors` (`--strict-analyzers` fails instead). `DependencyHint.ecosystem`
+works the same way, so a new ecosystem such as `cmake` never discards a
+plugin's whole result on an older core that typed it as a closed set. A plugin
+that must also run on cores older than this should check
+`"cmake" in attackmap.sdk.DEPENDENCY_ECOSYSTEMS` before emitting it.
 
 The native kinds are `unbounded_copy`, `format_string`, `native_command_exec`,
 `tainted_copy_length` and `alloc_size_overflow`. For these, set per instance:
@@ -346,10 +353,21 @@ The native kinds are `unbounded_copy`, `format_string`, `native_command_exec`,
   same function;
 - `source_kind` (`request`, `network`, `stdin`, `argv`, `env`, `file`) and
   `source_line`, naming the input you traced. Leave them `None` if you traced
-  none.
+  none. Any other `source_kind` is kept as `other`, and `source_line` is
+  dropped without a `source_kind`.
 
-Core emits one finding per severity tier, so one remote-input `strcpy` isn't
-merged into a pile of untraced ones. Skip test and vendored code the way core
+Core emits one finding per (kind, severity tier) with the shared tiering
+(`threat_model.tiered_findings`), so one remote-input `strcpy` isn't merged
+into a pile of untraced ones. The `high` tier keeps the plain title; the other
+tiers add "(medium-severity instances)" / "(low-severity instances)", so each
+tier has its own finding id for triage, suppression and `--fail-on-new-high`.
+SARIF rule metadata comes from the `high` default tier. Records merge on
+(kind, file, line, evidence); on a true duplicate the more severe, then more
+confident, report wins together with its `source_kind` / `source_line`. Each
+record is its own location with an instance fingerprint, so two sinks on one
+line (or the same line in two tiers) stay two SARIF results. Core-aggregated
+kinds (`xxe`, `prototype_pollution`, ...) are unchanged: one finding at the
+spec's fixed severity and `medium` confidence, whatever the record sets. Skip test and vendored code the way core
 does (`ATTACKMAP_INCLUDE_TESTS` / `ATTACKMAP_INCLUDE_VENDORED` opt back in).
 
 Manifest risks your analyzer understands better than core, such as a CMake
