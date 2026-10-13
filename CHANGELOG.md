@@ -189,7 +189,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Webhook management routes are no longer webhook receivers (#365).** Any path containing `webhook` was a `webhook` surface, so CRUD for an app's own outgoing webhooks (`/settings/webhooks`, `/v2/webhooks/:webhookId`, `/projects/<uuid>/add_webhook/`, a DRF `WebhookViewSet`, a tRPC webhook router) got `webhook_verification: absent` and raised `public-webhook`. These routes are now categorized like any other route. The signals are structural: a settings segment, a management word fused with `webhook` (`add_webhook`, `webhooklogs`), a stored webhook addressed by an id param and read or changed (GET/PUT/PATCH/DELETE, or `POST …/:id/test`), the collection of such members, or a ViewSet registration. A provider param (`/webhooks/:provider`), a POST to `/webhooks/:id[/:token]` (incoming-webhook style), or a candidate whose handler reaches signature verification stays a receiver. Real world: 31 of 44 webhook surfaces in the corpus were management routes. All 31 are now reclassified, and all 13 receivers are kept.
+- **Webhook management routes are no longer webhook receivers (#365).** Any path containing `webhook` was a `webhook` surface, so CRUD for an app's own outgoing webhooks got `webhook_verification: absent` and raised `public-webhook`. Only clear management shapes now leave the category; any doubt keeps a route a receiver. The shapes:
+  - a stored webhook addressed by an id param that is read, deleted or acted on (`GET`/`DELETE /webhooks/:webhookId`, `POST …/:id/test`);
+  - a PUT/PATCH on it only alongside such a sibling, a user-authenticated route, or a handler that persists a webhook URL with a secret or events;
+  - a GET on the collection of such members;
+  - a POST to that collection only when user-authenticated or persisting config;
+  - settings paths only for CRUD shapes;
+  - unambiguous fused words (`webhooklogs`, `add_webhook`), never on a POST;
+  - a tRPC router;
+  - a model CRUD DRF ViewSet on the webhook collection.
+
+  Tenant params (`:accountId`), provider params, shared-secret/signature guards, `hub.challenge`/`crc_token` handshakes, and any candidate whose handler reaches signature verification all stay receivers.
 - **BFLA follows config-declared routes to their controller, and reads ACL and Symfony role checks (#343).** `bfla-privileged-route` read the route's span in `route.file` as its handler. For routes declared in configuration that span is config, never the controller.
   - Symfony YAML/XML routes are now followed to the controller method through the repo's composer PSR-4 map: `controller: App\\Controller\\X::y`, `_controller` under `defaults`, XML `controller="..."` and `<default key="_controller">`, or an invokable `X`. The usual role check then runs on the method plus the attributes on it and on its class.
   - Config routes whose controller can't be resolved (Laminas / Omeka PHP config arrays, bundle resources) are not flagged on the strength of the config alone, unless the span holds an inline closure handler. Plugin `Route.guards` with role semantics are consulted first.
