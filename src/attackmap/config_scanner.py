@@ -149,7 +149,9 @@ _SECRET_KEY_RE = re.compile(
     r"['\"]?(?P<key>[a-zA-Z0-9_.-]{0,64}"             # optional key prefix (bounded, #236)
     r"(?:password|passwd|secret|token|api[_-]?key|priv[_-]?key|private[_-]?key|apikey|_pass|_pwd))"
     r"['\"]?"
-    r"\s*[:=]\s*"
+    # Same line only: `\s*` let an empty `KEY=` take the next line's
+    # `OTHER_KEY=` as its value (#385).
+    r"[ \t]*[:=][ \t]*"
     r"(?:['\"](?P<value>[^'\"\n]{4,})['\"]|(?P<bare>[^\s#'\",]{4,}))",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -172,10 +174,15 @@ _PLACEHOLDER_LITERALS = frozenset({
 })
 
 
+# GitHub Actions `permissions:` levels (`id-token: write`, `contents: read`),
+# which the key pattern sees as `…token: write` (#385).
+_PERMISSION_LEVELS = frozenset({"read", "write", "none", "read-all", "write-all"})
+
+
 def _is_placeholder(value: str) -> bool:
     trimmed = value.strip()
     lower = trimmed.lower()
-    if lower in _PLACEHOLDER_LITERALS:
+    if lower in _PLACEHOLDER_LITERALS or lower in _PERMISSION_LEVELS:
         return True
     # Template interpolation — `${ENV_VAR}`, `{{ .Values.foo }}`, `<value>`.
     if trimmed.startswith(("${", "{{", "<")):
