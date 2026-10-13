@@ -137,6 +137,11 @@ def unauthenticated_routes(
 
 _REGISTRATION_CALL = re.compile(r"\.\s*(?:get|post|put|patch|delete|all|route|on)\s*\(", re.IGNORECASE)
 _NEWLINE = re.compile(r"\n")
+_READ_ONLY_MIDDLEWARE = re.compile(
+    r"(?:[A-Za-z_$][\w$]{0,40}\.)?"
+    r"(?:[A-Za-z_$]{0,20}[Vv]alidat(?:or|e|ion)\w{0,20}|json|urlencoded|text|raw|cors|helmet|rateLimit\w{0,20}|\w{0,20}[Ll]imiter)"
+    r"\s*\([^;]{0,400}\)"
+)
 _SOLE_REF = re.compile(r"([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)")
 
 
@@ -201,9 +206,10 @@ def _handler_session_gate(
     if reg_close is None:
         return None
     args = _top_level_args(code[open_paren + 1 : reg_close])
-    if len(args) > 2:
-        # Only `post(path, handler)`: with `post(path, a, b)` a gate in `b`
-        # runs after `a` (multer, a writer) has already acted.
+    if len(args) > 2 and not all(_READ_ONLY_MIDDLEWARE.fullmatch(a.strip()) for a in args[1:-1]):
+        # `post(path, a, handler)`: a gate in the handler runs after `a`
+        # (multer, a writer) has already acted. Validators, body parsers,
+        # cors and rate limiters only read the request.
         return None
     body = handler_body(text)
     if body is not None and body[0] < reg_close:

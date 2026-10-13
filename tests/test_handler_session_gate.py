@@ -431,3 +431,16 @@ def test_hop_definition_lines_count_newlines_only(tmp_path: Path) -> None:
         "app.post('/api/open', open);\n"
     )
     assert len(_unauth_findings(tmp_path)) == 1
+
+
+def test_inline_handler_after_a_validator_is_trusted(tmp_path: Path) -> None:
+    # documenso's shape: `post('/', sValidator('json', Schema), async (c) => { gate })`.
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        "app.post('/api/ai', sValidator('json', Schema), async (req, res) => {\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await Order.create(req.body);\n"
+        "});\n"
+    )
+    assert _unauth_findings(tmp_path) == []

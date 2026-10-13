@@ -212,7 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - The lookup must be the initializer itself (not `!req.user` or a query mentioning `req.user`); destructured aliases bind the alias; whole `auth()` / `.auth.getUser()` results need a member test; member tests must name identity (`!session.user.isGuest` doesn't count).
     - A rejecting `return` returns nothing, a literal, a response, a redirect or an error, not a hand-off call. More writes count before a gate (`queue.add(`, `axios.post(`, `redis.del(`, `fs.unlink(`, `fetch(`).
     - Masking keeps template interpolations visible and skips regex literals.
-    - Before the gate, any awaited call other than the lookup or a request read (`req.json()`, `schema.parse…`), or a `return` that hands off (`return handleGuest(req, res)`), disqualifies it. `next('route')` is a hand-off, not a rejection. Inline handlers after other middleware (`upload.single('f')`) aren't trusted.
+    - Before the gate, any awaited call other than the lookup or a request read (`req.json()`, `schema.parse…`), or a `return` that hands off (`return handleGuest(req, res)`), disqualifies it. `next('route')` is a hand-off, not a rejection. Inline handlers after other middleware (`upload.single('f')`) aren't trusted; validators, body parsers, cors and rate limiters before them are.
     - Remix (`getSession(request.headers.get('Cookie'))`) and h3 (`getSession(event, …)`) sessions need a member test, as `.then(…)` and `Object.assign(session, …)` count as fallbacks.
     - The one-hop definition lookup counts lines on `\n` only, like route lines.
     - Assigning `req.user` / `req.session…` before a direct check disqualifies that check.
