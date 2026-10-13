@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from attackmap.authz import analyze_authz, _resource_id_param, is_config_route_file
+from attackmap.authz import analyze_authz, _resource_id_param, has_role_check, is_config_route_file
 from attackmap.models import BolaCandidate, DatabaseHint, Route, ScanResult, TaintChain
 from attackmap.scanner import scan_repo
 from attackmap.threat_model import generate_attack_paths, generate_findings
@@ -1068,3 +1068,634 @@ def test_bola_in_example_or_fixture_paths_not_reported() -> None:
     scan = ScanResult(root="/", authz_candidates=[cand])
     assert _bola_findings(scan) == []
     assert not [p for p in generate_attack_paths(scan) if "BOLA" in p.name]
+
+
+
+# ---------------------------------------------------------------------------
+# #349: role-check guard names from plugins
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "guards",
+    [
+        ["requireAuth", "restrictTo('admin')"],
+        ['restrictTo("admin", "owner")'],
+        ["checkRole('ROLE_ADMIN')"],
+        ["allowRoles(['superuser'])"],
+        ["permit('staff')"],
+        ["ApiAuthGuard", "@MembershipRoles(['OWNER'])"],
+        ["@MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER])"],
+        ["Roles('admin')"],
+        ["JwtAuthGuard", "RolesGuard", "@Roles('admin')"],
+        ["role:admin"],
+        ["role:ROLE_MODERATOR"],
+        # separators and constants: SUPER_ADMIN, super-admin, ADMIN
+        ["@Roles(Role.SUPER_ADMIN)"],
+        ["@Roles('super-admin')"],
+        ["@Roles(ADMIN)"],
+        ["authorizeRoles('admin')"],
+    ],
+)
+def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> None:
+    (tmp_path / "admin.js").write_text("// handled by a plugin\n")
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=guards)
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+@pytest.mark.parametrize(
+    "guards",
+    [
+        ["requireAuth"],
+        ["isAuthenticated"],
+        ["JwtAuthGuard"],
+        ["AuthGuard('jwt')"],
+        ["ApiAuthGuard"],
+        ["passport.authenticate"],
+        ["permitted"],  # not the `permit` guard
+        ["aclCache"],
+        # token-scope checks any authenticated client may pass
+        ["guard.check"],
+        ["requiredScopes"],
+        ["requireScopes('read:messages')"],
+        # arguments that admit every signed-in user, or nothing at all
+        ["Roles()"],
+        ["@Permissions()"],
+        ["restrictTo('*')"],
+        ["restrictTo('admin', 'user')"],
+        ["@MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER, MembershipRole.MEMBER])"],
+        ["allowRoles(['authenticated'])"],
+        ["role:"],
+        # metadata guards alone: they enforce @Roles metadata, and allow all without it
+        ["RolesGuard"],
+        ["JwtAuthGuard", "PermissionsGuard"],
+        ["PoliciesGuard"],
+        ["JwtAuthGuard", "RolesGuard", "@Roles('user')"],
+        # allow-list: names without arguments, non-privileged or unknown roles,
+        # identifiers, spreads, request-derived values
+        ["restrictTo"],
+        ["permit"],
+        ["checkRole"],
+        ["rbac"],
+        ["acl"],
+        ["allowRoles"],
+        ["role:canManageUsers"],
+        ["role:editor"],
+        ["@Pbac(['team.update'])"],
+        ["restrictTo(ADMIN_ROLE)"],
+        ["restrictTo(...adminRoles)"],
+        ["restrictTo(Object.values(Role))"],
+        ["Roles(Role.Viewer)"],
+        ["restrictTo(req.body.role)"],
+        ["restrictTo('admin', role)"],
+        # members of lower-case receivers are data, not role constants
+        ["restrictTo(doc.owner)"],
+        ["checkRole(user.admin)"],
+        ["restrictTo(event.body.admin)"],
+        ["restrictTo(this.req.query.admin)"],
+        ["authorizeRoles('user')"],
+        ["authorize_roles('user')"],
+        ["authorizeRolesFor('user')"],
+        # capitalised receivers that aren't role enums
+        ["restrictTo(User.admin)"],
+        ["restrictTo(Request.query.admin)"],
+        ["checkRoles(Config.roles.owner)"],
+        # template literals and mixed lists
+        ["restrictTo(`admin`)"],
+        ["restrictTo(Roles.ADMIN, Roles.USER)"],
+        ["authorizeRole('user')"],
+        ["checkRole(GroupChat.OWNER)"],
+        ["checkRole(LogLevel.ADMIN)"],
+    ],
+)
+def test_authentication_only_guards_are_not_role_checks(tmp_path: Path, guards: list[str]) -> None:
+    (tmp_path / "admin.js").write_text("// handled by a plugin\n")
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=guards)
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+def test_generic_guard_words_in_handler_code_are_not_role_checks(tmp_path: Path) -> None:
+    # `permit` / `acl` count only as guard names, not as words in the handler.
+    (tmp_path / "admin.rb.js").write_text(
+        "app.delete('/admin/users/:id', requireAuth, async (req, res) => {\n"
+        "  const attrs = params.permit('name');\n"
+        "  const acl = loadAcl();\n"
+        "  await User.remove(req.params.id);\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.rb.js", line=1, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["restrictTo('admin')", "checkRole('admin')", "allowRoles('admin')"],
+)
+def test_role_check_calls_in_the_chain_count(tmp_path: Path, call: str) -> None:
+    (tmp_path / "admin.js").write_text(
+        f"app.delete('/admin/users/:id', requireAuth, {call}, async (req, res) => {{\n"
+        "  await User.remove(req.params.id);\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=["requireAuth"])
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["restrictTo('admin', 'user')", "restrictTo('*')", "checkRole()", "requiredScopes('write:users')", "guard.check(['admin'])"],
+)
+def test_weak_role_calls_in_the_chain_do_not_count(tmp_path: Path, call: str) -> None:
+    (tmp_path / "admin.js").write_text(
+        f"app.delete('/admin/users/:id', requireAuth, {call}, async (req, res) => {{\n"
+        "  await User.remove(req.params.id);\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+def test_membership_roles_decorator_with_member_does_not_count(tmp_path: Path) -> None:
+    # cal.com: `@MembershipRoles([ADMIN, OWNER, MEMBER])` admits every member.
+    (tmp_path / "c.controller.ts").write_text(
+        "export class C {\n"
+        '  @Delete("/admin/teams/:id")\n'
+        "  @MembershipRoles([MembershipRole.ADMIN, MembershipRole.OWNER, MembershipRole.MEMBER])\n"
+        "  async remove(@Param('id') id: string) {\n"
+        "    await this.teams.delete(id);\n"
+        "  }\n"
+        "}\n"
+    )
+    route = Route(path="/admin/teams/:id", method="DELETE", file="c.controller.ts", line=2, auth="required", guards=["ApiAuthGuard"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("@UseGuards(JwtAuthGuard, RolesGuard)\n@Roles('admin')\nremove() {}", True),
+        ("@UseGuards(RolesGuard)\n@Roles(Role.Admin)\nremove() {}", True),
+        ("@UseGuards(JwtAuthGuard, RolesGuard)\n@Roles('user')\nremove() {}", False),
+        ("@UseGuards(JwtAuthGuard, RolesGuard)\nremove() {}", False),
+        ("@UseGuards(PermissionsGuard, PoliciesGuard)\nremove() {}", False),
+    ],
+)
+def test_nest_metadata_guards_in_code_need_privileged_roles(code: str, expected: bool) -> None:
+    # #349: RolesGuard enforces @Roles metadata and allows everyone without it.
+    assert has_role_check(code) is expected
+
+
+@pytest.mark.parametrize(
+    ("use", "flagged"),
+    [
+        ("router.use(authController.restrictTo('admin'));", 0),
+        ("router.use(checkRole('admin'));", 0),
+        ("router.use(requireAuth, restrictTo('admin', 'owner'));", 0),
+        ("router.use(authController.restrictTo('user'));", 1),
+        ("router.use(requireAuth);", 1),
+        # scoped to another prefix, another router, or commented out
+        ("router.use('/billing', restrictTo('admin'));", 1),
+        ("adminRouter.use(restrictTo('admin'));", 1),
+        ("// router.use(restrictTo('admin'));", 1),
+        ("/* router.use(restrictTo('admin')); */", 1),
+        ("router.use(ADMIN_PREFIX, restrictTo('admin'));", 1),
+        ("router.use(adminPath, restrictTo('admin'));", 1),
+        ("router.use(/^\\/admin/, restrictTo('admin'));", 1),
+        ("router.use(apiV1, restrictTo('admin'));", 1),
+        ("router.use(requireAuth, restrictTo('admin'));", 0),
+        ("router.use(isAdmin, logger);", 0),
+        ("router.use(protectRoute, restrictTo('admin'));", 0),
+        ("router.use(firebaseAuth, restrictTo('admin'));", 0),
+        ("router.use(cors, restrictTo('admin'));", 0),
+        ("router.use('/', restrictTo('admin'));", 0),
+        # first arguments that are paths, however they're built
+        ("router.use(API_PREFIX + '/billing', restrictTo('admin'));", 1),
+        ("router.use(['/billing', '/ops'], restrictTo('admin'));", 1),
+        ("router.use(path.join(base, 'billing'), restrictTo('admin'));", 1),
+        ("router.use(ADMIN_ROUTE, restrictTo('admin'));", 1),
+        ("router.use(PATHS.BILLING_ADMIN, restrictTo('admin'));", 1),
+        ("router.use(cors(), restrictTo('admin'));", 0),
+        # a regex literal holding a backtick or `/*` doesn't blank what follows
+        ("const strip = (s) => s.replace(/`/g, '');\nrouter.use(restrictTo('admin'));", 0),
+        ("const glob = /[/*]/;\nrouter.use(restrictTo('admin'));", 0),
+    ],
+)
+def test_router_use_role_call_keeps_its_arguments(tmp_path: Path, use: str, flagged: int) -> None:
+    # #349 review: `router.use(restrictTo('admin'))` was cut at the first `)`.
+    content = (
+        "const router = require('express').Router();\n"
+        f"{use}\n"
+        "router.delete('/admin/users/:id', async (req, res) => {\n"
+        "  await User.deleteOne({ _id: req.params.id });\n"
+        "});\n"
+    )
+    (tmp_path / "admin.js").write_text(content)
+    line = content.split("\n").index("router.delete('/admin/users/:id', async (req, res) => {") + 1
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=line, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == flagged
+
+
+def test_guard_name_parser_is_linear_on_whitespace(tmp_path: Path) -> None:
+    import time
+
+    route = Route(path="/admin/x", method="DELETE", file="admin.js", line=1, auth="required", guards=[" " * 80_000 + "!"])
+    (tmp_path / "admin.js").write_text("// x\n")
+    started = time.perf_counter()
+    _bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))
+    assert time.perf_counter() - started < 2.0
+
+
+def test_router_use_applies_only_to_later_routes_on_the_same_router() -> None:
+    # Express applies `use` middleware only to routes registered after it.
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "const router = require('express').Router();\n"
+        "router.delete('/a/:id', del);\n"
+        "router.use(restrictTo('admin'));\n"
+        "router.delete('/b/:id', del);\n"
+        "other.delete('/c/:id', del);\n"
+    )
+    info = _chain_roles("admin.js", content)
+    lines = {2: False, 4: True, 5: False}
+    for line, expected in lines.items():
+        route = Route(path="/x", method="DELETE", file="admin.js", line=line)
+        assert _chain_role_check(route, content, info) is expected, line
+    # a registration chained across lines resolves to the router it starts on
+    content = (
+        "const router = require('express').Router();\n"
+        "router.use(restrictTo('admin'));\n"
+        "router\n"
+        "  .route('/x')\n"
+        "  .delete(del);\n"
+        "other\n"
+        "  .route('/y')\n"
+        "  .delete(del);\n"
+    )
+    info = _chain_roles("admin.js", content)
+    lines = {5: True, 8: False}
+    for line, expected in lines.items():
+        route = Route(path="/x", method="DELETE", file="admin.js", line=line)
+        assert _chain_role_check(route, content, info) is expected, line
+
+
+@pytest.mark.parametrize(
+    ("line", "flagged"),
+    [
+        ("  log(\"TODO restrictTo('admin')\");", 1),
+        ("  // restrictTo('admin')", 1),
+        ("  restrictTo('admin')(req, res, () => {});", 0),
+    ],
+)
+def test_role_calls_in_strings_or_comments_dont_count(tmp_path: Path, line: str, flagged: int) -> None:
+    (tmp_path / "admin.js").write_text(
+        "const router = require('express').Router();\n"
+        "router.delete('/admin/users/:id', async (req, res) => {\n"
+        f"{line}\n"
+        "  await User.deleteOne({ _id: req.params.id });\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=2, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == flagged
+
+
+@pytest.mark.parametrize(
+    ("decorator", "bola"),
+    [
+        ("@Roles(Role.Admin)", 0),  # a privileged role-gated route reaches any object by design
+        ("@Roles(Role.Editor)", 1),  # any editor: still needs an object-level check
+        ("", 1),  # RolesGuard alone enforces nothing
+    ],
+)
+def test_role_metadata_and_bola(tmp_path: Path, decorator: str, bola: int) -> None:
+    (tmp_path / "users.controller.ts").write_text(
+        "@Controller('users')\n"
+        "export class UsersController {\n"
+        "  @UseGuards(JwtAuthGuard, RolesGuard)\n"
+        f"  {decorator}\n"
+        "  @Delete(':id')\n"
+        "  remove(@Param('id') id: string) {\n"
+        "    return this.users.delete(id);\n"
+        "  }\n"
+        "}\n"
+    )
+    route = Route(path="/users/:id", method="DELETE", file="users.controller.ts", line=5, auth="required")
+    assert len(analyze_authz(_plugin_shaped_scan(tmp_path, route), tmp_path)) == bola
+
+
+def test_fastapi_router_dependency_role_call(tmp_path: Path) -> None:
+    (tmp_path / "admin.py").write_text(
+        "router = APIRouter(prefix='/admin', dependencies=[Depends(check_roles('admin'))])\n"
+        "@router.delete('/users/{user_id}')\n"
+        "def delete_user(user_id: int):\n"
+        "    db.delete(User, user_id)\n"
+    )
+    route = Route(path="/admin/users/{user_id}", method="DELETE", file="admin.py", line=2, auth="required")
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+def test_class_level_roles_metadata_covers_the_controller(tmp_path: Path) -> None:
+    (tmp_path / "users.controller.ts").write_text(
+        "@Controller('admin/users')\n"
+        "@UseGuards(JwtAuthGuard, RolesGuard)\n"
+        "@Roles(Role.Admin)\n"
+        "export class AdminUsersController {\n"
+        "  @Delete(':id')\n"
+        "  remove(@Param('id') id: string) {\n"
+        "    return this.users.delete(id);\n"
+        "  }\n"
+        "}\n"
+        "\n"
+        "@Controller('admin/teams')\n"
+        "@UseGuards(JwtAuthGuard, RolesGuard)\n"
+        "export class AdminTeamsController {\n"
+        "  @Delete(':id')\n"
+        "  remove(@Param('id') id: string) {\n"
+        "    return this.teams.delete(id);\n"
+        "  }\n"
+        "}\n"
+    )
+    routes = [
+        Route(path="/admin/users/:id", method="DELETE", file="users.controller.ts", line=5, auth="required", guards=["JwtAuthGuard", "RolesGuard"]),
+        Route(path="/admin/teams/:id", method="DELETE", file="users.controller.ts", line=14, auth="required", guards=["JwtAuthGuard", "RolesGuard"]),
+    ]
+    findings = _bfla_findings(ScanResult(root=str(tmp_path), routes=routes))
+    assert len(findings) == 1
+    evidence = " ".join(findings[0].evidence)
+    assert "/admin/teams/:id" in evidence and "/admin/users/:id" not in evidence
+
+
+def _route_lines(content: str, marker: str) -> list[int]:
+    return [i + 1 for i, line in enumerate(content.split("\n")) if marker in line]
+
+
+def test_class_roles_stay_inside_the_class(tmp_path: Path) -> None:
+    # A method-level @Roles at the end of class A is not class B's metadata,
+    # and a class's range ends at its closing brace.
+    content = (
+        "export class AdminController {\n"
+        "  @Roles(Role.Admin)\n"
+        "  @Delete(':id')\n"
+        "  remove() {}\n"
+        "}\n"
+        "\n"
+        "@Controller('public')\n"
+        "export class PublicController {\n"
+        "  @Delete(':id')\n"
+        "  removeAny() {}\n"
+        "}\n"
+        "\n"
+        "@Roles(Role.Admin)\n"
+        "export class A {}\n"
+        "router.delete('/users/:id', h);\n"
+    )
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    info = _chain_roles("c.ts", content)
+    public_delete, after_class = 9, 15
+    for line in (public_delete, after_class):
+        assert _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=line), content, info) is False, line
+
+
+def test_method_roles_override_class_roles() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class UsersController {\n"
+        "  @Roles(Role.User)\n"
+        "  @Delete(':id')\n"
+        "  remove() {}\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "  @Delete('all')\n"
+        "  removeAll() {}\n"
+        "}\n"
+    )
+    info = _chain_roles("c.ts", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=4), content, info) is False
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=17), content, info) is True
+
+
+def test_fastapi_role_dependency_covers_only_its_router() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "x = a // b; admin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n"
+        "public = APIRouter()\n"
+        "@admin.delete('/users/{id}')\n"
+        "def delete_user(id: int): ...\n"
+        "@public.delete('/posts/{id}')\n"
+        "def delete_post(id: int): ...\n"
+    )
+    info = _chain_roles("r.py", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="r.py", line=3), content, info) is True
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="r.py", line=5), content, info) is False
+
+
+def test_this_router_in_class_controllers() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "class UsersRoutes {\n"
+        "  init() {\n"
+        "    this.router.use(restrictTo('admin'));\n"
+        "    this.router.delete('/u/:id', h);\n"
+        "  }\n"
+        "}\n"
+    )
+    info = _chain_roles("r.js", content)
+    assert _chain_role_check(Route(path="/u/:id", method="DELETE", file="r.js", line=4), content, info) is True
+
+
+def test_include_router_dependency_does_not_cover_app_routes() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    content = (
+        "app.include_router(admin_router, dependencies=[Depends(check_roles('admin'))])\n"
+        "@app.delete('/users/{id}')\n"
+        "def delete_user(id: int): ...\n"
+    )
+    info = _chain_roles("main.py", content)
+    assert _chain_role_check(Route(path="/users/{id}", method="DELETE", file="main.py", line=2), content, info) is False
+
+
+def test_class_roles_masking_and_method_blocks() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    # a commented-out decorator is not the class's metadata
+    content = "// @Roles(Role.Admin) -- removed\nexport class A {\n  @Delete(':id')\n  remove() {}\n}\n"
+    info = _chain_roles("a.ts", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="a.ts", line=3), content, info) is False
+    # a method's @Roles a few decorators below the route decorator still overrides
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class B {\n"
+        "  @Delete(':id')\n"
+        "  @ApiOperation({ summary: 'x' })\n"
+        "  @ApiResponse({ status: 200 })\n"
+        "  @Roles(Role.User)\n"
+        "  remove() {}\n"
+        "  @Roles(Role.User)\n"
+        "  other() {}\n"
+        "\n"
+        "  @Delete('all')\n"
+        "  removeAll() {}\n"
+        "}\n"
+    )
+    info = _chain_roles("b.ts", content)
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="b.ts", line=3), content, info) is False
+    # a sibling method's @Roles above doesn't drop the class roles
+    assert _chain_role_check(Route(path="/x", method="DELETE", file="b.ts", line=11), content, info) is True
+
+
+def test_jsx_closing_tag_is_not_a_regex() -> None:
+    from attackmap.authz import _mask_code
+
+    masked = _mask_code("const a = <p>x</p>; const s = `\nrestrictTo('admin')`;\n")
+    assert "restrictTo" not in masked
+
+
+def test_many_unclosed_role_classes_stay_linear() -> None:
+    import time
+
+    from attackmap.authz import _chain_roles
+
+    content = "@Roles(Role.Admin)\nexport class A {\n" * 200 + "x\n" * 200_000
+    started = time.perf_counter()
+    _chain_roles("a.ts", content)
+    assert time.perf_counter() - started < 3.0
+
+
+def test_round9_chain_scoping_cases() -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    def check(file: str, content: str, line: int) -> bool:
+        return _chain_role_check(Route(path="/x", method="DELETE", file=file, line=line), content, _chain_roles(file, content))
+
+    # braces inside a regex literal don't end (or extend) a class
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class A {\n"
+        "  f() { return x.replace(/{/g, ''); }\n"
+        "}\n"
+        "export class B {\n"
+        "  g() { return y.replace(/}/g, ''); }\n"
+        "  @Delete(':id')\n"
+        "  remove() {}\n"
+        "}\n"
+    )
+    assert check("c.ts", content, 7) is False
+    # a class head with object type arguments
+    content = "@Roles(Role.Admin)\nexport class A extends B<{ x: string }> {\n  @Delete(':id')\n  remove() {}\n}\n"
+    assert check("c.ts", content, 3) is True
+    # Python: `#` comments without a space and docstrings don't register routers
+    content = (
+        "#admin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n"
+        "\"\"\"\nadmin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n\"\"\"\n"
+        "admin = APIRouter()\n"
+        "@admin.delete('/u/{id}')\n"
+        "def d(id): ...\n"
+    )
+    assert check("r.py", content, 6) is False
+    # an unrecognised decorator isn't attributed to the router above it
+    content = (
+        "admin = APIRouter(dependencies=[Depends(check_roles('admin'))])\n"
+        "@admin.get('/a')\n"
+        "def a(): ...\n"
+        "@pub.websocket('/b')\n"
+        "def b(): ...\n"
+    )
+    assert check("r.py", content, 4) is False
+    # a chained registration whose handler calls `db.delete(`
+    content = "router.use(restrictTo('admin'));\nrouter\n  .route('/x')\n  .delete(auth, (q, s) => s.json(db.delete(id)));\n"
+    assert check("r.js", content, 4) is True
+    # a router mounted on the app after the app's role `use`
+    content = (
+        "const adminRouter = express.Router();\n"
+        "adminRouter.delete('/u/:id', h);\n"
+        "app.use(restrictTo('admin'));\n"
+        "app.use('/admin', adminRouter);\n"
+        "otherRouter.delete('/v/:id', h);\n"
+    )
+    assert check("r.js", content, 2) is True
+    assert check("r.js", content, 5) is False
+
+
+def test_round10_mounts_decorator_blocks_and_python_masking(tmp_path: Path) -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles, has_role_check
+
+    def check(file: str, content: str, line: int) -> bool:
+        return _chain_role_check(Route(path="/x", method="DELETE", file=file, line=line), content, _chain_roles(file, content))
+
+    # a role check passed inline when mounting a router covers it
+    for mount in ("app.use('/admin', requireAdmin, adminRouter);", "app.use(restrictTo('admin'), adminRouter);"):
+        content = f"const adminRouter = express.Router();\n{mount}\nadminRouter.delete('/users/:id', h);\n"
+        assert check("r.js", content, 3) is True, mount
+    # a method's own @Roles behind a multi-line decorator, a multi-line @Roles, a blank line
+    for block in (
+        "  @Roles(Role.User)\n  @ApiResponse({\n    status: 200,\n  })\n",
+        "  @Roles(\n    Role.User,\n  )\n",
+        "  @Roles(Role.User)\n\n",
+    ):
+        content = f"@Roles(Role.Admin)\nexport class C {{\n{block}  @Delete(':id')\n  remove() {{}}\n}}\n"
+        line = content.split("\n").index("  @Delete(':id')") + 1
+        assert check("c.ts", content, line) is False, block
+    # code (no semicolon) directly above a class is not its decorator
+    content = "const requireAdmin = restrictTo('admin')\nexport class UserController {\n  @Delete(':id')\n  remove() {}\n}\n"
+    assert check("c.ts", content, 3) is False
+    # Python comments and docstrings in handler text aren't role calls
+    assert has_role_check("def d():\n    \"\"\"check_roles('admin')\"\"\"\n    pass\n", python=True) is False
+    assert has_role_check("def d():\n    #restrictTo('admin')\n    pass\n", python=True) is False
+    assert has_role_check("def d():\n    check_roles('admin')\n", python=True) is True
+
+
+def test_round11_sibling_decorators_and_decorator_blocks(tmp_path: Path) -> None:
+    from attackmap.authz import _chain_role_check, _chain_roles
+
+    # the next method's @Permissions isn't this route's check (its own span runs past it)
+    content = (
+        "export class C {\n"
+        "  @Delete(':id')\n"
+        "  remove() { return this.svc.remove(); }\n"
+        "\n"
+        "  @Permissions('admin')\n"
+        "  @Post('purge')\n"
+        "  purge() {}\n"
+        "}\n"
+    )
+    (tmp_path / "c.controller.ts").write_text(content)
+    routes = [
+        Route(path="/admin/c/:id", method="DELETE", file="c.controller.ts", line=2, auth="required", guards=["JwtAuthGuard"]),
+    ]
+    evidence = " ".join(e for f in _bfla_findings(ScanResult(root=str(tmp_path), routes=routes)) for e in f.evidence)
+    assert "DELETE /admin/c/:id" in evidence
+
+    def check(content: str, line: int) -> bool:
+        return _chain_role_check(Route(path="/x", method="DELETE", file="c.ts", line=line), content, _chain_roles("c.ts", content))
+
+    # a multi-line decorator below the route decorator doesn't hide the method's own @Roles
+    content = (
+        "@Roles(Role.Admin)\n"
+        "export class C {\n"
+        "  @Delete(':id')\n"
+        "  @UseInterceptors(\n"
+        "    FileInterceptor('file'),\n"
+        "  )\n"
+        "  @Roles(Role.User)\n"
+        "  remove() {}\n"
+        "}\n"
+    )
+    assert check(content, 3) is False
+    # the tail of a statement above a class isn't its decorator
+    content = "const x = configure(\n  restrictTo('admin'))\nexport class PublicController {\n  @Delete(':id')\n  remove() {}\n}\n"
+    assert check(content, 4) is False

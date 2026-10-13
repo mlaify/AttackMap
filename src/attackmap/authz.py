@@ -33,6 +33,7 @@ import json
 import os
 import posixpath
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .handler_span import span_text
@@ -161,13 +162,13 @@ ROLE_MARKERS = re.compile(
     | \bhas_?[rR]oles?\b | hasAnyRole | hasAuthority | hasAnyAuthority
     | \brequires?_?[rR]oles?\b | \broles?_required\b | \badmin_required\b | \bsuperuser_required\b
     | \brequires?_?[aA]dmin\w* | \badmin_?[oO]nly\b | \bonlyAdmin\b | \bensureAdmin\b
-    | \bcheckAdmin\b | \bverifyAdmin\b | \bisAdminMiddleware\b | \bRolesGuard\b | @Roles\s*\(
+    | \bcheckAdmin\b | \bverifyAdmin\b | \bisAdminMiddleware\b
     | \bIsAdminUser\b | @staff_member_required | \buser_passes_test\b
     | permission_classes\s*=\s*[\[(][^\])]*(?:Admin|Staff|Superuser|Perm|Role)
     | @Secured | @RolesAllowed
     | @PreAuthorize\([^)]*(?:hasRole|hasAuthority|hasAnyRole|hasAnyAuthority|hasPermission)
     | \bpermission_required\b | \bhas_perm\b | \bhasPermission\b | \brequires?_?[pP]ermissions?\b
-    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize[!\w]*\s*\(
+    | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize(?!_?roles?)[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
     | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
     | ->userIsAllowed\s*\(
@@ -220,14 +221,230 @@ def _symfony_role_check(text: str) -> bool:
     return False
 
 
-def has_role_check(text: str) -> bool:
-    """A role or permission check in ``text`` (handler code or guards)."""
-    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text)
+def has_role_check(text: str, *, python: bool = False) -> bool:
+    """A role or permission check in ``text`` (handler code or guards);
+    ``python`` masks Python comments and docstrings for the role-call check."""
+    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text) or _role_call_check(text, python=python)
+
+
+# Guard *names* (as plugins put them in Route.guards, #349) that are a role or
+# permission check. Matched against the whole name, with any `@` and call
+# arguments stripped, so these generic words (`permit`, `acl`, `rbac`) only
+# count as a guard, never as a word in handler code (`params.permit(...)`).
+# A plugin can also mark any guard explicitly with a `role:` prefix.
+#
+# Arguments matter (an allow-list): a role-list guard counts only when every
+# listed role is a literal naming a privileged role (`_PRIVILEGED_ROLES`). `guard.check(...)` and
+# `require(d)Scopes(...)` are left out: in common frameworks they check token
+# scopes any authenticated client may hold.
+_ROLE_GUARD_NAMES = frozenset(
+    name.lower()
+    for name in (
+        "restrictTo", "permit", "checkRole", "checkRoles", "rbac", "acl", "allowRoles", "allowedRoles",
+        "authorizeRoles", "PermissionsGuard", "PermissionGuard", "PoliciesGuard", "PolicyGuard", "Permissions",
+        "CheckPolicies", "MembershipRoles", "Pbac", "Roles", "RolesGuard", "RoleGuard",
+    )
+)
+_GUARD_NAME_RE = re.compile(r"^\s*+@?\s*+([\w.$]{1,120}+)\s*+(\()?")
+# Role names that exclude ordinary signed-in users (case-insensitive, `ROLE_`
+# prefix stripped). An allow-list: anything else is not proof of a role check.
+_PRIVILEGED_ROLES = frozenset(
+    {
+        "admin", "administrator", "owner", "superuser", "superadmin", "systemadmin", "sysadmin",
+        "staff", "root", "moderator", "manager",
+    }
+)
+_ROLE_LITERAL_RE = re.compile(r"'([^'\n]{1,80})'" r'|"([^"\n]{1,80})"')
+# An enum-like member (`Role.ADMIN`, `UserRole.Admin`, `ROLES.OWNER`,
+# `Prisma.Role.ADMIN`): the member's owner is a capitalised name about roles
+# or permissions, so `doc.owner`, `User.admin` or `Config.roles.owner` don't count.
+_ROLE_MEMBER_RE = re.compile(
+    r"(?:[A-Z][\w$]{0,80}+\.)?([A-Z][\w$]{0,80}+)\.([A-Za-z_$][\w$]{0,80}+)"
+)
+# The owner's name ends in a role word: `Role`, `UserRole`, `ROLES`,
+# `Permission`, `AccessLevel` (not `GroupChat`).
+_ROLE_ENUM_RE = re.compile(r"(?i)(?:role|perm|permission|privilege|authority|authorities|accesslevel|usergroup)s?$")
+# A bare ALL_CAPS constant (`ADMIN`, `ROLE_ADMIN`).
+_ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
+# Role-list calls in handler or chain code: `restrictTo('admin')`,
+# `@MembershipRoles([MembershipRole.OWNER])`, `@Roles(Role.Admin)`. Judged by
+# their arguments. Metadata guards (`RolesGuard`, `PermissionsGuard`) are not
+# role checks on their own: they enforce this metadata, and allow all without it.
+_ROLE_CALL_RE = re.compile(
+    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorize_?[rR]oles?(?:For|To)?|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
+)
+_MAX_ROLE_ARGS = 400
+
+
+def _privileged_args(args: str) -> bool:
+    """An allow-list: every listed role is a string literal, an enum-like
+    member (`Role.ADMIN`) or an ALL_CAPS constant (`ADMIN`) naming a
+    privileged role. Other identifiers, members of lower-case receivers
+    (`doc.owner`, `req.query.admin`), spreads and `Object.values(...)` don't count."""
+    inner = args.strip()
+    while inner.startswith("[") and inner.endswith("]"):
+        inner = inner[1:-1].strip()
+    elements = [e.strip() for e in inner.split(",") if e.strip()]
+    if not elements:
+        return False
+    for element in elements:
+        literal = _ROLE_LITERAL_RE.fullmatch(element)
+        member = _ROLE_MEMBER_RE.fullmatch(element) if literal is None else None
+        if literal is not None:
+            value = literal.group(1) or literal.group(2)
+        elif member is not None and _ROLE_ENUM_RE.search(member.group(1)):
+            value = member.group(2)
+        elif _ROLE_CONSTANT_RE.fullmatch(element):
+            value = element
+        else:
+            return False
+        if _normalized_role(value) not in _PRIVILEGED_ROLES:
+            return False
+    return True
+
+
+def _normalized_role(value: str) -> str:
+    """Lower-case, `ROLE_` stripped, separators dropped (`SUPER_ADMIN`, `super-admin`)."""
+    value = value.strip().lower()
+    value = value[5:] if value.startswith("role_") else value
+    return value.replace("_", "").replace("-", "").replace(" ", "")
+
+
+def _call_close(code: str, open_paren: int, limit: int = _MAX_ROLE_ARGS) -> int | None:
+    """Offset of the `)` closing the call whose `(` is at ``open_paren`` (bounded)."""
+    depth = 0
+    for i in range(open_paren, min(len(code), open_paren + limit)):
+        if code[i] == "(":
+            depth += 1
+        elif code[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+_QUOTES = "'\"`"
+
+
+def _mask_code(text: str, *, python: bool = False) -> str:
+    """``text`` with comments (`//`, `/* */`, `# ` lines; any `#` and
+    triple-quoted strings with ``python``), string-literal contents and JS
+    regex-literal bodies blanked, offsets and newlines kept. Approximate; used
+    only to tell a call from a mention of one. A regex literal (`/` after an
+    operator or bracket) can't start a string or comment that hides code."""
+    out = list(text)
+    n = len(text)
+    i = 0
+    prev = ""  # last non-space character outside literals
+    while i < n:
+        c = text[i]
+        if not python and c == "/" and prev in _REGEX_PREV and text[i + 1 : i + 2] not in ("/", "*"):
+            j = i + 1
+            in_class = False
+            while j < n and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "[":
+                    in_class = True
+                elif text[j] == "]":
+                    in_class = False
+                elif text[j] == "/" and not in_class:
+                    break
+                j += 1
+            for k in range(i + 1, min(j, n)):
+                out[k] = " "  # `/{/g`: its braces aren't code
+            i, prev = j + 1, "/"
+            continue
+        if python and text.startswith(('"""', "'''"), i):
+            j = text.find(text[i : i + 3], i + 3)
+            j = n if j < 0 else j
+            for k in range(i + 3, j):
+                if out[k] != "\n":
+                    out[k] = " "
+            i, prev = j + 3, c
+            continue
+        if c in _QUOTES:
+            j = i + 1
+            while j < n and text[j] != c:
+                if text[j] == "\\":
+                    j += 1
+                elif text[j] == "\n" and c != "`":
+                    break
+                j += 1
+            for k in range(i + 1, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i, prev = j + 1, c
+            continue
+        if (not python and text.startswith("//", i)) or (
+            c == "#" and (python or ((i == 0 or text[i - 1] in " \t\n") and text[i + 1 : i + 2] in (" ", "\t")))
+        ):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+            continue
+        if not python and text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            for k in range(i, j):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+            continue
+        if not c.isspace():
+            prev = c
+        i += 1
+    return "".join(out)
+
+
+# A `/` after one of these (or at the start) begins a regex literal, not a division.
+# (Not `<` / `>`: in JSX `</p>` is a closing tag.)
+_REGEX_PREV = frozenset(["", *"(,=:[!&|?{};+-*%~^"])
+
+
+def _role_call_check(text: str, *, python: bool = False) -> bool:
+    # Matched on masked code (a call in a string or comment doesn't count);
+    # the arguments, string literals included, are read from the original.
+    # Most text has no role call at all: mask only when there is one.
+    if _ROLE_CALL_RE.search(text) is None:
+        return False
+    code = _mask_code(text, python=python)
+    for count, match in enumerate(_ROLE_CALL_RE.finditer(code)):
+        if count >= _MAX_CALLS:
+            break
+        close = _call_close(code, match.end() - 1)
+        if close is not None and _privileged_args(text[match.end() : close]):
+            return True
+    return False
+
+
+def _role_guard_name(guard: str) -> bool:
+    stripped = guard.strip()
+    if stripped.lower().startswith("role:"):
+        # `role:admin`: an explicit privileged role name.
+        return _normalized_role(stripped[5:]) in _PRIVILEGED_ROLES
+    match = _GUARD_NAME_RE.match(guard)
+    if match is None or match.group(1).lower() not in _ROLE_GUARD_NAMES:
+        return False
+    if match.group(2) is None:
+        # Only the name proves nothing: a role-list call needs its arguments,
+        # and a metadata-driven guard (`RolesGuard`, `PermissionsGuard`)
+        # enforces whatever `@Roles(...)` lists, and allows everyone when
+        # none is set (NestJS). The privileged `@Roles('admin')` entry counts
+        # on its own.
+        return False
+    close = _call_close(guard, match.end() - 1)
+    return close is not None and _privileged_args(guard[match.end() : close])
 
 
 def _guards_role_check(route: Route) -> bool:
     """Plugin-declared guards with role semantics, including Symfony
     ``access_control`` rules naming a role other than ROLE_USER & co."""
+    if any(_role_guard_name(guard) for guard in route.guards):
+        return True
     text = " ".join(route.guards) + " " + (route.guard_evidence or "")
     if has_role_check(text):
         return True
@@ -238,8 +455,41 @@ def _guards_role_check(route: Route) -> bool:
     )
 
 
-_JS_USE_RE = re.compile(r"\b(?:app|router|server|\w+Router)\s*\.\s*use\s*\(([^)]*)\)")
-_PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*\(([^)]*)\)", re.DOTALL)
+# The `(` of `router.use(`; its arguments are read with balanced parentheses,
+# so `router.use(restrictTo('admin'))` keeps its inner call.
+# `router.use(` or `this.router.use(` (class-based controllers); the receiver
+# is the name after any `this.`.
+_JS_USE_RE = re.compile(r"(?<![\w$.])(?:this\s*+\.\s*+)?+([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+use\s*+\(")
+_JS_ROUTE_RECEIVER_RE = re.compile(
+    r"(?<![\w$.])(?:this\s*+\.\s*+)?+([A-Za-z_$][\w$]{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|del|all|options|head|route)\s*+\("
+)
+_CHAIN_HEAD_RE = re.compile(r"\s*+([A-Za-z_$][\w$]{0,80}+)\s*+")
+_MAX_CHAIN_LINES = 8
+_MAX_ROUTER_ARGS = 2_000
+_MAX_CALLS = 200
+_PY_ROUTER_DEPS_RE = re.compile(
+    r"(?<![\w.])(?P<router>[A-Za-z_]\w{0,80}+)\s*+(?::[^=\n]{0,80}+)?=\s*+(?:fastapi\s*+\.\s*+)?APIRouter\s*+\("
+)
+_PY_ROUTE_DECORATOR_RE = re.compile(r"(?<!\s)\s*+@([A-Za-z_]\w{0,80}+)\s*+\.\s*+(?:get|post|put|patch|delete|api_route|route|head|options)\s*+\(")
+_AUTH_MIDDLEWARE_NAME_RE = re.compile(
+    r"(?i)auth|protect|login|session|passport|jwt|guard|verify|require|ensure|check|token"
+    r"|admin|role|staff|perm|owner|super|rbac|acl|polic|restrict|only|allow"
+    r"|cors|helmet|compression|morgan|logger|parser|limit|csrf|cookie|static|json|urlencoded"
+)
+# A name that ends in a path word (not `Route`: `protectRoute` is middleware).
+_PATH_NAME_RE = re.compile(r"(?i)(?:path|prefix|base|baseurl|url|mount|mountpoint)$")
+# The last `use` argument when it is a bare router name: `app.use('/admin', adminRouter)`.
+_MOUNTED_ROUTER_RE = re.compile(r"[,(]\s*+([A-Za-z_$][\w$]{0,80}+)\s*+\)")
+# A middleware-shaped `use` argument: a (dotted) name, optionally called.
+_MIDDLEWARE_ARG_RE = re.compile(r"([A-Za-z_$][\w$]{0,80}+(?:\s*+\.\s*+[A-Za-z_$][\w$]{0,80}+){0,4}+)\s*+(?:\([^()]{0,400}+\))?+")
+_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}+")
+_ROOT_PATH_RE = re.compile(r"(?<!\s)\s*+(['\"`])/\1\s*+,")
+_METHOD_ROLE_META_RE = re.compile(r"@(?:Roles|Permissions|CheckPolicies|MembershipRoles|Pbac)\s*+\(")
+_MAX_DECORATOR_LINES = 12
+_MAX_CLASS_HEAD = 2_000
+_METHOD_SIGNATURE_RE = re.compile(
+    r"(?:(?:public|private|protected|static|async|readonly)\s++){0,4}+[A-Za-z_$][\w$]{0,80}+\s*+(?:<[^>\n]{0,80}+>)?+\s*+\("
+)
 _CLASS_DECL_RE = re.compile(r"\b(?:class|interface)\s+\w+")
 # Route declarations that live in configuration rather than code (#343):
 # data formats, and PHP files that are a returned config array (Laminas /
@@ -406,7 +656,7 @@ def find_bfla_routes(
             route_lines.setdefault(r.file, []).append(r.line)
     java_global_auth: bool | None = None
     lines_cache: dict[str, list[str]] = {}
-    chain_role_cache: dict[str, bool] = {}
+    chain_role_cache: dict[str, bool | _ChainRoles] = {}
     config_cache: dict[str, bool] = {}
     controllers = _ConfigControllerResolver(root_path, content_cache)
     out: list[tuple[Route, str]] = []
@@ -437,9 +687,10 @@ def find_bfla_routes(
             continue  # the plugin resolved a role check
         if route.file not in lines_cache:
             lines_cache[route.file] = content.splitlines()
-            chain_role_cache[route.file] = _chain_role_check(route, content)
-        handler = span_text(
-            route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
+            chain_role_cache[route.file] = _chain_roles(route.file, content)
+        handler = _own_span(
+            route.file,
+            span_text(route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN),
         )
         where = f"{route.file}:{route.line}" if route.line else route.file
         if route.file not in config_cache:
@@ -461,9 +712,9 @@ def find_bfla_routes(
             )
             continue
         if (
-            chain_role_cache[route.file]
-            or has_role_check(handler)
-            or has_role_check(hop.delegated_text(route.file, content, handler))
+            _chain_role_check(route, content, chain_role_cache[route.file])
+            or has_role_check(handler, python=route.file.endswith(".py"))
+            or has_role_check(hop.delegated_text(route.file, content, handler), python=route.file.endswith(".py"))
         ):
             continue
         out.append(
@@ -472,24 +723,287 @@ def find_bfla_routes(
     return out
 
 
-def _chain_role_check(route: Route, content: str) -> bool:
-    """A role check on the route's router/controller rather than the handler:
-    a JS ``router.use(requireRole(...))``, a FastAPI router dependency, or a
-    Java class-level annotation."""
-    suffix = Path(route.file).suffix.lower()
+@dataclass
+class _ChainRoles:
+    """A file's router- and class-level role checks, scoped to the routes they cover."""
+
+    lines: list[str]
+    code_lines: list[str] = field(default_factory=list)  # ``lines`` masked
+    uses: list[tuple[str, int]] = field(default_factory=list)  # JS `receiver.use(<role check>)`: (receiver, line)
+    classes: list[tuple[int, int]] = field(default_factory=list)  # role-decorated classes: [first, last] lines
+    routers: set[str] = field(default_factory=set)  # FastAPI `name = APIRouter(dependencies=[<role check>])`
+    mounts: list[tuple[str, str, int]] = field(default_factory=list)  # JS `parent.use([path,] child)`: (child, parent, line)
+    covered: set[str] = field(default_factory=set)  # JS routers mounted behind a role check
+
+
+def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
+    """The file's router-level role checks: JS ``router.use(<role check>)``
+    calls, NestJS classes decorated with a privileged ``@Roles(...)``, and
+    FastAPI routers created with a role dependency; for Java, whether a
+    class-level annotation checks a role."""
+    suffix = Path(file).suffix.lower()
     if suffix in JS_TS_SUFFIXES:
-        return any(ROLE_MARKERS.search(m.group(1)) for m in _JS_USE_RE.finditer(content))
+        code = _mask_code(content)
+        info = _ChainRoles(content.split("\n"))
+        for count, m in enumerate(_JS_USE_RE.finditer(code)):
+            if count >= _MAX_CALLS:
+                break
+            close = _call_close(code, m.end() - 1)
+            if close is None:
+                continue
+            args = content[m.end() : close]
+            line = code.count("\n", 0, m.start()) + 1
+            # Only the call's own last argument: `restrictTo('admin', role)` mounts nothing.
+            mounted = _MOUNTED_ROUTER_RE.search(code, max(m.end() - 1, close - 90), close + 1)
+            if mounted is not None and mounted.end() == close + 1 and not has_role_check(mounted.group(1)):
+                info.mounts.append((mounted.group(1), m.group(1), line))
+                if has_role_check(args):
+                    # `app.use('/admin', requireAdmin, adminRouter)`: the check guards the mount.
+                    info.covered.add(mounted.group(1))
+            if _path_scoped(code[m.end() : close], args):
+                continue  # `router.use('/billing', …)`: scoped to a prefix
+            if has_role_check(args):
+                info.uses.append((m.group(1), line))
+        # A router mounted on a parent after the parent's role `use`:
+        # `app.use(restrictTo('admin')); app.use('/admin', adminRouter)`.
+        first_use: dict[str, int] = {}
+        for receiver, line in info.uses:
+            first_use[receiver] = min(line, first_use.get(receiver, line))
+        for child, parent, mounted_at in info.mounts:
+            if first_use.get(parent, mounted_at) < mounted_at:
+                info.covered.add(child)
+        code_lines = info.code_lines = code.split("\n")
+        braces: dict[int, int] | None = None
+        for count, i in enumerate(i for i, line in enumerate(code_lines) if _CLASS_DECL_RE.search(line)):
+            if count >= _MAX_CALLS:
+                break
+            decorators = _decorators_above(info.lines, code_lines, i)
+            if not has_role_check(decorators):
+                continue
+            if braces is None:
+                braces = _brace_pairs(code)
+            last = _block_end_line(code, code_lines, i, braces)
+            if last is not None:
+                info.classes.append((i + 1, last))
+        return info
     if suffix == ".py":
-        return any(
-            "dependencies" in m.group(1) and ROLE_MARKERS.search(m.group(1))
-            for m in _PY_ROUTER_DEPS_RE.finditer(content)
-        )
+        code = _mask_code(content, python=True)
+        info = _ChainRoles(content.split("\n"))
+        for count, m in enumerate(_PY_ROUTER_DEPS_RE.finditer(code)):
+            if count >= _MAX_CALLS:
+                break
+            close = _call_close(code, m.end() - 1, _MAX_ROUTER_ARGS)
+            args = content[m.end() : close] if close is not None else ""
+            if close is None or "dependencies" not in code[m.end() : close]:
+                continue
+            # `include_router(r, dependencies=[…])` covers the included router's
+            # routes, which live in another file: it says nothing about this one's.
+            if "dependencies" in args and has_role_check(args):
+                info.routers.add(m.group("router"))
+        return info
     if suffix in _JAVA_SUFFIXES:
         lines = content.splitlines()
         for i, line in enumerate(lines):
             if _CLASS_DECL_RE.search(line):
                 return bool(ROLE_MARKERS.search("\n".join(lines[max(0, i - 6) : i])))
     return False
+
+
+def _decorators_above(lines: list[str], code_lines: list[str], i: int) -> str:
+    """The class line and the decorators directly above it."""
+    return "\n".join([*_decorator_block(lines, code_lines, i, stop=-1), lines[i]])
+
+
+def _decorator_block(lines: list[str], code_lines: list[str], i: int, stop: int) -> list[str]:
+    """The decorator lines directly above line ``i`` (0-based), not past
+    ``stop``. A line belongs to the block if it starts with `@`, or if it
+    closes more parentheses than it opens (the tail of a multi-line
+    decorator, `})`), or while a decorator's arguments are still open below
+    it. Blank and comment-only lines are skipped. Anything else (`remove() {}`,
+    `}`, `const x = restrictTo('admin')`) ends the block."""
+    out: list[str] = []
+    tentative: list[str] = []  # lines inside a multi-line decorator, kept once its `@` is reached
+    pending = 0  # `)` seen below that no `(` has matched yet
+    for j in range(i - 1, max(stop, i - 1 - _MAX_DECORATOR_LINES), -1):
+        code = code_lines[j].strip()
+        if not code:
+            continue  # blank, or a comment (`// @Roles('admin') -- removed`)
+        net = code.count(")") - code.count("(")
+        if not (code.startswith("@") or pending > 0 or net > 0):
+            break
+        pending = max(0, pending + net)
+        tentative.append(lines[j])
+        if code.startswith("@") and pending == 0:
+            out.extend(tentative)
+            tentative = []
+    # A `)`-heavy tail that never reached its `@` is the end of a statement
+    # (`const x = configure(\n  restrictTo('admin'))`), not a decorator.
+    return list(reversed(out))
+
+
+def _class_body_open(code: str, offset: int) -> int:
+    """The `{` opening a class body declared at ``offset``: the first one
+    outside type arguments (`class A extends B<{ x: string }> {`)."""
+    angle = 0
+    for k in range(offset, min(len(code), offset + _MAX_CLASS_HEAD)):
+        ch = code[k]
+        if ch == "<":
+            angle += 1
+        elif ch == ">" and angle:
+            angle -= 1
+        elif ch == "{" and angle == 0:
+            return k
+    return -1
+
+
+def _brace_pairs(code: str) -> dict[int, int]:
+    """`{` offset → its `}` offset, in one pass (unbalanced ones omitted)."""
+    pairs: dict[int, int] = {}
+    stack: list[int] = []
+    for k, ch in enumerate(code):
+        if ch == "{":
+            stack.append(k)
+        elif ch == "}" and stack:
+            pairs[stack.pop()] = k
+    return pairs
+
+
+def _block_end_line(code: str, code_lines: list[str], i: int, braces: dict[int, int]) -> int | None:
+    """1-based line of the `}` closing the class declared on line ``i``."""
+    offset = sum(len(line) + 1 for line in code_lines[:i])
+    open_at = _class_body_open(code, offset)
+    close = braces.get(open_at) if open_at >= 0 else None
+    return code.count("\n", 0, close) + 1 if close is not None else None
+
+
+def _path_scoped(masked_args: str, original_args: str) -> bool:
+    """`use(path, …)`: the first of several arguments is a path rather than
+    middleware. Only a name (or call) that reads as middleware (`requireAuth`,
+    `protect`, `cors()`) and `'/'` are unscoped; anything else (strings,
+    arrays, `API_PREFIX + '/x'`, `path.join(…)`, `PATHS.ADMIN`, `apiV1`) is
+    taken as a path. When in doubt the `use` doesn't count, and the finding stays."""
+    if len(_split_top_level(masked_args)) < 2:
+        return False  # `router.use(restrictTo('admin'))`: no path
+    first = _split_top_level(masked_args)[0].strip()
+    if _ROOT_PATH_RE.match(original_args):
+        return False  # `use('/', …)` covers every route
+    callee = _MIDDLEWARE_ARG_RE.fullmatch(first)
+    if callee is None:
+        return True
+    name = callee.group(1)
+    last = name.rsplit(".", 1)[-1]
+    if _CONSTANT_RE.fullmatch(last) or _PATH_NAME_RE.search(last):
+        return True  # `ADMIN_ROUTE`, `PATHS.BILLING_ADMIN`, `adminPath`
+    return not _AUTH_MIDDLEWARE_NAME_RE.search(name)
+
+
+def _split_top_level(text: str) -> list[str]:
+    """``text`` split on commas outside brackets."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for k, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:k])
+            start = k + 1
+    parts.append(text[start:])
+    return [part for part in parts if part.strip()]
+
+
+def _own_span(file: str, handler: str) -> str:
+    """A JS/TS handler span without the next member's decorators: in a NestJS
+    class the span runs to the next route line, past the next method's
+    `@Permissions('admin')`, which isn't this route's check."""
+    if Path(file).suffix.lower() not in JS_TS_SUFFIXES:
+        return handler
+    lines = handler.split("\n")
+    seen_code = False
+    for k, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("@"):
+            if seen_code:
+                return "\n".join(lines[:k])
+        elif stripped and not stripped.startswith(("//", "*", "/*")) and not seen_code:
+            # The first non-decorator line (the signature) starts the body;
+            # lines inside a multi-line decorator start with `)`/`}` or args.
+            seen_code = _METHOD_SIGNATURE_RE.match(stripped) is not None or stripped.endswith("{")
+    return handler
+
+
+def _route_receiver(lines: list[str], line: int) -> str | None:
+    """The router a registration on ``line`` is called on, following a
+    chain written across lines (`router\\n  .route('/x')\\n  .delete(h)`)."""
+    i = line - 1
+    for _ in range(_MAX_CHAIN_LINES):
+        if not 0 <= i < len(lines):
+            return None
+        text = lines[i]
+        stripped = text.lstrip()
+        # The registration heads the line; `db.delete(` inside a handler doesn't count.
+        registration = _JS_ROUTE_RECEIVER_RE.match(text, len(text) - len(stripped))
+        if registration is not None:
+            return registration.group(1)
+        if not stripped.startswith("."):
+            head = _CHAIN_HEAD_RE.fullmatch(text)
+            return head.group(1) if head is not None and i < line - 1 else None
+        i -= 1
+    return None
+
+
+def _chain_role_check(route: Route, content: str, info: bool | _ChainRoles) -> bool:
+    """A role check on the route's router/controller (see :func:`_chain_roles`).
+    A JS ``use`` counts only on the route's own router and before the route:
+    Express doesn't apply middleware to routes registered earlier. A class's
+    roles don't apply to a method with its own role metadata (NestJS takes the
+    handler's over the class's)."""
+    if not isinstance(info, _ChainRoles):
+        return info
+    if route.line is None or not 1 <= route.line <= len(info.lines):
+        return False
+    for first, last in info.classes:
+        if first < route.line <= last:
+            if not _METHOD_ROLE_META_RE.search(_method_decorators(info.lines, info.code_lines, route.line, first)):
+                return True
+    if info.routers:
+        decorator = _py_route_receiver(info.lines, route.line)
+        if decorator is not None and decorator in info.routers:
+            return True
+    if not info.uses and not info.covered:
+        return False
+    receiver = _route_receiver(info.lines, route.line)
+    if receiver is None:
+        return False
+    return receiver in info.covered or any(r == receiver and line < route.line for r, line in info.uses)
+
+
+def _method_decorators(lines: list[str], code_lines: list[str], line: int, class_line: int) -> str:
+    """The decorator block around the route's decorator on ``line``: up to
+    the previous member, down to the method signature (inside the class)."""
+    out = _decorator_block(lines, code_lines, line - 1, stop=class_line - 1)
+    depth = 0  # open parentheses of a multi-line decorator (`@UseInterceptors(\n  FileInterceptor('f'),\n)`)
+    for j in range(line - 1, min(len(lines), line - 1 + _MAX_DECORATOR_LINES)):
+        out.append(lines[j])
+        code = code_lines[j].strip() if j < len(code_lines) else lines[j].strip()
+        if depth == 0 and not code.startswith("@") and _METHOD_SIGNATURE_RE.match(code):
+            break
+        depth = max(0, depth + code.count("(") - code.count(")"))
+    return "\n".join(out)
+
+
+def _py_route_receiver(lines: list[str], line: int) -> str | None:
+    """The router of a FastAPI `@router.delete(...)` decorator on or just above ``line``."""
+    for i in range(line - 1, max(-1, line - 1 - _MAX_DECORATOR_LINES), -1):
+        m = _PY_ROUTE_DECORATOR_RE.match(lines[i])
+        if m is not None:
+            return m.group(1)
+        stripped = lines[i].strip()
+        if stripped.startswith("@") or (stripped and i < line - 1 and not stripped.startswith(("def ", "async def "))):
+            return None  # another decorator (`@pub.websocket`) or code: not ours to guess
+    return None
 
 
 # GraphQL resolver files keep the original whole-file marker set (#139):
@@ -552,7 +1066,7 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
     content_cache: dict[str, str | None] = {}
     query_param_cache: dict[str, str | None] = {}
     lines_cache: dict[str, list[str]] = {}
-    chain_role_cache: dict[str, bool] = {}
+    chain_role_cache: dict[str, bool | _ChainRoles] = {}
     hop = _HopResolver(root_path, content_cache)
 
     # Handler spans end at the next route declared in the same file.
@@ -603,8 +1117,9 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         if content:
             if route.file not in lines_cache:
                 lines_cache[route.file] = content.splitlines()
-            handler = span_text(
-                route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
+            handler = _own_span(
+                route.file,
+                span_text(route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN),
             )
         delegated = hop.delegated_text(route.file, content, handler) if handler else ""
         scope = handler + "\n" + delegated
@@ -612,8 +1127,10 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
             # Object-level authorization is (probably) enforced — not a candidate.
             continue
         if content and route.file not in chain_role_cache:
-            chain_role_cache[route.file] = _chain_role_check(route, content)
-        if has_role_check(scope) or chain_role_cache.get(route.file, False):
+            chain_role_cache[route.file] = _chain_roles(route.file, content)
+        if has_role_check(scope, python=route.file.endswith(".py")) or (
+            content and _chain_role_check(route, content, chain_role_cache[route.file])
+        ):
             # A role-gated route (admin tooling) reaches any object by design.
             continue
 
