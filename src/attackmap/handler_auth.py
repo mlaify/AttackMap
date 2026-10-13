@@ -93,32 +93,40 @@ _ALWAYS_OBJECT = re.compile(
 # `supabase.auth.getUser()`), not an expression that mentions one.
 # Only a member lookup (`.auth.getUser(`) may have a receiver before it.
 _LOOKUP_PREFIX = re.compile(r"\s*+(?:await\s++)?")
+# An async lookup without `await` is a Promise, never falsy: `if (!session)` never fires.
+_AWAITED = re.compile(r"(?<!\s)\s*+await\s")
 _RECEIVER_PREFIX = re.compile(r"\s*+(?:await\s++)?[A-Za-z_$][\w$]{0,80}+(?:\s*+\??\.\s*+[A-Za-z_$][\w$]{0,80}+){0,6}+\s*+")
 _REJECTING_FIRST = re.compile(r"\A\s*throw\b")
 _RETURN = re.compile(r"\A\s*return\b(?P<rest>.*)\Z", re.DOTALL)
 # What a rejecting `return` may return: nothing, a literal, a response, a
 # redirect or an error. `return createGuestOrder(req, res)` doesn't count.
 _RETURN_VALUE = re.compile(
-    r"\A\s*+(?:\Z|[;{\['\"`\d]|null\b|false\b|undefined\b|new\s++\w{0,40}(?:Response|Error|Exception)\b"
-    r"|(?:void\s++)?(?:res|response|reply|ctx|c|context|h|event)\s*+\."
+    r"\A\s*+(?:\Z|;|['\"`\d]|[{\[][^()]*+\Z|null\b|false\b|undefined\b|new\s++\w{0,40}(?:Response|Error|Exception)\b"
+    r"|(?:void\s++)?(?:res|response|reply|ctx|c|context|h|event)\s*+\.\s*+"
+    r"(?:status|sendStatus|send|json|end|redirect|render|code|text|body|html|notFound|header|set|type|writeHead|response|throw)\b"
     r"|(?:Next)?Response\s*+\.|NextResponse\b"
     r"|(?:await\s++)?(?i:(?:send|respond(?:with)?|make|create|throw|to)?_?"
     r"(?:unauthori[sz]ed|forbidden|error|json|redirect|status|login|sign_?in|abort|den(?:y|ied)|reject(?:ed)?"
     r"|fail(?:ure|ed)?|not_?allowed)(?:_?(?:response|error|page))?)\s*+\("
-    r"|next\s*+\(\s*+(?!['\"`])[^\s)])"
+    r"|next\s*+\(\s*+(?:new\s|(?i:\w{0,40}(?:error|err|unauthori[sz]ed|forbidden|boom)\w{0,20})\s*+[,()]|e\s*+\)))"
 )
 # `next()` continues the chain, as do `next(null)` / `next(undefined)`.
 _BARE_NEXT = re.compile(r"\A\s*(?:(?:void|await)\s+)?next\s*\(\s*(?:null|undefined)?\s*\)\s*\Z")
 # `next('route')` / `next('router')` skip to the next route: a hand-off, not a
 # rejection. Strings are masked by then, so no string argument counts.
-_NEXT_WITH_ERROR = re.compile(r"\A\s*next\s*\(\s*(?!(?:null|undefined)\s*\)|['\"`])\S")
+# Only an error object counts: `next(new Error(…))`, `next(createError(401))`,
+# `next(err)`; `next(skip)` may be anything.
+_NEXT_WITH_ERROR = re.compile(
+    r"\A\s*next\s*\(\s*(?:new\s|(?i:\w{0,40}(?:error|err|unauthori[sz]ed|forbidden|boom)\w{0,20})\s*[,()]|e\s*\))"
+)
 _STATUS_REJECT = re.compile(r"\A\s*(?:res|response|reply|ctx)\s*\.\s*(?:status|code)\s*\(\s*(?:401|403)\s*\)")
 # The handler function's body: the first `{` after `=>` or a parameter list.
 _BODY_OPEN = re.compile(r"(?:=>|\))\s*+(?::[^{};=\n]{1,120})?\s*+\{")
 # A state-changing call: persistence or an outbound write.
 _MUTATION = re.compile(
     r"\$(?:execute|query)Raw"
-    r"|(?:\.\s*|(?<![\w$.]))(?:create|createMany|update|updateMany|upsert|delete|deleteMany|insert|insertOne|insertMany"
+    r"|(?:\.\s*|(?<![\w$.]))[a-z_$][A-Za-z_$]{0,40}(?:Remove|Delete|Update|Create|Insert|Save|Destroy|Upsert|Refund|Charge|Write)\w{0,20}\s*\("
+    r"|(?:\.\s*|(?<![\w$.]))(?:create(?![A-Za-z]{0,40}Client\s*\()|createMany|update|updateMany|upsert|delete|deleteMany|insert|insertOne|insertMany"
     r"|save|remove|destroy|execute|exec|query|write|enqueue|publish|add|set|del|unlink|rm|post|put|patch"
     r"|send|push|append|incr|decr|hset|lpush|rpush|sadd|zadd|expire|rename|copy|mkdir|fetch|charge|transfer)\w{0,40}\s*\("
 )
@@ -283,8 +291,10 @@ def _rejects(statements: list[str]) -> bool:
     if returned:
         rest = returned.group("rest")
         return not _BARE_NEXT.match(rest) and _RETURN_VALUE.match(rest) is not None
-    if (_NEXT_WITH_ERROR.match(first) or _STATUS_REJECT.match(first)) and re.match(r"\A\s*return\b", second):
-        return True
+    if _NEXT_WITH_ERROR.match(first) or _STATUS_REJECT.match(first):
+        # `res.status(401); return` / `next(err); return`, not `return next()`.
+        then = _RETURN.match(second)
+        return then is not None and not _BARE_NEXT.match(then.group("rest")) and _RETURN_VALUE.match(then.group("rest")) is not None
     return False
 
 
@@ -430,27 +440,37 @@ _AWAIT = re.compile(r"(?<![\w$.])await\s++")
 _EARLY_RETURN = re.compile(r"(?<![\w$.])return\b")
 
 
-def _unsafe_before(code: str, body_open: int, gate: int) -> bool:
-    """Anything before the gate that may act for an anonymous caller: a write
-    (`_MUTATION`), any awaited call other than the session lookup or a request
-    read (`await processOrder(req.body)`), or an earlier `return` that hands
-    off (`if (req.query.guest) return handleGuest(req, res)`)."""
-    if _MUTATION.search(code, body_open, gate):
-        return True
-    for match in _AWAIT.finditer(code, body_open, gate):
-        after = code[match.end() : min(gate, match.end() + 300)]
-        lookup = _SESSION_CALL.search(after)
-        if lookup is not None:
-            prefix = _RECEIVER_PREFIX if after[lookup.start()] == "." else _LOOKUP_PREFIX
-            if prefix.fullmatch(after, 0, lookup.start()) is None:
-                lookup = None
-        if lookup is None and _READ_AWAIT.match(after) is None:
-            return True
-    for match in _EARLY_RETURN.finditer(code, body_open, gate):
-        stmt = _statements(code[match.end() : min(gate, match.end() + 400)])
+def _first_unsafe(code: str, body_open: int, body_close: int) -> int:
+    """Offset of the first thing in the body that may act for an anonymous
+    caller, or ``body_close``: a write (`_MUTATION`), an awaited call other
+    than the session lookup or a request read (`await processOrder(req.body)`),
+    or a `return` that hands off (`if (req.query.guest) return
+    handleGuest(req, res)`). Computed once per body; a gate counts only
+    before it."""
+    first = body_close
+    mutation = _MUTATION.search(code, body_open, body_close)
+    if mutation is not None:
+        first = mutation.start()
+    for match in _AWAIT.finditer(code, body_open, first):
+        if _unsafe_await(code, match, first):
+            first = match.start()
+            break
+    for match in _EARLY_RETURN.finditer(code, body_open, first):
+        stmt = _statements(code[match.end() : min(first, match.end() + 400)])
         if not _RETURN_VALUE.match(stmt[0] if stmt else ""):
-            return True
-    return False
+            first = match.start()
+            break
+    return first
+
+
+def _unsafe_await(code: str, match: re.Match[str], limit: int) -> bool:
+    after = code[match.end() : min(limit, match.end() + 300)]
+    lookup = _SESSION_CALL.search(after)
+    if lookup is not None:
+        prefix = _RECEIVER_PREFIX if after[lookup.start()] == "." else _LOOKUP_PREFIX
+        if prefix.fullmatch(after, 0, lookup.start()) is None:
+            lookup = None
+    return lookup is None and _READ_AWAIT.match(after) is None
 
 
 _CONTINUATION = ("??", "||", "&&", "?", ":", ".", "+")
@@ -480,6 +500,7 @@ def session_gate(text: str) -> str | None:
     pairs = _matches(code)
     tracked: dict[str, int] = {}
     needs_member: set[str] = set()
+    unsafe_from = _first_unsafe(code, body_open, body_close)
     for decl in _DECLARATION.finditer(code, body_open, body_close):
         window = code[decl.end() : min(body_close, decl.end() + 400)].split(";", 1)[0]
         rest = window.split("\n", 1)[0]
@@ -488,6 +509,8 @@ def session_gate(text: str) -> str | None:
             continue
         prefix = _RECEIVER_PREFIX if rest[lookup.start()] == "." else _LOOKUP_PREFIX
         if prefix.fullmatch(rest, 0, lookup.start()) is None:
+            continue  # `!req.user`, `typeof req.user`, `findFirst({ authorId: req.user.id })`
+        if lookup.group(0).endswith("(") and not _AWAITED.match(rest):
             continue  # `!req.user`, `typeof req.user`, `findFirst({ authorId: req.user.id })`
         if _FALLBACK.search(_initializer(window)):
             continue  # `getSession(c) ?? { user: guest }`: never empty, so the gate proves nothing
@@ -531,8 +554,8 @@ def session_gate(text: str) -> str | None:
         if not _starts_statement(code, match.start(), pairs):
             continue  # `else if`, or the body of a braceless `if` / loop
         # Nothing may act for an anonymous caller before the check.
-        if _unsafe_before(code, body_open, match.start()):
-            continue
+        if match.start() > unsafe_from:
+            break  # every later check comes after the same unsafe call
         branch = _then_branch(code, close + 1, pairs)
         if branch is not None and _rejects(branch):
             line_start = code.rfind("\n", 0, match.start()) + 1

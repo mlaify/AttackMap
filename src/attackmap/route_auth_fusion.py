@@ -139,7 +139,8 @@ _REGISTRATION_CALL = re.compile(r"\.\s*(?:get|post|put|patch|delete|all|route|on
 _NEWLINE = re.compile(r"\n")
 _READ_ONLY_MIDDLEWARE = re.compile(
     r"(?:[A-Za-z_$][\w$]{0,40}\.)?"
-    r"(?:[A-Za-z_$]{0,20}[Vv]alidat(?:or|e|ion)\w{0,20}|json|urlencoded|text|raw|cors|helmet|rateLimit\w{0,20}|\w{0,20}[Ll]imiter)"
+    r"(?:[A-Za-z_$]{0,20}[Vv]alidat(?:or|e|ion)(?:Body|Query|Params|Request|Input|Schema|Json|Middleware)?"
+    r"|json|urlencoded|text|raw|cors|helmet|rateLimit(?:er)?|[A-Za-z_$]{0,20}[Ll]imiter)"
     r"\s*\([^;]{0,400}\)"
 )
 _SOLE_REF = re.compile(r"([A-Za-z_$][\w$]{0,80}(?:\.[A-Za-z_$][\w$]{0,80})?)")
@@ -213,22 +214,29 @@ def _handler_session_gate(
         return None
     body = handler_body(text)
     if body is not None and body[0] < reg_close:
-        return session_gate(text)  # an inline handler
+        # An inline handler: its body must open in the last argument, not in a
+        # callback passed to middleware (`validate({ custom: (req) => { … } })`).
+        last_start = reg_close - len(args[-1]) if args else reg_close
+        return session_gate(text) if body[0] >= last_start else None
     ref = _SOLE_REF.fullmatch(args[-1].strip()) if args else None
     if ref is None:
         return None
     if not hop_box:
         from .authz import _HopResolver  # local import: authz imports this module
 
-        hop_box.append(_HopResolver(root, cache))
-    hop = hop_box[0]
+        # The resolver, and (file, function) → gate shared by every route using it.
+        hop_box.extend([_HopResolver(root, cache), {}])
+    hop, gates = hop_box
     owner, _, func = ref.group(1).rpartition(".")
     imports = hop._import_map(route.file, content)
     if owner and owner not in imports:
         return None  # `ctl.create` with `ctl` not imported: don't guess a local `create`
     target = imports.get(owner or func, route.file)
-    definition = hop._definition(target, func)
-    return session_gate(definition) if definition else None
+    key = (target, func)
+    if key not in gates:
+        definition = hop._definition(target, func)
+        gates[key] = session_gate(definition) if definition else None
+    return gates[key]
 
 
 def _in_scope(surface: AttackSurface, route: Route) -> bool:

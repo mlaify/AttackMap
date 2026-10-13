@@ -40,6 +40,9 @@ GATED = [
     "const input = await schema.parseAsync(req.body);\nconst session = await getServerSession(req, res, authOptions);\nif (!session) return res.status(401).end();",
     "if (!req.body) return res.status(400).end();\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
     "const session = await getSession(req);\nif (!session) return createError({ statusCode: 401 });",
+    "const session = await getSession(req);\nif (!session) return next(createError(401));",
+    "const session = await getSession(req);\nif (!session) return { error: 'unauthorized' };",
+    "const supabase = createClient();\nconst r = await supabase.auth.getUser();\nif (!r.data.user) return res.status(401).end();",
 ]
 
 NOT_GATED = [
@@ -182,6 +185,18 @@ NOT_GATED = NOT_GATED + [
     # more fallbacks
     "const session = await getSession(req).then((s) => s, () => ({ user: guest }));\nif (!session) return res.status(401).end();",
     "const session = await getSession(req);\nObject.assign(session, { user: guest });\nif (!session.user) return res.status(401).end();",
+    # an un-awaited async lookup is a Promise: never falsy
+    "const session = getServerSession(opts);\nif (!session) return res.status(401).end();",
+    # `return next()` after a status falls through
+    "const session = await getSession(req);\nif (!session) {\n  res.status(401);\n  return next();\n}",
+    # hand-offs dressed as responses
+    "const session = await getSession(req);\nif (!session) return { ...(await createGuest(req)) };",
+    "const session = await getSession(req);\nif (!session) return res.locals.guestHandler(req, res);",
+    "const session = await getSession(req);\nif (!session) return c.env.GUEST.fetch(req);",
+    "const session = await getSession(req);\nif (!session) return next(skip);",
+    # un-awaited writes whose verb sits inside the name
+    "const session = await getSession(req);\nOrder.findOneAndRemove({ _id: id }, cb);\nif (!session) return res.status(401).end();",
+    "const session = await getSession(req);\nprocessRefund(req.body);\nif (!session) return res.status(401).end();",
 ]
 
 
@@ -444,3 +459,36 @@ def test_inline_handler_after_a_validator_is_trusted(tmp_path: Path) -> None:
         "});\n"
     )
     assert _unauth_findings(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "middleware",
+    [
+        "validateBody({ custom: (req) => { if (!req.user) throw new Error('x') } })",
+        "validateAndSave(Order)",
+    ],
+)
+def test_middleware_before_inline_handler_is_not_its_gate(tmp_path: Path, middleware: str) -> None:
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        f"app.post('/api/orders', {middleware}, async (req, res) => {{\n"
+        "  const session = await getSession(req);\n"
+        "  if (!session) return res.status(401).end();\n"
+        "  await Order.create(req.body);\n"
+        "});\n"
+    )
+    assert len(_unauth_findings(tmp_path)) == 1
+
+
+def test_many_routes_sharing_a_hostile_handler_stay_fast(tmp_path: Path) -> None:
+    import time
+
+    body = "const s = await getSession(req);" + "await x.json();" * 1000 + "if(!s.user){}" * 200
+    routes = "".join(f"app.post('/a{i}', h);\n" for i in range(50))
+    (tmp_path / "app.js").write_text(
+        "const app = require('express')();\n"
+        f"async function h(req, res) {{ {body} await Order.create(req.body); }}\n" + routes
+    )
+    started = time.perf_counter()
+    _unauth_findings(tmp_path)
+    assert time.perf_counter() - started < 10.0
