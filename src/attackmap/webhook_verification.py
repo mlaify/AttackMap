@@ -165,8 +165,21 @@ _NOT_FOUND_RESPONSE = re.compile(
     r"|\bHttpResponse(?:NotFound|Gone)\b|\babort\s*\(\s*(?:404|410)\b|\bnotFound\s*\(\s*\)"
 )
 _PACKAGE_NAME = re.compile(r'"name"\s*:\s*"([^"\n]{1,200})"')
-_STUB_NOISE = re.compile(r"^\s*(?:[{}()\[\];,]+|export\s+default\s+function\b.*|(?:async\s+)?function\b.*\{|def\b.*:|return\s*;?)\s*$")
+_STUB_NOISE = re.compile(r"^\s*(?:[{}()\[\];,]+|(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b.*|(?:async\s+)?def\b.*:|return\s*;?)\s*$")
 _MAX_STUB_LINES = 3
+_STRING_LITERAL = re.compile(r"""'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`""")
+_STUB_DISQUALIFIER = re.compile(
+    r"\?|&&|\|\||\bawait\b|\b(?:if|else|elif|for|while|switch|case|try|catch|unless)\b"
+    r"|^\s*(?:const|let|var)\b|^\s*[\w.\[\]]+\s*(?<![=!<>])=(?![=>])"
+)
+_CALL_NAME = re.compile(r"(?<![\w$])([A-Za-z_$][\w$]*+)\s*+\(")
+_RESPONSE_CALLS = frozenset(
+    {
+        "status", "json", "send", "end", "sendStatus", "abort", "notFound", "Response", "NextResponse",
+        "HttpResponse", "HttpResponseNotFound", "HttpResponseGone", "JsonResponse", "jsonify", "make_response",
+        "type", "set", "header", "setHeader", "writeHead", "response",
+    }
+)
 _MAX_SECOND_HOP_FUNCTIONS = 8
 _MAX_WORKSPACE_PACKAGES = 2_000
 _WORKSPACE_SKIP = frozenset({"node_modules", ".git", "dist", "build", ".next", "out", "vendor", "coverage"})
@@ -407,7 +420,19 @@ def _is_not_found_stub(handler: str) -> bool:
         for ln in handler.splitlines()
         if ln.strip() and not _COMMENT_LINE.match(ln) and not _STUB_NOISE.match(ln)
     ]
-    return 0 < len(code) <= _MAX_STUB_LINES and all(_NOT_FOUND_RESPONSE.search(ln) for ln in code)
+    return 0 < len(code) <= _MAX_STUB_LINES and all(_pure_not_found(ln) for ln in code)
+
+
+def _pure_not_found(line: str) -> bool:
+    """`res.status(404).json({...})`, `return new Response(null, { status: 404 })`,
+    `return HttpResponseNotFound()`: a 404/410 response and nothing else — no
+    condition, `await`, `?`, `&&`/`||`, assignment, or call other than the response."""
+    if not _NOT_FOUND_RESPONSE.search(line):
+        return False
+    code = _STRING_LITERAL.sub('""', line)
+    if _STUB_DISQUALIFIER.search(code):
+        return False
+    return all(name in _RESPONSE_CALLS for name in _CALL_NAME.findall(code))
 
 
 def _mount_covers(mount: str, route: str) -> bool:

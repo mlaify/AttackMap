@@ -236,3 +236,32 @@ def test_second_hop_is_bounded_to_eight_functions(tmp_path: Path, monkeypatch) -
     _webhook(tmp_path, "/x/webhook", "app.ts", 2)
     helper_bodies = {ln.line for ln in captured[0] if "return x +" in ln.text}
     assert 1 <= len(helper_bodies) <= 8
+
+
+def test_one_line_handlers_that_do_more_than_answer_404_are_live(tmp_path: Path) -> None:
+    cases = {
+        "a.js": "app.post('/a/webhook', (req, res) => res.status(process(req.body) ? 200 : 404).end())\n",
+        "b.js": "app.post('/b/webhook', async (req, res) => res.status(404).json(await save(req.body)))\n",
+        "c.js": "app.post('/c/webhook', (req, res) => handle(req.body) || res.sendStatus(404))\n",
+        "d.js": "app.post('/d/webhook', (req, res) => { if (!req.body) return res.sendStatus(404) })\n",
+        # Only one rule catches each of these:
+        "h.ts": "export default async function handler(req, res) {\n  return ok ? res.status(404).end() : res.end()\n}\n",  # `?`
+        "i.js": "app.post('/i/webhook', (req, res) => res.status(404).json(load(req.body)))\n",  # another call
+    }
+    _write(tmp_path, cases)
+    for name in cases:
+        route = "/" + name[0] + "/webhook"
+        _, surface = _webhook(tmp_path, route, name, 1, "ANY" if name.endswith(".ts") else "POST")
+        assert surface.webhook_verification.inert is False, name
+
+
+def test_pure_404_responses_are_stubs(tmp_path: Path) -> None:
+    cases = {
+        "e.ts": "export default function handler(_req, res) {\n  res.status(404).json({ message: \"not (yet) available\" });\n}\n",
+        "f.py": "def webhook(request):\n    return HttpResponseNotFound()\n",
+        "g.ts": "export async function POST() {\n  return new Response(null, { status: 410 })\n}\n",
+    }
+    _write(tmp_path, cases)
+    for name in cases:
+        _, surface = _webhook(tmp_path, "/" + name[0] + "/webhook", name, 1, "ANY")
+        assert surface.webhook_verification.inert is True, name
