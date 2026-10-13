@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Detection rules for cloud and Kubernetes misconfigurations (#351).** Findings from the cloud / IaC rule ids (#334) now come with Sigma rules that watch the control plane for the risky setting being applied. One rule per template per repository; each rule's selection needs the risky attribute itself, never a bare event name.
+  - Kubernetes audit log (`product: kubernetes, service: audit`):
+    - privileged workloads; privilege escalation or dangerous capabilities; hostPath or host namespaces (pods, workload templates, CronJob job templates; containers, init and ephemeral containers);
+    - LoadBalancer/NodePort services; RBAC grants with `*` or `escalate`/`bind`/`impersonate`;
+    - service accounts using `pods/exec` or `pods/attach` (create, or get for WebSocket exec); cluster-admin bindings; secret list/watch outside the control plane.
+  - CloudTrail: security groups opened to `0.0.0.0/0` or `::/0`; RDS `PubliclyAccessible`; EC2 instances launched with public IPs (`aws_instance`; launch templates aren't mapped); S3 Block Public Access deleted or set with a protection off, or public ACLs; S3 bucket policies with a `*` principal; EKS endpoints made public, or created without `endpointPublicAccess: false` (public by default).
+  - AWS rules apply only to records on the `aws` platform with a matching Terraform resource type. Kubernetes rules apply only to Kubernetes/Helm records (and RBAC from Terraform). Kinds with no control-plane event (unencrypted storage, unpinned images, Dockerfile issues, missing security contexts) show as uncovered.
+  - Ids fold in the repository name. Rules pass `attackmap.detections.sigma` and pySigma.
 - **`CloudMisconfig` contract record for IaC plugins (terraform#4, iac#1).** A new `ScanResult.cloud_misconfigs` list of `CloudMisconfig(kind, file, line, resource, platform, context, escalation_path, evidence_text, severity, confidence)`, exported from `attackmap.sdk` with the `CLOUD_MISCONFIG_KINDS` and `CLOUD_MISCONFIG_PLATFORMS` vocabularies. Until now the Terraform and IaC plugins could only report misconfigurations as auth/entrypoint hints, which never became findings.
   - Core emits one finding per (kind, severity), so each instance keeps its own severity in SARIF (`level`, `security-severity`) and in `--fail-on-new-high`: adding a low `/var/log` mount to a repo with a high `docker.sock` mount doesn't trip the gate. The kind's usual severity keeps the plain title; other tiers add "(low-severity instances)". Confidence is the max over the tier's records.
   - Records merge on (kind, file, line, resource, evidence), and a true duplicate keeps the more severe report. Every record is a location, so two resources at one (file, line) stay two instances.
