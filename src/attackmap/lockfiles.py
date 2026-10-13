@@ -112,7 +112,7 @@ def parse_lockfiles(root: str | Path) -> tuple[list[DependencyHint], set[tuple[s
 def _iter_lockfiles(root: Path):
     def walk(directory: Path, depth: int):
         try:
-            entries = list(directory.iterdir())
+            entries = sorted(directory.iterdir())
         except (OSError, PermissionError):
             return
         for entry in entries:
@@ -192,7 +192,9 @@ def _implicit_roots(graph: _Graph, names: set[str]) -> set[str]:
 
 def _shortest_paths(graph: _Graph, roots: set[str], names: set[str]) -> dict[str, list[str]]:
     """BFS from every root; record the shortest name-path to each name."""
-    paths: dict[str, list[str]] = {r: [r] for r in roots if r in names}
+    # Roots seeded in sorted order: which root reaches a shared transitive
+    # first decides its `via` path, so set order made it vary per run (#353).
+    paths: dict[str, list[str]] = {r: [r] for r in sorted(roots) if r in names}
     queue: deque[str] = deque(paths)
     while queue:
         current = queue.popleft()

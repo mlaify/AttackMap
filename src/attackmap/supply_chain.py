@@ -611,7 +611,7 @@ def _internal_match(name: str, prefixes: list[str], own_scopes: set[str]) -> tup
     for prefix in prefixes:
         if lowered.startswith(prefix):
             return f"matches internal_prefixes entry '{prefix}'", True
-    for scope in own_scopes:
+    for scope in sorted(own_scopes):
         if lowered.startswith(f"{scope}-"):
             return f"unscoped name with the repo's own '{scope}' prefix", True
     if lowered.startswith(_GENERIC_INTERNAL_PREFIXES) or lowered.endswith(_GENERIC_INTERNAL_SUFFIXES):

@@ -14,7 +14,7 @@ def build_graph(scan: ScanResult) -> nx.DiGraph:
         graph.add_node("web", kind="service", label="Web/API Layer")
         graph.add_edge("repo", "web", relation="contains")
 
-    for db in {d.kind for d in scan.databases}:
+    for db in sorted({d.kind for d in scan.databases}):
         graph.add_node(db, kind="database", label=db)
         graph.add_edge("web" if scan.routes else "repo", db, relation="uses")
 
