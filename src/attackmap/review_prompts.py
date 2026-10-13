@@ -325,7 +325,12 @@ def _evidence_pack(
     assets_payload = [asset.model_dump() for asset in overlay.assets]
     controls_payload = [control.model_dump() for control in overlay.controls]
     insights_payload = [insight.model_dump() for insight in overlay.insights]
-    detection_payload = [opp.model_dump() for opp in overlay.detection_opportunities]
+    # The Sigma bodies and sample events (#251) are for SIEMs, not the LLM:
+    # keep the pack's token budget for evidence.
+    detection_payload = [
+        opp.model_dump(exclude={"sigma", "sigma_correlation", "test_events", "false_positive_notes"})
+        for opp in overlay.detection_opportunities
+    ]
 
     techniques_observed: dict[str, dict] = {}
     for insight in overlay.insights:

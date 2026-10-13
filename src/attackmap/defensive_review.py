@@ -13,6 +13,7 @@ from .models import (
     Insight,
     ScanResult,
 )
+from .detection_opportunities import SIGMA_POINTER, detection_coverage
 from .security_overlay import SecurityOverlay, build_security_overlay
 from .taxonomy import taxonomy_label
 
@@ -508,11 +509,17 @@ def _render_notable_observations(insights: list[Insight]) -> list[str]:
     return lines
 
 
-def _render_detection_opportunities(opportunities: list[DetectionOpportunity]) -> list[str]:
+def _render_detection_opportunities(
+    opportunities: list[DetectionOpportunity], findings: list[Finding] | None = None
+) -> list[str]:
     if not opportunities:
         return ["- No detection opportunities were generated for this scan."]
     lines: list[str] = []
-    for opp in opportunities[:5]:
+    # Prose sketches: everything except the per-route rules whose suggested
+    # rule is just a pointer to their Sigma rule.
+    sketches = [o for o in opportunities if not o.suggested_rule.startswith(SIGMA_POINTER)]
+    rules = [o for o in opportunities if o.sigma is not None]
+    for opp in sketches[:5]:
         lines.append(f"- **{opp.title}** _(signal={opp.signal_kind})_")
         lines.append(f"  - _Why:_ {opp.rationale}")
         lines.append(f"  - _Suggested rule:_ {opp.suggested_rule}")
@@ -521,9 +528,43 @@ def _render_detection_opportunities(opportunities: list[DetectionOpportunity]) -
                 f"`{t.technique_id}`" for t in opp.attack_techniques[:4]
             )
             lines.append(f"  - _ATT&CK:_ {techniques_text}")
-    if len(opportunities) > 5:
-        lines.append(f"- …and {len(opportunities) - 5} more detection opportunities in JSON output.")
+    if len(sketches) > 5:
+        lines.append(f"- …and {len(sketches) - 5} more detection opportunities in JSON output.")
+    if rules:
+        lines += ["", "### Deployable Sigma rules", ""]
+        for opp in rules[:_MAX_RULES_SHOWN]:
+            sigma = opp.sigma or {}
+            source = opp.logsource.label() if opp.logsource else "unknown"
+            extra = " + correlation" if opp.sigma_correlation else ""
+            lines.append(
+                f"- **{md_text(sigma.get('title', opp.title))}** _(logsource={md_text(source)}, "
+                f"level={md_text(sigma.get('level', ''))}{extra})_ — Sigma id {md_code(sigma.get('id', ''))}"
+            )
+        if len(rules) > _MAX_RULES_SHOWN:
+            lines.append(f"- …and {len(rules) - _MAX_RULES_SHOWN} more Sigma rules in JSON output.")
+        lines.append(
+            "- The rules are written to `attackmap-detections/*.yml` (with `--format json` or `all`); each rule's "
+            "`test_events` in the JSON report holds sample log lines it must and must not match."
+        )
+    coverage = detection_coverage(findings or [], opportunities)
+    if coverage:
+        lines += [
+            "",
+            "### Detection coverage",
+            "",
+            "| Finding class | Sigma rule | Log sources |",
+            "| --- | --- | --- |",
+        ]
+        for row in coverage:
+            count = int(row["sigma_rules"])  # type: ignore[call-overload]
+            present = f"yes ({count})" if count else "no"
+            sources = ", ".join(str(s) for s in row["logsources"]) or "—"  # type: ignore[attr-defined]
+            rule_cell = md_code(row["rule_id"]).replace("|", "\\|")
+            lines.append(f"| {rule_cell} | {present} | {md_text(sources)} |")
     return lines
+
+
+_MAX_RULES_SHOWN = 12
 
 
 def _render_attack_techniques_summary(overlay: SecurityOverlay) -> list[str]:
@@ -575,7 +616,7 @@ def render_defensive_review(
         *_render_attack_techniques_summary(overlay),
         "",
         "## Detection Opportunities",
-        *_render_detection_opportunities(overlay.detection_opportunities),
+        *_render_detection_opportunities(overlay.detection_opportunities, overlay.findings),
         "",
         "## Asset Inventory",
         *_render_assets_section(overlay.assets),

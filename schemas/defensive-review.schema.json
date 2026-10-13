@@ -51,9 +51,184 @@
     },
     "detection_opportunities": {
       "type": "array",
-      "description": "Defender-facing detection-engineering hints derived from insights and findings.",
+      "description": "Defender-facing detection-engineering hints derived from insights and findings. Opportunities generated per finding class also carry a deployable Sigma rule (added in 1.5.0, #251).",
       "items": {
-        "type": "object"
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "rationale",
+          "signal_kind",
+          "suggested_rule"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "signal_kind": {
+            "type": "string"
+          },
+          "suggested_rule": {
+            "type": "string"
+          },
+          "related_insight_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "related_finding_titles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "related_rule_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "attack_techniques": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "sigma": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A Sigma detection rule (status experimental, deterministic UUID id); null on prose-only opportunities (added in 1.5.0, #251).",
+            "required": [
+              "title",
+              "id",
+              "status",
+              "description",
+              "author",
+              "date",
+              "logsource",
+              "detection",
+              "level"
+            ]
+          },
+          "sigma_correlation": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A Sigma correlation rule over `sigma` (BOLA cardinality); null when there is none (added in 1.5.0, #251).",
+            "required": [
+              "title",
+              "id",
+              "status",
+              "correlation"
+            ]
+          },
+          "logsource": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The Sigma rule's log source (added in 1.5.0, #251).",
+            "properties": {
+              "product": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "service": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "category": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "fields_required": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Log fields the rule reads (added in 1.5.0, #251)."
+          },
+          "false_positive_notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Known benign causes of a match (added in 1.5.0, #251)."
+          },
+          "test_events": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Sample events: every `positive` matches the rule, no `negative` does (added in 1.5.0, #251).",
+            "properties": {
+              "positive": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "negative": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "detection_coverage": {
+      "type": "array",
+      "description": "Per finding class (rule id) in this report: how many deployable Sigma rules cover it and from which log sources (added in 1.5.0, #251).",
+      "items": {
+        "type": "object",
+        "required": [
+          "rule_id",
+          "sigma_rules",
+          "logsources"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "sigma_rules": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "correlation_rules": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "logsources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       }
     },
     "attack_techniques_observed": {

@@ -22,8 +22,8 @@ from .workflow_scanner import scan_workflows
 from .srcpaths import is_test_file, is_vendored_file
 from .mass_assignment import analyze_mass_assignment
 from .weaknesses import find_code_weaknesses
-from .auth_protocol import find_jwt_issues, find_oauth_session_issues
-from .webhardening import find_web_hardening_issues, has_csrf_protection
+from .auth_protocol import _GO_JWT, _JS_JWT_DEFAULT, _JS_JWT_NAMED, find_jwt_issues, find_oauth_session_issues
+from .webhardening import find_jvm_csrf_disabled, find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
 from .taint import DEFAULT_RECALL, analyze_taint, recall_config
 
@@ -104,6 +104,11 @@ FLASK_ROUTE_PATTERN = re.compile(
     r"@(\w+)\.route\(\s*['\"]([^'\"]+)['\"](?P<args>.*?)\)",
     re.IGNORECASE | re.DOTALL,
 )
+# aiohttp's `RouteTableDef.route(method, path)` takes the verb first:
+# `@routes.route("PATCH", "/users/{id}")`. Matched against the stripped
+# arguments that follow the first string in FLASK_ROUTE_PATTERN (#342).
+ROUTE_VERB_FIRST_ARGS_PATTERN = re.compile(r",\s*+['\"]([^'\"]+)['\"]")
+_ROUTE_VERBS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "*"})
 EXPRESS_DIRECT_ROUTE_PATTERN = re.compile(
     r"\b(\w+)\.(get|post|put|delete|patch|options|head|all)\(\s*['\"]([^'\"]+)['\"]",
     re.IGNORECASE,
@@ -202,9 +207,9 @@ DB_PATTERNS = [
 # `token`, `mfa`, `bearer`) were dropped in #2. They fired across
 # unrelated code and turned the file-level auth-signal set into
 # indistinguishable noise (see Bluesky FINDINGS.md §55). Specific
-# compound patterns in AUTH_PATTERNS below carry the real signal.
+# compound patterns in AUTH_PATTERNS below carry the real signal. `jwt` went
+# the same way in #325: an import, a comment or a `jwtSecret` name isn't a check.
 AUTH_KEYWORDS = [
-    "jwt",
     "oauth",
     "auth0",
     "apikey",
@@ -216,10 +221,23 @@ AUTH_PATTERNS = [
     (re.compile(r"@login_required\b", re.IGNORECASE), "login_required"),
     (re.compile(r"@jwt_required\b", re.IGNORECASE), "jwt"),
     (re.compile(r"@UseGuards\("), "auth_guard"),
-    # JWT library calls — jwt.decode / encode / verify / sign
-    (re.compile(r"\bjwt\.(?:decode|encode|verify|sign)\(", re.IGNORECASE), "jwt"),
-    (re.compile(r"\bjsonwebtoken\b", re.IGNORECASE), "jwt"),
-    (re.compile(r"\bPyJWT\b"), "jwt"),
+    # JWT verification only (#325). `jwt.decode` (jsonwebtoken), `jwt.sign` /
+    # `encode` and the library name don't authenticate a caller. An unpinned
+    # `jwt.verify(` still checks a signature (its missing `algorithms` is
+    # `jwt-alg-confusion`); a pinned one, jose `jwtVerify`, golang-jwt and
+    # PyJWT `decode(..., algorithms=…)` come from auth_protocol as `jwt_verified`.
+    (re.compile(r"\bjwt\.verify\(", re.IGNORECASE), "jwt"),
+    # Calls and middleware that verify: jose / @fastify/jwt `jwtVerify()`,
+    # firebase/php-jwt `JWT::decode` (it always checks the signature),
+    # golang-jwt `Parse`/`ParseWithClaims` (not `ParseUnverified`), express-jwt /
+    # koa-jwt, flask-jwt-extended, Tuupola JwtAuthentication, NestJS
+    # JwtAuthGuard, passport-jwt JwtStrategy, DRF simplejwt JWTAuthentication.
+    (re.compile(r"\bjwtVerify\s*\(|\bJWT::decode\s*\(|\bjwt\.Parse(?:WithClaims)?\s*\("), "jwt"),
+    (re.compile(r"\b(?:express|koa)jwt\s*\(|\bverify_jwt_in_request\s*\(", re.IGNORECASE), "jwt"),
+    (re.compile(r"\b(?:Jwt|JSONWebToken)(?:Authentication|AuthGuard|Strategy)\b", re.IGNORECASE), "jwt"),
+    # echo-jwt / echo's JWT middleware, tymon/jwt-auth's verifying calls.
+    (re.compile(r"\bechojwt\.(?:JWT|WithConfig)\s*\(|\bmiddleware\.JWT(?:WithConfig)?\s*\("), "jwt"),
+    (re.compile(r"\bJWTAuth::(?:parseToken|authenticate|toUser|getPayload|check)\b"), "jwt"),
     # OAuth / OIDC library forms
     (re.compile(r"OAuth2PasswordBearer\(", re.IGNORECASE), "oauth"),
     (re.compile(r"\bauthlib\.\w+", re.IGNORECASE), "oauth"),
@@ -525,8 +543,16 @@ def _extract_python_routes(content: str, file: str) -> list[Route]:
 
     for match in FLASK_ROUTE_PATTERN.finditer(content):
         router_name, route_path, args = match.group(1), match.group(2), match.group("args")
-        full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
         line = _line_of(content, match.start())
+        verb_first = ROUTE_VERB_FIRST_ARGS_PATTERN.match(args.lstrip())
+        if route_path.upper() in _ROUTE_VERBS and verb_first is not None:
+            # aiohttp `@routes.route("PATCH", "/x")`: the first string is the
+            # verb and the path comes second — not Flask's `GET /PATCH` (#342).
+            method = "ANY" if route_path == "*" else route_path.upper()
+            full_path = _join_route_parts(prefixes.get(router_name, ""), verb_first.group(1))
+            routes.append(Route(path=full_path, method=method, file=file, line=line))
+            continue
+        full_path = _join_route_parts(prefixes.get(router_name, ""), route_path)
         for method in _extract_methods(args, default_method="GET"):
             routes.append(Route(path=full_path, method=method, file=file, line=line))
 
@@ -691,6 +717,71 @@ def _append_unique_database_hints(result: ScanResult, relative: str, content: st
             seen.add((kind, relative))
 
 
+# JWT verification whose call name alone is too generic to trust (#325):
+# middleware called as `jwt({ secret })` counts only in a file that imports
+# express-jwt, koa-jwt or hono's jwt; `<name>.verify(` / `<name>.Parse(` and a
+# bare `verify(` only when the name is bound to jsonwebtoken / golang-jwt by an
+# import (auth_protocol's import patterns, so any alias works and a named
+# `{ decode: verify }` doesn't).
+_JWT_MIDDLEWARE_IMPORT_RE = re.compile(r"""['"](?:express-jwt|koa-jwt|hono/jwt|@hono/[\w-]{0,40}jwt)['"]""")
+_JWT_MIDDLEWARE_CALL_RE = re.compile(r"\b(?:jwt|expressjwt|expressJwt|koaJwt|koajwt)\s*\(\s*\{")
+_NAMED_CALL_SCAN_LIMIT = 50
+_GO_JWT_VERIFY_METHODS = ("Parse(", "ParseWithClaims(")
+
+
+def _call_at(content: str, needle: str, start: int) -> int | None:
+    """First `needle` (a callee ending in `(`) at or after ``start`` that isn't
+    the tail of a longer name or member (`xverify(`, `a.verify(` for `verify(`)."""
+    pos = start
+    for _ in range(_NAMED_CALL_SCAN_LIMIT):
+        pos = content.find(needle, pos)
+        if pos < 0:
+            return None
+        before = content[pos - 1] if pos else ""
+        if not (before.isalnum() or before in "_$."):
+            return pos
+        pos += len(needle)
+    return None
+
+
+def _named_verify_aliases(members: str) -> set[str]:
+    """Local names bound to jsonwebtoken's `verify` in a `{ … }` import list
+    (`verify`, `verify as check`, `verify: check`; not `decode: verify`)."""
+    out: set[str] = set()
+    for part in members.split(","):
+        pieces = part.replace(":", " as ").split(" as ")
+        source = pieces[0].strip()
+        local = pieces[-1].strip() if len(pieces) > 1 else source
+        if source == "verify" and local:
+            out.add(local)
+    return out
+
+
+def _gated_jwt_verification(content: str) -> int | None:
+    """Offset of a JWT verification that only counts with its import (see above)."""
+    if _JWT_MIDDLEWARE_IMPORT_RE.search(content):
+        call = _JWT_MIDDLEWARE_CALL_RE.search(content)
+        if call:
+            return call.start()
+    for imp in _JS_JWT_DEFAULT.finditer(content):
+        name = imp.group(1) or imp.group(2)
+        found = _call_at(content, f"{name}.verify(", imp.end()) if name else None
+        if found is not None:
+            return found
+    for imp in _JS_JWT_NAMED.finditer(content):
+        for name in sorted(_named_verify_aliases(imp.group(1) or imp.group(2) or "")):
+            found = _call_at(content, f"{name}(", imp.end())
+            if found is not None:
+                return found
+    for imp in _GO_JWT.finditer(content):
+        name = (imp.group(1) or "jwt").strip()
+        for method in _GO_JWT_VERIFY_METHODS:
+            found = _call_at(content, f"{name}.{method}", imp.end())
+            if found is not None:
+                return found
+    return None
+
+
 def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, lowered: str) -> None:
     seen = {(hint.hint, hint.file) for hint in result.auth_hints}
 
@@ -707,6 +798,20 @@ def _append_unique_auth_hints(result: ScanResult, relative: str, content: str, l
                 )
             )
             seen.add((hint, relative))
+
+    if ("jwt", relative) not in seen:
+        offset = _gated_jwt_verification(content)
+        if offset is not None:
+            result.auth_hints.append(
+                AuthHint(
+                    hint="jwt",
+                    file=relative,
+                    line=_line_of(content, offset),
+                    evidence_text=_line_snippet(content, offset),
+                    confidence=0.85,
+                )
+            )
+            seen.add(("jwt", relative))
 
     for keyword in AUTH_KEYWORDS:
         idx = lowered.find(keyword)
@@ -924,6 +1029,12 @@ def run_repo_passes(
     # Field-level mass assignment (#242): binders and models live in
     # different files, so this can't ride the per-file weakness pass.
     result.code_weaknesses = result.code_weaknesses + analyze_mass_assignment(root_path)
+    # Spring Security `csrf_disabled` in Java/Kotlin config (#341): the
+    # per-file pass doesn't read JVM sources.
+    seen = {(i.kind, i.file, i.line) for i in result.web_hardening_issues}
+    result.web_hardening_issues = result.web_hardening_issues + [
+        i for i in find_jvm_csrf_disabled(root_path) if (i.kind, i.file, i.line) not in seen
+    ]
     # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
     # Runs last so the full route list is assembled into cohorts. It drives its
     # own determinate per-cohort progress (the slow tail on big route surfaces).

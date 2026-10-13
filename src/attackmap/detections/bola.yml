@@ -1,0 +1,57 @@
+# BOLA/IDOR cardinality (#251). A per-route base rule selects successful
+# object accesses; a Sigma `value_count` correlation fires when one principal
+# touches more distinct object ids on that route than a normal user would in
+# the window. The base rule is only the correlation's input (`generate:
+# false` keeps backends from emitting it as its own alert).
+
+templates:
+  bola-cardinality:
+    date: "2026-10-12"
+    name: "${rule_name}"
+    title: "Object access through ${method_route}"
+    description: >-
+      Successful requests to ${method_route}, the input to the cardinality
+      correlation below. AttackMap found no object-level authorization check
+      for the ${id_param} identifier (rule ${rule_id}, ${location}), so one
+      principal enumerating ids would read or change other users' objects.
+    logsource:
+      category: webserver
+    fields_required: [cs-method, cs-uri-stem, cs-uri-query, sc-status, "${principal_field}"]
+    detection:
+      selection:
+        "${route_field}": "${route_value}"
+        cs-method: "${method}"
+        sc-status: [200, 201, 202, 204]
+      condition: selection
+    falsepositives:
+      - Not an alert on its own; see the correlation rule
+    level: low
+    correlation:
+      title: "One principal accesses many distinct objects through ${method_route}"
+      description: >-
+        At least ${threshold} distinct ${value_field} values for
+        ${method_route} from one ${principal_field} within ${timespan}: the
+        shape of object-id enumeration against a route without an
+        object-level authorization check.
+      type: value_count
+      group-by: ["${principal_field}"]
+      timespan: "${timespan}"
+      field: "${value_field}"
+      threshold: "${threshold}"
+      level: "${level}"
+      falsepositives:
+        - Exports, sync jobs and admin tooling that legitimately page through many objects; exclude their principals
+        - Shared NAT addresses when grouping by c-ip
+    test_events:
+      positive:
+        - cs-method: "${method_example}"
+          cs-uri-stem: "${positive_stem}"
+          cs-uri-query: "${positive_query}"
+          sc-status: 200
+          "${principal_field}": "${principal_value}"
+      negative:
+        - cs-method: "${method_example}"
+          cs-uri-stem: /healthz
+          cs-uri-query: ""
+          sc-status: 200
+          "${principal_field}": "${principal_value}"

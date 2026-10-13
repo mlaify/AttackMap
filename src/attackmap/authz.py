@@ -171,6 +171,7 @@ ROLE_MARKERS = re.compile(
     | ->userIsAllowed\s*\( | ->isAllowed\s*\(
     | \b(?:IsGranted|denyAccessUnlessGranted)\s*\(\s*(?!['"]?(?:[\w\\]{1,100}::)?(?:IS_AUTHENTICATED\w*|PUBLIC_ACCESS|ROLE_USER)\b)
     | (?-i:\bROLE_(?!USER\b)[A-Z][A-Z0-9_]*)
+    | \bRolePolicy\s*\( | \bPermissionPolicy\s*\(
     """,
     re.IGNORECASE | re.VERBOSE,
 )

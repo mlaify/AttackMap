@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from .srcpaths import JS_TS_SUFFIXES, SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
-from .merge import MERGE_SCHEMA, initial_seen, merge_into
+from .merge import MERGE_SCHEMA, initial_seen, merge_into, superseded_builtin_routes
 
 from .sdk.contracts import (
     AnalyzerMetadata,
@@ -32,7 +32,7 @@ from .sdk.contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
-from .models import AnalyzerError
+from .models import APP_SURFACE_ISSUE_KINDS, CLOUD_MISCONFIG_KINDS, AnalyzerError
 from .redact import redact_text
 from .sdk.models import (
     AuthHint,
@@ -403,8 +403,25 @@ def get_builtin_repository_analyzers() -> list[Analyzer]:
     ]
 
 
+_BUILTIN_ANALYZER_TYPES = (BuiltinPythonWebAnalyzer, BuiltinJavaScriptWebAnalyzer, BuiltinConfigAnalyzer, DefaultAnalyzer)
+
+
+def is_builtin_analyzer(analyzer: object) -> bool:
+    """Whether ``analyzer`` is one of core's own extractors, by type: a
+    plugin can't claim it by name or by pre-stamping ``source_analyzer``.
+    A plugin route supersedes a built-in twin (#337)."""
+    return isinstance(analyzer, _BUILTIN_ANALYZER_TYPES)
+
+
 # Official plugins by package name, pinned to immutable commits (#237).
 _OFFICIAL_BY_PACKAGE = {entry["package"]: entry for entry in OFFICIAL_PLUGINS}
+# ...and by each analyzer entry point a package registers (#190): one package
+# may ship several analyzers (attackmap-analyzer-swift registers `swift` and
+# `objc`), so `-m objc` must resolve to the swift package. Underscored entry
+# point names (`java_spring`) also match their hyphenated analyzer names.
+_OFFICIAL_BY_ENTRY_POINT = {
+    ep.replace("_", "-"): entry for entry in OFFICIAL_PLUGINS for ep in entry.get("entry_points", ())
+}
 TRUSTED_ONLY_ENV = "ATTACKMAP_TRUSTED_ANALYZERS_ONLY"
 ALLOW_SYSTEM_INSTALL_ENV = "ATTACKMAP_ALLOW_SYSTEM_INSTALL"
 
@@ -418,8 +435,13 @@ class MissingAnalyzersError(ValueError):
 
 
 def official_plugin(name: str) -> dict | None:
-    """The lock entry for an official analyzer (by analyzer, package or repo name)."""
-    return _OFFICIAL_BY_PACKAGE.get(_normalize_repo_name(name))
+    """The lock entry for an official analyzer (by analyzer, package or repo
+    name, or by any analyzer entry point the package registers)."""
+    package = _normalize_repo_name(name)
+    entry = _OFFICIAL_BY_PACKAGE.get(package)
+    if entry is None:
+        entry = _OFFICIAL_BY_ENTRY_POINT.get(package.removeprefix("attackmap-analyzer-").replace("_", "-"))
+    return entry
 
 
 def trusted_analyzers_only() -> bool:
@@ -560,9 +582,15 @@ def select_requested_analyzers(
 
     if missing_names and auto_install:
         install_fn = installer if installer is not None else install_analyzer_module
+        installed_packages: set[str] = set()
         for missing_name in missing_names:
+            # One package can provide several requested analyzers (#190).
+            package = official_plugin(missing_name)["package"]  # type: ignore[index]
+            if package in installed_packages:
+                continue
+            installed_packages.add(package)
             try:
-                install_fn(_derive_repo_name(missing_name))
+                install_fn(package)
             except Exception as exc:
                 raise ValueError(f"Failed to install analyzer module '{missing_name}': {exc}") from exc
         resolved = _match_requested_analyzers(requested_names)
@@ -641,10 +669,6 @@ def _normalize_repo_name(repo_name: str) -> str:
     if normalized.startswith("attackmap-analyzer-"):
         return normalized
     return f"attackmap-analyzer-{normalized}"
-
-
-def _derive_repo_name(analyzer_name: str) -> str:
-    return _normalize_repo_name(analyzer_name)
 
 
 def get_analyzer_metadata(analyzer: Analyzer) -> AnalyzerMetadata:
@@ -727,6 +751,7 @@ def analyze_repository(
     repo_root = Path(root).resolve()
     active_analyzers = resolve_run_analyzers(repo_root, analyzers=analyzers)
     results: list[AnalyzerResult] = []
+    builtin: list[bool] = []  # per result: produced by a core extractor
     errors: list[AnalyzerError] = []
     for analyzer in active_analyzers:
         try:
@@ -744,9 +769,19 @@ def analyze_repository(
             if progress is not None:
                 progress.stage(f"Analyzer {analyzer.name} failed ({error.error_type}); continuing")
             continue
+        for unknown in drop_unknown_kinds(result, analyzer.name):
+            if strict:
+                raise ValueError(unknown.message)
+            errors.append(unknown)
+            logger.warning("Analyzer %r: %s", analyzer.name, unknown.message)
         _stamp_provenance(result, analyzer.name)
         results.append(result)
-    merged = merge_analyzer_results(results, root=repo_root) if results else AnalyzerResult(root=str(repo_root))
+        builtin.append(is_builtin_analyzer(analyzer))
+    merged = (
+        merge_analyzer_results(results, root=repo_root, builtin=builtin)
+        if results
+        else AnalyzerResult(root=str(repo_root))
+    )
     merged.analyzer_errors = errors
     # Whole-repo passes run once, over every analyzer's merged signals (#219).
     run_repo_passes(merged, repo_root, progress=progress, recall=recall)
@@ -793,6 +828,39 @@ def _call_analyze(
     except (TypeError, ValueError):
         pass
     return analyzer.analyze(root, **kwargs)  # type: ignore[call-arg]
+
+
+# Signal lists whose `kind` is typed `str` so a plugin built against a newer
+# core still validates: (ScanResult attribute, kinds this core knows, error
+# type of the drop note). Records with another kind are dropped one by one,
+# the rest of the plugin's result is kept, and the drop is noted under
+# `analyzer_errors` (`--strict-analyzers` raises instead).
+KIND_VOCABULARIES: tuple[tuple[str, frozenset[str], str], ...] = (
+    ("cloud_misconfigs", frozenset(CLOUD_MISCONFIG_KINDS), "UnknownCloudMisconfigKind"),
+    ("app_surface_issues", frozenset(APP_SURFACE_ISSUE_KINDS), "UnknownAppSurfaceIssueKind"),
+)
+
+
+def drop_unknown_kinds(result: AnalyzerResult, analyzer_name: str) -> list[AnalyzerError]:
+    notes: list[AnalyzerError] = []
+    for attr, known, error_type in KIND_VOCABULARIES:
+        items = getattr(result, attr)
+        unknown = [item for item in items if item.kind not in known]
+        if not unknown:
+            continue
+        setattr(result, attr, [item for item in items if item.kind in known])
+        kinds = sorted({item.kind for item in unknown})
+        message = (
+            f"dropped {len(unknown)} {attr} record(s) with kind(s) this AttackMap doesn't know: "
+            f"{', '.join(kinds[:5])}{' …' if len(kinds) > 5 else ''} (upgrade attackmap to report them)"
+        )
+        notes.append(
+            AnalyzerError(
+                analyzer=analyzer_name, error_type=error_type,
+                message=redact_text(message)[:_ANALYZER_ERROR_MAX_CHARS],
+            )
+        )
+    return notes
 
 
 def _stamp_provenance(result: AnalyzerResult, analyzer_name: str) -> None:
@@ -854,11 +922,15 @@ def _should_run_analyzer(analyzer: Analyzer, repo_root: Path) -> bool:
 def merge_analyzer_results(
     results: Iterable[AnalyzerResult],
     root: str | Path | None = None,
+    builtin: Iterable[bool] | None = None,
 ) -> AnalyzerResult:
     """Combine multiple whole-repo analyzer results into one.
 
     Field-by-field merge behavior is declared in :data:`merge.MERGE_SCHEMA`
-    and applied uniformly here. See `merge.py` for the rules.
+    and applied uniformly here. See `merge.py` for the rules. ``builtin``
+    marks, per result, those produced by a core extractor
+    (:func:`is_builtin_analyzer`); a plugin route then supersedes a built-in
+    twin of it (#337). Without it, routes merge on their key alone.
     """
     result_list = list(results)
     if not result_list:
@@ -869,6 +941,19 @@ def merge_analyzer_results(
     merged = AnalyzerResult(root=str(resolved_root))
     seen_by_attr: dict[str, set] = {rule.attr: set() for rule in MERGE_SCHEMA}
 
+    # A plugin route on the same (file, line) replaces core's built-in twin of
+    # it (a group prefix the built-in couldn't join), whatever order they run in.
+    flags = list(builtin) if builtin is not None else [False] * len(result_list)
+    if len(flags) != len(result_list):
+        raise ValueError("builtin must have one flag per result")
+    superseded = (
+        superseded_builtin_routes(
+            (route for result, flag in zip(result_list, flags) if flag for route in result.routes),
+            (route for result, flag in zip(result_list, flags) if not flag for route in result.routes),
+        )
+        if any(flags) and not all(flags)
+        else set()
+    )
     for result in result_list:
         merged.files_scanned += result.files_scanned
         for language in result.languages:
@@ -878,7 +963,10 @@ def merge_analyzer_results(
             if limitation not in merged.limitations:
                 merged.limitations.append(limitation)
         for rule in MERGE_SCHEMA:
-            merge_into(merged, getattr(result, rule.attr), rule, seen_by_attr[rule.attr])
+            items = getattr(result, rule.attr)
+            if rule.attr == "routes" and superseded:
+                items = [route for route in items if id(route) not in superseded]
+            merge_into(merged, items, rule, seen_by_attr[rule.attr])
 
     merged.languages.sort()
     return merged

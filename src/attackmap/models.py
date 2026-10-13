@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -35,6 +35,9 @@ DependencyEcosystem = Literal[
     "vcpkg",
     "gem",
     "cocoapods",
+    # Carthage pins git repositories (`github "owner/repo" "1.2.3"`); CVE-matched
+    # like SwiftPM, by source URL (#188).
+    "carthage",
     "hex",
     "pub",
 ]
@@ -336,6 +339,53 @@ class WebHardeningIssue(_RedactedEvidence):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+# Kinds of `AppSurfaceIssue` (#188, #190). Prefixed by platform so their
+# rule ids (`apple-...`) never collide with a core detector family.
+AppSurfaceIssueKind = Literal[
+    "apple_ats_insecure_loads",
+    "apple_custom_url_scheme",
+    "apple_webview_js_injection",
+    "apple_insecure_secret_storage",
+    "apple_pasteboard_secret",
+    "apple_hardened_runtime_exception",
+    "apple_debuggable_entitlement",
+    "apple_xpc_unvalidated_peer",
+    "apple_dynamic_dispatch",
+]
+APP_SURFACE_ISSUE_KINDS: tuple[str, ...] = get_args(AppSurfaceIssueKind)
+
+
+class AppSurfaceIssue(_RedactedEvidence):
+    """A mobile/desktop app attack-surface issue emitted by a platform plugin
+    (#188, #190): the Apple analyzers (Swift, Objective-C) report App Transport
+    Security exceptions, custom URL-scheme handlers, weakening entitlements,
+    WKWebView script built from strings, secrets in UserDefaults or on the
+    pasteboard, unvalidated XPC peers, and classes, selectors or libraries
+    resolved from runtime strings. Native format-string and command-exec
+    constructs are `CodeWeakness` kinds shared with the C/C++ plugins.
+
+    Core owns the findings: one aggregated finding per kind (rule id = the
+    kind, dashed), at the most severe instance's severity. Like the other
+    issue families, every instance is a positively-present construct, never
+    an absence.
+
+    ``kind`` is one of ``APP_SURFACE_ISSUE_KINDS`` but typed ``str``, so a
+    plugin built against a newer core still validates: core drops records
+    with a kind it doesn't know (noted under ``analyzer_errors``) and keeps
+    the rest of the plugin's result.
+    """
+
+    kind: str = Field(min_length=1, max_length=64)
+    file: str
+    line: int | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    # How sure the emitter is (0-1). On a duplicate report of the same
+    # instance the merge keeps the more severe, then the more confident one.
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class SupplyChainIssue(_RedactedEvidence):
     """A dependency supply-chain risk beyond CVEs (#247).
 
@@ -360,6 +410,106 @@ class SupplyChainIssue(_RedactedEvidence):
     evidence_text: str | None = None
     severity: Literal["low", "medium", "high"] = "medium"
     source_analyzer: str | None = _PROVENANCE_FIELD
+
+
+# Cloud / IaC / container-runtime misconfiguration kinds (`CloudMisconfig`).
+# Exported from `attackmap.sdk`; each kind is a core rule id (dashed) with a
+# finding spec in `threat_model` and a taxonomy entry in `taxonomy.py`.
+CloudMisconfigKind = Literal[
+    # Cloud resources (Terraform)
+    "iac_module_unpinned",
+    "public_network_access",
+    "public_cluster_endpoint",
+    "plaintext_listener",
+    "api_no_authorizer",
+    "unencrypted_storage",
+    "public_data_access",
+    "public_invoker",
+    # Workloads (Kubernetes / Helm / compose / Dockerfile)
+    "privileged_container",
+    "privilege_escalation_allowed",
+    "container_runs_as_root",
+    "missing_security_context",
+    "host_path_mount",
+    "host_namespace_shared",
+    "dangerous_capability",
+    "security_profile_disabled",
+    "exposed_service",
+    "unpinned_container_image",
+    "dockerfile_remote_add",
+    "dockerfile_curl_pipe_shell",
+    # Kubernetes RBAC
+    "rbac_wildcard",
+    "rbac_escalation",
+    "rbac_secret_access",
+    "cluster_admin_binding",
+]
+CLOUD_MISCONFIG_KINDS: tuple[str, ...] = get_args(CloudMisconfigKind)
+
+
+# Where a CloudMisconfig's resource lives. `terraform` is for module blocks.
+CloudMisconfigPlatform = Literal["aws", "azure", "gcp", "kubernetes", "helm", "compose", "docker", "terraform"]
+CLOUD_MISCONFIG_PLATFORMS: tuple[str, ...] = get_args(CloudMisconfigPlatform)
+
+# Free-text fields are copied from the scanned repo: one line, capped.
+_CLOUD_TEXT_CAPS = {"evidence_text": 300, "resource": 200, "context": 300, "escalation_path": 300}
+_CLOUD_KIND_MAX = 64
+
+
+class CloudMisconfig(_RedactedEvidence):
+    """A cloud, IaC or container-runtime misconfiguration (terraform#4, iac#1).
+
+    Emitted by IaC plugins (Terraform, Kubernetes / Helm, compose,
+    Dockerfile). Like the other issue families, each one is a
+    positively-present setting (or a documented insecure default that the
+    file leaves in place) at a file and line. Core turns each `kind` into
+    findings, one per (kind, severity) tier, so a low `/var/log` mount never
+    inherits the severity of a `docker.sock` mount of the same kind.
+
+    - `kind`: one of `CLOUD_MISCONFIG_KINDS`. Typed `str` so a plugin built
+      against a newer core still validates here; core drops records with a
+      kind it doesn't know (noted under `analyzer_errors`) and keeps the rest
+      of the plugin's result.
+    - `resource`: what the setting belongs to, e.g. `aws_eks_cluster.main`,
+      `Deployment/web container app`, `module.vpc`.
+    - `platform`: one of `CLOUD_MISCONFIG_PLATFORMS`.
+    - `context`: how the resource is instantiated — `for_each`/`count`,
+      the calling module of a local module, a Helm template.
+    - `escalation_path`: what an attacker gets from it, in one line, e.g.
+      `hostPath / → node root → kubelet credentials`.
+
+    The free-text fields are redacted, folded to one line and capped.
+    """
+
+    kind: str = Field(min_length=1, max_length=_CLOUD_KIND_MAX)
+    file: str
+    line: int | None = None
+    resource: str | None = None
+    platform: CloudMisconfigPlatform | None = None
+    context: str | None = None
+    escalation_path: str | None = None
+    evidence_text: str | None = None
+    severity: Literal["low", "medium", "high"] = "medium"
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+    @model_validator(mode="after")
+    def _clean_text_fields(self) -> "CloudMisconfig":
+        # Redact first (a module source URL can carry a token), then fold to
+        # one line and cap, so a cut never leaves half a secret unredacted.
+        for name, cap in _CLOUD_TEXT_CAPS.items():
+            value = getattr(self, name)
+            if not value:
+                continue
+            value = " ".join(redact_text(value).split())
+            if len(value) > cap:
+                value = value[: cap - 1] + "…"
+            object.__setattr__(self, name, value)
+        return self
+
+    @property
+    def known_kind(self) -> bool:
+        return self.kind in CLOUD_MISCONFIG_KINDS
 
 
 class WorkflowIssue(_RedactedEvidence):
@@ -705,6 +855,12 @@ class FindingLocation(BaseModel):
     # Instance identity across runs (#222): rule + file + normalized source
     # line, without the line number. Set by `fingerprint.assign_fingerprints`.
     fingerprint: str | None = None
+    # What tells this instance apart from others on the same line (a
+    # severity-tiered record's resource and evidence). Set only by tiered
+    # findings; when set it is mixed into the fingerprint, so an instance's
+    # fingerprint doesn't depend on its position among same-line instances
+    # (adding one, or re-tiering one, doesn't move dismissals). Not serialized.
+    instance: str | None = Field(default=None, exclude=True, repr=False)
 
 
 class FindingTaxonomy(BaseModel):
@@ -867,6 +1023,25 @@ class Insight(_RedactedEvidence):
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)
 
 
+class DetectionLogsource(BaseModel):
+    """Sigma `logsource` of a generated rule (#251)."""
+
+    product: str | None = None
+    service: str | None = None
+    category: str | None = None
+
+    def label(self) -> str:
+        return self.category or "/".join(p for p in (self.product, self.service) if p) or "unknown"
+
+
+class DetectionTestEvents(BaseModel):
+    """Sample log events for a generated rule (#251): `positive` events match
+    it, `negative` ones don't."""
+
+    positive: list[dict[str, Any]] = Field(default_factory=list)
+    negative: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class DetectionOpportunity(BaseModel):
     """A defender-facing detection-engineering hint produced from an insight or finding.
 
@@ -884,6 +1059,18 @@ class DetectionOpportunity(BaseModel):
     # Rule ids of the linked findings (#250), linked via the taxonomy registry.
     related_rule_ids: list[str] = Field(default_factory=list)
     attack_techniques: list[AttackTechnique] = Field(default_factory=list)
+    # Deployable rule (#251), set on opportunities generated per finding
+    # class: a structurally valid Sigma rule (deterministic `id`, status
+    # experimental), its log source, the log fields it reads, false-positive
+    # notes and sample events (positives match the rule, negatives don't).
+    # `sigma_correlation` is a Sigma correlation rule over `sigma` (BOLA
+    # cardinality). All `None`/empty on prose-only opportunities.
+    sigma: dict[str, Any] | None = None
+    sigma_correlation: dict[str, Any] | None = None
+    logsource: DetectionLogsource | None = None
+    fields_required: list[str] = Field(default_factory=list)
+    false_positive_notes: list[str] = Field(default_factory=list)
+    test_events: DetectionTestEvents | None = None
 
 
 class AnalyzerError(BaseModel):
@@ -917,6 +1104,9 @@ class ScanResult(BaseModel):
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)
     workflow_issues: list[WorkflowIssue] = Field(default_factory=list)
     supply_chain_issues: list[SupplyChainIssue] = Field(default_factory=list)
+    cloud_misconfigs: list[CloudMisconfig] = Field(default_factory=list)
+    # Plugin-emitted app attack surface (#188, #190).
+    app_surface_issues: list[AppSurfaceIssue] = Field(default_factory=list)
     secret_history: list[SecretHistoryHit] = Field(default_factory=list)
     anomalies: list[Anomaly] = Field(default_factory=list)
     # What the scan deliberately did not analyze (e.g. symlinks that point out
