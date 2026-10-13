@@ -28,9 +28,12 @@ def _scan(
     (tmp_path / file).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / file).write_text(body or "\n".join(f"// {m} {p}" for m, p in routes) + "\n")
     auth = "required" if authenticated else "unknown"
+    guards = ["SessionAuthGuard"] if authenticated else []
     return ScanResult(
         root=str(tmp_path),
-        routes=[Route(path=p, method=m, file=file, line=i + 1, auth=auth) for i, (m, p) in enumerate(routes)],
+        routes=[
+            Route(path=p, method=m, file=file, line=i + 1, auth=auth, guards=guards) for i, (m, p) in enumerate(routes)
+        ],
     )
 
 
@@ -204,3 +207,62 @@ def test_django_member_of_a_collection_is_management_but_the_collection_is_not(t
     # webhook; the bare collection could be a receiver, so it stays one.
     routes = [("ANY", "/extras/webhooks/"), ("ANY", "/extras/webhooks/<int:pk>/")]
     assert _management(tmp_path, routes) == {("ANY", "/extras/webhooks/<int:pk>/")}
+
+
+
+# ---------------------------------------------------------------------------
+# Review round 2: PUT alone, tenant params, secret guards, handshakes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "routes",
+    [
+        [("PUT", "/webhooks/{id}")],  # a PUT alone isn't management
+        [("PATCH", "/api/webhooks/:webhookId")],
+        [("PUT", "/webhooks/:accountId"), ("GET", "/webhooks/:accountId")],  # tenant-scoped receiver
+        [("DELETE", "/webhooks/:tenantId"), ("GET", "/hooks/webhook/:orgId")],
+    ],
+)
+def test_put_alone_and_tenant_params_stay_receivers(tmp_path: Path, routes: list[tuple[str, str]]) -> None:
+    assert _management(tmp_path, routes) == set()
+
+
+def test_put_with_read_sibling_or_user_auth_is_management(tmp_path: Path) -> None:
+    routes = [("PUT", "/webhooks/{id}"), ("GET", "/webhooks/{id}")]
+    assert _management(tmp_path, routes) == set(routes)
+    assert _management(tmp_path, [("PUT", "/hooks/webhooks/{id}")], authenticated=True) == {("PUT", "/hooks/webhooks/{id}")}
+
+
+def _guarded(tmp_path: Path, guards: list[str], auth: str = "required") -> set[tuple[str, str]]:
+    (tmp_path / "r.js").write_text("// POST /v2/webhooks\n// GET /v2/webhooks/:webhookId\n")
+    scan = ScanResult(
+        root=str(tmp_path),
+        routes=[
+            Route(path="/v2/webhooks", method="POST", file="r.js", line=1, auth=auth, guards=guards),
+            Route(path="/v2/webhooks/:webhookId", method="GET", file="r.js", line=2),
+        ],
+    )
+    return {(m, p) for m, p, _ in webhook_management_routes(scan)}
+
+
+def test_only_user_guards_count_as_management_auth(tmp_path: Path) -> None:
+    assert ("POST", "/v2/webhooks") in _guarded(tmp_path, ["ApiAuthGuard"])
+    # A plugin-declared shared-secret / signature check is how receivers authenticate.
+    assert ("POST", "/v2/webhooks") not in _guarded(tmp_path, ["WebhookSecretGuard"])
+    assert ("POST", "/v2/webhooks") not in _guarded(tmp_path, ["verifySignature"])
+    # Required with no named guard: doubt → receiver.
+    assert ("POST", "/v2/webhooks") not in _guarded(tmp_path, [])
+
+
+def test_get_with_subscription_handshake_stays_a_receiver(tmp_path: Path) -> None:
+    body = (
+        "router.get('/webhooks', (req, res) => {\n"
+        "  if (req.query['hub.mode'] === 'subscribe') return res.send(req.query['hub.challenge'])\n"
+        "  res.sendStatus(403)\n"
+        "})\n"
+        "router.get('/webhooks/:webhookId', show)\n"
+    )
+    scan = _scan(tmp_path, [("GET", "/webhooks"), ("GET", "/webhooks/:webhookId")], file="s.js", body=body)
+    scan.routes[1].line = 5
+    assert {(m, p) for m, p, _ in webhook_management_routes(scan)} == {("GET", "/webhooks/:webhookId")}

@@ -322,6 +322,20 @@ _PARAM_SEGMENT = re.compile(r"^(?:\{([^{}]*)\}|:([\w-]+)\??|<(?:[\w]+:)?([^<>]*)
 # Parameter names that identify a stored record (a webhook's own id), as opposed
 # to a provider name (`:provider`, `[source]`) that routes inbound events.
 _ID_PARAM = re.compile(r"^(?:id|pk|uuid|hook|webhook|webhook_?id|webhook_?uuid|\w*(?:Id|_id|ID|Uuid|_uuid|_pk))$")
+# An id that scopes a tenant, not a stored webhook: `/webhooks/:accountId` may
+# route a provider's events to a tenant.
+_TENANT_PARAM = re.compile(
+    r"^(?:account|tenant|org|organization|organisation|workspace|team|project|user|customer|shop|store|site"
+    r"|merchant|app|application|client|company|integration|installation|instance|space|channel|provider|source)"
+    r"_?(?:id|uuid|key|slug)?$",
+    re.IGNORECASE,
+)
+# Guards that are a user or session login, as opposed to a shared secret,
+# signature or token header a plugin may also declare `required`.
+_USER_GUARD = re.compile(r"(?i)session|login|user|jwt|permission|role|admin|member|apiauth|authenticated|isauth|auth_?required|login_?required")
+_SECRET_GUARD = re.compile(r"(?i)webhook|signature|secret|hmac|token|api_?key|svix|stripe|github|slack|twilio|shopify|verif|sig\b|basic")
+# A receiver's subscription handshake: Meta/WhatsApp `hub.challenge`, Twitter `crc_token`.
+_HANDSHAKE = re.compile(r"hub[._]challenge|hub[._]mode|hub[._]verify_token|crc_token")
 _ID_CONVERTERS = re.compile(r"^<(?:int|uuid|pk):", re.IGNORECASE)
 # Words that, fused with `webhook` in one segment, name a management page or
 # sub-resource: `add_webhook`, `webhooklogs`, `edit-webhook`.
@@ -371,9 +385,12 @@ def _is_id_param(segment: str) -> bool:
     name = _param_name(segment)
     if name is None:
         return False
+    bare = name.split(":", 1)[-1].strip()
+    if _TENANT_PARAM.match(bare):
+        return False
     if _ID_CONVERTERS.match(segment):
         return True
-    return _ID_PARAM.match(name.split(":", 1)[-1].strip()) is not None
+    return _ID_PARAM.match(bare) is not None
 
 
 def _drf_model_viewset(base: Path, cache: dict[str, str | None], hop: _HopResolver, route, line: str) -> bool:  # noqa: ANN001
@@ -424,19 +441,29 @@ def _fused_management_word(segment: str) -> bool:
     return bool(words) and any(w in _MANAGEMENT_WORDS for w in words)
 
 
-def _member_management(method: str, segs: list[str], hook: int, *, collection_known: bool) -> bool:
-    """`/…/webhooks/:webhookId[/…]`: a stored webhook addressed by id, read or
-    changed (GET/PUT/PATCH/DELETE), or acted on (`POST …/:id/test`). A
-    method-less route (Django, DRF: ANY) counts when it is the bare member of a
-    known collection."""
+def _member_management(method: str, segs: list[str], hook: int, *, collection_known: bool) -> str | None:
+    """`/…/webhooks/:webhookId[/…]`: a stored webhook addressed by id.
+    ``"strong"`` when it is read or deleted (GET/HEAD/DELETE), acted on
+    (`POST …/:id/test`), or a method-less bare member of a known collection;
+    ``"weak"`` for a PUT/PATCH, which needs other evidence; else None."""
     if hook + 1 >= len(segs) or not _is_id_param(segs[hook + 1]):
-        return False
+        return None
     tail = [s.lower() for s in segs[hook + 2 :]]
-    if method in _READ_WRITE_METHODS:
-        return True
     if any(word in _MANAGEMENT_ACTIONS for word in tail if _param_name(word) is None):
-        return True
-    return method == "ANY" and not tail and collection_known
+        return "strong"
+    if method in {"GET", "HEAD", "DELETE"}:
+        return "strong"
+    if method in {"PUT", "PATCH"}:
+        return "weak"
+    return "strong" if method == "ANY" and not tail and collection_known else None
+
+
+def _user_authenticated(route) -> bool:  # noqa: ANN001
+    """Required auth by a user/session guard. A plugin may also declare a
+    shared-secret or signature check `required`; that proves nothing here."""
+    if route.auth != "required" or not route.guards:
+        return False
+    return all(not _SECRET_GUARD.search(g) for g in route.guards) and any(_USER_GUARD.search(g) for g in route.guards)
 
 
 def _route_line(root: Path, cache: dict[str, str | None], route) -> str:  # noqa: ANN001
@@ -456,13 +483,16 @@ def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) 
     # Collections that have an id-addressed member somewhere: `/v2/webhooks`
     # when `/v2/webhooks/:webhookId` exists.
     collections: set[str] = set()
+    # Members (`/webhooks/:id`) that something reads, deletes or acts on.
+    members_read: set[str] = set()
     parsed = []
     for route in scan.routes:
         segs = _segments(route.path)
         hook = next((i for i, seg in enumerate(segs) if _WEBHOOK_SEGMENT.search(seg)), None)
         parsed.append((route, segs, hook))
-        if hook is not None and _member_management(route.method.upper(), segs, hook, collection_known=True):
+        if hook is not None and _member_management(route.method.upper(), segs, hook, collection_known=True) == "strong":
             collections.add("/".join(s.lower() for s in segs[: hook + 1]))
+            members_read.add("/".join(s.lower() for s in segs[: hook + 2]))
     collections_paths = {"/".join(s.lower() for s in segs) for _, segs, hook in parsed if hook is not None and hook + 1 == len(segs)}
     hop = _HopResolver(base, cache)
     route_lines: dict[str, list[int]] = {}
@@ -475,7 +505,7 @@ def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) 
         method = route.method.upper()
         lowered = [s.lower() for s in segs]
         after = lowered[hook + 1 :]
-        authenticated = route.auth == "required"
+        authenticated = _user_authenticated(route)
         reason = None
         if any(s in _SETTINGS_SEGMENTS for s in lowered[:hook]) and (
             method in _READ_WRITE_METHODS
@@ -489,10 +519,20 @@ def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) 
             reason = "a tRPC procedure endpoint"
         elif method != "POST" and _fused_management_word(segs[hook]):
             reason = f"`{segs[hook]}` names a management page"
-        elif _member_management(
-            method, segs, hook, collection_known="/".join(lowered[: hook + 1]) in collections_paths
-        ):
-            reason = f"`{segs[hook + 1]}` addresses a stored webhook"
+        elif (
+            member := _member_management(
+                method, segs, hook, collection_known="/".join(lowered[: hook + 1]) in collections_paths
+            )
+        ) is not None:
+            if member == "strong":
+                reason = f"`{segs[hook + 1]}` addresses a stored webhook"
+            elif (
+                "/".join(lowered[: hook + 2]) in members_read
+                or authenticated
+                or _persists_webhook_config(_handler_text(base, cache, route, route_lines.get(route.file, [])))
+            ):
+                # A PUT/PATCH alone isn't management: a provider may PUT events.
+                reason = f"`{segs[hook + 1]}` updates a stored webhook"
         elif hook + 1 == len(segs) and "/".join(lowered) in collections:
             # The collection of id-addressed webhooks. Listing it is management;
             # a POST (or a method-less route) may be a receiver beside an
@@ -505,6 +545,10 @@ def webhook_management_routes(scan: ScanResult, root: str | Path | None = None) 
                 reason = "a create that persists a webhook's URL and settings"
         if reason is None and _drf_model_viewset(base, cache, hop, route, _route_line(base, cache, route)):
             reason = "a model CRUD ViewSet over the app's webhooks"
+        if reason is not None and method in {"GET", "HEAD", "ANY"} and _HANDSHAKE.search(
+            _handler_text(base, cache, route, route_lines.get(route.file, []))
+        ):
+            reason = None  # a receiver's subscription handshake (`hub.challenge`, `crc_token`)
         if reason is not None:
             out[(route.method, route.path, route.file)] = reason
     return out
