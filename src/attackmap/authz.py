@@ -29,7 +29,9 @@ proof.
 
 from __future__ import annotations
 
+import json
 import os
+import posixpath
 import re
 from pathlib import Path
 
@@ -168,13 +170,221 @@ ROLE_MARKERS = re.compile(
     | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
     | \broles\s*\.\s*(?:includes|indexOf|contains)\s*\( | ['"]admin['"]\s+(?:not\s+)?in\s+[\w.]*roles
+    | ->userIsAllowed\s*\(
+    | (?:\$|->)(?:get)?(?:acl|permissions?|authorization|authz|auth)(?:\(\))?\s*->\s*isAllowed\s*\(
     | \bRolePolicy\s*\( | \bPermissionPolicy\s*\(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+# Symfony authorization (#343). A grant counts unless its attribute is one
+# every authenticated session (or every visitor) has. Parsed rather than
+# matched with a lookahead, so `IsGranted( 'ROLE_USER' )` and
+# `IsGranted(attribute: 'IS_AUTHENTICATED_FULLY')` can't slip through.
+_SYMFONY_GRANT_RE = re.compile(
+    r"\b(?:IsGranted|isGranted|denyAccessUnlessGranted|is_granted)\s*+\(\s*+(?:attribute\s*+:\s*+)?"
+)
+_SYMFONY_SECURITY_RE = re.compile(r"(?:#\[\s*+|@)(?:[\w\\]{0,200}\\)?Security\s*+\(")
+_GRANT_ARG_RE = re.compile(r"""'([^'\n]{0,200})'|"([^"\n]{0,200})"|(?:[\w\\]{1,200}::)?(\w+)""")
+_ROLE_CONST_RE = re.compile(r"\bROLE_[A-Z][A-Z0-9_]*")
+_SYMFONY_NON_ROLES = frozenset(
+    {
+        "IS_AUTHENTICATED", "IS_AUTHENTICATED_FULLY", "IS_AUTHENTICATED_REMEMBERED",
+        "IS_AUTHENTICATED_ANONYMOUSLY", "IS_ANONYMOUS", "IS_REMEMBERED", "IS_IMPERSONATOR",
+        "PUBLIC_ACCESS", "ROLE_USER", "ROLE_ANONYMOUS", "ROLE_PREVIOUS_ADMIN",
+    }
+)
+# Symfony `access_control` rules a plugin declares as a guard
+# (`access_control ^/admin: ROLE_ADMIN`); read from Route.guards only.
+_ACCESS_CONTROL_GUARD_RE = re.compile(r"\baccess_control\b")
+_SYMFONY_SCAN = 400
+
+
+def _symfony_role_check(text: str) -> bool:
+    """A Symfony grant of a role or voter permission other than the ones
+    every session has: ``#[IsGranted(...)]``, ``isGranted(...)``,
+    ``denyAccessUnlessGranted(...)``, or a ``#[Security(...)]`` expression
+    naming such a role."""
+    if "ranted" not in text and "Security" not in text and "is_granted" not in text:
+        return False
+    for match in _SYMFONY_GRANT_RE.finditer(text):
+        arg = _GRANT_ARG_RE.match(text, match.end(), match.end() + _SYMFONY_SCAN)
+        if arg is None:
+            return True  # an expression, array or variable: still an authorization call
+        value = next(group for group in arg.groups() if group is not None)
+        if value not in _SYMFONY_NON_ROLES:
+            return True
+    for match in _SYMFONY_SECURITY_RE.finditer(text):
+        body = text[match.end() : match.end() + _SYMFONY_SCAN]
+        if any(role not in _SYMFONY_NON_ROLES for role in _ROLE_CONST_RE.findall(body)):
+            return True
+    return False
+
+
+def has_role_check(text: str) -> bool:
+    """A role or permission check in ``text`` (handler code or guards)."""
+    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text)
+
+
+def _guards_role_check(route: Route) -> bool:
+    """Plugin-declared guards with role semantics, including Symfony
+    ``access_control`` rules naming a role other than ROLE_USER & co."""
+    text = " ".join(route.guards) + " " + (route.guard_evidence or "")
+    if has_role_check(text):
+        return True
+    return any(
+        _ACCESS_CONTROL_GUARD_RE.search(guard)
+        and any(role not in _SYMFONY_NON_ROLES for role in _ROLE_CONST_RE.findall(guard))
+        for guard in route.guards
+    )
+
+
 _JS_USE_RE = re.compile(r"\b(?:app|router|server|\w+Router)\s*\.\s*use\s*\(([^)]*)\)")
 _PY_ROUTER_DEPS_RE = re.compile(r"(?:APIRouter|include_router)\s*\(([^)]*)\)", re.DOTALL)
 _CLASS_DECL_RE = re.compile(r"\b(?:class|interface)\s+\w+")
+# Route declarations that live in configuration rather than code (#343):
+# data formats, and PHP files that are a returned config array (Laminas /
+# Omeka `routes.config.php`, Mezzio `routes.php`). The handler (a
+# controller) is elsewhere, so the route's span there is not its handler.
+_CONFIG_ROUTE_SUFFIXES = frozenset({".yaml", ".yml", ".xml", ".json", ".ini", ".neon", ".toml"})
+_PHP_OPEN_RE = re.compile(r"<\?php\b")
+_PHP_PREAMBLE_RE = re.compile(
+    r"\s+|//[^\n]*|#(?!\[)[^\n]*|/\*|declare\s*\([^)]{0,200}\)\s*;|namespace\s+[\w\\]+\s*;|use\s+[^;]{1,500};"
+)
+_PHP_RETURN_ARRAY_RE = re.compile(r"return\s*(?:\[|array\s*\()", re.IGNORECASE)
+# A handler written inline in the config (a closure) is visible after all.
+_INLINE_HANDLER_RE = re.compile(r"\bfunction\s*\(|\bfn\s*\(")
+
+
+# A Symfony YAML/XML route's controller: `controller: App\Controller\X::y`,
+# `_controller: ...` under `defaults`, `controller="..."`, or
+# `<default key="_controller">...</default>`.
+_CONFIG_CONTROLLER_RE = re.compile(
+    r"""(?:\b_?controller['"]?\s*+[:=]|\bkey\s*+=\s*+['"]_controller['"]\s*+>)\s*+['"]?\\?"""
+    r"""([A-Za-z_][\w\\]{0,300})(?:::(\w+))?"""
+)
+_PHP_FUNCTION_RE = re.compile(r"\bfunction\s++&?\s*+(\w+)\s*+\(")
+_CONTROLLER_ATTR_LINES = 15
+
+
+class _ConfigControllerResolver:
+    """Resolve a config-declared Symfony route to its controller method via
+    the repo's composer PSR-4 map, and return the method's text plus the
+    attributes on it and on its class (#343). Files are read through
+    ``contained_file``; nothing outside the repo is followed."""
+
+    def __init__(self, root: Path, cache: dict[str, str | None]):
+        self.root = root
+        self.cache = cache
+        self._psr4: list[tuple[str, str]] | None = None
+
+    def _autoload(self) -> list[tuple[str, str]]:
+        if self._psr4 is None:
+            self._psr4 = []
+            text = _read_file_content("composer.json", self.root, self.cache)
+            try:
+                data = json.loads(text) if text else {}
+            except ValueError:
+                data = {}
+            psr4 = data.get("autoload", {}).get("psr-4", {}) if isinstance(data, dict) else {}
+            if isinstance(psr4, dict):
+                for prefix, dirs in list(psr4.items())[:64]:
+                    for directory in [dirs] if isinstance(dirs, str) else (dirs if isinstance(dirs, list) else []):
+                        if isinstance(prefix, str) and isinstance(directory, str):
+                            self._psr4.append((prefix, directory))
+            self._psr4.sort(key=lambda item: -len(item[0]))
+        return self._psr4
+
+    def resolve(self, config_file: str, span: str) -> tuple[str, str, str, str] | None:
+        """``(controller file, its content, method + attributes text,
+        "Class::method")`` or None when the span names no resolvable
+        controller (only data-format route files are followed)."""
+        if Path(config_file).suffix.lower() not in _CONFIG_ROUTE_SUFFIXES:
+            return None
+        match = _CONFIG_CONTROLLER_RE.search(span)
+        if match is None:
+            return None
+        cls, method = match.group(1).strip("\\"), match.group(2) or "__invoke"
+        rel_file = next(
+            (
+                directory.rstrip("/") + "/" + cls[len(prefix) :].replace("\\", "/") + ".php"
+                for prefix, directory in self._autoload()
+                if cls.startswith(prefix)
+            ),
+            None,
+        )
+        if rel_file is None:
+            return None
+        rel_file = posixpath.normpath(rel_file)
+        if rel_file.startswith(".."):
+            return None
+        content = _read_file_content(rel_file, self.root, self.cache)
+        if not content:
+            return None
+        lines = content.splitlines()
+        # (0-based line, name) of each function, counting newlines once.
+        starts: list[tuple[int, str]] = []
+        line_no = pos = 0
+        for m in _PHP_FUNCTION_RE.finditer(content):
+            line_no += content.count("\n", pos, m.start())
+            pos = m.start()
+            starts.append((line_no, m.group(1)))
+        index = next((i for i, (_, name) in enumerate(starts) if name == method), None)
+        if index is None:
+            return None
+        first = starts[index][0]
+        if index + 1 < len(starts):
+            # Stop above the next method's own attributes / docblock: they
+            # describe it, not this one.
+            last = starts[index + 1][0]
+            last -= len(_leading_attributes(lines, last))
+        else:
+            last = len(lines)
+        body = _leading_attributes(lines, first) + lines[first : min(last, first + _AUTHZ_SPAN)]
+        class_line = next((i for i, line in enumerate(lines[:first]) if _CLASS_DECL_RE.search(line)), None)
+        class_attrs = _leading_attributes(lines, class_line) if class_line is not None else []
+        return rel_file, content, "\n".join(class_attrs + body), f"{cls}::{method}"
+
+
+def _leading_attributes(lines: list[str], index: int) -> list[str]:
+    """The attribute / docblock lines directly above ``lines[index]``,
+    stopping at the previous member (a line ending in ``;``, ``{`` or ``}``)."""
+    start = index
+    while start > 0 and index - start < _CONTROLLER_ATTR_LINES:
+        previous = lines[start - 1].rstrip()
+        if previous.endswith((";", "{", "}")):
+            break
+        start -= 1
+    return lines[start:index]
+
+
+def is_config_route_file(file: str, content: str) -> bool:
+    """True when ``file`` declares routes as configuration: a data format,
+    or a PHP file whose first statement is ``return [...]`` /
+    ``return array(...)`` (after ``namespace`` / ``use`` / ``declare`` and
+    comments)."""
+    suffix = Path(file).suffix.lower()
+    if suffix in _CONFIG_ROUTE_SUFFIXES:
+        return True
+    if suffix != ".php":
+        return False
+    opener = _PHP_OPEN_RE.match(content.lstrip("\ufeff"))
+    if not opener:
+        return False
+    text = content.lstrip("\ufeff")
+    pos = opener.end()
+    # Each step consumes at least one character, so this is linear.
+    for _ in range(10_000):
+        match = _PHP_PREAMBLE_RE.match(text, pos)
+        if not match:
+            break
+        if match.group() == "/*":
+            end = text.find("*/", match.end())
+            if end < 0:
+                return False
+            pos = end + 2
+        else:
+            pos = match.end()
+    return _PHP_RETURN_ARRAY_RE.match(text, pos) is not None
 
 
 def find_bfla_routes(
@@ -197,6 +407,8 @@ def find_bfla_routes(
     java_global_auth: bool | None = None
     lines_cache: dict[str, list[str]] = {}
     chain_role_cache: dict[str, bool] = {}
+    config_cache: dict[str, bool] = {}
+    controllers = _ConfigControllerResolver(root_path, content_cache)
     out: list[tuple[Route, str]] = []
     seen: set[tuple[str, str, str]] = set()
     for route in scan.routes:
@@ -221,21 +433,39 @@ def find_bfla_routes(
             authn = resolve_control(route, content, bool(java_global_auth)) or ""
         if not authn:
             continue
-        guards = " ".join(route.guards) + " " + (route.guard_evidence or "")
+        if _guards_role_check(route):
+            continue  # the plugin resolved a role check
         if route.file not in lines_cache:
             lines_cache[route.file] = content.splitlines()
             chain_role_cache[route.file] = _chain_role_check(route, content)
         handler = span_text(
             route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN
         )
+        where = f"{route.file}:{route.line}" if route.line else route.file
+        if route.file not in config_cache:
+            config_cache[route.file] = is_config_route_file(route.file, content)
+        if config_cache[route.file] and not _INLINE_HANDLER_RE.search(handler):
+            # Declared in config (#343): the span here is configuration, not
+            # the handler. Follow a Symfony YAML/XML `controller` reference
+            # to the controller method; when there is none to follow
+            # (Laminas / Omeka PHP arrays), finding no role check in the
+            # config says nothing, so the route isn't flagged.
+            resolved = controllers.resolve(route.file, handler)
+            if resolved is None:
+                continue
+            ctrl_file, ctrl_content, ctrl_text, target = resolved
+            if has_role_check(ctrl_text) or has_role_check(hop.delegated_text(ctrl_file, ctrl_content, ctrl_text)):
+                continue
+            out.append(
+                (route, f"{route.method} {route.path} in {where} (handler {target}) — {authn}, but no role or permission check")
+            )
+            continue
         if (
             chain_role_cache[route.file]
-            or ROLE_MARKERS.search(guards)
-            or ROLE_MARKERS.search(handler)
-            or ROLE_MARKERS.search(hop.delegated_text(route.file, content, handler))
+            or has_role_check(handler)
+            or has_role_check(hop.delegated_text(route.file, content, handler))
         ):
             continue
-        where = f"{route.file}:{route.line}" if route.line else route.file
         out.append(
             (route, f"{route.method} {route.path} in {where} — {authn}, but no role or permission check")
         )
@@ -383,7 +613,7 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
             continue
         if content and route.file not in chain_role_cache:
             chain_role_cache[route.file] = _chain_role_check(route, content)
-        if ROLE_MARKERS.search(scope) or chain_role_cache.get(route.file, False):
+        if has_role_check(scope) or chain_role_cache.get(route.file, False):
             # A role-gated route (admin tooling) reaches any object by design.
             continue
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from attackmap.authz import analyze_authz, _resource_id_param
+from attackmap.authz import analyze_authz, _resource_id_param, is_config_route_file
 from attackmap.models import BolaCandidate, DatabaseHint, Route, ScanResult, TaintChain
 from attackmap.scanner import scan_repo
 from attackmap.threat_model import generate_attack_paths, generate_findings
@@ -697,6 +697,284 @@ def test_bfla_respects_declared_role_guard(tmp_path: Path) -> None:
         ],
     )
     assert _bfla_findings(scan) == []
+
+
+_OMEKA_ROUTES = (
+    "<?php\n"
+    "// Routes are configuration; controllers live in application/src.\n"
+    "namespace Omeka;\n\n"
+    "use Laminas\\Router\\Http\\Literal;\n\n"
+    "return [\n"
+    "    'router' => ['routes' => ['admin' => ['child_routes' => [\n"
+    "        'site' => [\n"
+    "            'type' => Literal::class,\n"
+    "            'options' => [\n"
+    "                'route' => '/site',\n"
+    "                'defaults' => ['__ADMIN__' => true, 'controller' => 'Index', 'action' => 'index'],\n"
+    "            ],\n"
+    "        ],\n"
+    "    ]]]],\n"
+    "];\n"
+)
+
+
+def _admin_route(file: str, line: int, guards: list[str] | None = None) -> Route:
+    return Route(
+        path="/admin/site", method="ANY", file=file, line=line, auth="required",
+        guards=guards if guards is not None else ["omeka:admin_login"], source_analyzer="omeka-s",
+    )
+
+
+def test_bfla_does_not_judge_a_config_declared_route_by_its_config(tmp_path: Path) -> None:
+    # #343: Omeka's /admin/site routes are declared in routes.config.php; the
+    # controller (and its userIsAllowed checks) isn't in that file.
+    (tmp_path / "routes.config.php").write_text(_OMEKA_ROUTES)
+    scan = ScanResult(root=str(tmp_path), routes=[_admin_route("routes.config.php", 10)])
+    assert _bfla_findings(scan) == []
+    # Same for a data-format route file.
+    (tmp_path / "routes.yaml").write_text("admin_users:\n    path: /admin/users\n    controller: App\\Admin::delete\n")
+    scan = ScanResult(root=str(tmp_path), routes=[_admin_route("routes.yaml", 2)])
+    assert _bfla_findings(scan) == []
+
+
+def test_bfla_still_judges_a_closure_handler_inside_config(tmp_path: Path) -> None:
+    (tmp_path / "routes.php").write_text(
+        "<?php\nreturn [\n    'routes' => [\n"
+        "        ['path' => '/admin/purge', 'middleware' => function ($request) {\n"
+        "            return purge_everything();\n        }],\n    ],\n];\n"
+    )
+    route = Route(path="/admin/purge", method="POST", file="routes.php", line=4, auth="required", guards=["session"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+def test_bfla_code_routes_file_is_still_judged(tmp_path: Path) -> None:
+    # A Laravel routes file is code, not a config array.
+    (tmp_path / "web.php").write_text(
+        "<?php\nuse Illuminate\\Support\\Facades\\Route;\n"
+        "Route::delete('/admin/users/{id}', function ($id) { User::destroy($id); });\n"
+    )
+    route = Route(path="/admin/users/{id}", method="DELETE", file="web.php", line=3, auth="required", guards=["auth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+@pytest.mark.parametrize("check", ["$site->userIsAllowed('update')", "$acl->isAllowed($role, 'Omeka\\Site', 'update')"])
+def test_bfla_accepts_laminas_and_omeka_acl_checks(tmp_path: Path, check: str) -> None:
+    (tmp_path / "web.php").write_text(
+        "<?php\n"
+        "Route::post('/admin/sites/{id}', function ($id) {\n"
+        f"    if (!{check}) {{ abort(403); }}\n"
+        "    Site::find($id)->update(request()->all());\n"
+        "});\n"
+    )
+    route = Route(path="/admin/sites/{id}", method="POST", file="web.php", line=2, auth="required", guards=["auth"])
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+@pytest.mark.parametrize(
+    ("guards", "flagged"),
+    [
+        (["IsGranted(User::ROLE_ADMIN)"], False),
+        (["IsGranted('edit', subject: 'post')"], False),  # a voter permission
+        (["access_control ^/admin: ROLE_ADMIN"], False),
+        (["IsGranted('IS_AUTHENTICATED')"], True),  # authentication only
+        (["IsGranted('ROLE_USER')"], True),  # every logged-in user has it
+        (["IsGranted(User::ROLE_USER)"], True),
+        (["access_control ^/admin: ROLE_USER"], True),
+    ],
+)
+def test_bfla_reads_symfony_role_guards(tmp_path: Path, guards: list[str], flagged: bool) -> None:
+    (tmp_path / "AdminController.php").write_text(
+        "<?php\nclass AdminController {\n    #[Route('/admin/purge', methods: ['POST'])]\n"
+        "    public function purge(): void { $this->repo->purgeAll(); }\n}\n"
+    )
+    route = Route(
+        path="/admin/purge", method="POST", file="AdminController.php", line=3, auth="required", guards=guards
+    )
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == (1 if flagged else 0)
+
+
+def test_bfla_handler_role_id_column_is_not_a_role_check(tmp_path: Path) -> None:
+    # ROLE_ constants are matched case-sensitively: a `role_id` column isn't one.
+    (tmp_path / "web.php").write_text(
+        "<?php\nRoute::delete('/admin/users/{id}', function ($id) {\n"
+        "    DB::table('users')->where('role_id', 2)->where('id', $id)->delete();\n});\n"
+    )
+    route = Route(path="/admin/users/{id}", method="DELETE", file="web.php", line=2, auth="required", guards=["auth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+def _php_admin_route(tmp_path: Path, body: str, attrs: str = "") -> list:
+    (tmp_path / "web.php").write_text(
+        "<?php\nRoute::post('/admin/users/{id}', function ($id) {\n" + attrs + body + "\n});\n"
+    )
+    route = Route(path="/admin/users/{id}", method="POST", file="web.php", line=2, auth="required", guards=["auth"])
+    return _bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))
+
+
+@pytest.mark.parametrize(
+    ("body", "flagged"),
+    [
+        # Promoting a user is the BFLA case itself, not a role check.
+        ("    $user->setRoles(['ROLE_ADMIN']);", True),
+        ("    $user->roles = 'ROLE_SUPER_ADMIN';", True),
+        ("    $this->denyAccessUnlessGranted('ROLE_ANONYMOUS');", True),
+        ("    $this->denyAccessUnlessGranted('ROLE_PREVIOUS_ADMIN');", True),
+        ("    $this->denyAccessUnlessGranted( 'ROLE_USER' );", True),
+        ("    $this->denyAccessUnlessGranted(attribute: 'IS_AUTHENTICATED_FULLY');", True),
+        ("    if (!$security->isGranted(\"IS_AUTHENTICATED_REMEMBERED\")) { abort(403); }", True),
+        ("    $this->denyAccessUnlessGranted('ROLE_ADMIN');", False),
+        ("    $this->denyAccessUnlessGranted( attribute: User::ROLE_ADMIN );", False),
+        ("    if (!$this->isGranted('edit', $post)) { abort(403); }", False),
+        ("    $this->denyAccessUnlessGranted($attribute);", False),  # not statically known: an authz call
+    ],
+)
+def test_bfla_symfony_grants_in_handler(tmp_path: Path, body: str, flagged: bool) -> None:
+    assert len(_php_admin_route(tmp_path, body)) == (1 if flagged else 0)
+
+
+@pytest.mark.parametrize(
+    ("attr", "flagged"),
+    [
+        ("    #[Security(\"is_granted('ROLE_ADMIN')\")]\n", False),
+        ("    #[Security(\"is_granted('ROLE_USER')\")]\n", True),
+        ("    #[IsGranted( 'ROLE_USER' )]\n", True),
+        ("    #[Security(\"'ROLE_ADMIN' in role_names\")]\n", False),
+        ("    #[Security(\"'ROLE_USER' in role_names\")]\n", True),
+        ("    #[\\Sensio\\Bundle\\FrameworkExtraBundle\\Configuration\\Security(\"'ROLE_EDITOR' in role_names\")]\n", False),
+        ("    #[IsGranted(attribute: 'IS_AUTHENTICATED_FULLY')]\n", True),
+    ],
+)
+def test_bfla_symfony_grant_attributes(tmp_path: Path, attr: str, flagged: bool) -> None:
+    assert len(_php_admin_route(tmp_path, "    User::destroy($id);", attr)) == (1 if flagged else 0)
+
+
+@pytest.mark.parametrize(
+    ("body", "flagged"),
+    [
+        ("    if (!$limiter->isAllowed($ip)) { abort(429); }", True),  # a rate limiter
+        ("    if (!$validator->isAllowed($value)) { abort(422); }", True),
+        ("    if (!$this->acl->isAllowed($role, 'users', 'delete')) { abort(403); }", False),
+        ("    if (!$this->getAcl()->isAllowed($role, 'users')) { abort(403); }", False),
+        ("    if (!$permissions->isAllowed('users.delete')) { abort(403); }", False),
+        ("    if (!$user->userIsAllowed('delete')) { abort(403); }", False),
+    ],
+)
+def test_bfla_is_allowed_needs_an_acl_receiver(tmp_path: Path, body: str, flagged: bool) -> None:
+    assert len(_php_admin_route(tmp_path, body + "\n    User::destroy($id);")) == (1 if flagged else 0)
+
+
+_COMPOSER = '{"autoload": {"psr-4": {"App\\\\": "src/"}}}'
+
+
+def _symfony_repo(tmp_path: Path, routes_file: str, routes: str, controller: str) -> list:
+    (tmp_path / "composer.json").write_text(_COMPOSER)
+    (tmp_path / "config").mkdir(exist_ok=True)
+    (tmp_path / routes_file).write_text(routes)
+    (tmp_path / "src" / "Controller").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "Controller" / "AdminController.php").write_text(controller)
+    route = Route(path="/admin/purge", method="POST", file=routes_file, line=2, auth="required", guards=["access_control ^/: IS_AUTHENTICATED_FULLY"])
+    return _bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))
+
+
+_YAML = "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\AdminController::purge\n"
+_CONTROLLER = (
+    "<?php\nnamespace App\\Controller;\n\n{class_attr}final class AdminController\n{{\n"
+    "    #[IsGranted('ROLE_ADMIN')]\n    public function other(): void {{}}\n\n"
+    "{method_attr}    public function purge(): void\n    {{\n{body}        $this->repo->purgeAll();\n    }}\n}}\n"
+)
+
+
+def _controller(class_attr: str = "", method_attr: str = "", body: str = "") -> str:
+    return _CONTROLLER.format(class_attr=class_attr, method_attr=method_attr, body=body)
+
+
+def test_bfla_follows_a_symfony_yaml_route_to_its_controller(tmp_path: Path) -> None:
+    findings = _symfony_repo(tmp_path, "config/routes.yaml", _YAML, _controller())
+    assert len(findings) == 1
+    # The neighbouring action's #[IsGranted] doesn't leak into purge().
+    assert "(handler App\\Controller\\AdminController::purge)" in findings[0].evidence[0]
+
+
+def test_bfla_next_methods_attributes_dont_leak_into_the_route_method(tmp_path: Path) -> None:
+    """A role-gated action written *after* the unchecked one: its attribute
+    and docblock sit above its own `function` line, not in purge()'s body."""
+    controller = (
+        "<?php\nnamespace App\\Controller;\n\nfinal class AdminController\n{\n"
+        "    public function purge(): void\n    {\n        $this->repo->purgeAll();\n    }\n\n"
+        "    /** Admins only. */\n    #[IsGranted('ROLE_ADMIN')]\n    public function other(): void {}\n}\n"
+    )
+    findings = _symfony_repo(tmp_path, "config/routes.yaml", _YAML, controller)
+    assert len(findings) == 1
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"method_attr": "    #[IsGranted('ROLE_ADMIN')]\n"},
+        {"class_attr": "#[IsGranted('ROLE_ADMIN')]\n"},
+        {"body": "        $this->denyAccessUnlessGranted('ROLE_ADMIN');\n"},
+    ],
+)
+def test_bfla_symfony_yaml_route_controller_role_check(tmp_path: Path, kwargs: dict) -> None:
+    assert _symfony_repo(tmp_path, "config/routes.yaml", _YAML, _controller(**kwargs)) == []
+
+
+@pytest.mark.parametrize(
+    ("routes_file", "routes"),
+    [
+        ("config/routes.xml", '<routes>\n<route id="p" path="/admin/purge" controller="App\\Controller\\AdminController::purge"/>\n</routes>\n'),
+        ("config/routes.yaml", "admin_purge:\n    path: /admin/purge\n    defaults: { _controller: 'App\\Controller\\AdminController::purge' }\n"),
+        ("config/routes.xml", '<routes>\n<route id="p" path="/admin/purge"><default key="_controller">App\\Controller\\AdminController::purge</default></route>\n</routes>\n'),
+    ],
+)
+def test_bfla_symfony_controller_reference_forms(tmp_path: Path, routes_file: str, routes: str) -> None:
+    assert len(_symfony_repo(tmp_path, routes_file, routes, _controller())) == 1
+
+
+@pytest.mark.parametrize(
+    "routes",
+    [
+        "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\Missing::purge\n",
+        "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\AdminController::missing\n",
+        "admin_purge:\n    path: /admin/purge\n    controller: Vendor\\Bundle\\X::purge\n",
+        "admin_purge:\n    path: /admin/purge\n    resource: '@AdminBundle/routes.yaml'\n",
+    ],
+)
+def test_bfla_unresolvable_config_controller_is_skipped(tmp_path: Path, routes: str) -> None:
+    assert _symfony_repo(tmp_path, "config/routes.yaml", routes, _controller()) == []
+
+
+def test_bfla_invokable_symfony_controller(tmp_path: Path) -> None:
+    routes = "admin_purge:\n    path: /admin/purge\n    controller: App\\Controller\\AdminController\n"
+    controller = "<?php\nfinal class AdminController\n{\n    public function __invoke(): void { $this->repo->purgeAll(); }\n}\n"
+    assert len(_symfony_repo(tmp_path, "config/routes.yaml", routes, controller)) == 1
+
+
+@pytest.mark.parametrize(
+    ("file", "content", "expected"),
+    [
+        ("config/routes.yaml", "x:\n  path: /x\n", True),
+        ("routes.xml", "<routes/>", True),
+        ("a.config.php", "<?php\nreturn [];\n", True),
+        ("a.php", "\ufeff<?php\n/* doc\n */\ndeclare(strict_types=1);\nnamespace A\\B;\nuse C\\D;\n# c\nreturn array(\n);\n", True),
+        ("a.php", "<?php\nnamespace A;\nclass RoutesConfig { public function get() { return []; } }\n", False),
+        ("a.php", "<?php\n$x = 1;\nreturn [];\n", False),
+        ("a.php", "<?php\n/* unclosed", False),
+        ("a.php", "", False),
+        ("urls.py", "urlpatterns = []\n", False),
+    ],
+)
+def test_is_config_route_file(file: str, content: str, expected: bool) -> None:
+    assert is_config_route_file(file, content) is expected
+
+
+def test_is_config_route_file_is_linear_on_hostile_input() -> None:
+    import time
+
+    for content in ("<?php" + " //\n" * 200_000, "<?php" + "/**/" * 200_000, "<?php" + "use a;" * 100_000):
+        start = time.perf_counter()
+        is_config_route_file("a.php", content)
+        assert time.perf_counter() - start < 2.0
 
 
 def test_bfla_respects_hummingbird_role_and_permission_policies(tmp_path: Path) -> None:
