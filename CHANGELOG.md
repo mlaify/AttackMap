@@ -197,6 +197,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fewer false hard-coded secrets (#385).** On the Bluesky repos almost every `hardcoded-secret` location was noise. It now skips four shapes:
+  - **IPLD/IPFS content identifiers.** CIDv1 base32 (`bafy…`, `bafk…`, `bafyrei…`) and CIDv0 `Qm…` are public content hashes, so the high-entropy fallback ignores them.
+  - **Empty `KEY=` values.** A config secret must have its value on the same line. Before, an empty `PDS_JWT_SECRET=` (or an action input `token:` followed by `description:`) took the next line as its value.
+  - **GitHub Actions permission levels.** `id-token: write`, `contents: read` and the like are not secrets.
+  - **Random-looking literals in test and mock files.** The high-entropy guess is skipped there. Provider-shaped credentials (AWS keys, PEM blocks, verified JWTs, …) in tests are still reported.
+
+  Effect on `hardcoded-secret` locations: atproto 221 → 7, social-app 45 → 3, pds 2 → 0. Every removed location on ten corpus repos was hand-checked.
 - **`attackmap modules` lists the omeka-s analyzer (#259).** The remote module listing kept only repos named `attackmap-analyzer-*`, so `attack-map-analyzer-omeka-s` never appeared. Official repos from the plugin lock are now listed under their package name (`omeka-s`), the name that `-m` and the pinned installer already resolve (#347).
 - **Sinks count request data only in their dangerous argument (#375).** The legacy same-call token gate read the whole call, so request data in a harmless argument raised the sink. It now reads only the argument(s) the sink declares (`args`). `getattr(request.user, 'ldap_username')` is no longer `code-injection`, because only the attribute name is dangerous. `re.split(r'…', request.GET['q'])` is no longer `regex-injection`, because only the pattern is dangerous. `open-redirect` treats a target built from `reverse("view")`, `reverse_lazy`, `url_for("view", …)` or `resolve_url` as an internal path, including with request data in its kwargs or an appended query (`reverse('home') + '?next=' + x`, f-strings). Sinks declaring `all`, the receiver or the rest of the statement keep the old gate.
 - **Webhook verification reaches framework guards, constructor middleware, PayPal and shared secrets (#366, part 2).** Four kinds of verifying receivers came out `absent`; they are now reached:

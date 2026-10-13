@@ -963,7 +963,12 @@ def scan_files(
         # The keyword-proximity and URL-credential rules (#252) are skipped in
         # test/vendored code, where fake credential fixtures are the norm.
         first_party = not is_test_file(relative) and not is_vendored_file(relative)
-        _append_hardcoded_secret_hints(result, relative, content, generic=first_party, urls=first_party)
+        # The high-entropy fallback is a guess, and test fixtures are full of
+        # random-looking ids and hashes (#385). Provider-shaped credentials
+        # (AWS keys, PEM blocks, verified JWTs, …) are still reported there.
+        _append_hardcoded_secret_hints(
+            result, relative, content, entropy=first_party, generic=first_party, urls=first_party
+        )
 
         # The weakness passes below are noise in test scaffolding (#67) and in
         # vendored/minified third-party code (#95) — a bug in a dependency the
@@ -1081,6 +1086,11 @@ def _shannon_entropy(value: str) -> float:
     return entropy
 
 
+# Multiformat content identifiers: CIDv1 in base32 (multibase `b`, version 1
+# → `baf…`/`bag…`) and CIDv0 (46-char base58btc starting `Qm`).
+_CID_RE = re.compile(r"ba[fg][a-z2-7]{50,120}$|Qm[1-9A-HJ-NP-Za-km-z]{44}$")
+
+
 def _looks_like_secret_candidate(value: str) -> bool:
     """Reject obvious non-secret shapes that would otherwise clear the
     entropy bar (hex hashes in comments, URLs, etc.)."""
@@ -1098,6 +1108,10 @@ def _looks_like_secret_candidate(value: str) -> bool:
         return False
     if _UUID_RE.match(value):
         # Canonical UUID — an identifier, not a credential.
+        return False
+    if _CID_RE.match(value):
+        # An IPLD/IPFS content identifier (`bafy…`, `bafk…`, `bafyrei…`,
+        # CIDv0 `Qm…`): a public content hash, not a credential (#385).
         return False
     if "/" in value and value.count("/") > 2:
         # Looks like a URL path fragment.
