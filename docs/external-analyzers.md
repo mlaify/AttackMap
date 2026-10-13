@@ -223,6 +223,7 @@ Emit third-party dependencies as `DependencyHint`s in `result.dependencies`.
 | `swiftpm` | SwiftURL | package identity; put the source **repository URL** in `evidence_text` (OSV keys Swift packages by URL) |
 | `carthage` | SwiftURL | `owner/repo` or the pinned URL; put the source **repository URL** in `evidence_text`, as for `swiftpm` |
 | `cocoapods` | — | inventory only: no OSV database, reported as not CVE-checked |
+| `cmake` | — | inventory only: CMake `FetchContent` / `find_package` dependencies have no package registry; `name` is the CMake package or content name, `version` the tag or minimum version |
 
 Set `resolved=True` when `version` is an exact pin (lockfile), and
 `direct` / `via` when you know the resolution path. Core already parses the
@@ -330,13 +331,58 @@ Validate entries in your tests with `attackmap.sdk.validate_taint_sink`. At
 scan time an invalid entry is skipped with a warning. Core still decides
 reachability, the intra-procedural flow, sanitizers and severity.
 
+## Weakness and supply-chain records
+
+Some bug classes are decided inside a single function and don't fit core's
+route-seeded taint pass, such as C/C++ memory-safety sinks. An analyzer may
+emit those as `attackmap.sdk.CodeWeakness` records in `result.code_weaknesses`
+(#189). `kind` is one of `attackmap.sdk.CODE_WEAKNESS_KINDS`. Core owns
+each kind's title, mitigation and CWE/OWASP mapping. `kind` is typed `str`:
+core drops a record with a kind it doesn't know (a plugin built against a
+newer core), keeps the rest of the result and notes the drop under
+`analyzer_errors` (`--strict-analyzers` fails instead). `DependencyHint.ecosystem`
+works the same way, so a new ecosystem such as `cmake` never discards a
+plugin's whole result on an older core that typed it as a closed set. A plugin
+that must also run on cores older than this should check
+`"cmake" in attackmap.sdk.DEPENDENCY_ECOSYSTEMS` before emitting it.
+
+The native kinds are `unbounded_copy`, `format_string`, `native_command_exec`,
+`tainted_copy_length` and `alloc_size_overflow`. For these, set per instance:
+
+- `severity` and `confidence`, from whether an input reaches the sink in the
+  same function;
+- `source_kind` (`request`, `network`, `stdin`, `argv`, `env`, `file`) and
+  `source_line`, naming the input you traced. Leave them `None` if you traced
+  none. Any other `source_kind` is kept as `other`, and `source_line` is
+  dropped without a `source_kind`.
+
+Core emits one finding per (kind, severity tier) with the shared tiering
+(`threat_model.tiered_findings`), so one remote-input `strcpy` isn't merged
+into a pile of untraced ones. The `high` tier keeps the plain title; the other
+tiers add "(medium-severity instances)" / "(low-severity instances)", so each
+tier has its own finding id for triage, suppression and `--fail-on-new-high`.
+SARIF rule metadata comes from the `high` default tier. Records merge on
+(kind, file, line, evidence); on a true duplicate the more severe, then more
+confident, report wins together with its `source_kind` / `source_line`. Each
+record is its own location with an instance fingerprint, so two sinks on one
+line (or the same line in two tiers) stay two SARIF results. Core-aggregated
+kinds (`xxe`, `prototype_pollution`, ...) are unchanged: one finding at the
+spec's fixed severity and `medium` confidence, whatever the record sets. Skip test and vendored code the way core
+does (`ATTACKMAP_INCLUDE_TESTS` / `ATTACKMAP_INCLUDE_VENDORED` opt back in).
+
+Manifest risks your analyzer understands better than core, such as a CMake
+`FetchContent` `GIT_TAG` that names a branch, go in `result.supply_chain_issues`
+as `attackmap.sdk.SupplyChainIssue` records. Use the kinds core already
+reports, for example `mutable_vcs_dependency`.
+
 ## What analyzers may not do
 
 - **No subprocess calls** to other tools (linters, language servers, etc.).
   Analyzers must be self-contained Python.
 - **No network access** during `detect()` or `analyze()`. Scans are offline.
 - **No finding generation, severity scoring, or report rendering.** Emit
-  signals; core does the reasoning.
+  signals; core does the reasoning. (Per-instance `severity`/`confidence` on
+  a native `CodeWeakness` is a signal, not a finding.)
 - **No mutation of `root`.** Read-only.
 - **No global state.** Multiple analyzers run in one process; instances are
   reused across calls.

@@ -1250,6 +1250,81 @@ def _cwe_tags(kind: str) -> list[str]:
     return [cwe_tag(c) for c in entry.cwe] if entry else []
 
 
+# Native C/C++ sinks (#189), emitted by the C/C++ analyzer plugins with a
+# per-instance severity and confidence: an input from the network or a request
+# traced to the sink in the same function is high, a local input (argv, env,
+# stdin, a file) medium, no traced input low. Findings are split per
+# (kind, severity tier) with `tiered_findings`; `tier` is the kind's usual
+# severity, which keeps the plain title and sets the SARIF rule metadata.
+_NATIVE_WEAKNESS_FINDING_SPEC: dict[str, dict[str, str]] = {
+    "unbounded_copy": {
+        "tier": "high",
+        "title": "Unbounded buffer copy (strcpy/strcat/sprintf/gets)",
+        "mitigation": "Copy with an explicit destination size: `snprintf(dst, sizeof dst, \"%s\", src)`, `strlcpy`/`strlcat`, or `std::string`. Never use `gets` (use `fgets(buf, sizeof buf, stdin)`), and give every `scanf` `%s` a field width. Check the input length against the destination before copying.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "format_string": {
+        "tier": "high",
+        "title": "Non-constant printf-family format string",
+        "mitigation": "Pass data as an argument, never as the format: `printf(\"%s\", msg)`, `syslog(LOG_ERR, \"%s\", msg)`. Build with `-Wformat -Wformat-security` (and `-Werror=format-security`) so the compiler rejects non-literal formats.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "native_command_exec": {
+        "tier": "high",
+        "title": "OS command execution with a non-constant command (system/popen/exec)",
+        "mitigation": "Don't build shell command lines from input. Run the program directly with `execv`/`posix_spawn` and a fixed path and argument vector, validate each argument against an allow-list, and never pass input to `sh -c`, `system` or `popen`.",
+        "technique_id": "T1059.004",
+        "technique_name": "Command and Scripting Interpreter: Unix Shell",
+        "tactic": "Execution",
+    },
+    "tainted_copy_length": {
+        "tier": "high",
+        "title": "Memory copy with an input-controlled length (memcpy/memmove)",
+        "mitigation": "Bound the length by the destination before copying (`if (n > sizeof dst) reject;`), and never take a copy length straight from a packet or request header. Prefer containers that carry their own size.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+    "alloc_size_overflow": {
+        "tier": "high",
+        "title": "Allocation size computed from input without an overflow check",
+        "mitigation": "Check the multiplication before allocating (`if (n > SIZE_MAX / size) reject;`, `__builtin_mul_overflow`), or use `calloc(n, size)` / `reallocarray`, which fail on overflow. A wrapped size allocates a short buffer that the following writes overflow.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
+}
+
+# Native weakness evidence (#189): the input the emitter traced to the sink.
+# `CodeWeakness.source_kind` is validated against these keys.
+_NATIVE_SOURCE_LABEL = {
+    "request": "request input",
+    "network": "network input",
+    "stdin": "standard input",
+    "argv": "command-line argument",
+    "env": "environment variable",
+    "file": "file contents",
+    "other": "other input",
+}
+
+
+def _native_evidence_line(w) -> str:
+    line = f"{w.file}:{w.line}" if w.line else w.file
+    if w.evidence_text:
+        line += f" — {w.evidence_text}"
+    if w.source_kind:
+        label = _NATIVE_SOURCE_LABEL.get(w.source_kind, "other input")
+        at = f" (line {w.source_line})" if w.source_line else ""
+        line += f" [input: {label}{at}]"
+    else:
+        line += " [no input source traced]"
+    return line
+
+
 # CI-workflow security (#142). Severity is taken from the emitted issues (some
 # kinds tier per instance — e.g. unpinned semver tag vs. branch ref), so the
 # spec carries only the title, remediation and ATT&CK mapping. CWE/OWASP ids
@@ -1558,7 +1633,10 @@ _CLOUD_MISCONFIG_FINDING_SPEC: dict[str, dict[str, str]] = {
 }
 
 # Spec tables whose findings are split by severity tier (see `tiered_findings`).
-_TIERED_SPEC_TABLES: tuple[dict[str, dict[str, str]], ...] = (_CLOUD_MISCONFIG_FINDING_SPEC,)
+_TIERED_SPEC_TABLES: tuple[dict[str, dict[str, str]], ...] = (
+    _CLOUD_MISCONFIG_FINDING_SPEC,
+    _NATIVE_WEAKNESS_FINDING_SPEC,
+)
 
 
 def check_tiered_tables(tables: tuple[dict[str, dict[str, str]], ...]) -> None:
@@ -1734,13 +1812,15 @@ def tiered_findings(
     evidence: Callable[[Any], str],
     locations: Callable[[list], list[FindingLocation]] | None = None,
     tags: list[str],
+    attack_techniques: list[AttackTechnique] | None = None,
 ) -> list[Finding]:
     """One finding per severity tier of ``items`` (records with `severity`
-    and a numeric `confidence`). Confidence is the max over the tier's
-    records; evidence lists the most confident first, capped at 10."""
+    and a `confidence`: numeric, low/medium/high, or unset = medium).
+    Confidence is the max over the tier's records; evidence lists the most
+    confident first (stable, so callers can pre-sort ties), capped at 10."""
     out: list[Finding] = []
     for tier in _SEVERITY_TIERS:
-        tier_items = sorted((i for i in items if i.severity == tier), key=lambda i: -i.confidence)
+        tier_items = sorted((i for i in items if i.severity == tier), key=lambda i: -_confidence_value(i))
         if not tier_items:
             continue
         lines = [evidence(i) for i in tier_items[:10]]
@@ -1754,11 +1834,24 @@ def tiered_findings(
                 evidence=lines,
                 locations=(locations or instance_locs)(tier_items),
                 mitigation=spec["mitigation"],
-                confidence=_numeric_to_confidence(tier_items[0].confidence),  # type: ignore[arg-type]
+                confidence=_numeric_to_confidence(_confidence_value(tier_items[0])),  # type: ignore[arg-type]
                 tags=list(tags),
+                attack_techniques=list(attack_techniques or []),
             )
         )
     return out
+
+
+# Low/medium/high confidences on the numeric scale `_numeric_to_confidence`
+# reads back (the same scale `merge.keep_more_severe` ranks by).
+_CONFIDENCE_VALUE = {"low": 0.3, "medium": 0.6, "high": 0.9}
+
+
+def _confidence_value(item: Any) -> float:
+    value = getattr(item, "confidence", None)
+    if isinstance(value, str):
+        return _CONFIDENCE_VALUE.get(value, 0.6)
+    return 0.6 if value is None else float(value)
 
 
 def tiered_rule_defaults(rule_id: str) -> tuple[str, str, str] | None:
@@ -2626,6 +2719,33 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
+    # Native C/C++ weaknesses (#189): one finding per (kind, severity tier).
+    # Within a tier, traced instances lead, then by location.
+    for kind, spec in _NATIVE_WEAKNESS_FINDING_SPEC.items():
+        items = sorted(
+            code_by_kind.get(kind, []),
+            key=lambda w: (w.source_kind is None, w.file, w.line or 0),
+        )
+        findings.extend(
+            tiered_findings(
+                kind, spec, items,
+                evidence=_native_evidence_line,
+                tags=[
+                    "novel-vuln", "native",
+                    *(["memory-safety"] if kind != "native_command_exec" else []),
+                    *_cwe_tags(kind),
+                ],
+                attack_techniques=[
+                    AttackTechnique(
+                        technique_id=spec["technique_id"],
+                        name=spec["technique_name"],
+                        tactic=spec["tactic"],
+                        url=f"https://attack.mitre.org/techniques/{spec['technique_id'].replace('.', '/')}/",
+                    )
+                ],
+            )
+        )
+
     # Cloud / IaC / container misconfigurations (terraform#4, iac#1). One
     # finding per (kind, severity tier); confidence is the max over that
     # tier's records, and evidence lists the most confident first.
@@ -3305,7 +3425,7 @@ def rule_catalog() -> list[tuple[str, str, str]]:
     ]
     for spec_table in (
         _TAINT_FINDING_SPEC, _CRYPTO_FINDING_SPEC, _WEB_HARDENING_FINDING_SPEC,
-        _CODE_WEAKNESS_FINDING_SPEC, _WORKFLOW_FINDING_SPEC, _ANOMALY_FINDING_SPEC,
+        _CODE_WEAKNESS_FINDING_SPEC, _NATIVE_WEAKNESS_FINDING_SPEC, _WORKFLOW_FINDING_SPEC, _ANOMALY_FINDING_SPEC,
         _SUPPLY_CHAIN_FINDING_SPEC, _APP_SURFACE_FINDING_SPEC, _CLOUD_MISCONFIG_FINDING_SPEC,
     ):
         for kind, spec in spec_table.items():
