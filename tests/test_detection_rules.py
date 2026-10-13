@@ -96,6 +96,11 @@ def test_unknown_placeholder_is_an_error() -> None:
         detections.render_rule("ssrf-metadata-egress", rule_ids=["ssrf"], key="k", params={})
 
 
+def test_literal_null_survives_but_none_placeholders_drop_keys() -> None:
+    filled = detections._fill({"a": None, "b": "${x}", "c": "${y}"}, {"x": None, "y": 1})
+    assert filled == {"a": None, "c": 1}
+
+
 def test_placeholders_in_repo_text_are_not_expanded() -> None:
     # A route containing `${level}` must stay literal text.
     filled = detections._fill("x ${a} y", {"a": "${level}"})

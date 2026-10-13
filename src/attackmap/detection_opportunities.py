@@ -1073,6 +1073,74 @@ def _listed(items: list[str], limit: int = 3) -> str:
     return shown + (f" and {len(items) - limit} more" if len(items) > limit else "")
 
 
+def _cloud_opportunities(scan: ScanResult, findings: list[Finding]) -> list[DetectionOpportunity]:
+    """Kubernetes audit-log and CloudTrail rules for cloud / IaC
+    misconfigurations (#351), one per template per repository. A template
+    applies to the records its mapping allows (platform, AWS resource type)
+    that a finding of that rule id still covers after suppression; cloud
+    findings are tiered, so the covered set is the union over the tiers."""
+    mapping: dict[str, list[dict]] = template_data("cloud").get("mapping", {})
+    if not scan.cloud_misconfigs or not mapping:
+        return []
+    covered: dict[str, set[tuple[str, int | None]]] = {}
+    first: dict[str, Finding] = {}
+    for finding in findings:
+        if finding.rule_id in mapping:
+            covered.setdefault(finding.rule_id, set()).update(_location_keys(finding))
+            first.setdefault(finding.rule_id, finding)
+    # template id -> (rule ids, locations), in first-seen order
+    plan: dict[str, tuple[list[str], list[str]]] = {}
+    for record in scan.cloud_misconfigs:
+        rule_id = record.kind.replace("_", "-")
+        if rule_id not in covered or (record.file, record.line) not in covered[rule_id]:
+            continue
+        resource_type = (record.resource or "").split(".", 1)[0]
+        for spec in mapping[rule_id]:
+            platforms = spec.get("platforms") or []
+            types = spec.get("resource_types") or []
+            if platforms and record.platform not in platforms:
+                continue
+            if types and resource_type not in types:
+                continue
+            rule_ids, locations = plan.setdefault(spec["template"], ([], []))
+            if rule_id not in rule_ids:
+                rule_ids.append(rule_id)
+            where = f"{record.file}:{record.line}" if record.line else record.file
+            if record.resource:
+                where = f"{record.resource} ({where})"
+            if where not in locations:
+                locations.append(where)
+    out: list[DetectionOpportunity] = []
+    # Sorted, so neither the rule text nor the id depends on record order.
+    for template_id, (rule_ids, locations) in sorted(plan.items()):
+        rule_ids = sorted(rule_ids)
+        locations = sorted(locations)
+        rendered = _checked(
+            render_rule(
+                template_id,
+                rule_ids=rule_ids,
+                key="|".join([_repo_key(scan), template_id]),
+                params={"locations": _listed(locations), "rule_id": ", ".join(rule_ids)},
+            )
+        )
+        if rendered is None:
+            continue
+        opportunity = _rule_opportunity(
+            opportunity_id=f"detect:cloud:{template_id}",
+            finding=first[rule_ids[0]],
+            rendered=rendered,
+            rationale=(
+                "The repository's infrastructure code applies this setting; the control-plane log shows "
+                "it being applied, by whom, and to which resource, including copies AttackMap never saw."
+            ),
+        )
+        for rule_id in rule_ids[1:]:
+            opportunity.related_rule_ids.append(rule_id)
+            opportunity.related_finding_titles.append(first[rule_id].title)
+        out.append(opportunity)
+    return out
+
+
 def _finding_class_opportunities(findings: list[Finding], scan: ScanResult) -> list[DetectionOpportunity]:
     by_rule: dict[str, Finding] = {}
     for finding in findings:
@@ -1089,6 +1157,7 @@ def _finding_class_opportunities(findings: list[Finding], scan: ScanResult) -> l
     out += _workflow_opportunities(scan, by_rule)
     out += _secret_opportunities(scan, by_rule)
     out += _weakness_opportunities(scan, by_rule)
+    out += _cloud_opportunities(scan, findings)
     return out
 
 

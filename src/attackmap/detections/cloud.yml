@@ -1,0 +1,609 @@
+# Cloud and Kubernetes misconfiguration rules (#351), keyed by the
+# CloudMisconfig rule ids (#334). Each rule watches the control plane for the
+# risky setting being applied: the Kubernetes API audit log for workloads and
+# RBAC, CloudTrail for AWS resources. Every selection needs the risky
+# attribute itself (privileged: true, a 0.0.0.0/0 range, roleRef
+# cluster-admin), never a bare event name.
+#
+# Audit and CloudTrail events nest arrays (containers, rules, ipRanges). The
+# field paths below are the dotted, array-flattened names most pipelines
+# produce (Elastic, Splunk spath, Sentinel parse_json). Kubernetes rules on
+# requestObject need audit level Request or RequestResponse for these
+# resources. Map the names to your pipeline.
+
+templates:
+  k8s-privileged-workload:
+    date: "2026-10-12"
+    title: "Kubernetes workload created or changed with a privileged container"
+    description: >-
+      A pod or workload controller (including CronJob job templates and
+      init or ephemeral containers) is created or updated with a container
+      running privileged (full access to the node). AttackMap found
+      privileged containers in ${locations} (rule ${rule_id}); applying such a
+      spec is the step that hands an attacker in the container the node.
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.namespace, objectRef.name, user.username, requestObject.spec.containers.securityContext.privileged, requestObject.spec.template.spec.containers.securityContext.privileged, requestObject.spec.jobTemplate.spec.template.spec.containers.securityContext.privileged]
+    detection:
+      selection_write:
+        verb: [create, update, patch]
+        objectRef.resource: [pods, deployments, daemonsets, statefulsets, replicasets, replicationcontrollers, jobs, cronjobs]
+      priv_any:
+        - requestObject.spec.containers.securityContext.privileged: true
+        - requestObject.spec.initContainers.securityContext.privileged: true
+        - requestObject.spec.ephemeralContainers.securityContext.privileged: true
+        - requestObject.spec.template.spec.containers.securityContext.privileged: true
+        - requestObject.spec.template.spec.initContainers.securityContext.privileged: true
+        - requestObject.spec.template.spec.ephemeralContainers.securityContext.privileged: true
+        - requestObject.spec.jobTemplate.spec.template.spec.containers.securityContext.privileged: true
+        - requestObject.spec.jobTemplate.spec.template.spec.initContainers.securityContext.privileged: true
+        - requestObject.spec.jobTemplate.spec.template.spec.ephemeralContainers.securityContext.privileged: true
+      condition: selection_write and priv_any
+    falsepositives:
+      - CNI, CSI and monitoring agents that need privileged mode (exclude their namespaces, e.g. kube-system)
+    level: high
+    test_events:
+      positive:
+        - verb: create
+          objectRef.resource: daemonsets
+          objectRef.namespace: default
+          user.username: alice
+          requestObject.spec.template.spec.containers.securityContext.privileged: true
+      negative:
+        - verb: create
+          objectRef.resource: deployments
+          objectRef.namespace: default
+          user.username: alice
+          requestObject.spec.template.spec.containers.securityContext.privileged: false
+        - verb: get
+          objectRef.resource: pods
+          requestObject.spec.containers.securityContext.privileged: true
+
+  k8s-privilege-escalation-workload:
+    date: "2026-10-12"
+    title: "Kubernetes workload allows privilege escalation or adds dangerous capabilities"
+    description: >-
+      A pod or workload controller is created or updated with
+      allowPrivilegeEscalation true or a container capability that breaks
+      isolation (SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, ALL).
+      AttackMap found this in ${locations} (rule ${rule_id}).
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.namespace, user.username, requestObject.spec.containers.securityContext.allowPrivilegeEscalation, requestObject.spec.containers.securityContext.capabilities.add]
+    detection:
+      selection_write:
+        verb: [create, update, patch]
+        objectRef.resource: [pods, deployments, daemonsets, statefulsets, replicasets, replicationcontrollers, jobs, cronjobs]
+      esc_flag:
+        - requestObject.spec.containers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.initContainers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.ephemeralContainers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.template.spec.containers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.template.spec.initContainers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.template.spec.ephemeralContainers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.jobTemplate.spec.template.spec.containers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.jobTemplate.spec.template.spec.initContainers.securityContext.allowPrivilegeEscalation: true
+        - requestObject.spec.jobTemplate.spec.template.spec.ephemeralContainers.securityContext.allowPrivilegeEscalation: true
+      esc_cap:
+        - requestObject.spec.containers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.initContainers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.ephemeralContainers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.template.spec.containers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.template.spec.initContainers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.template.spec.ephemeralContainers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.jobTemplate.spec.template.spec.containers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.jobTemplate.spec.template.spec.initContainers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+        - requestObject.spec.jobTemplate.spec.template.spec.ephemeralContainers.securityContext.capabilities.add: [SYS_ADMIN, NET_ADMIN, SYS_PTRACE, SYS_MODULE, DAC_READ_SEARCH, ALL]
+      condition: selection_write and 1 of esc_*
+    falsepositives:
+      - Network and storage agents that need NET_ADMIN or SYS_ADMIN (exclude their namespaces)
+    level: medium
+    test_events:
+      positive:
+        - verb: create
+          objectRef.resource: pods
+          requestObject.spec.containers.securityContext.capabilities.add: SYS_ADMIN
+      negative:
+        - verb: create
+          objectRef.resource: pods
+          requestObject.spec.containers.securityContext.capabilities.add: NET_BIND_SERVICE
+
+  k8s-host-access-workload:
+    date: "2026-10-12"
+    title: "Kubernetes workload mounts a host path or shares a host namespace"
+    description: >-
+      A pod or workload controller is created or updated with a hostPath
+      volume or hostNetwork / hostPID / hostIPC, which give the container
+      the node's files or namespaces. AttackMap found this in ${locations}
+      (rule ${rule_id}).
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.namespace, user.username, requestObject.spec.volumes.hostPath.path, requestObject.spec.hostNetwork, requestObject.spec.hostPID, requestObject.spec.hostIPC]
+    detection:
+      selection_write:
+        verb: [create, update, patch]
+        objectRef.resource: [pods, deployments, daemonsets, statefulsets, replicasets, replicationcontrollers, jobs, cronjobs]
+      host_path:
+        - requestObject.spec.volumes.hostPath.path|startswith: /
+        - requestObject.spec.template.spec.volumes.hostPath.path|startswith: /
+        - requestObject.spec.jobTemplate.spec.template.spec.volumes.hostPath.path|startswith: /
+      host_namespace:
+        - requestObject.spec.hostNetwork: true
+        - requestObject.spec.hostPID: true
+        - requestObject.spec.hostIPC: true
+        - requestObject.spec.template.spec.hostNetwork: true
+        - requestObject.spec.template.spec.hostPID: true
+        - requestObject.spec.template.spec.hostIPC: true
+        - requestObject.spec.jobTemplate.spec.template.spec.hostNetwork: true
+        - requestObject.spec.jobTemplate.spec.template.spec.hostPID: true
+        - requestObject.spec.jobTemplate.spec.template.spec.hostIPC: true
+      condition: selection_write and 1 of host_*
+    falsepositives:
+      - Node agents (log shippers, CNI, node exporters) that read the host by design; exclude their namespaces
+    level: high
+    test_events:
+      positive:
+        - verb: create
+          objectRef.resource: daemonsets
+          requestObject.spec.template.spec.volumes.hostPath.path: /var/run/docker.sock
+        - verb: patch
+          objectRef.resource: deployments
+          requestObject.spec.template.spec.hostNetwork: true
+      negative:
+        - verb: create
+          objectRef.resource: deployments
+          requestObject.spec.template.spec.hostNetwork: false
+        - verb: delete
+          objectRef.resource: daemonsets
+          requestObject.spec.template.spec.volumes.hostPath.path: /var/log
+
+  k8s-exposed-service:
+    date: "2026-10-12"
+    title: "Kubernetes Service exposed outside the cluster"
+    description: >-
+      A Service is created or changed to type LoadBalancer or NodePort,
+      which publishes it outside the cluster. AttackMap found exposed
+      services in ${locations} (rule ${rule_id}).
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.namespace, objectRef.name, user.username, requestObject.spec.type]
+    detection:
+      selection:
+        verb: [create, update, patch]
+        objectRef.resource: services
+        requestObject.spec.type: [LoadBalancer, NodePort]
+      condition: selection
+    falsepositives:
+      - Ingress controllers and intended public services; exclude them by namespace and name
+    level: low
+    test_events:
+      positive:
+        - verb: create
+          objectRef.resource: services
+          requestObject.spec.type: LoadBalancer
+      negative:
+        - verb: create
+          objectRef.resource: services
+          requestObject.spec.type: ClusterIP
+
+  k8s-rbac-wildcard-grant:
+    date: "2026-10-12"
+    title: "Kubernetes Role or ClusterRole granting wildcard verbs or resources"
+    description: >-
+      A Role or ClusterRole is created or changed with "*" in its verbs or
+      resources. AttackMap found wildcard RBAC rules in ${locations} (rule
+      ${rule_id}).
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.name, user.username, requestObject.rules.verbs, requestObject.rules.resources]
+    detection:
+      selection_write:
+        verb: [create, update, patch]
+        objectRef.resource: [roles, clusterroles]
+      wildcard_verbs:
+        requestObject.rules.verbs|re: ^\*$
+      wildcard_resources:
+        requestObject.rules.resources|re: ^\*$
+      condition: selection_write and 1 of wildcard_*
+    falsepositives:
+      - The built-in cluster-admin and admin roles when the cluster is bootstrapped or upgraded (user system:apiserver)
+    level: high
+    test_events:
+      positive:
+        - verb: create
+          objectRef.resource: clusterroles
+          user.username: alice
+          requestObject.rules.verbs: "*"
+      negative:
+        - verb: create
+          objectRef.resource: clusterroles
+          user.username: alice
+          requestObject.rules.verbs: get
+
+  k8s-rbac-escalation-grant:
+    date: "2026-10-12"
+    title: "Kubernetes RBAC grant of escalate, bind or impersonate"
+    description: >-
+      A Role or ClusterRole is created or changed to allow escalate, bind or
+      impersonate, the verbs that let a subject grant itself more rights.
+      AttackMap found such rules in ${locations} (rule ${rule_id}).
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.name, user.username, requestObject.rules.verbs]
+    detection:
+      selection:
+        verb: [create, update, patch]
+        objectRef.resource: [roles, clusterroles]
+        requestObject.rules.verbs: [escalate, bind, impersonate]
+      condition: selection
+    falsepositives:
+      - Cluster bootstrap and operators that manage RBAC (user system:apiserver, OLM)
+    level: high
+    test_events:
+      positive:
+        - verb: patch
+          objectRef.resource: roles
+          requestObject.rules.verbs: impersonate
+      negative:
+        - verb: patch
+          objectRef.resource: roles
+          requestObject.rules.verbs: list
+
+  k8s-pod-exec:
+    date: "2026-10-12"
+    title: "Service account opens an exec or attach session in a Kubernetes pod"
+    description: >-
+      A service account (not a person) opens an exec or attach session in a
+      pod (pods/exec, pods/attach). kubectl 1.30 and later exec over
+      WebSocket, which reaches the API server as a GET and is recorded with
+      verb get; older clients use create. AttackMap found RBAC rules that grant
+      this broadly in ${locations} (rule ${rule_id}); with them, a stolen
+      service-account token runs commands in other workloads. Workloads
+      rarely exec into each other, so this is a strong signal.
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.subresource, objectRef.namespace, objectRef.name, user.username]
+    detection:
+      selection:
+        verb: [create, get]
+        objectRef.resource: pods
+        objectRef.subresource: [exec, attach]
+        user.username|startswith: "system:serviceaccount:"
+      condition: selection
+    falsepositives:
+      - CI/CD or debugging tools that exec through a service account (exclude them by name)
+    level: high
+    test_events:
+      positive:
+        - verb: create
+          objectRef.resource: pods
+          objectRef.subresource: exec
+          user.username: system:serviceaccount:web:default
+        - verb: get
+          objectRef.resource: pods
+          objectRef.subresource: exec
+          user.username: system:serviceaccount:ci:runner
+      negative:
+        - verb: create
+          objectRef.resource: pods
+          objectRef.subresource: exec
+          user.username: alice@example.com
+        - verb: get
+          objectRef.resource: pods
+          objectRef.subresource: log
+          user.username: system:serviceaccount:web:default
+
+  k8s-cluster-admin-binding:
+    date: "2026-10-12"
+    title: "Kubernetes binding to the cluster-admin role"
+    description: >-
+      A RoleBinding or ClusterRoleBinding to cluster-admin is created or
+      changed. AttackMap found cluster-admin bindings in ${locations} (rule
+      ${rule_id}).
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.name, user.username, requestObject.roleRef.name, requestObject.subjects.name]
+    detection:
+      selection:
+        verb: [create, update, patch]
+        objectRef.resource: [clusterrolebindings, rolebindings]
+        requestObject.roleRef.name: cluster-admin
+      condition: selection
+    falsepositives:
+      - Cluster bootstrap (user system:apiserver) and managed-cluster admin setup
+    level: high
+    test_events:
+      positive:
+        - verb: create
+          objectRef.resource: clusterrolebindings
+          requestObject.roleRef.name: cluster-admin
+      negative:
+        - verb: create
+          objectRef.resource: clusterrolebindings
+          requestObject.roleRef.name: view
+
+  k8s-secret-enumeration:
+    date: "2026-10-12"
+    title: "Kubernetes secrets listed or watched by a non-system user"
+    description: >-
+      A list or watch of secrets by a user or service account outside the
+      control plane. AttackMap found roles granting broad secret access in
+      ${locations} (rule ${rule_id}); bulk reads are how a stolen token is
+      turned into every credential in the namespace or cluster.
+    logsource: {product: kubernetes, service: audit}
+    fields_required: [verb, objectRef.resource, objectRef.namespace, user.username]
+    detection:
+      selection:
+        verb: [list, watch]
+        objectRef.resource: secrets
+      filter_control_plane:
+        user.username|startswith: ["system:kube-", "system:node:", "system:serviceaccount:kube-system:"]
+      condition: selection and not filter_control_plane
+    falsepositives:
+      - Operators and controllers that cache secrets (cert-manager, external-secrets, Helm); exclude their service accounts
+    level: low
+    test_events:
+      positive:
+        - verb: list
+          objectRef.resource: secrets
+          user.username: system:serviceaccount:web:default
+      negative:
+        - verb: list
+          objectRef.resource: secrets
+          user.username: system:kube-controller-manager
+        - verb: get
+          objectRef.resource: configmaps
+          user.username: alice
+
+  aws-security-group-open-ingress:
+    date: "2026-10-12"
+    title: "AWS security group opened to the whole internet"
+    description: >-
+      An ingress rule allowing 0.0.0.0/0 or ::/0 is added to a security
+      group. AttackMap found publicly reachable network rules in
+      ${locations} (rule ${rule_id}).
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, sourceIPAddress, requestParameters.groupId, requestParameters.ipPermissions.items.ipRanges.items.cidrIp, requestParameters.ipPermissions.items.ipv6Ranges.items.cidrIpv6]
+    detection:
+      selection:
+        eventSource: ec2.amazonaws.com
+        eventName: AuthorizeSecurityGroupIngress
+      open_v4:
+        requestParameters.ipPermissions.items.ipRanges.items.cidrIp: 0.0.0.0/0
+      open_v6:
+        requestParameters.ipPermissions.items.ipv6Ranges.items.cidrIpv6: "::/0"
+      condition: selection and 1 of open_*
+    falsepositives:
+      - Load balancer security groups that are public by design (ports 80/443)
+    level: medium
+    test_events:
+      positive:
+        - eventSource: ec2.amazonaws.com
+          eventName: AuthorizeSecurityGroupIngress
+          requestParameters.ipPermissions.items.ipRanges.items.cidrIp: 0.0.0.0/0
+      negative:
+        - eventSource: ec2.amazonaws.com
+          eventName: AuthorizeSecurityGroupIngress
+          requestParameters.ipPermissions.items.ipRanges.items.cidrIp: 10.0.0.0/8
+
+  aws-rds-publicly-accessible:
+    date: "2026-10-12"
+    title: "AWS RDS database made publicly accessible"
+    description: >-
+      An RDS instance or cluster is created or modified with
+      PubliclyAccessible true. AttackMap found publicly accessible databases
+      in ${locations} (rule ${rule_id}).
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, requestParameters.dBInstanceIdentifier, requestParameters.publiclyAccessible]
+    detection:
+      selection:
+        eventSource: rds.amazonaws.com
+        eventName: [CreateDBInstance, ModifyDBInstance, CreateDBCluster, ModifyDBCluster, RestoreDBInstanceFromDBSnapshot]
+        requestParameters.publiclyAccessible: true
+      condition: selection
+    falsepositives:
+      - Databases deliberately public behind other controls (rare; document them)
+    level: high
+    test_events:
+      positive:
+        - eventSource: rds.amazonaws.com
+          eventName: ModifyDBInstance
+          requestParameters.publiclyAccessible: true
+      negative:
+        - eventSource: rds.amazonaws.com
+          eventName: ModifyDBInstance
+          requestParameters.publiclyAccessible: false
+
+  aws-instance-public-ip:
+    date: "2026-10-12"
+    title: "AWS EC2 instance launched with a public IP address"
+    description: >-
+      RunInstances with a network interface that associates a public IP.
+      AttackMap found instances with public addresses in ${locations} (rule
+      ${rule_id}).
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, requestParameters.networkInterfaceSet.items.associatePublicIpAddress]
+    detection:
+      selection:
+        eventSource: ec2.amazonaws.com
+        eventName: RunInstances
+        requestParameters.networkInterfaceSet.items.associatePublicIpAddress: true
+      condition: selection
+    falsepositives:
+      - Bastion hosts and public-facing instances by design; exclude by subnet or tag
+    level: low
+    test_events:
+      positive:
+        - eventSource: ec2.amazonaws.com
+          eventName: RunInstances
+          requestParameters.networkInterfaceSet.items.associatePublicIpAddress: true
+      negative:
+        - eventSource: ec2.amazonaws.com
+          eventName: RunInstances
+          requestParameters.networkInterfaceSet.items.associatePublicIpAddress: false
+
+  aws-s3-made-public:
+    date: "2026-10-12"
+    title: "AWS S3 Block Public Access weakened or public ACL applied"
+    description: >-
+      A bucket's (or the account's) Block Public Access configuration is
+      deleted or set with any of its four protections off, or a public
+      canned ACL is applied. AttackMap found publicly readable storage in
+      ${locations} (rule ${rule_id}).
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, requestParameters.bucketName, requestParameters.x-amz-acl, requestParameters.PublicAccessBlockConfiguration.BlockPublicAcls, requestParameters.PublicAccessBlockConfiguration.IgnorePublicAcls, requestParameters.PublicAccessBlockConfiguration.BlockPublicPolicy, requestParameters.PublicAccessBlockConfiguration.RestrictPublicBuckets]
+    detection:
+      selection_s3:
+        eventSource: [s3.amazonaws.com, s3-control.amazonaws.com]
+      block_removed:
+        eventName: [DeleteBucketPublicAccessBlock, DeleteAccountPublicAccessBlock, DeletePublicAccessBlock]
+      block_weakened:
+        - eventName: [PutBucketPublicAccessBlock, PutAccountPublicAccessBlock, PutPublicAccessBlock]
+          requestParameters.PublicAccessBlockConfiguration.BlockPublicAcls: false
+        - eventName: [PutBucketPublicAccessBlock, PutAccountPublicAccessBlock, PutPublicAccessBlock]
+          requestParameters.PublicAccessBlockConfiguration.IgnorePublicAcls: false
+        - eventName: [PutBucketPublicAccessBlock, PutAccountPublicAccessBlock, PutPublicAccessBlock]
+          requestParameters.PublicAccessBlockConfiguration.BlockPublicPolicy: false
+        - eventName: [PutBucketPublicAccessBlock, PutAccountPublicAccessBlock, PutPublicAccessBlock]
+          requestParameters.PublicAccessBlockConfiguration.RestrictPublicBuckets: false
+      public_acl:
+        eventName: [PutBucketAcl, PutObjectAcl, CreateBucket]
+        requestParameters.x-amz-acl: [public-read, public-read-write]
+      condition: selection_s3 and (block_removed or block_weakened or public_acl)
+    falsepositives:
+      - Static-website buckets that are public by design
+    level: high
+    test_events:
+      positive:
+        - eventSource: s3.amazonaws.com
+          eventName: PutBucketAcl
+          requestParameters.x-amz-acl: public-read
+        - eventSource: s3.amazonaws.com
+          eventName: DeleteBucketPublicAccessBlock
+        - eventSource: s3.amazonaws.com
+          eventName: PutBucketPublicAccessBlock
+          requestParameters.PublicAccessBlockConfiguration.BlockPublicAcls: true
+          requestParameters.PublicAccessBlockConfiguration.IgnorePublicAcls: true
+          requestParameters.PublicAccessBlockConfiguration.BlockPublicPolicy: false
+          requestParameters.PublicAccessBlockConfiguration.RestrictPublicBuckets: true
+      negative:
+        - eventSource: s3.amazonaws.com
+          eventName: PutBucketAcl
+          requestParameters.x-amz-acl: private
+        - eventSource: s3.amazonaws.com
+          eventName: PutBucketPublicAccessBlock
+          requestParameters.PublicAccessBlockConfiguration.BlockPublicAcls: true
+          requestParameters.PublicAccessBlockConfiguration.IgnorePublicAcls: true
+          requestParameters.PublicAccessBlockConfiguration.BlockPublicPolicy: true
+          requestParameters.PublicAccessBlockConfiguration.RestrictPublicBuckets: true
+
+  aws-s3-public-policy:
+    date: "2026-10-12"
+    title: "AWS S3 bucket policy with a wildcard principal"
+    description: >-
+      PutBucketPolicy with a statement whose principal is "*" (anyone).
+      AttackMap found publicly readable storage in ${locations} (rule
+      ${rule_id}). Flattened policy fields can't tie the principal to its
+      statement's effect, so a Deny statement with Principal "*" (the
+      common aws:SecureTransport guard) also matches; check the Effect.
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, requestParameters.bucketName, requestParameters.bucketPolicy.Statement.Principal, requestParameters.bucketPolicy.Statement.Principal.AWS, requestParameters.bucketPolicy.Statement.Effect]
+    detection:
+      selection:
+        eventSource: s3.amazonaws.com
+        eventName: PutBucketPolicy
+      wildcard_principal:
+        - requestParameters.bucketPolicy.Statement.Principal|re: ^\*$
+        - requestParameters.bucketPolicy.Statement.Principal.AWS|re: ^\*$
+      condition: selection and wildcard_principal
+    falsepositives:
+      - Deny statements with Principal "*" (for example requiring TLS); review the policy's Allow statements
+      - Static-website buckets that are public by design
+    level: medium
+    test_events:
+      positive:
+        - eventSource: s3.amazonaws.com
+          eventName: PutBucketPolicy
+          requestParameters.bucketPolicy.Statement.Principal: "*"
+          requestParameters.bucketPolicy.Statement.Effect: Allow
+      negative:
+        - eventSource: s3.amazonaws.com
+          eventName: PutBucketPolicy
+          requestParameters.bucketPolicy.Statement.Principal.AWS: arn:aws:iam::123456789012:role/reader
+
+  aws-eks-public-endpoint:
+    date: "2026-10-12"
+    title: "AWS EKS cluster API endpoint made public"
+    description: >-
+      An EKS cluster is reconfigured with endpointPublicAccess true, or
+      created without endpointPublicAccess false (the API endpoint is public
+      by default). AttackMap found public cluster endpoints in ${locations}
+      (rule ${rule_id}).
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, requestParameters.name, requestParameters.resourcesVpcConfig.endpointPublicAccess, requestParameters.resourcesVpcConfig.publicAccessCidrs]
+    detection:
+      selection_eks:
+        eventSource: eks.amazonaws.com
+      made_public:
+        eventName: [CreateCluster, UpdateClusterConfig]
+        requestParameters.resourcesVpcConfig.endpointPublicAccess: true
+      public_by_default:
+        eventName: CreateCluster
+        requestParameters.resourcesVpcConfig.endpointPublicAccess: null
+      condition: selection_eks and (made_public or public_by_default)
+    falsepositives:
+      - Clusters with a public endpoint restricted by publicAccessCidrs; check the CIDRs
+    level: medium
+    test_events:
+      positive:
+        - eventSource: eks.amazonaws.com
+          eventName: UpdateClusterConfig
+          requestParameters.resourcesVpcConfig.endpointPublicAccess: true
+        - eventSource: eks.amazonaws.com
+          eventName: CreateCluster
+          requestParameters.name: main
+      negative:
+        - eventSource: eks.amazonaws.com
+          eventName: UpdateClusterConfig
+          requestParameters.resourcesVpcConfig.endpointPublicAccess: false
+        - eventSource: eks.amazonaws.com
+          eventName: CreateCluster
+          requestParameters.resourcesVpcConfig.endpointPublicAccess: false
+        - eventSource: eks.amazonaws.com
+          eventName: UpdateClusterConfig
+          requestParameters.name: main
+
+data:
+  # Rule id -> the templates that detect it. `platforms` limits a template to
+  # records on those platforms; `resource_types` (AWS) to Terraform resource
+  # types (the part of `resource` before the first dot). Kinds with no entry
+  # (unencrypted storage, unpinned images, Dockerfile issues, missing
+  # security contexts, ...) have no control-plane event to watch; the
+  # coverage table shows them as not covered. Launch templates and launch
+  # configurations are left out: their public-IP flag isn't in RunInstances'
+  # request, and their own create calls aren't mapped yet.
+  mapping:
+    privileged-container:
+      - {template: k8s-privileged-workload, platforms: [kubernetes, helm]}
+    privilege-escalation-allowed:
+      - {template: k8s-privilege-escalation-workload, platforms: [kubernetes, helm]}
+    dangerous-capability:
+      - {template: k8s-privilege-escalation-workload, platforms: [kubernetes, helm]}
+    host-path-mount:
+      - {template: k8s-host-access-workload, platforms: [kubernetes, helm]}
+    host-namespace-shared:
+      - {template: k8s-host-access-workload, platforms: [kubernetes, helm]}
+    exposed-service:
+      - {template: k8s-exposed-service, platforms: [kubernetes, helm]}
+    rbac-wildcard:
+      - {template: k8s-rbac-wildcard-grant, platforms: [kubernetes, helm, terraform]}
+      - {template: k8s-pod-exec, platforms: [kubernetes, helm, terraform]}
+    rbac-escalation:
+      - {template: k8s-rbac-escalation-grant, platforms: [kubernetes, helm, terraform]}
+      - {template: k8s-pod-exec, platforms: [kubernetes, helm, terraform]}
+    cluster-admin-binding:
+      - {template: k8s-cluster-admin-binding, platforms: [kubernetes, helm, terraform]}
+    rbac-secret-access:
+      - {template: k8s-secret-enumeration, platforms: [kubernetes, helm, terraform]}
+    public-network-access:
+      - {template: aws-security-group-open-ingress, platforms: [aws], resource_types: [aws_security_group, aws_security_group_rule, aws_vpc_security_group_ingress_rule]}
+      - {template: aws-rds-publicly-accessible, platforms: [aws], resource_types: [aws_db_instance, aws_rds_cluster, aws_rds_cluster_instance]}
+      - {template: aws-instance-public-ip, platforms: [aws], resource_types: [aws_instance]}
+    public-data-access:
+      - {template: aws-s3-made-public, platforms: [aws], resource_types: [aws_s3_bucket, aws_s3_bucket_acl, aws_s3_bucket_public_access_block, aws_s3_account_public_access_block]}
+      - {template: aws-s3-public-policy, platforms: [aws], resource_types: [aws_s3_bucket, aws_s3_bucket_policy]}
+      - {template: aws-rds-publicly-accessible, platforms: [aws], resource_types: [aws_db_instance, aws_rds_cluster, aws_rds_cluster_instance]}
+    public-cluster-endpoint:
+      - {template: aws-eks-public-endpoint, platforms: [aws], resource_types: [aws_eks_cluster]}
