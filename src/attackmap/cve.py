@@ -82,7 +82,7 @@ _OSV_ECOSYSTEM: dict[str, str] = {
 }
 # Ecosystems with no OSV.dev database: inventoried in the SBOM but never
 # CVE-matched. Reported as such so an empty result isn't read as "no vulns".
-INVENTORY_ONLY_ECOSYSTEMS: frozenset[str] = frozenset({"cocoapods"})
+INVENTORY_ONLY_ECOSYSTEMS: frozenset[str] = frozenset({"cocoapods", "cmake"})
 
 _DEFAULT_TTL_HOURS = 24
 _REQUEST_TIMEOUT_S = 10

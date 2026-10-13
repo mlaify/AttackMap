@@ -33,6 +33,9 @@ DependencyEcosystem = Literal[
     "nuget",
     "conan",
     "vcpkg",
+    # CMake `FetchContent` / `find_package` dependencies (#191): no package
+    # registry behind them, so inventory only (never CVE-matched).
+    "cmake",
     "gem",
     "cocoapods",
     # Carthage pins git repositories (`github "owner/repo" "1.2.3"`); CVE-matched
@@ -215,7 +218,10 @@ class DependencyHint(_RedactedEvidence):
 
     name: str
     version: str
-    ecosystem: DependencyEcosystem
+    # One of `DEPENDENCY_ECOSYSTEMS`, typed `str` so a plugin built against a
+    # newer core still validates here: core drops a hint with an ecosystem it
+    # doesn't know (noted under `analyzer_errors`) and keeps the rest.
+    ecosystem: str = Field(min_length=1, max_length=32)
     file: str
     line: int | None = None
     # dev / build-only dependency (``devDependencies``, ``require-dev``,
@@ -234,6 +240,39 @@ class DependencyHint(_RedactedEvidence):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+# Kinds of `CodeWeakness` this core turns into findings (#77, #189).
+CodeWeaknessKind = Literal[
+    "prototype_pollution",
+    "mass_assignment",
+    "jwt_weakness",
+    "jwt_alg_confusion",
+    "jwt_unverified_decode",
+    "jwt_claims_unchecked",
+    "jwt_header_trust",
+    "jwt_weak_secret",
+    "oauth_missing_state",
+    "oauth_implicit_flow",
+    "oauth_redirect_uri_loose",
+    "oauth_missing_pkce",
+    "session_fixation",
+    "session_weak_secret",
+    "xxe",
+    "redos",
+    "insecure_upload",
+    "graphql_exposure",
+    "graphql_no_query_limits",
+    "graphql_batching",
+    "prompt_injection_attempt",
+    # Native (C/C++) memory-safety and command-exec sinks (#189), emitted
+    # by the C/C++ analyzer plugins. See `NATIVE_WEAKNESS_KINDS`.
+    "unbounded_copy",
+    "format_string",
+    "native_command_exec",
+    "tainted_copy_length",
+    "alloc_size_overflow",
+]
+
+
 class CodeWeakness(_RedactedEvidence):
     """A novel vulnerability-class weakness in source (#77).
 
@@ -242,34 +281,50 @@ class CodeWeakness(_RedactedEvidence):
     constructs (not absence).
     """
 
-    kind: Literal[
-        "prototype_pollution",
-        "mass_assignment",
-        "jwt_weakness",
-        "jwt_alg_confusion",
-        "jwt_unverified_decode",
-        "jwt_claims_unchecked",
-        "jwt_header_trust",
-        "jwt_weak_secret",
-        "oauth_missing_state",
-        "oauth_implicit_flow",
-        "oauth_redirect_uri_loose",
-        "oauth_missing_pkce",
-        "session_fixation",
-        "session_weak_secret",
-        "xxe",
-        "redos",
-        "insecure_upload",
-        "graphql_exposure",
-        "graphql_no_query_limits",
-        "graphql_batching",
-        "prompt_injection_attempt",
-    ]
+    # One of `CODE_WEAKNESS_KINDS`, typed `str` so a plugin built against a
+    # newer core still validates here: core drops a record with a kind it
+    # doesn't know (noted under `analyzer_errors`) and keeps the rest (#189).
+    kind: str = Field(min_length=1, max_length=64)
     file: str
     line: int | None = None
     evidence_text: str | None = None
     severity: Literal["low", "medium", "high"] = "medium"
+    # Optional per-instance confidence (#189). When set, the finding takes the
+    # highest confidence among its instances instead of the default `medium`.
+    confidence: Literal["low", "medium", "high"] | None = None
+    # The input that reaches the weakness in the same function, when the
+    # emitter traced one (#189): `request`, `network`, `stdin`, `argv`, `env`,
+    # `file`. None means no source was traced.
+    # A value outside `NATIVE_SOURCE_KINDS` is kept as `other` (never as
+    # free text); a non-positive line is dropped.
+    source_kind: str | None = None
+    source_line: int | None = None
     source_analyzer: str | None = _PROVENANCE_FIELD
+
+    @model_validator(mode="after")
+    def _clean_source(self) -> "CodeWeakness":
+        if self.source_kind is not None and self.source_kind not in NATIVE_SOURCE_KINDS:
+            object.__setattr__(self, "source_kind", "other")
+        if self.source_line is not None and self.source_line < 1:
+            object.__setattr__(self, "source_line", None)
+        if self.source_kind is None:
+            object.__setattr__(self, "source_line", None)
+        return self
+
+
+CODE_WEAKNESS_KINDS: tuple[str, ...] = get_args(CodeWeaknessKind)
+# Kinds whose severity and confidence are set per instance by the emitter
+# (they depend on whether an input source reaches the sink), so findings are
+# grouped per severity tier instead of taking the kind's fixed severity.
+# Inputs a native weakness's emitter may name in `source_kind`.
+NATIVE_SOURCE_KINDS: frozenset[str] = frozenset({"request", "network", "stdin", "argv", "env", "file", "other"})
+NATIVE_WEAKNESS_KINDS: tuple[str, ...] = (
+    "unbounded_copy",
+    "format_string",
+    "native_command_exec",
+    "tainted_copy_length",
+    "alloc_size_overflow",
+)
 
 
 class Anomaly(BaseModel):

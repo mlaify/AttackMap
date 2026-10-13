@@ -32,7 +32,13 @@ from .sdk.contracts import (
     AnalyzerResult,
     normalize_analyzer_metadata,
 )
-from .models import APP_SURFACE_ISSUE_KINDS, CLOUD_MISCONFIG_KINDS, AnalyzerError
+from .models import (
+    APP_SURFACE_ISSUE_KINDS,
+    CLOUD_MISCONFIG_KINDS,
+    CODE_WEAKNESS_KINDS,
+    DEPENDENCY_ECOSYSTEMS,
+    AnalyzerError,
+)
 from .redact import redact_text
 from .sdk.models import (
     AuthHint,
@@ -832,26 +838,30 @@ def _call_analyze(
 
 # Signal lists whose `kind` is typed `str` so a plugin built against a newer
 # core still validates: (ScanResult attribute, kinds this core knows, error
-# type of the drop note). Records with another kind are dropped one by one,
+# type of the drop note[, field checked, default `kind`]). Records with
+# another value are dropped one by one,
 # the rest of the plugin's result is kept, and the drop is noted under
 # `analyzer_errors` (`--strict-analyzers` raises instead).
 KIND_VOCABULARIES: tuple[tuple[str, frozenset[str], str], ...] = (
     ("cloud_misconfigs", frozenset(CLOUD_MISCONFIG_KINDS), "UnknownCloudMisconfigKind"),
     ("app_surface_issues", frozenset(APP_SURFACE_ISSUE_KINDS), "UnknownAppSurfaceIssueKind"),
+    ("code_weaknesses", frozenset(CODE_WEAKNESS_KINDS), "UnknownCodeWeaknessKind"),
+    ("dependencies", frozenset(DEPENDENCY_ECOSYSTEMS), "UnknownDependencyEcosystem", "ecosystem"),
 )
 
 
 def drop_unknown_kinds(result: AnalyzerResult, analyzer_name: str) -> list[AnalyzerError]:
     notes: list[AnalyzerError] = []
-    for attr, known, error_type in KIND_VOCABULARIES:
+    for attr, known, error_type, *rest in KIND_VOCABULARIES:
+        field = rest[0] if rest else "kind"
         items = getattr(result, attr)
-        unknown = [item for item in items if item.kind not in known]
+        unknown = [item for item in items if getattr(item, field) not in known]
         if not unknown:
             continue
-        setattr(result, attr, [item for item in items if item.kind in known])
-        kinds = sorted({item.kind for item in unknown})
+        setattr(result, attr, [item for item in items if getattr(item, field) in known])
+        kinds = sorted({str(getattr(item, field)) for item in unknown})
         message = (
-            f"dropped {len(unknown)} {attr} record(s) with kind(s) this AttackMap doesn't know: "
+            f"dropped {len(unknown)} {attr} record(s) with {field}(s) this AttackMap doesn't know: "
             f"{', '.join(kinds[:5])}{' …' if len(kinds) > 5 else ''} (upgrade attackmap to report them)"
         )
         notes.append(

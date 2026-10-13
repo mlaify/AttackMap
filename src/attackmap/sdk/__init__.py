@@ -147,6 +147,27 @@ cores older than this record should feature-detect it (``try: from
 attackmap.sdk import CloudMisconfig`` / ``hasattr(ScanResult,
 "cloud_misconfigs")``) and keep emitting its old hints there, because an older
 core ignores the records.
+## Weakness and supply-chain records (#189, #191)
+
+Some bug classes are decided inside one function and don't fit the
+route-seeded taint pass, e.g. C/C++ memory-safety sinks (``strcpy`` from a
+traced input, a non-literal ``printf`` format, ``system`` on a built
+command). An analyzer may emit those as :class:`CodeWeakness` records in
+``result.code_weaknesses``. ``kind`` must be one of
+:data:`CODE_WEAKNESS_KINDS`; core owns the finding title, mitigation and
+taxonomy for each kind. For the native kinds (``unbounded_copy``,
+``format_string``, ``native_command_exec``, ``tainted_copy_length``,
+``alloc_size_overflow``) set ``severity`` and ``confidence`` per instance
+from whether an input reaches the sink in the same function, and name that
+input in ``source_kind`` / ``source_line``. Core groups the instances into
+one finding per (kind, severity tier), like :class:`CloudMisconfig`. ``kind``
+(and ``DependencyHint.ecosystem``) is typed ``str``: core drops a record with
+a value it doesn't know and notes it under ``analyzer_errors``.
+
+Manifest-level supply-chain risks an analyzer understands better than core
+(a CMake ``FetchContent`` ``GIT_TAG`` on a branch) go in
+``result.supply_chain_issues`` as :class:`SupplyChainIssue` records, using
+the kinds core already reports (``mutable_vcs_dependency``, ...).
 
 ## Versioning
 
@@ -174,6 +195,7 @@ from .models import (
     CLOUD_MISCONFIG_KINDS,
     CLOUD_MISCONFIG_PLATFORMS,
     APP_SURFACE_ISSUE_KINDS,
+    CODE_WEAKNESS_KINDS,
     DEPENDENCY_ECOSYSTEMS,
     AppSurfaceIssue,
     AppSurfaceIssueKind,
@@ -181,6 +203,7 @@ from .models import (
     CloudMisconfig,
     CloudMisconfigKind,
     CloudMisconfigPlatform,
+    CodeWeakness,
     DatabaseHint,
     DependencyEcosystem,
     DependencyHint,
@@ -193,6 +216,7 @@ from .models import (
     ScanResult,
     SecretHint,
     ServiceHint,
+    SupplyChainIssue,
 )
 
 __all__ = [
@@ -227,6 +251,10 @@ __all__ = [
     "AppSurfaceIssue",
     "AppSurfaceIssueKind",
     "APP_SURFACE_ISSUE_KINDS",
+    # Function-local weakness and supply-chain records (#189, #191).
+    "CodeWeakness",
+    "CODE_WEAKNESS_KINDS",
+    "SupplyChainIssue",
     # Repo-confined filesystem helpers (#234): walk and read the scanned repo
     # without following symlinks out of it. Plugins should use these instead
     # of Path.rglob / read_text.
