@@ -79,7 +79,22 @@ NOT_GATED = NOT_GATED + [
     # a state change before the check
     "const session = await getSession(req);\nawait Audit.create({ at: Date.now() });\nif (!session) return res.status(401).end();",
 ]
+NOT_GATED = NOT_GATED + [
+    # a `try` whose catch swallows the rejection
+    "try {\n  const session = await getSession(req);\n  if (!session) {\n    throw new Error('no');\n  }\n} catch (err) {\n  console.error(err);\n}",
+    # a lookup with a fallback is never empty
+    "const session = (await getSession(req)) ?? { user: guest };\nif (!session.user) return res.status(401).end();",
+    "const user = (await currentUser()) || anonymousUser;\nif (!user) return res.status(401).end();",
+    "const session = ok ? await getSession(req) : demo;\nif (!session) return res.status(401).end();",
+    # direct form reassigned before the check
+    "req.user = req.user || { id: 0 };\nif (!req.user) return res.status(401).end();",
+    "req.session.userId ??= 'guest';\nif (!req.session.userId) return res.status(401).end();",
+]
 GATED = GATED + [
+    # optional chaining is not a fallback
+    "const session = await getSession(req);\nif (!session?.user) return res.status(401).end();",
+    # try/finally doesn't swallow
+    "try {\n  const session = await getSession(req);\n  if (!session) throw new Error('no');\n} finally {\n  done();\n}",
     # passport / express-session identity
     "if (!req.user) return res.status(401).end();",
     "if (!req.session.userId) {\n  return res.redirect('/login');\n}",

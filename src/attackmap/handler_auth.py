@@ -24,9 +24,13 @@ doubt, the finding stays.
    exactly `!name[.member…]` for a tracked name, or `!req.user`,
    `!req.session.user[Id]`, `!req.isAuthenticated()`.
 5. The gate must be a top-level statement of the handler body: not inside a
-   branch, loop, callback or nested function. `try { … }` blocks and an
-   immediately-invoked function wrapping the whole body (`void (async () =>
-   { … })()`) are transparent. No state-changing call may come before it.
+   branch, loop, callback or nested function. A `try { … }` block is
+   transparent only if its `catch` rethrows or returns (or there is none);
+   an immediately-invoked function wrapping the whole body (`void (async
+   () => { … })()`) is transparent. No state-changing call may come before it.
+   A lookup with a fallback (`?? {…}`, `|| {…}`, a ternary) doesn't count,
+   and assigning `req.user` / `req.session…` before a direct check
+   disqualifies it.
 6. Its then-branch (a braced block or a single statement) must start with a
    `return` (not `return next()` / `return void next()`), a `throw`, or a
    bare `redirect(...)` (Next/Remix redirects throw). An Express-style
@@ -67,6 +71,12 @@ _MUTATION = re.compile(
     r"|save|remove|destroy|execute|exec|query|write|enqueue|publish)\w{0,40}\s*\("
 )
 _TRY_OPEN = re.compile(r"\btry\s*\Z")
+# A fallback in a session initializer: `??`, `||`, or a ternary (not `?.`).
+_FALLBACK = re.compile(r"\?\?|\|\||\?(?![.?])")
+# Assigning the request identity directly: `req.user = …`, `req.session.user ||= …`.
+_DIRECT_ASSIGN = re.compile(
+    r"(?<![\w$.])(?:req|request)\s*\.\s*(?:user|session)(?:\s*\.\s*(?:user|userId))?\s*(?:\|\||&&|\?\?)?=(?![=>])"
+)
 _IIFE_HEAD = re.compile(r"\A\s*(?:async\s+)?(?:\([^()]{0,200}\)|[A-Za-z_$][\w$]{0,80})\s*=>\s*\{|\A\s*(?:async\s+)?function\b")
 _MAX_SPAN_CHARS = 20_000
 _MAX_IFS = 200
@@ -199,7 +209,7 @@ def _transparent(code: str, open_at: int, pairs: dict[int, int]) -> bool:
     if ch == "{":
         before = code[max(0, open_at - 40) : open_at]
         if _TRY_OPEN.search(before.rstrip()):
-            return True
+            return _catch_rejects(code, open_at, pairs)
         close = pairs.get(open_at)
         if close is not None and re.match(r"\s*\)\s*\(", code[close + 1 : close + 20]) and re.search(r"=>\s*\Z", before):
             return True
@@ -211,6 +221,33 @@ def _transparent(code: str, open_at: int, pairs: dict[int, int]) -> bool:
             and _IIFE_HEAD.match(code[open_at + 1 : open_at + 300]) is not None
             and re.match(r"\s*\(", code[close + 1 : close + 20]) is not None
         )
+    return False
+
+
+_CATCH_HEAD = re.compile(r"\A\s*catch\s*(?:\([^()]{0,200}\))?\s*\{")
+_FINALLY_HEAD = re.compile(r"\A\s*finally\s*\{")
+
+
+def _catch_rejects(code: str, try_open: int, pairs: dict[int, int]) -> bool:
+    """A `try` is see-through only if its `catch` rethrows or returns at its
+    top level (so a `throw` in the try still rejects), or there is no catch."""
+    try_close = pairs.get(try_open)
+    if try_close is None:
+        return False
+    after = code[try_close + 1 : try_close + 260]
+    head = _CATCH_HEAD.match(after)
+    if head is None:
+        return _FINALLY_HEAD.match(after) is not None  # try/finally doesn't swallow
+    catch_open = try_close + head.end()
+    catch_close = pairs.get(catch_open)
+    if catch_close is None:
+        return False
+    for stmt in _statements(code[catch_open + 1 : catch_close]):
+        if re.match(r"\A\s*throw\b", stmt):
+            return True
+        returned = _RETURN.match(stmt)
+        if returned and not _BARE_NEXT.match(returned.group("rest")):
+            return True
     return False
 
 
@@ -243,6 +280,8 @@ def session_gate(text: str) -> str | None:
         rest = code[decl.end() : min(body_close, decl.end() + 400)].split(";", 1)[0].split("\n", 1)[0]
         if not _SESSION_CALL.search(rest) or not _top_level(code, body_open, decl.start(), pairs):
             continue
+        if _FALLBACK.search(rest):
+            continue  # `getSession(c) ?? { user: guest }`: never empty, so the gate proves nothing
         names = [decl.group("name")] if decl.group("name") else _IDENT.findall(decl.group("names") or "")
         for name in names:
             tracked.setdefault(name, decl.end())
@@ -262,6 +301,8 @@ def session_gate(text: str) -> str | None:
                 continue
             if _reassigned(name, code[tracked[name] : match.start()]):
                 continue
+        elif _DIRECT_ASSIGN.search(code, body_open, match.start()):
+            continue  # `req.user = req.user || { id: 0 }` before the check
         if not _top_level(code, body_open, match.start(), pairs):
             continue
         # No state change may happen before the check.

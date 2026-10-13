@@ -206,6 +206,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - The `if` must be a top-level statement of the handler body; a `try` block or an IIFE wrapping the whole body still counts as top level. It must also come before any state-changing call.
     - The then-branch must start with `return` (not `return next()` / `return void next()`), `throw` or `redirect(`. `next(err)` / `res.status(401|403)` count only when followed by `return`.
     - Any reassignment of the session variable (`=`, `||=`, `??=`, destructuring) disqualifies it.
+    - A `try` block counts as top level only if its `catch` rethrows or returns.
+    - A lookup with a fallback (`?? {…}`, `|| x`, a ternary) doesn't count.
+    - Assigning `req.user` / `req.session…` before a direct check disqualifies that check.
   - When in doubt the finding stays.
   - Real world: documenso's `POST /api/ai/detect-fields` and `/detect-recipients` are no longer flagged. juice-shop's `/dataerasure` stays flagged, because its lookup is app-specific. cal.com, dub, zulip, saleor, netbox and BookStack are unchanged.
 - **`attackmap modules` lists the omeka-s analyzer (#259).** The remote module listing kept only repos named `attackmap-analyzer-*`, so `attack-map-analyzer-omeka-s` never appeared. Official repos from the plugin lock are now listed under their package name (`omeka-s`), the name that `-m` and the pinned installer already resolve (#347).
