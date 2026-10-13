@@ -567,8 +567,10 @@ def _express_prefixes(content: str) -> dict[str, str]:
     (`app.use('/api/auth/*', csrf); app.use('/api/trpc/*', csrf)`, usually
     middleware) used to make the fixpoint below flip between its mounts
     forever, hanging the scan; mount cycles grew the prefix forever. Each
-    router now has one mount, self-mounts are skipped, and the propagation is
-    bounded by the number of mounts.
+    router now has one mount, self-mounts are skipped, and each name is
+    resolved once by walking its parent links (linear in the number of
+    mounts); the members of a mount cycle get no prefix, since no request
+    path reaches them from the app.
     """
     mounts: dict[str, tuple[str, str]] = {}
     for match in EXPRESS_USE_PATTERN.finditer(content):
@@ -577,15 +579,23 @@ def _express_prefixes(content: str) -> dict[str, str]:
             mounts.setdefault(child_name, (parent_name, mount_path))
 
     prefixes: dict[str, str] = {}
-    for _ in range(len(mounts) + 1):
-        updated = False
-        for child_name, (parent_name, mount_path) in mounts.items():
-            combined = _join_route_parts(prefixes.get(parent_name, ""), _join_route_parts(mount_path, ""))
-            if prefixes.get(child_name) != combined:
-                prefixes[child_name] = combined
-                updated = True
-        if not updated:
-            break
+    for start in mounts:
+        # Walk up to a resolved name, a root, or back into this walk (a cycle).
+        chain: list[str] = []
+        position: dict[str, int] = {}
+        node = start
+        while node in mounts and node not in prefixes:
+            if node in position:
+                for member in chain[position[node]:]:
+                    prefixes[member] = ""
+                del chain[position[node]:]
+                break
+            position[node] = len(chain)
+            chain.append(node)
+            node = mounts[node][0]
+        for name in reversed(chain):
+            parent_name, mount_path = mounts[name]
+            prefixes[name] = _join_route_parts(prefixes.get(parent_name, ""), _join_route_parts(mount_path, ""))
     return prefixes
 
 
