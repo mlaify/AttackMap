@@ -173,6 +173,10 @@ ROLE_MARKERS = re.compile(
     | ->userIsAllowed\s*\(
     | (?:\$|->)(?:get)?(?:acl|permissions?|authorization|authz|auth)(?:\(\))?\s*->\s*isAllowed\s*\(
     | \bRolePolicy\s*\( | \bPermissionPolicy\s*\(
+    | \brestrictTo\s*\( | \bcheck_?[rR]oles?\s*\( | \ballow(?:ed)?_?[rR]oles\s*\(
+    | \brequire[ds]?_?[sS]copes?\s*\( | \bPermissionsGuard\b | \bPoliciesGuard\b
+    | @Permissions\s*\( | @CheckPolicies\s*\( | @MembershipRoles\s*\( | @Pbac\s*\(
+    | \bguard\s*\.\s*check\s*\(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -225,9 +229,35 @@ def has_role_check(text: str) -> bool:
     return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text)
 
 
+# Guard *names* (as plugins put them in Route.guards, #349) that are a role or
+# permission check. Matched against the whole name, with any `@` and call
+# arguments stripped, so these generic words (`permit`, `acl`, `rbac`) only
+# count as a guard, never as a word in handler code (`params.permit(...)`).
+# A plugin can also mark any guard explicitly with a `role:` prefix.
+_ROLE_GUARD_NAMES = frozenset(
+    name.lower()
+    for name in (
+        "restrictTo", "permit", "checkRole", "checkRoles", "rbac", "acl", "allowRoles", "allowedRoles",
+        "authorizeRoles", "guard.check", "requireScopes", "requiredScopes", "requireScope", "requiredScope",
+        "PermissionsGuard", "PermissionGuard", "PoliciesGuard", "PolicyGuard", "Permissions", "CheckPolicies",
+        "MembershipRoles", "Pbac", "Roles", "RolesGuard", "RoleGuard",
+    )
+)
+_GUARD_NAME_RE = re.compile(r"^\s*@?\s*([\w.$]{1,120})")
+
+
+def _role_guard_name(guard: str) -> bool:
+    if guard.strip().lower().startswith("role:"):
+        return True
+    match = _GUARD_NAME_RE.match(guard)
+    return match is not None and match.group(1).lower() in _ROLE_GUARD_NAMES
+
+
 def _guards_role_check(route: Route) -> bool:
     """Plugin-declared guards with role semantics, including Symfony
     ``access_control`` rules naming a role other than ROLE_USER & co."""
+    if any(_role_guard_name(guard) for guard in route.guards):
+        return True
     text = " ".join(route.guards) + " " + (route.guard_evidence or "")
     if has_role_check(text):
         return True

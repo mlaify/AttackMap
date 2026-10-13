@@ -1068,3 +1068,81 @@ def test_bola_in_example_or_fixture_paths_not_reported() -> None:
     scan = ScanResult(root="/", authz_candidates=[cand])
     assert _bola_findings(scan) == []
     assert not [p for p in generate_attack_paths(scan) if "BOLA" in p.name]
+
+
+
+# ---------------------------------------------------------------------------
+# #349: role-check guard names from plugins
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "guards",
+    [
+        ["requireAuth", "restrictTo"],
+        ["requireAuth", "restrictTo('admin')"],
+        ["isAuthenticated", "permit"],
+        ["checkRole"],
+        ["rbac"],
+        ["acl"],
+        ["allowRoles"],
+        ["guard.check"],
+        ["requiredScopes"],
+        ["requireScopes"],
+        ["JwtAuthGuard", "PermissionsGuard"],
+        ["PoliciesGuard"],
+        ["ApiAuthGuard", "@MembershipRoles(['OWNER'])"],
+        ["@Pbac(['team.update'])"],
+        ["role:canManageUsers"],
+    ],
+)
+def test_role_guard_names_are_role_checks(tmp_path: Path, guards: list[str]) -> None:
+    (tmp_path / "admin.js").write_text("// handled by a plugin\n")
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=guards)
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
+
+
+@pytest.mark.parametrize(
+    "guards",
+    [
+        ["requireAuth"],
+        ["isAuthenticated"],
+        ["JwtAuthGuard"],
+        ["AuthGuard('jwt')"],
+        ["ApiAuthGuard"],
+        ["passport.authenticate"],
+        ["permitted"],  # not the `permit` guard
+        ["aclCache"],
+    ],
+)
+def test_authentication_only_guards_are_not_role_checks(tmp_path: Path, guards: list[str]) -> None:
+    (tmp_path / "admin.js").write_text("// handled by a plugin\n")
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=guards)
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+def test_generic_guard_words_in_handler_code_are_not_role_checks(tmp_path: Path) -> None:
+    # `permit` / `acl` count only as guard names, not as words in the handler.
+    (tmp_path / "admin.rb.js").write_text(
+        "app.delete('/admin/users/:id', requireAuth, async (req, res) => {\n"
+        "  const attrs = params.permit('name');\n"
+        "  const acl = loadAcl();\n"
+        "  await User.remove(req.params.id);\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.rb.js", line=1, auth="required", guards=["requireAuth"])
+    assert len(_bfla_findings(ScanResult(root=str(tmp_path), routes=[route]))) == 1
+
+
+@pytest.mark.parametrize(
+    "call",
+    ["restrictTo('admin')", "checkRole('admin')", "allowRoles('admin')", "requiredScopes('write:users')", "guard.check(['admin'])"],
+)
+def test_role_check_calls_in_the_chain_count(tmp_path: Path, call: str) -> None:
+    (tmp_path / "admin.js").write_text(
+        f"app.delete('/admin/users/:id', requireAuth, {call}, async (req, res) => {{\n"
+        "  await User.remove(req.params.id);\n"
+        "});\n"
+    )
+    route = Route(path="/admin/users/:id", method="DELETE", file="admin.js", line=1, auth="required", guards=["requireAuth"])
+    assert _bfla_findings(ScanResult(root=str(tmp_path), routes=[route])) == []
