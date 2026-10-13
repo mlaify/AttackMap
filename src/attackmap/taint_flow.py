@@ -213,6 +213,31 @@ def _fixed_prefix(kind: str, literal: str | None) -> bool:
     return False
 
 
+_INTERNAL_URL_FUNCS = frozenset({"reverse", "reverse_lazy", "url_for", "resolve_url"})
+
+
+def _internal_url_node(node: ast.AST) -> bool:
+    """A redirect target built from `reverse("view")` / `url_for("view", …)`
+    (possibly followed by `+ "?q=" + x` or inside an f-string's first part):
+    the view name pins an internal path, so request data in its kwargs or the
+    query can't send the user off-site (#375)."""
+    for _ in range(8):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+            node = node.left
+        elif isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.FormattedValue):
+            node = node.values[0].value
+        else:
+            break
+    if not isinstance(node, ast.Call) or not node.args:
+        return False
+    func = node.func
+    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+    if name not in _INTERNAL_URL_FUNCS:
+        return False
+    first = node.args[0]
+    return (isinstance(first, ast.Constant) and isinstance(first.value, str)) or isinstance(first, (ast.Name, ast.Attribute))
+
+
 def _sanitizer_table() -> list[tuple[frozenset[str], str, re.Pattern[str]]]:
     table: list[tuple[frozenset[str], str, re.Pattern[str]]] = []
     for kind, entries in SANITIZERS.items():
@@ -632,6 +657,8 @@ class _PyFlow:
         atoms: list[Atom] = []
         for node in nodes:
             if _fixed_prefix(kind, self._leading_literal(node)):
+                continue
+            if kind == "open_redirect" and _internal_url_node(node):
                 continue
             atoms += self._eval(node, env)
         atoms = _dedupe(atoms)
