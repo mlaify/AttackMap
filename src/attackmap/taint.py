@@ -1062,6 +1062,65 @@ _ARG_DYNAMIC = re.compile(
 )
 
 
+# A redirect to `reverse("view")` / `url_for("view", …)` / `resolve_url(view)`
+# goes to an internal path whatever the request supplies as kwargs or query
+# (#375): the view name pins it, like #327's fixed host.
+_INTERNAL_URL_CALL_RE = re.compile(
+    r"(?:[fF]['\"]\{)?(?<![\w.])(?:reverse|reverse_lazy|url_for|resolve_url)\s*\(\s*(?:[rbuRBU]?['\"][^'\"\n]{1,200}['\"]|[A-Za-z_][\w.]{0,200})\s*[,)]"
+)
+
+
+def _top_level_args(text: str) -> list[tuple[int, int]]:
+    """Offsets of each top-level comma-separated argument in ``text`` (a
+    call's argument text), skipping brackets and quoted strings."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    quote = ""
+    start = 0
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = ""
+        elif c in "'\"`":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            spans.append((start, i))
+            start = i + 1
+        i += 1
+    spans.append((start, len(text)))
+    return spans
+
+
+def _token_in_dangerous_args(
+    content: str, arg_lo: int, token_hi: int, arg_text: str, args: tuple[int, ...] | None, kind: str
+) -> bool:
+    """The legacy request-token gate, limited to the sink's dangerous
+    argument(s) when it names them by position (#375). `all`, receiver and
+    rest-of-statement sinks keep the old span (paren to first `)`)."""
+    if args is None or any(index < 0 for index in args):
+        return _TAINTED_RE.search(content, arg_lo, token_hi) is not None
+    spans = _top_level_args(arg_text)
+    for index in args:
+        if not 0 <= index < len(spans):
+            continue
+        lo, hi = spans[index]
+        while lo < hi and arg_text[lo].isspace():
+            lo += 1
+        if kind == "open_redirect" and _INTERNAL_URL_CALL_RE.match(arg_text, lo, hi):
+            continue
+        if _TAINTED_RE.search(arg_text, lo, hi) is not None:
+            return True
+    return False
+
+
 def _extract_call_arg(content: str, open_paren: int, cap: int = 400) -> str:
     """Return the text inside the balanced parens starting at ``open_paren``
     (the index of the ``(``), bounded to ``cap`` chars."""
@@ -1237,8 +1296,13 @@ def _find_sinks(
                 flow_only = False
                 if sink.gate == "tainted":
                     # The pre-#239 same-call gate: a request-container token
-                    # between the call's paren and its first `)`.
-                    legacy_ok = sink.token_gate and _TAINTED_RE.search(content, arg_lo, token_hi) is not None
+                    # between the call's paren and its first `)` — inside the
+                    # sink's dangerous argument(s) only (#375): a request
+                    # object passed as `getattr`'s object, or as the subject
+                    # of a fixed regex, isn't the injected value.
+                    legacy_ok = sink.token_gate and _token_in_dangerous_args(
+                        content, arg_lo, token_hi, arg_text, sink.args, kind
+                    )
                     if not legacy_ok:
                         if not traced:
                             continue
