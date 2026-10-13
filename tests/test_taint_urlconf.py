@@ -191,3 +191,57 @@ def test_many_views_parse_each_module_once(tmp_path: Path) -> None:
     small, large = run(500), run(2000)
     assert large < 20.0
     assert large < max(small, 0.05) * 12  # 4x the views: linear-ish ~4-6x, a parse per view ~16x
+
+
+_INDIRECT_VIEWS = (
+    "import functools\n"
+    "import subprocess\n\n\n"
+    "def handler_a(request):\n"
+    "    subprocess.run('a ' + request.GET['a'], shell=True)\n"  # 6
+    "\n\n"
+    "HANDLERS = {'a': handler_a}\n"
+    "\n\n"
+    "def dispatch(request):\n"
+    "    return HANDLERS[request.GET['kind']](request)\n"
+    "\n\n"
+    "def _do(fmt, request):\n"
+    "    subprocess.run(fmt + request.GET['f'], shell=True)\n"  # 17
+    "\n\n"
+    "export_csv = functools.partial(_do, 'csv')\n"
+    "\n\n"
+    "def export(request):\n"
+    "    return export_csv(request)\n"
+    "\n\n"
+    "class Runner:\n"
+    "    def go(self, x):\n"
+    "        subprocess.run('go ' + x, shell=True)\n"  # 29
+    "\n\n"
+    "RUNNER = Runner()\n"
+    "\n\n"
+    "def run(request):\n"
+    "    return RUNNER.go(request.GET['x'])\n"
+    "\n\n"
+    "def unrelated(request):\n"
+    "    subprocess.run('u ' + request.GET['u'], shell=True)\n"  # 40
+)
+
+
+def test_views_reach_helpers_through_module_level_variables(tmp_path: Path) -> None:
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "iv.py").write_text(_INDIRECT_VIEWS, encoding="utf-8")
+    (tmp_path / "app" / "urls.py").write_text(
+        "from django.urls import path\n"
+        "from app.iv import dispatch, export, run\n\n"
+        "urlpatterns = [\n"
+        "    path('d/', dispatch),\n"  # 5
+        "    path('e/', export),\n"  # 6
+        "    path('r/', run),\n"  # 7
+        "]\n",
+        encoding="utf-8",
+    )
+    routes = [Route(path=p, method="GET", file="app/urls.py", line=ln) for p, ln in (("/d/", 5), ("/e/", 6), ("/r/", 7))]
+    got: dict[str, set[int]] = {r.path: set() for r in routes}
+    for chain in analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path):
+        got[chain.route_path].add(chain.sink_line)
+    assert got == {"/d/": {6}, "/e/": {17}, "/r/": {29}}  # never `unrelated`'s line 40

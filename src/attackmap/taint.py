@@ -964,22 +964,31 @@ _ModuleDefs = dict[str, tuple[int, int, frozenset[str]]]
 
 
 def _py_module_defs(content: str) -> _ModuleDefs:
-    """Top-level `def`/`class` spans of a module, parsed once (#372)."""
+    """Top-level `def`/`class` and assignment spans of a module, parsed once (#372)."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)  # scanned code's escapes aren't ours
             tree = ast.parse(content)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return {}
-    nodes = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
-    names = {n.name for n in nodes}
+    # Definitions, plus module-level assignments the walk passes through
+    # (`HANDLERS = {'a': handler_a}`, `export = partial(_do, 'csv')`,
+    # `RUNNER = Runner()`): an assignment's mentions are its right-hand names.
+    entries: list[tuple[str, ast.AST, int, int, ast.AST]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            start = min([d.lineno for d in node.decorator_list] + [node.lineno])
+            entries.append((node.name, node, start, node.end_lineno or node.lineno, node))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for name in (t.id for t in ast.walk(target) if isinstance(t, ast.Name)):
+                    entries.append((name, node, node.lineno, node.end_lineno or node.lineno, node.value))
+    names = {name for name, *_ in entries}
     out: _ModuleDefs = {}
-    for node in nodes:
-        start = min([d.lineno for d in node.decorator_list] + [node.lineno])
-        mentioned = frozenset(
-            sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name) and sub.id in names and sub.id != node.name
-        )
-        out.setdefault(node.name, (start, node.end_lineno or node.lineno, mentioned))
+    for name, _node, start, end, body in entries:
+        mentioned = frozenset(sub.id for sub in ast.walk(body) if isinstance(sub, ast.Name) and sub.id in names and sub.id != name)
+        out.setdefault(name, (start, end, mentioned))
     return out
 
 
