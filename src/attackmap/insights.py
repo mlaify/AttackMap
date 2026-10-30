@@ -12,7 +12,6 @@ from .models import (
     Control,
     ControlKind,
     Insight,
-    InsightKind,
     ScanResult,
 )
 
@@ -254,7 +253,6 @@ def _detect_control_strength_mismatch(ctx: _DetectorContext) -> list[Insight]:
         gaps: list[str] = []
         for kind in expected:
             present = ctx.present_controls_by_kind.get(kind, [])
-            absent = ctx.absent_controls_by_kind.get(kind, [])
             if not present:
                 gaps.append(f"{kind} (absent)")
                 continue

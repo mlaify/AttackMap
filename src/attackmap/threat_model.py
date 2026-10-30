@@ -13,6 +13,8 @@ from .models import (
     AttackTechnique,
     BolaCandidate,
     CloudMisconfig,
+    DatabaseHint,
+    ExternalCall,
     Finding,
     FindingLocation,
     Route,

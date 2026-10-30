@@ -197,6 +197,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pyflakes-clean core, with ruff in CI (#231).** `ruff check` (rule set `F`) now passes on `src/attackmap`, and a new `lint` CI job runs it on every PR.
+  - `typing.get_type_hints` works on the public functions in `analyzers.py`: `Callable` and `ScanProgress` are now real imports. `threat_model.py` imports `DatabaseHint` and `ExternalCall`, which its annotations named.
+  - Removed unused imports and locals, and the unused `_WEB_DEPENDENCY_TOKENS` (JS `detect()` never checked frameworks).
+  - Docstrings now match behaviour: `DefaultAnalyzer` is the built-in Go/PHP analyzer, not a no-op; `merge_analyzer_signals` doesn't dedup routes, calls or secrets; `progress` documents the NDJSON renderer.
 - **`unauth-state-change` recognises handler-level session checks in JS/TS (#348).**
   - A route's own handler that resolves the caller's identity and rejects when it's missing is no longer reported. The handler is either inline, clamped to its closing brace, or the function the registration passes by reference.
   - Identity calls: `getSession(`, `getServerSession(`, a zero-argument `auth()`, `currentUser(`, `supabase.auth.getUser(`, `req.session.user`/`userId`, or the passport `req.user` / `req.isAuthenticated()`.

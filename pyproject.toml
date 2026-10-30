@@ -84,6 +84,7 @@ dev = [
   "jsonschema>=4.0",
   # Validates the generated Sigma rules in tests (#251); not a runtime dependency.
   "pysigma>=2.0",
+  "ruff>=0.6",
 ]
 
 [project.urls]
@@ -114,3 +115,8 @@ version = {attr = "attackmap.__version__"}
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Pyflakes only (#231): undefined names, unused imports/locals. Style rules
+# are out of scope; CI runs this on src/attackmap.
+select = ["F"]
