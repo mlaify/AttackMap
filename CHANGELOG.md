@@ -174,6 +174,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The omeka-s analyzer repo is now `attackmap-analyzer-omeka-s` (#380).** It was `attack-map-analyzer-omeka-s`. The plugin lock, the `[all]` pin, `update_plugin_lock.py` and the docs use the new name, and the pinned commit is unchanged. GitHub redirects the old URL, so existing installs keep working.
 - **ATT&CK mapping for findings comes from the rule id (#250).** It is no longer substring-matched against title and evidence, which mapped "monkey" to T1552, `cursor.execute` to T1059 and "author" to T1078. Findings without a registered rule id (some plugin findings) fall back to whole-word matching on the title only. Detection opportunities link findings by their rule's ATT&CK techniques and list them in a new `related_rule_ids` field; the fuzzy title-word match is gone. Insight mappings use T1685 (Disable or Modify Tools) in place of T1562, which ATT&CK v19 revoked. Tactic names follow ATT&CK v19 (for example "Stealth" and "Defense Impairment").
 - **`analyze` validates every option before scanning (#229).**
   - Enum options are checked up front and the error lists the accepted values: `--progress-format` (now including `tty`), `--format`, `--llm-provider/-speed/-effort/-backend`. A typo in an LLM option used to surface only after the full scan and report writing. In the `--llm` and `--remediate` paths it could be swallowed by the broad error handling.

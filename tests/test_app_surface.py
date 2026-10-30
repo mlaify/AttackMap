@@ -138,7 +138,7 @@ _LOCK = [
      "git_sha": "a" * 40, "entry_points": ["objc", "swift"]},
     {"repo": "attackmap-analyzer-java-spring", "package": "attackmap-analyzer-java-spring", "version": "0.1.0",
      "git_sha": "b" * 40, "entry_points": ["java_spring"]},
-    {"repo": "attack-map-analyzer-omeka-s", "package": "attackmap-analyzer-omeka-s", "version": "0.1.0",
+    {"repo": "attackmap-analyzer-omeka-s", "package": "attackmap-analyzer-omeka-s", "version": "0.1.0",
      "git_sha": "c" * 40, "entry_points": ["omeka_s"]},
 ]
 

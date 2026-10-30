@@ -75,7 +75,7 @@ all = [
   "attackmap-analyzer-atproto @ git+https://github.com/mlaify/attackmap-analyzer-atproto.git@d2cb6ed6d5e69adf929a1fd7f66947830ecfd5fc",
   "attackmap-analyzer-php-web @ git+https://github.com/mlaify/attackmap-analyzer-php-web.git@69143bd994ec9111cffc2f78d4020bad611e68c7",
   "attackmap-analyzer-php-laminas @ git+https://github.com/mlaify/attackmap-analyzer-php-laminas.git@7eac668b6f64a1d3fc3fa731317cb253a98915ce",
-  "attackmap-analyzer-omeka-s @ git+https://github.com/mlaify/attack-map-analyzer-omeka-s.git@6b9e478689a825dbcba655de4ff0bf63a3a3c544",
+  "attackmap-analyzer-omeka-s @ git+https://github.com/mlaify/attackmap-analyzer-omeka-s.git@6b9e478689a825dbcba655de4ff0bf63a3a3c544",
   "attackmap-analyzer-iac @ git+https://github.com/mlaify/attackmap-analyzer-iac.git@002efc484fc26ead1243aa34b610ccb2230147b0",
 ]
 dev = [

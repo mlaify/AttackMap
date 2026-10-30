@@ -21,7 +21,7 @@ REPOS = [
     "attackmap-analyzer-java-spring", "attackmap-analyzer-dotnet", "attackmap-analyzer-terraform",
     "attackmap-analyzer-c", "attackmap-analyzer-cpp", "attackmap-analyzer-swift",
     "attackmap-analyzer-node-service", "attackmap-analyzer-atproto", "attackmap-analyzer-php-web",
-    "attackmap-analyzer-php-laminas", "attack-map-analyzer-omeka-s", "attackmap-analyzer-iac",
+    "attackmap-analyzer-php-laminas", "attackmap-analyzer-omeka-s", "attackmap-analyzer-iac",
 ]
 
 
