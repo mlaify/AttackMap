@@ -1,4 +1,4 @@
-"""Live scan progress with ETA (#36).
+"""Live scan progress with ETA (#36), for terminals and for front-ends.
 
 A repo scan can run for many minutes on a large tree, and a silent terminal
 reads as "hung." This renders a single, self-updating status line to stderr:
@@ -11,6 +11,11 @@ Zero third-party deps. TTY-aware: when stderr isn't a terminal (CI, piped to
 a file) it stays silent so logs aren't polluted with carriage returns. The
 scanner drives it through the small hook surface (`begin`/`advance`/`stage`/
 `done`); when no progress object is passed, the scan runs exactly as before.
+
+Two renderers implement that hook surface: :class:`ScanProgress` (the TTY
+status line above) and :class:`JsonScanProgress`, which always emits NDJSON
+events for the macOS GUI and other non-TTY front-ends.
+:func:`create_progress` picks one from ``--progress-format``.
 """
 
 from __future__ import annotations

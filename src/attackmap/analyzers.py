@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from importlib.metadata import entry_points
 import importlib
@@ -11,15 +11,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Protocol, TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from .progress import ScanProgress
 from urllib.error import URLError
 from urllib.request import urlopen
 
 from pydantic import BaseModel, Field
 
+from .progress import ScanProgress
 from .srcpaths import JS_TS_SUFFIXES, SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
@@ -43,15 +42,10 @@ from .redact import redact_text
 from .sdk.models import (
     AuthHint,
     DatabaseHint,
-    EdgeHint,
-    EntrypointHint,
     ExternalCall,
-    FrameworkHint,
-    ProtocolHint,
     Route,
     ScanResult,
     SecretHint,
-    ServiceHint,
 )
 from .scanner import (
     AUTH_KEYWORDS,
@@ -65,7 +59,6 @@ from .scanner import (
     extract_routes,
     run_repo_passes,
     scan_files,
-    scan_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -199,8 +192,9 @@ def merge_analyzer_signals(scan: ScanResult, signals: AnalyzerSignals) -> None:
     `AnalyzerSignals` is the narrow per-file shape used by the built-in
     micro-analyzers in this module. Dedup follows :data:`merge.MERGE_SCHEMA`
     for the field families it covers; routes, external calls, and secrets
-    have always been straight extend (intentional: per-file analyzers emit
-    one batch per file, dedup happens at the result-level merge step).
+    are appended as-is, with no dedup against what the scan already holds.
+    Callers that apply several batches for the same file must dedup those
+    fields themselves.
     """
     scan.routes.extend(signals.routes)
     scan.external_calls.extend(signals.external_calls)
@@ -218,10 +212,10 @@ Analyzer = AnalyzerProtocol
 
 class DefaultAnalyzer:
     """Catch-all for code file suffixes not claimed by a specialized
-    built-in analyzer. Currently a no-op since python-web + javascript-web
-    together cover every entry in CODE_EXTENSIONS — kept so future
-    additions (e.g. `.go`, `.rs`) get picked up automatically until a
-    dedicated built-in ships."""
+    built-in analyzer. In practice this is the built-in Go/PHP analyzer:
+    CODE_EXTENSIONS includes `.go` and `.php`, which neither python-web nor
+    javascript-web claims. Any suffix added to CODE_EXTENSIONS later is
+    picked up here until a dedicated built-in ships."""
 
     # Suffixes owned by specialized built-in analyzers. Kept in sync
     # with BuiltinPythonWebAnalyzer + BuiltinJavaScriptWebAnalyzer.
@@ -290,21 +284,6 @@ class BuiltinJavaScriptWebAnalyzer:
     """
 
     _JS_SUFFIXES = set(JS_TS_SUFFIXES)
-    _WEB_DEPENDENCY_TOKENS = (
-        "express",
-        "fastify",
-        "koa",
-        "hapi",
-        "hono",
-        "elysia",
-        "next",
-        "nuxt",
-        "nestjs",
-        "@nestjs/",
-        "@trpc/",
-        "@atproto/xrpc-server",
-    )
-
     metadata = AnalyzerMetadata(
         name="javascript-web",
         display_name="JavaScript / TypeScript Web Analyzer",
@@ -327,9 +306,9 @@ class BuiltinJavaScriptWebAnalyzer:
 
         Signals (any one is sufficient):
         - `package.json` at any depth,
-        - a JS/TS-family file at any depth (bounded by SKIP_DIRS),
-        - `package.json` referencing a known web framework (deeper
-          signal — costs one file read).
+        - a JS/TS-family file at any depth (bounded by SKIP_DIRS).
+
+        No framework check: any JS/TS repo gets this fallback analyzer.
         """
         repo = Path(root)
         if not repo.exists() or not repo.is_dir():

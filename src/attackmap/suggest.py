@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .safe_fs import is_unsafe_link

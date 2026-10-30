@@ -76,7 +76,6 @@ def canonical_category(finding: dict[str, Any]) -> str:
     """
     tags = {t.lower() for t in finding.get("tags", [])}
     title = (finding.get("title") or "").lower()
-    text = title + " " + " ".join(finding.get("evidence", [])).lower()
 
     if "dependency" in tags or "cve" in tags:
         return "cve"

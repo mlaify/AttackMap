@@ -1559,10 +1559,10 @@ def _graphql_bola_candidates(root: Path, seen: set) -> list[BolaCandidate]:
     for rel, text in files:
         for type_name, method in _graphql_root_types(text).items():
             for body in _graphql_type_bodies(text, type_name):
-                for field in _GRAPHQL_FIELD_RE.finditer(body):
-                    name = field.group("name")
-                    args = field.group("args") or ""
-                    rest = field.group("rest") or ""
+                for field_match in _GRAPHQL_FIELD_RE.finditer(body):
+                    name = field_match.group("name")
+                    args = field_match.group("args") or ""
+                    rest = field_match.group("rest") or ""
                     arg_id = _graphql_id_arg(args)
                     if arg_id is None:
                         continue

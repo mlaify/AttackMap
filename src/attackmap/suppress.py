@@ -415,7 +415,8 @@ def _load_yaml_entries(path: Path, warnings: list[str], *, root: Path | None = N
     """Parse a suppress file. Never raises (#225): every problem becomes a
     ``Suppression warning`` and the offending entry (or file) is skipped."""
     try:
-        import yaml  # type: ignore[import-untyped]
+        # Availability check only; parse_suppress_text does the import it uses.
+        import yaml  # type: ignore[import-untyped]  # noqa: F401
     except ImportError:
         warnings.append(
             f"{path.name} found but PyYAML is not installed; suppressions ignored. "
