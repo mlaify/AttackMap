@@ -404,8 +404,8 @@ _OFFICIAL_BY_PACKAGE = {entry["package"]: entry for entry in OFFICIAL_PLUGINS}
 # may ship several analyzers (attackmap-analyzer-swift registers `swift` and
 # `objc`), so `-m objc` must resolve to the swift package. Underscored entry
 # point names (`java_spring`) also match their hyphenated analyzer names.
-# ...and by GitHub repo name, for official repos outside the
-# `attackmap-analyzer-*` naming (`attack-map-analyzer-omeka-s`, #259).
+# ...and by GitHub repo name, so an official repo lists under its package's
+# analyzer name even if the repo is named differently (#259).
 _OFFICIAL_BY_REPO = {entry["repo"]: entry for entry in OFFICIAL_PLUGINS}
 _OFFICIAL_BY_ENTRY_POINT = {
     ep.replace("_", "-"): entry for entry in OFFICIAL_PLUGINS for ep in entry.get("entry_points", ())
@@ -694,8 +694,8 @@ def get_available_repository_modules(
         repo_name = str(project.get("name", "")).strip()
         official = _OFFICIAL_BY_REPO.get(repo_name)
         if official is not None:
-            # Named after its package, so `attack-map-analyzer-omeka-s` lists as
-            # `omeka-s`, the name `-m` and the installer accept (#259).
+            # Named after its package, the name `-m` and the installer
+            # accept (#259).
             analyzer_name = _normalize_analyzer_name(official["package"])
         elif repo_name.startswith("attackmap-analyzer-"):
             analyzer_name = _normalize_analyzer_name(repo_name)

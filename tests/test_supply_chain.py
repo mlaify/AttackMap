@@ -89,7 +89,7 @@ def test_all_extra_matches_the_lock() -> None:
 
 
 def test_official_plugin_lookup_accepts_analyzer_repo_and_package_names() -> None:
-    assert official_plugin("omeka-s")["repo"] == "attack-map-analyzer-omeka-s"
+    assert official_plugin("omeka-s")["repo"] == "attackmap-analyzer-omeka-s"
     assert official_plugin("mlaify/attackmap-analyzer-go")["package"] == "attackmap-analyzer-go"
     assert official_plugin("pyhton") is None
 

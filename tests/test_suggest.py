@@ -276,6 +276,6 @@ def test_suggestion_install_url_uses_repo_name_override() -> None:
 
     s = Suggestion(plugin="attackmap-analyzer-omeka-s", analyzer_name="omeka-s", matched_signals=())
     assert re.fullmatch(
-        r"pip install 'attackmap-analyzer-omeka-s @ git\+https://github\.com/mlaify/attack-map-analyzer-omeka-s\.git@[0-9a-f]{40}'",
+        r"pip install 'attackmap-analyzer-omeka-s @ git\+https://github\.com/mlaify/attackmap-analyzer-omeka-s\.git@[0-9a-f]{40}'",
         s.pip_install,
     )

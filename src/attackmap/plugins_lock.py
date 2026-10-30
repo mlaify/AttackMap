@@ -98,7 +98,7 @@ OFFICIAL_PLUGINS: list[dict] = [
         'entry_points': ['php_laminas'],
     },
     {
-        'repo': 'attack-map-analyzer-omeka-s',
+        'repo': 'attackmap-analyzer-omeka-s',
         'package': 'attackmap-analyzer-omeka-s',
         'version': '0.1.0',
         'git_sha': '6b9e478689a825dbcba655de4ff0bf63a3a3c544',

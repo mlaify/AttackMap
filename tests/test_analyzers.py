@@ -373,17 +373,18 @@ def test_get_available_repository_modules_filters_and_normalizes() -> None:
     assert [module.repo_name for module in modules] == ["attackmap-analyzer-node-express", "attackmap-analyzer-php-web"]
 
 
-def test_official_repo_outside_the_naming_convention_is_listed() -> None:
-    # #259: the omeka-s repo is `attack-map-analyzer-omeka-s`; it must list as
-    # `omeka-s`, the name `-m` and the pinned installer resolve.
+def test_official_repo_lists_under_its_analyzer_name() -> None:
+    # #259/#380: the omeka-s repo (renamed from `attack-map-analyzer-omeka-s`)
+    # lists as `omeka-s`, the name `-m` and the pinned installer resolve. Repos
+    # outside the naming convention that aren't in the lock stay unlisted.
     modules = get_available_repository_modules(
         fetcher=lambda _url: [
-            {"name": "attack-map-analyzer-omeka-s", "html_url": "https://github.com/mlaify/attack-map-analyzer-omeka-s"},
+            {"name": "attackmap-analyzer-omeka-s", "html_url": "https://github.com/mlaify/attackmap-analyzer-omeka-s"},
             {"name": "attack-map-analyzer-unofficial", "html_url": "https://github.com/mlaify/attack-map-analyzer-unofficial"},
         ]
     )
-    assert [(m.analyzer_name, m.repo_name) for m in modules] == [("omeka-s", "attack-map-analyzer-omeka-s")]
-    assert "attack-map-analyzer-omeka-s.git@" in analyzer_install_url(modules[0].analyzer_name)
+    assert [(m.analyzer_name, m.repo_name) for m in modules] == [("omeka-s", "attackmap-analyzer-omeka-s")]
+    assert "attackmap-analyzer-omeka-s.git@" in analyzer_install_url(modules[0].analyzer_name)
 
 
 def test_get_available_repository_modules_passes_through_fetch_errors() -> None:

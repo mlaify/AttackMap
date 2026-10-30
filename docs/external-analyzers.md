@@ -423,7 +423,7 @@ and installs from git. Source-read any of them for a real, working analyzer.
 | [`attackmap-analyzer-atproto`](https://github.com/mlaify/attackmap-analyzer-atproto) | AT Protocol (Bluesky) services |
 | [`attackmap-analyzer-php-web`](https://github.com/mlaify/attackmap-analyzer-php-web) | Generic PHP web |
 | [`attackmap-analyzer-php-laminas`](https://github.com/mlaify/attackmap-analyzer-php-laminas) | Laminas / Zend MVC |
-| [`attackmap-analyzer-omeka-s`](https://github.com/mlaify/attack-map-analyzer-omeka-s) | Omeka-S |
+| [`attackmap-analyzer-omeka-s`](https://github.com/mlaify/attackmap-analyzer-omeka-s) | Omeka-S |
 
 ## Versioning
 
