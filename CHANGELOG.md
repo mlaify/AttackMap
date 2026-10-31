@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-31
+
+### Changed — packaging
+
+- Released to the mlaify package index (https://pkg.mlaify.io/pypi/simple/). A `v*` tag now builds the wheel and sdist and attaches them to a GitHub release (`.github/workflows/release.yml`); the index picks them up within six hours.
+- `plugins_lock.py` and the `[all]` extra pin the analyzers' 0.2.0 release commits (node-service 0.3.0); those releases are on the index too.
+
 ### Added
 
 - **Detection rules for cloud and Kubernetes misconfigurations (#351).** Findings from the cloud / IaC rule ids (#334) now come with Sigma rules that watch the control plane for the risky setting being applied. One rule per template per repository; each rule's selection needs the risky attribute itself, never a bare event name.
@@ -1430,7 +1437,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mlaify/AttackMap/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/mlaify/AttackMap/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/mlaify/AttackMap/compare/v0.4.31...v0.5.0
 [0.4.31]: https://github.com/mlaify/AttackMap/compare/v0.4.30...v0.4.31

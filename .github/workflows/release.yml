@@ -1,0 +1,53 @@
+# Pushing a v* tag builds the wheel and sdist and attaches them to a GitHub release.
+# mlaify/ci-publish picks up the files within six hours and adds them to https://pkg.mlaify.io/pypi.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q build==1.6.1
+          "$RUNNER_TEMP/venv/bin/python" -m build
+
+      - name: Check the tag matches the package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          ver=${TAG#v}
+          ls dist
+          if ! compgen -G "dist/*-${ver}-py3-none-any.whl" >/dev/null || ! compgen -G "dist/*-${ver}.tar.gz" >/dev/null; then
+            echo "::error::tag $TAG does not match the version that was built"
+            exit 1
+          fi
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ver=${TAG#v}
+          # The notes are this version's CHANGELOG section.
+          awk -v v="$ver" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md >"$RUNNER_TEMP/notes.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*
+          elif [ -s "$RUNNER_TEMP/notes.md" ]; then
+            gh release create "$TAG" dist/* --verify-tag --title "${GITHUB_REPOSITORY#*/} $ver" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "${GITHUB_REPOSITORY#*/} $ver" --generate-notes
+          fi
