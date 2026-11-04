@@ -496,3 +496,73 @@ def test_generic_signatures_do_not_fire_on_java_method_names(tmp_path: Path) -> 
     )
     scan = ScanResult(root=str(tmp_path), routes=[Route(path="/jobs", method="POST", file="JobController.java", line=3)])
     assert analyze_taint(scan, tmp_path) == []
+
+
+# ---------- Concise arrow handlers (#398) ----------
+
+_CONCISE_APP = (
+    "const express = require('express');\n"
+    "const mysql = require('mysql');\n"
+    "const conn = mysql.createConnection({});\n"
+    "const app = express();\n"
+    "app.get('/a', (req, res) => conn.query('SELECT * FROM t WHERE id = ' + req.query.id));\n"
+    "app.get('/safe', (req, res) => conn.query('SELECT * FROM t WHERE id = ?', [req.query.id]));\n"
+    "app.get('/multi', async (req, res) =>\n"
+    "  conn.query('SELECT * FROM t WHERE name = ' + req.query.name));\n"
+    "app.get('/b', (req, res) => { conn.query('SELECT * FROM t WHERE id = ' + req.query.id); });\n"
+)
+
+
+def _sqli_lines(scan: ScanResult) -> set[int]:
+    return {
+        loc.line
+        for f in generate_findings(scan)
+        if f.rule_id == "sql-injection"
+        for loc in f.locations
+        if loc.line is not None
+    }
+
+
+def test_concise_arrow_handler_is_taint_walked(tmp_path: Path) -> None:
+    (tmp_path / "app.js").write_text(_CONCISE_APP, encoding="utf-8")
+    scan = scan_repo(tmp_path)
+    # /a (one line), /multi (body on the next line) and the braced /b; not the
+    # parameterized /safe.
+    assert _sqli_lines(scan) == {5, 8, 9}
+    traced = {(c.route_path, c.sink_line) for c in scan.taint_chains if c.source_kind is not None}
+    assert {("/a", 5), ("/multi", 8), ("/b", 9)} <= traced
+    # Each concise handler is its own function: /a's input isn't traced into
+    # /b's sink (it may still list it as an untraced same-file reach).
+    assert not [c for c in scan.taint_chains if c.route_path == "/a" and c.sink_line == 9 and c.source_kind]
+
+
+def test_concise_arrow_handler_in_a_router_module(tmp_path: Path) -> None:
+    (tmp_path / "app.js").write_text(
+        "const express = require('express');\n"
+        "const users = require('./users');\n"
+        "const app = express();\n"
+        "app.use('/api/users', users);\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "users.js").write_text(
+        "const router = require('express').Router();\n"
+        "const db = require('./db');\n"
+        "router.get('/:id', (req, res) => db.query('SELECT * FROM users WHERE id = ' + req.params.id));\n"
+        "module.exports = router;\n",
+        encoding="utf-8",
+    )
+    scan = scan_repo(tmp_path)
+    assert [f for f in generate_findings(scan) if f.rule_id == "sql-injection"]
+
+
+def test_concise_bodies_do_not_swallow_their_neighbours(tmp_path: Path) -> None:
+    from attackmap.taint_flow import _TextFlow
+
+    src = (
+        "const f = (a, b) => a + b, g = x => ({ y: x });\n"
+        "items.map(i => i.id).filter(Boolean);\n"
+        "function h(req) { return run(() => req.query.x); }\n"
+    )
+    flow = _TextFlow(src, "js")
+    bodies = [src[o + 1 : c].strip() for o, c in flow._concise_bodies()]
+    assert bodies == ["a + b", "({ y: x })", "i.id", "req.query.x"]

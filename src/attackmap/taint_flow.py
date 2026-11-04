@@ -48,9 +48,10 @@ Documented limits (precision-first, heuristic — evidence, not proof):
   ``obj.prop = …``), aliasing through containers other than the listed
   mutators, closures, generators and ``global`` state are not tracked.
 - **Regex languages are approximate.** JS/Go/PHP/Java use a brace-balance pass,
-  not a parser: braceless arrow bodies, heredocs, regex literals containing
+  not a parser: heredocs, regex literals containing
   braces, and statements split across lines without a trailing operator can
-  be mis-scoped. When the enclosing function can't be found the caller falls
+  be mis-scoped. A JS concise arrow body (``x => expr``) is scoped as its own
+  function up to the expression's end (#398). When the enclosing function can't be found the caller falls
   back to the legacy same-call request-token gate.
 - **Raising validators are not guards.** A bare ``validate_url(u)`` statement
   that raises on bad input is not recognized; only ``if``/``assert`` checks.
@@ -704,6 +705,8 @@ _QUOTED_BODY = {
     ("'", True): re.compile(r"(?:[^'\\]|\\.)*", re.S),
 }
 _BRACES_RE = re.compile(r"[{}]")
+# A JS arrow and the whitespace after it; a body not starting with `{` is concise (#398).
+_CONCISE_ARROW_RE = re.compile(r"=>[ \t\r\n]*")
 _PARENS_RE = re.compile(r"[()]")
 _STMT_SPECIAL_RE = re.compile(r"[()\[\]{};\n]")
 _COMMA_SPECIAL_RE = re.compile(r"[()\[\]{},]")
@@ -861,12 +864,57 @@ class _TextFlow:
                 stack.append(len(opens) - 1)
             elif stack:
                 closes[stack.pop()] = mt.start()
+        # Concise arrow bodies (`(req, res) => db.query(...)`, #398) have no
+        # braces; each becomes a synthetic block that opens on the `>` of its
+        # `=>`, so `_body` starts right after it and the function machinery
+        # treats the expression like a braced body.
+        self._concise: set[int] = set()
+        concise = self._concise_bodies() if lang == JS else []
+        if concise:
+            blocks = sorted([(o, c, False) for o, c in zip(opens, closes)] + [(o, c, True) for o, c in concise])
+            opens, closes, parent = [], [], []
+            stack = []
+            for o, c, synthetic in blocks:
+                while stack and closes[stack[-1]] < o:
+                    stack.pop()
+                parent.append(stack[-1] if stack else -1)
+                opens.append(o)
+                closes.append(c)
+                if synthetic:
+                    self._concise.add(len(opens) - 1)
+                stack.append(len(opens) - 1)
         self.opens, self.closes, self.parent = opens, closes, parent
-        self.open_index = {o: k for k, o in enumerate(opens)}
+        self.open_index = {o: k for k, o in enumerate(opens) if k not in self._concise}
         self._is_fn: dict[int, tuple[int, int, int] | None] = {}
         self._fn_state: dict[int, tuple[list, dict]] = {}
 
     # -- structure --
+    def _concise_bodies(self) -> list[tuple[int, int]]:
+        """(open, close) of every concise arrow body: ``open`` is the ``>`` of
+        its ``=>``, ``close`` the first depth-0 ``,`` / ``;`` / closing bracket,
+        or the statement's end (``_stmt_end``: a line break ends it unless the
+        expression continues)."""
+        m = self.m
+        out: list[tuple[int, int]] = []
+        for mt in _CONCISE_ARROW_RE.finditer(m):
+            body = mt.end()
+            if body >= len(m) or m[body] == "{":
+                continue
+            end = self._stmt_end(body, len(m))
+            depth = 0
+            for sp in _COMMA_SPECIAL_RE.finditer(m, body, end):
+                c = sp.group()
+                if c in "([{":
+                    depth += 1
+                elif c in ")]}":
+                    depth -= 1
+                elif depth == 0:
+                    end = sp.start()
+                    break
+            if end > body:
+                out.append((mt.start() + 1, end))
+        return out
+
     def _innermost(self, off: int) -> int:
         k = bisect.bisect_right(self.opens, off) - 1
         while k >= 0 and not (self.opens[k] < off < self.closes[k]):
@@ -879,11 +927,13 @@ class _TextFlow:
         if k in self._is_fn:
             return self._is_fn[k]
         o = self.opens[k]
+        # A concise body opens on the `>` of `=>`: the header includes it.
+        hend = o + 1 if k in self._concise else o
         lo = max(0, o - _MAX_HEADER)
-        seg = self.m[lo:o]
+        seg = self.m[lo:hend]
         cut = max(seg.rfind(";"), seg.rfind("{"), seg.rfind("}"))
         start = lo + cut + 1
-        header = self.m[start:o]
+        header = self.m[start:hend]
         h = header.rstrip()
         result: tuple[int, int, int] | None = None
         hs = start + (len(header) - len(header.lstrip()))
