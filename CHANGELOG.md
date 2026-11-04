@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concise arrow handlers are taint-walked (#398).** A route handler written as an arrow with an expression body, `(req, res) => db.query('...' + req.query.id)`, wasn't seen as a function, so its request input was never traced and the sink was dropped below the finding threshold; the same code in braces was reported. Concise bodies are now scoped like braced ones (to the expression's end: the first `,` / `;` / closing bracket at their depth, or the statement end), so they're found, and a handler's flow no longer spills into its neighbours' sinks.
+
 ## [0.6.0] - 2026-11-04
 
 ### Changed — packaging
