@@ -7,12 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-10-31
+## [0.6.0] - 2026-11-04
 
 ### Changed — packaging
 
 - Released to the mlaify package index (https://pkg.mlaify.io/pypi/simple/). A `v*` tag now builds the wheel and sdist and attaches them to a GitHub release (`.github/workflows/release.yml`); the index picks them up within six hours.
-- `plugins_lock.py` and the `[all]` extra pin the analyzers' 0.2.0 release commits (node-service 0.3.0); those releases are on the index too.
+- `plugins_lock.py` and the `[all]` extra still pin the analyzers' 0.1.0 commits (node-service 0.2.0), as in 0.5.x. Their 0.2.0 releases (node-service 0.3.0) need this core release (`attackmap>=0.6.0`), so they follow it onto the index, and the pins move to them in a later release.
 
 ### Added
 
