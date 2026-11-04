@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — packaging
+
+- `plugins_lock.py` and the `[all]` extra pin the analyzers' 0.2.0 release commits (node-service 0.3.0), the commits their signed `v*` tags point at. Those releases are on the mlaify package index, and they need `attackmap>=0.6.0`.
+
 ## [0.6.0] - 2026-11-04
 
 ### Changed — packaging
