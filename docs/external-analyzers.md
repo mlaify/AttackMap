@@ -2,7 +2,8 @@
 
 This is the developer-facing guide for building an analyzer plugin that ships as
 its own Python package in its own repo. If you only want to *use* analyzers, run
-`pip install "attackmap[all] @ git+https://github.com/mlaify/AttackMap.git"` and stop reading.
+`uv tool install "attackmap[all]" --index mlaify=https://pkg.mlaify.io/pypi/simple/ --index-strategy first-index`
+and stop reading.
 
 The contract itself is documented in code at
 [`attackmap.sdk`](../src/attackmap/sdk/__init__.py); this guide is the

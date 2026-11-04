@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate src/attackmap/plugins_lock.py and the `[all]` extra pins (#237).
+"""Regenerate src/attackmap/plugins_lock.py (commits) and the `[all]` extra (released versions) (#237).
 
 Resolves each official analyzer repo's current `main` to an immutable commit
 SHA and reads the package name/version from its pyproject at that commit.
@@ -64,9 +64,14 @@ def main() -> None:
     )
     pyproject = ROOT / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
+    # `[all]` pins released versions, not git URLs: uv and pip refuse a URL dependency of a package
+    # installed from an index, and the analyzers are on the same index as AttackMap. The lock above
+    # keeps the commits for `-m` auto-install.
     for e in entries:
-        pattern = re.compile(rf'"{re.escape(e["package"])} @ git\+https://github\.com/{ORG}/{re.escape(e["repo"])}\.git(?:@[0-9a-f]+)?"')
-        text, n = pattern.subn(f'"{e["package"]} @ git+https://github.com/{ORG}/{e["repo"]}.git@{e["git_sha"]}"', text)
+        pattern = re.compile(
+            rf'"{re.escape(e["package"])}(?: @ git\+https://github\.com/{ORG}/{re.escape(e["repo"])}\.git(?:@[0-9a-f]+)?|==[^"]+)"'
+        )
+        text, n = pattern.subn(f'"{e["package"]}=={e["version"]}"', text)
         if n != 1:
             raise SystemExit(f"[all] extra entry for {e['repo']} not found exactly once in pyproject.toml")
     pyproject.write_text(text, encoding="utf-8")

@@ -83,9 +83,12 @@ def test_every_official_plugin_installs_from_an_immutable_commit() -> None:
 
 
 def test_all_extra_matches_the_lock() -> None:
+    # Exact released versions, never URLs: a URL dependency makes `attackmap[all]` uninstallable
+    # from an index (uv and pip refuse it), and the lock's versions are the tagged releases.
     extra = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]["all"]
-    pinned = {line for line in extra if " @ git+" in line}
-    assert pinned == {analyzer_install_url(e["package"]) for e in OFFICIAL_PLUGINS}
+    analyzers = {line for line in extra if line.startswith("attackmap-analyzer-")}
+    assert analyzers == {f"{e['package']}=={e['version']}" for e in OFFICIAL_PLUGINS}
+    assert not [line for line in extra if " @ " in line]
 
 
 def test_official_plugin_lookup_accepts_analyzer_repo_and_package_names() -> None:
