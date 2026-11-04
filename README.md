@@ -46,7 +46,7 @@ brew install --cask mlaify/tap/attackmap-app
 
 ```bash
 brew install mlaify/tap/attackmap         # Homebrew: CLI + all 15 analyzer plugins
-# or: pip install "attackmap[all] @ git+https://github.com/mlaify/AttackMap.git"
+# or: uv tool install "attackmap[all]" --index mlaify=https://pkg.mlaify.io/pypi/simple/ --index-strategy first-index
 attackmap analyze /path/to/repo           # heuristic review → reports/
 attackmap analyze /path/to/repo --llm     # + AI-narrated review (Claude or OpenAI)
 attackmap analyze ./svc-a ./svc-b ./gw    # cross-repo / fleet scan
