@@ -8,6 +8,7 @@ the AttackMap self-scan isn't polluted by intentionally risky manifests.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import socket
 from pathlib import Path
@@ -185,13 +186,15 @@ def test_requirements_git_line_is_not_a_dependency_named_git(tmp_path: Path) -> 
 
 
 def test_self_scan_flags_unpinned_git_extras_only_when_unpinned(tmp_path: Path) -> None:
-    # AttackMap's own [all] extra pins every plugin to a commit (#237): clean.
+    # AttackMap's own [all] extra pins every plugin to a released version (#237, #411): clean.
     assert [i for i in scan_supply_chain(ROOT) if i.file == "pyproject.toml"] == []
-    # The pattern it used to ship (a moving git ref) is flagged.
+    # The pattern it once shipped (a git URL on a moving ref) is flagged.
     shutil.copyfile(ROOT / "pyproject.toml", tmp_path / "pyproject.toml")
     text = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
-    first = text.index(".git@") + len(".git@")
-    (tmp_path / "pyproject.toml").write_text(text[:first] + "main" + text[first + 40:], encoding="utf-8")
+    pinned = re.search(r'"attackmap-analyzer-python==[^"]+"', text)
+    assert pinned, "the [all] extra should pin attackmap-analyzer-python to a version"
+    moving = '"attackmap-analyzer-python @ git+https://github.com/mlaify/attackmap-analyzer-python.git@main"'
+    (tmp_path / "pyproject.toml").write_text(text[: pinned.start()] + moving + text[pinned.end():], encoding="utf-8")
     issues = scan_supply_chain(tmp_path)
     assert [i.kind for i in issues] == ["mutable_vcs_dependency"]
     assert issues[0].package == "attackmap-analyzer-python"
