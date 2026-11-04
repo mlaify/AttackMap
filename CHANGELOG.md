@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Concise arrow handlers are taint-walked (#398).** A route handler written as an arrow with an expression body, `(req, res) => db.query('...' + req.query.id)`, wasn't seen as a function, so its request input was never traced and the sink was dropped below the finding threshold; the same code in braces was reported. Concise bodies are now scoped like braced ones (to the expression's end: the first `,` / `;` / closing bracket at their depth, or the statement end), so they're found, and a handler's flow no longer spills into its neighbours' sinks.
-- **`-m python` keeps the built-in `python-web` analyzer (#401).** `-m` runs only the named analyzers, and attackmap-analyzer-python is additive over `python-web`, which extracts FastAPI and Flask routes, so `-m python` alone found no routes on a FastAPI or Flask app. Selecting an official plugin that is additive over a built-in now selects that built-in too (`analyzers.ADDITIVE_OVER_BUILTIN`; today only `python` → `python-web`).
-
 ## [0.6.0] - 2026-11-04
 
 ### Changed — packaging
@@ -210,6 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concise arrow handlers are taint-walked (#398).** A route handler written as an arrow with an expression body, `(req, res) => db.query('...' + req.query.id)`, wasn't seen as a function, so its request input was never traced and the sink was dropped below the finding threshold; the same code in braces was reported. Concise bodies are now scoped like braced ones (to the expression's end: the first `,` / `;` / closing bracket at their depth, or the statement end), so they're found, and a handler's flow no longer spills into its neighbours' sinks.
+- **`-m python` keeps the built-in `python-web` analyzer (#401).** `-m` runs only the named analyzers, and attackmap-analyzer-python is additive over `python-web`, which extracts FastAPI and Flask routes, so `-m python` alone found no routes on a FastAPI or Flask app. Selecting an official plugin that is additive over a built-in now selects that built-in too (`analyzers.ADDITIVE_OVER_BUILTIN`; today only `python` → `python-web`).
 - **Pyflakes-clean core, with ruff in CI (#231).** `ruff check` (rule set `F`, configured in `pyproject.toml`) now passes on `src/attackmap`.
   - `typing.get_type_hints` works on the public functions in `analyzers.py`: `Callable` and `ScanProgress` are now real imports. `threat_model.py` imports `DatabaseHint` and `ExternalCall`, which its annotations named.
   - Removed unused imports and locals, and the unused `_WEB_DEPENDENCY_TOKENS` (JS `detect()` never checked frameworks).
