@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-04
+
 ### Fixed — packaging
 
 - `attackmap[all]` couldn't be installed from the package index: its analyzers were git URL dependencies, which uv and pip refuse for a package installed from an index ("URL dependencies must be expressed as direct requirements"). The extra now pins each analyzer's release on the same index (`attackmap-analyzer-python==0.2.0`, node-service 0.3.0, …); `plugins_lock.py` keeps the commits for `-m` auto-install. `scripts/update_plugin_lock.py` writes both. Install with `uv tool install "attackmap[all]" --index mlaify=https://pkg.mlaify.io/pypi/simple/ --index-strategy first-index` (README and the external-analyzer guide no longer give the git-URL form, which now needs the index for the analyzers).
@@ -1449,7 +1451,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/mlaify/AttackMap/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mlaify/AttackMap/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mlaify/AttackMap/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/mlaify/AttackMap/compare/v0.5.0...v0.5.1
