@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`-m python` keeps the built-in `python-web` analyzer (#401).** `-m` runs only the named analyzers, and attackmap-analyzer-python is additive over `python-web`, which extracts FastAPI and Flask routes, so `-m python` alone found no routes on a FastAPI or Flask app. Selecting an official plugin that is additive over a built-in now selects that built-in too (`analyzers.ADDITIVE_OVER_BUILTIN`; today only `python` → `python-web`).
+
 ## [0.6.0] - 2026-11-04
 
 ### Changed — packaging

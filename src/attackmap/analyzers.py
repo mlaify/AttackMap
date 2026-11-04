@@ -388,6 +388,11 @@ def get_builtin_repository_analyzers() -> list[Analyzer]:
     ]
 
 
+# Official plugins that only add to a built-in analyzer rather than replace it:
+# selecting the plugin with `-m` also selects the built-in (#401).
+# attackmap-analyzer-python leaves FastAPI / Flask routes to python-web.
+ADDITIVE_OVER_BUILTIN: dict[str, str] = {"python": "python-web"}
+
 _BUILTIN_ANALYZER_TYPES = (BuiltinPythonWebAnalyzer, BuiltinJavaScriptWebAnalyzer, BuiltinConfigAnalyzer, DefaultAnalyzer)
 
 
@@ -594,6 +599,15 @@ def select_requested_analyzers(
             continue
         seen.add(name)
         selected.append(resolved[name])
+    # An official plugin that is additive over a built-in brings the built-in
+    # along: `-m python` alone would otherwise drop python-web, which extracts
+    # the FastAPI / Flask routes the plugin leaves to it (#401).
+    builtins = {analyzer.name: analyzer for analyzer in get_builtin_repository_analyzers()}
+    for name in list(seen):
+        companion = ADDITIVE_OVER_BUILTIN.get(name)
+        if companion is not None and companion not in seen and companion in builtins:
+            seen.add(companion)
+            selected.append(builtins[companion])
     return selected
 
 
