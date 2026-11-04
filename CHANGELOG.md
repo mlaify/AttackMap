@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-04
+
 ### Changed — packaging
 
 - `plugins_lock.py` and the `[all]` extra pin the analyzers' 0.2.0 release commits (node-service 0.3.0), the commits their signed `v*` tags point at. Those releases are on the mlaify package index, and they need `attackmap>=0.6.0`.
@@ -1443,7 +1445,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/mlaify/AttackMap/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mlaify/AttackMap/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/mlaify/AttackMap/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/mlaify/AttackMap/compare/v0.4.31...v0.5.0
