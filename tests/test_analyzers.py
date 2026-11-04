@@ -774,3 +774,43 @@ def test_builtin_javascript_analyzer_merges_alongside_default_without_double_cou
     (tmp_path / "server.ts").write_text("const x = 1;\n", encoding="utf-8")
     result = analyze_repository(tmp_path)
     assert result.files_scanned == 1
+
+
+def _fake_plugin(plugin_name: str):
+    class FakePlugin:
+        metadata = AnalyzerMetadata(name=plugin_name, description="fake", scope="test", ecosystems=("python",))
+
+        @property
+        def name(self) -> str:
+            return plugin_name
+
+        def analyze(self, root: str | Path) -> AnalyzerResult:
+            return AnalyzerResult(root=str(root))
+
+    return FakePlugin()
+
+
+def test_selecting_an_additive_plugin_also_selects_its_builtin(monkeypatch) -> None:
+    """`-m python` keeps python-web, which extracts FastAPI / Flask routes (#401)."""
+    from attackmap.analyzers import get_builtin_repository_analyzers
+
+    registry = [*get_builtin_repository_analyzers(), _fake_plugin("python"), _fake_plugin("php-web")]
+    monkeypatch.setattr("attackmap.analyzers.get_registered_analyzers", lambda: registry)
+
+    assert [a.name for a in select_requested_analyzers(["python"])] == ["python", "python-web"]
+    assert [a.name for a in select_requested_analyzers(["attackmap-analyzer-python"])] == ["python", "python-web"]
+    assert [a.name for a in select_requested_analyzers(["python-web", "python"])] == ["python-web", "python"]
+    assert [a.name for a in select_requested_analyzers(["php-web"])] == ["php-web"]
+
+
+def test_module_python_alone_still_finds_fastapi_routes(monkeypatch, tmp_path: Path) -> None:
+    from attackmap.analyzers import analyze_repository, get_builtin_repository_analyzers
+
+    (tmp_path / "main.py").write_text(
+        'from fastapi import FastAPI\napp = FastAPI()\n\n@app.get("/health")\ndef health():\n    return "ok"\n',
+        encoding="utf-8",
+    )
+    registry = [*get_builtin_repository_analyzers(), _fake_plugin("python")]
+    monkeypatch.setattr("attackmap.analyzers.get_registered_analyzers", lambda: registry)
+    result = analyze_repository(tmp_path, analyzers=select_requested_analyzers(["python"]))
+    assert [(r.method, r.path) for r in result.routes] == [("GET", "/health")]
