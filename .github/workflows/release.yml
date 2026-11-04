@@ -12,6 +12,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-24.04
+    # The operator approves each release here: the `release` environment has a required
+    # reviewer and accepts only v* tags. Nothing reaches the GitHub release, and so the
+    # package index (ci-publish reads the releases), until the run is approved.
+    environment:
+      name: release
+      url: https://pkg.mlaify.io/pypi/simple/attackmap/
     permissions:
       contents: write
     steps:
