@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Both Markdown reports now escape every repo-derived value with `md_text`/`md_code`. Attack-path headings are escaped; attack-path and topology Mermaid labels show `<`, `>` and backticks as literal characters, and every diagram label (Mermaid and DOT) shows control characters as `\uXXXX`. The fleet outputs (`fleet-summary.md`, `fleet-graph.md`), which wrote cross-repo call targets and routes raw, are escaped the same way. JSON, SARIF and the PR comment keep the raw values; the JSON report's `attack_surface_summary` copy of the Markdown is escaped like the file.
   - Reported by CREDIT-PENDING (`attack-surface.md` and `attackmap-exploitability.md`; the diagram labels, control characters and fleet outputs were found internally).
 
+### Fixed
+
+- `sanitize_llm_markdown`, which defangs the Markdown the optional LLM passes write (`defensive-review-llm.md`, `vulnerability-hypotheses.md`, `remediation.md`, `triage.md`), matched links, images and HTML tags with exact patterns that accept less than CommonMark does: a tag containing a newline, link text with an escaped `]`, a newline or nested brackets, a reference-style `[ref]: url` definition and a protocol-relative `//host` destination all passed through live, and `<…>` was stripped inside fenced code (`#include <stdio.h>` lost its argument). The pass is now fence-aware (code blocks and code spans are kept verbatim) and neutralises every remaining link, image or definition syntax in place; `//host` destinations are defanged like `https://` ones.
+
 ### Changed
 
 - The GitHub Action's new `fail-on-new-suppression` input is **on by default** when a baseline is given: a finding that was active in the baseline and is suppressed, or excluded from the scan, in this run fails the job, whatever silenced it and whatever its severity. It will also fail legitimate changes (an entry widened on the base branch, an expiry extended in the PR) until they are re-trusted on the base; set it to `false` only if you accept that a PR could silence a finding without failing the check, and the Action prints a warning when it is off.
