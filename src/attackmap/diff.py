@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -120,6 +122,10 @@ class DiffReport:
     # Active in the baseline, suppressed now (#224): not a fix, so not
     # "resolved" — surfaced separately and optionally gated.
     newly_suppressed: list[FindingSnapshot] = field(default_factory=list)
+    # Active in the baseline, and every instance now sits under a directory
+    # the scan skipped because of an output marker (GHSA-j544-8x8g-c3mw): not
+    # resolved, the code was never looked at. Gated with --fail-on-new-suppression.
+    newly_excluded: list[FindingSnapshot] = field(default_factory=list)
     # True when the baseline predates fingerprints, so only whole new
     # findings (not new instances) could be detected.
     baseline_without_instances: bool = False
@@ -137,25 +143,49 @@ class DiffReport:
             "resolved": len(self.resolved),
             "new_instances": sum(len(labels) for _, labels in self.new_instances),
             "newly_suppressed": len(self.newly_suppressed),
+            "newly_excluded": len(self.newly_excluded),
         }
+
+
+def _under_excluded(snapshot: FindingSnapshot, excluded_dirs: tuple[str, ...]) -> bool:
+    """True when the finding has instances and every one of them is in a file
+    under one of ``excluded_dirs`` (repo-relative POSIX directory paths)."""
+    if not snapshot.instances or not excluded_dirs:
+        return False
+    for _fp, label in snapshot.instances:
+        file = label.rsplit(":", 1)[0] if re.search(r":\d+$", label) else label
+        if not any(file == d or file.startswith(d + "/") for d in excluded_dirs):
+            return False
+    return True
 
 
 def diff_findings(
     baseline: list[FindingSnapshot],
     current: list[FindingSnapshot],
     suppressed: list[FindingSnapshot] | None = None,
+    *,
+    excluded_dirs: Iterable[str] = (),
 ) -> DiffReport:
     """``suppressed``: findings suppressed in the current run. One that was
-    active in the baseline is *newly suppressed*, not resolved (#224)."""
+    active in the baseline is *newly suppressed*, not resolved (#224).
+    ``excluded_dirs``: directories this run skipped because of an output
+    marker; a baseline finding whose instances all lived there is *newly
+    excluded*, not resolved (GHSA-j544-8x8g-c3mw)."""
     base_by_id = {s.id: s for s in baseline}
     cur_ids = {s.id for s in current}
     suppressed_ids = {s.id for s in suppressed or []}
+    excluded = tuple(d.strip("/") for d in excluded_dirs if d.strip("/"))
     gone = [s for s in baseline if s.id not in cur_ids]
     report = DiffReport(
         new=[s for s in current if s.id not in base_by_id],
         persisted=[s for s in current if s.id in base_by_id],
-        resolved=[s for s in gone if s.id not in suppressed_ids],
+        resolved=[
+            s for s in gone if s.id not in suppressed_ids and not _under_excluded(s, excluded)
+        ],
         newly_suppressed=[s for s in gone if s.id in suppressed_ids],
+        newly_excluded=[
+            s for s in gone if s.id not in suppressed_ids and _under_excluded(s, excluded)
+        ],
     )
     report.baseline_without_instances = bool(baseline) and not any(s.instances for s in baseline)
     for snap in report.persisted:
@@ -224,6 +254,7 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
             f"**{counts['persisted']} persisted** · "
             f"**{counts['resolved']} resolved** · "
             f"**{counts['newly_suppressed']} newly suppressed**"
+            + (f" · **{counts['newly_excluded']} newly excluded from the scan**" if diff.newly_excluded else "")
         ),
         "",
         "## New findings",
@@ -238,6 +269,16 @@ def render_diff_markdown(diff: DiffReport, *, title: str = "AttackMap diff") -> 
         "## Newly suppressed findings",
         _bullets(diff.newly_suppressed),
         "",
+    ]
+    if diff.newly_excluded:
+        parts += [
+            "## Newly excluded from the scan",
+            "_Active in the baseline; every instance is now under a directory skipped "
+            "because of an `.attackmap-output` marker, so the code was not analyzed._",
+            _bullets(diff.newly_excluded),
+            "",
+        ]
+    parts += [
         "## Persisted findings",
         _bullets(diff.persisted),
     ]

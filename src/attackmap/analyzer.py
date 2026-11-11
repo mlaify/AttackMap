@@ -5,6 +5,7 @@ from collections import Counter
 
 import networkx as nx
 
+from .md import md_text
 from .models import AttackSurface, AuthHint, Route, ScanResult
 from .webhook_verification import assess_webhook_surfaces, reclaim_receivers, webhook_management_routes
 
@@ -348,7 +349,7 @@ def _risk_rank(value: str) -> int:
 def _surface_summary(surface: AttackSurface) -> str:
     traits: list[str] = []
     if surface.auth_signals:
-        traits.append(f"auth signals: {', '.join(surface.auth_signals)}")
+        traits.append(f"auth signals: {', '.join(md_text(signal) for signal in surface.auth_signals)}")
     else:
         traits.append("no auth signals observed")
 
@@ -360,6 +361,12 @@ def _surface_summary(surface: AttackSurface) -> str:
         traits.append(f"webhook signature: {surface.webhook_verification.state.replace('_', ' ')}")
 
     return "; ".join(traits)
+
+
+def _surface_label(surface: AttackSurface) -> str:
+    """``METHOD route (file)`` with the repo-derived parts escaped: a route
+    string is attacker-controlled text in a scanned repository."""
+    return f"{md_text(surface.method)} {md_text(surface.route)} ({md_text(surface.file)})"
 
 
 def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurface] | None = None) -> str:
@@ -386,9 +393,7 @@ def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurfa
     lines.extend(["", "## Highest-Risk Entry Points"])
     if high_risk:
         for surface in high_risk[:10]:
-            lines.append(
-                f"- {surface.method} {surface.route} ({surface.file}) -> {surface.category}; {_surface_summary(surface)}"
-            )
+            lines.append(f"- {_surface_label(surface)} -> {surface.category}; {_surface_summary(surface)}")
     else:
         lines.append("- No high-risk entry points were classified")
 
@@ -396,8 +401,8 @@ def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurfa
     if auth_and_admin:
         for surface in auth_and_admin[:10]:
             lines.append(
-                f"- [{surface.risk.upper()}] {surface.method} {surface.route} "
-                f"({surface.file}) -> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
+                f"- [{surface.risk.upper()}] {_surface_label(surface)} "
+                f"-> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
             )
     else:
         lines.append("- No dedicated auth or admin routes were classified")
@@ -406,8 +411,8 @@ def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurfa
     if public_entry_points:
         for surface in public_entry_points[:10]:
             lines.append(
-                f"- [{surface.risk.upper()}] {surface.method} {surface.route} "
-                f"({surface.file}) -> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
+                f"- [{surface.risk.upper()}] {_surface_label(surface)} "
+                f"-> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
             )
     else:
         lines.append("- No additional public application routes were classified")
@@ -416,8 +421,8 @@ def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurfa
     if operational_routes:
         for surface in operational_routes[:10]:
             lines.append(
-                f"- [{surface.risk.upper()}] {surface.method} {surface.route} "
-                f"({surface.file}) -> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
+                f"- [{surface.risk.upper()}] {_surface_label(surface)} "
+                f"-> {surface.category}, {surface.exposure}; {_surface_summary(surface)}"
             )
     else:
         lines.append("- No health, metrics, debug, or internal routes were classified")
@@ -425,19 +430,19 @@ def summarize_attack_surface(scan: ScanResult, attack_surfaces: list[AttackSurfa
     lines.extend(["", "## External Dependencies"])
     if external_targets:
         for target in external_targets[:25]:
-            lines.append(f"- {target}")
+            lines.append(f"- {md_text(target)}")
     else:
         lines.append("- No explicit outbound HTTP calls detected")
 
     lines.extend(["", "## Secrets And Auth Hints"])
     if scan.secret_hints:
         for hint in scan.secret_hints[:25]:
-            lines.append(f"- Secret-related env usage: {hint.name} ({hint.file})")
+            lines.append(f"- Secret-related env usage: {md_text(hint.name)} ({md_text(hint.file)})")
     else:
         lines.append("- No secret-like environment variable usage detected")
 
     if auth_summary:
-        lines.append(f"- Auth-related keywords observed: {', '.join(auth_summary)}")
+        lines.append(f"- Auth-related keywords observed: {', '.join(md_text(hint) for hint in auth_summary)}")
     else:
         lines.append("- No auth-related keywords observed")
 

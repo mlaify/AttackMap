@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 
 from .contracts import ContractLink
 from .crossrepo import CrossBoundaryFlow, CrossRepoAnomaly, TrustGap
+from .diagrams import _mermaid_text
+from .md import md_code, md_text
 
 if TYPE_CHECKING:
     from .models import AttackPath, Finding, ScanResult
@@ -130,7 +132,7 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         lines.append(f"**{len(fleet.failed)} repositor{'y' if len(fleet.failed) == 1 else 'ies'} failed and "
                      "are not included below:**")
         for f in fleet.failed:
-            lines.append(f"- `{f['repo_id']}` — {f['error']}")
+            lines.append(f"- {md_code(f['repo_id'])} — {md_text(f['error'])}")
         lines.append("")
     lines.append("| Repository | HIGH | MED | LOW | Total | Report |")
     lines.append("|---|---:|---:|---:|---:|---|")
@@ -138,27 +140,27 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         c = r.severity_counts()
         total = len(r.findings)
         lines.append(
-            f"| `{r.repo_id}` | {c['high']} | {c['medium']} | {c['low']} | "
+            f"| {md_code(r.repo_id)} | {c['high']} | {c['medium']} | {c['low']} | "
             f"{total} | [{r.repo_id}/]({r.repo_id}/) |"
         )
     lines.append("")
 
     for r in fleet.results:
-        lines.append(f"## `{r.repo_id}`")
+        lines.append(f"## {md_code(r.repo_id)}")
         lines.append("")
-        lines.append(f"- Path: `{r.root}`")
+        lines.append(f"- Path: {md_code(r.root)}")
         lines.append(f"- Findings: {len(r.findings)} ({r.suppressed_count} suppressed)")
         top = _top_findings(r)
         if top:
             lines.append("- Top findings:")
             for f in top:
-                lines.append(f"  - **[{f.severity.upper()}]** {f.title}")
+                lines.append(f"  - **[{f.severity.upper()}]** {md_text(f.title)}")
         lines.append("")
 
     lines.append("## Cross-repo links (#146b)")
     lines.append("")
     if fleet.links:
-        loc = lambda f, ln: f"{f}:{ln}" if ln else f  # noqa: E731
+        loc = lambda f, ln: md_text(f"{f}:{ln}" if ln else f)  # noqa: E731
         lines.append(
             f"{len(fleet.links)} client→server contract link(s) — an outbound call "
             "in one repo matched to a route another repo serves:"
@@ -168,9 +170,9 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         lines.append("|---|---|---|---|---|")
         for lk in fleet.links:
             lines.append(
-                f"| `{lk.client_repo}` | `{lk.method} {lk.client_target}` "
-                f"[{loc(lk.client_file, lk.client_line)}] | → | `{lk.server_repo}` | "
-                f"`{lk.method} {lk.server_route_path}` [{loc(lk.server_file, lk.server_line)}] |"
+                f"| {md_code(lk.client_repo)} | {md_code(f'{lk.method} {lk.client_target}')} "
+                f"[{loc(lk.client_file, lk.client_line)}] | → | {md_code(lk.server_repo)} | "
+                f"{md_code(f'{lk.method} {lk.server_route_path}')} [{loc(lk.server_file, lk.server_line)}] |"
             )
         lines.append("")
     else:
@@ -180,7 +182,7 @@ def render_fleet_summary(fleet: FleetScan) -> str:
     lines.append("## Cross-boundary trust (#146c)")
     lines.append("")
     if fleet.cross_boundary:
-        loc = lambda f, ln: f"{f}:{ln}" if ln else f  # noqa: E731
+        loc = lambda f, ln: md_text(f"{f}:{ln}" if ln else f)  # noqa: E731
         lines.append(
             f"{len(fleet.cross_boundary)} SPECULATIVE confused-deputy flow(s) — a "
             "value forwarded across a link that the callee trusts into a sink or "
@@ -189,15 +191,15 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         lines.append("")
         for cb in fleet.cross_boundary:
             what = (
-                f"reaches a {cb.detail} sink"
+                f"reaches a {md_text(cb.detail)} sink"
                 if cb.basis == "taint"
-                else f"is an unguarded {cb.detail}"
+                else f"is an unguarded {md_text(cb.detail)}"
             )
             lines.append(
-                f"- **[{cb.severity.upper()}, SPECULATIVE]** `{cb.client_repo}` calls "
-                f"`{cb.method} {cb.route}` served by `{cb.server_repo}`, which {what} — "
+                f"- **[{cb.severity.upper()}, SPECULATIVE]** {md_code(cb.client_repo)} calls "
+                f"{md_code(f'{cb.method} {cb.route}')} served by {md_code(cb.server_repo)}, which {what} — "
                 f"the caller's value is trusted without the callee re-validating. "
-                f"Caller: `{cb.client_target}` [{loc(cb.client_file, cb.client_line)}]; "
+                f"Caller: {md_code(cb.client_target)} [{loc(cb.client_file, cb.client_line)}]; "
                 f"callee: [{loc(cb.server_file, cb.server_line)}]."
             )
         lines.append("")
@@ -205,7 +207,7 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         lines.append("_No cross-boundary trust flows detected._")
         lines.append("")
 
-    loc = lambda f, ln: f"{f}:{ln}" if ln else f  # noqa: E731
+    loc = lambda f, ln: md_text(f"{f}:{ln}" if ln else f)  # noqa: E731
 
     lines.append("## Trust-assumption gaps (#146d)")
     lines.append("")
@@ -218,9 +220,9 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         lines.append("")
         for g in fleet.trust_gaps:
             lines.append(
-                f"- **[{g.severity.upper()}, SPECULATIVE]** `{g.client_repo}` calls "
-                f"`{g.method} {g.route}` on `{g.server_repo}`, which enforces no "
-                f"authentication. Caller: `{g.client_target}` "
+                f"- **[{g.severity.upper()}, SPECULATIVE]** {md_code(g.client_repo)} calls "
+                f"{md_code(f'{g.method} {g.route}')} on {md_code(g.server_repo)}, which enforces no "
+                f"authentication. Caller: {md_code(g.client_target)} "
                 f"[{loc(g.client_file, g.client_line)}]; callee route: "
                 f"[{loc(g.server_file, g.server_line)}]."
             )
@@ -238,11 +240,11 @@ def render_fleet_summary(fleet: FleetScan) -> str:
         )
         lines.append("")
         for a in fleet.cross_repo_anomalies:
-            peers = ", ".join(f"`{p}`" for p in a.peers)
+            peers = ", ".join(md_code(p) for p in a.peers)
             lines.append(
-                f"- **[{a.severity.upper()}, SPECULATIVE]** `{a.repo}` serves "
-                f"`{a.method} {a.route}` with no auth, but {peers} guard the same "
-                f"`/{a.template}` route."
+                f"- **[{a.severity.upper()}, SPECULATIVE]** {md_code(a.repo)} serves "
+                f"{md_code(f'{a.method} {a.route}')} with no auth, but {peers} guard the same "
+                f"{md_code(f'/{a.template}')} route."
             )
         lines.append("")
     else:
@@ -259,7 +261,7 @@ def render_fleet_graph_mermaid(fleet: FleetScan) -> str:
     ids = {r.repo_id for r in fleet.results}
     node_id = {rid: f"R{i}" for i, rid in enumerate(sorted(ids))}
     for rid in sorted(ids):
-        lines.append(f'    {node_id[rid]}["{rid}"]')
+        lines.append(f'    {node_id[rid]}["{_mermaid_text(rid)}"]')
     # Collapse multiple links between the same pair to one edge per route.
     seen: set[tuple[str, str, str, str]] = set()
     for lk in fleet.links:
@@ -267,7 +269,7 @@ def render_fleet_graph_mermaid(fleet: FleetScan) -> str:
         if edge in seen or lk.client_repo not in node_id or lk.server_repo not in node_id:
             continue
         seen.add(edge)
-        label = f"{lk.method} /{lk.path_template}"
+        label = _mermaid_text(f"{lk.method} /{lk.path_template}")
         lines.append(f'    {node_id[lk.client_repo]} -->|"{label}"| {node_id[lk.server_repo]}')
     lines.append("```")
     return "\n".join(lines)

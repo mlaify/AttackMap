@@ -278,3 +278,24 @@ def line_number(content: str, offset: int) -> int:
     if offset <= 0:
         return 1
     return bisect.bisect_right(_line_starts(content), offset)
+
+
+def split_lines(content: str, *, keepends: bool = False) -> list[str]:
+    """``content`` as a list of lines, split on ``"\n"`` only, so that index
+    ``n - 1`` is the line ``line_number()`` calls ``n``.
+
+    Never ``str.splitlines()`` for anything that is numbered or indexed by a
+    line number: it also breaks on ``\x0b``, ``\x0c``, ``\x1c``-``\x1e``,
+    ``\x85``, U+2028 and U+2029, so one such character in a comment shifts
+    every later line by one relative to the findings, which let a pull
+    request move a trusted ``attackmap:ignore`` directive onto the line it
+    added (GHSA-677m-4884-vg22).
+    """
+    lines = content.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if keepends:
+        last = len(lines) - 1
+        ends_with_newline = content.endswith("\n")
+        return [line + "\n" if i < last or ends_with_newline else line for i, line in enumerate(lines)]
+    return lines

@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from .safe_fs import UnsafePathError, read_repo_text
+from .srcpaths import split_lines
 
 
 class GitRefError(RuntimeError):
@@ -95,15 +96,34 @@ def added_lines(root: Path, ref: str, rel: str) -> set[int]:
     `--no-ext-diff` don't disable, so a scanned repo could execute code.
     """
     try:
-        current = read_repo_text(root, rel, errors="replace").splitlines()
+        current = split_lines(read_repo_text(root, rel, errors="replace"))
     except (OSError, UnsafePathError):
         return set()
     previous = show_file(root, ref, rel)
     if previous is None:
         return set(range(1, len(current) + 1))  # new since ref (or untracked)
-    matcher = difflib.SequenceMatcher(None, previous.splitlines(), current, autojunk=False)
+    matcher = difflib.SequenceMatcher(None, split_lines(previous), current, autojunk=False)
     lines: set[int] = set()
     for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
         if tag in ("replace", "insert"):
             lines.update(range(j1 + 1, j2 + 1))
     return lines
+
+
+def untrusted_output_markers(root: Path, ref: str, *, keep_under: "list[Path] | tuple[Path, ...]" = ()) -> list[Path]:
+    """Output-marker files under ``root`` that do not exist at ``ref``, as
+    paths relative to ``root``: ones a pull request added, which must not
+    exclude their directory from the scan (GHSA-j544-8x8g-c3mw). Markers
+    anywhere under a ``keep_under`` directory (the run's own output
+    directory, which carries markers in its subdirectories too) are trusted."""
+    from .safe_fs import output_marker_files  # noqa: PLC0415 — local, so the module header is untouched
+
+    kept = [os.path.abspath(str(d)) for d in keep_under]
+    untrusted: list[Path] = []
+    for rel in output_marker_files(root):
+        marker = os.path.abspath(str(root / rel))
+        if any(marker == d or marker.startswith(d + os.sep) for d in kept):
+            continue
+        if show_file(root, ref, rel.as_posix()) is None:
+            untrusted.append(rel)
+    return untrusted

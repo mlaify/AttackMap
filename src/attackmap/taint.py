@@ -38,7 +38,7 @@ from pathlib import Path
 
 from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain, TaintFlowStep
-from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number
+from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number, split_lines
 from .taint_flow import REST, FileFlow, SinkFlow
 from .taint_sinks import SINKS, all_sinks, call_receiver
 from .taint_sources import GO, JS, PHP, PY, lang_for_suffix
@@ -798,7 +798,7 @@ def _handler_seed_files(route: Route, content: str, name_to_module: dict[str, st
     import-hub fan-out (#107)."""
     if route.line is None:
         return []
-    lines = content.splitlines(keepends=True)
+    lines = split_lines(content, keepends=True)
     idx = route.line - 1
     if idx < 0 or idx >= len(lines):
         return []

@@ -233,13 +233,18 @@ def render_exploitability_ranking(scores: list[ExploitabilityScore]) -> str:
         "score is the clamped sum of the listed factors). Highest risk first."
     )
     lines.append("")
+    # Route, method, location and factor text carry repo-derived route paths,
+    # files and package names: escaped here, at render time, so the score
+    # objects (JSON, SARIF, PR comment) keep the raw values. The heading is
+    # `s.subject` rebuilt from its parts, so only the repo-derived ones are escaped.
     for rank, s in enumerate(scores, start=1):
-        lines.append(f"## {rank}. {s.subject} — {s.score}/100 ({s.tier.upper()})")
-        lines.append(f"- sink location: `{s.location}`")
+        subject = f"{md_text(s.method)} {md_text(s.route)} → {s.sink_kind}"
+        lines.append(f"## {rank}. {subject} — {s.score}/100 ({s.tier.upper()})")
+        lines.append(f"- sink location: {md_code(s.location)}")
         lines.append("- factors:")
         for f in s.factors:
             sign = "+" if f.points >= 0 else ""
-            lines.append(f"    - {sign}{f.points}  {f.name} — {f.detail}")
+            lines.append(f"    - {sign}{f.points}  {md_text(f.name)} — {md_text(f.detail)}")
         if s.raw_score != s.score:
             lines.append(f"    - (raw {s.raw_score} clamped to {s.score})")
         lines.append("")
@@ -287,6 +292,16 @@ def render_pr_comment(
             lines.append("### Newly suppressed in this change")
             lines.append("_Active in the baseline, silenced by a suppression added here — review the reason._")
             for s in sorted(newly_suppressed, key=lambda s: sev_rank.get(s.severity, 3)):
+                lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
+            lines.append("")
+        newly_excluded = list(getattr(diff, "newly_excluded", []) or [])
+        if newly_excluded:
+            lines.append("### Newly excluded from the scan")
+            lines.append(
+                "_Active in the baseline, now under a directory skipped because of an "
+                "`.attackmap-output` marker committed here — the code was not analyzed._"
+            )
+            for s in sorted(newly_excluded, key=lambda s: sev_rank.get(s.severity, 3)):
                 lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
             lines.append("")
         if new_instances:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from attackmap.cli import app
@@ -92,7 +91,9 @@ def test_diff_counts_helper() -> None:
         persisted=[FindingSnapshot.from_finding(_finding("P"))],
         resolved=[FindingSnapshot.from_finding(f) for f in (_finding("R1"), _finding("R2"))],
     )
-    assert diff.counts() == {"new": 1, "persisted": 1, "resolved": 2, "new_instances": 0, "newly_suppressed": 0}
+    assert diff.counts() == {
+        "new": 1, "persisted": 1, "resolved": 2, "new_instances": 0, "newly_suppressed": 0, "newly_excluded": 0,
+    }
 
 
 def test_has_new_high_triggers_only_on_new_high_findings() -> None:
