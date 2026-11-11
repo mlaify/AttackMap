@@ -29,6 +29,14 @@ def _visible(text: str) -> str:
     return _INVISIBLE.sub(lambda m: f"\\u{ord(m.group(0)):04x}", text)
 
 
+def visible_text(value: object) -> str:
+    """``value`` with control, invisible and bidi characters shown as visible
+    ``\\uXXXX`` escapes (tab and newline kept), for non-Markdown outputs such
+    as diagram labels: a raw ESC from a scanned repo would otherwise reach the
+    terminal of whoever views the file."""
+    return _visible(str(value))
+
+
 def md_text(value: object) -> str:
     """Escape an untrusted value for inline Markdown prose.
 

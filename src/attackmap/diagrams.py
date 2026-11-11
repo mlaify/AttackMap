@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from .md import md_text, visible_text
 from .models import AttackPath
 from .topology import ServiceEdge, ServiceGraph
 
@@ -38,16 +39,16 @@ def render_attack_paths_mermaid(paths: Iterable[AttackPath]) -> str:
 
     parts: list[str] = ["# AttackMap — Attack paths", ""]
     for idx, path in enumerate(paths, start=1):
-        parts.append(f"## {idx}. {path.name}")
+        parts.append(f"## {idx}. {md_text(path.name)}")
         parts.append("")
         parts.append("```mermaid")
         parts.append("flowchart TD")
         node_ids = [_mermaid_node_id(idx, step_i) for step_i in range(len(path.steps) + 1)]
         for step_i, step in enumerate(path.steps):
-            parts.append(f'  {node_ids[step_i]}["{_mermaid_escape(step)}"]')
+            parts.append(f'  {node_ids[step_i]}["{_mermaid_text(step)}"]')
         # Impact node — visually distinguished with a rectangular label.
         impact_id = node_ids[-1]
-        parts.append(f'  {impact_id}["Impact: {_mermaid_escape(path.impact)}"]')
+        parts.append(f'  {impact_id}["Impact: {_mermaid_text(path.impact)}"]')
         parts.append(f"  class {impact_id} impact")
         # Chain: n0 → n1 → n2 → ... → impact
         if node_ids:
@@ -74,9 +75,9 @@ def render_topology_mermaid(graph: ServiceGraph) -> str:
     for idx, node in enumerate(graph.nodes):
         nid = f"S{idx}"
         node_id_by_name[node.name] = nid
-        label = _mermaid_escape(node.name)
+        label = _mermaid_text(node.name)
         if node.role and node.role != "service":
-            label = f"{label}<br/><i>{_mermaid_escape(node.role)}</i>"
+            label = f"{label}<br/><i>{_mermaid_text(node.role)}</i>"
         parts.append(f'  {nid}["{label}"]')
 
     # Edges grouped by kind so the legend line makes sense.
@@ -102,7 +103,7 @@ def render_topology_mermaid(graph: ServiceGraph) -> str:
 
 def _mermaid_edge(edge: ServiceEdge) -> str:
     label = edge.evidence or edge.kind
-    label = _mermaid_escape(label)
+    label = _mermaid_text(label)
     if edge.kind == "http-call":
         return f'-. "{label}" .->'
     if edge.kind == "env-configured":
@@ -134,6 +135,15 @@ def _mermaid_escape(text: str) -> str:
         .replace('"', "'")
         .replace("\n", " ")
     )
+
+
+def _mermaid_text(text: str) -> str:
+    """A label made only of text. Attack-path steps and topology names and
+    evidence carry repo-derived strings, and Mermaid renders HTML in labels
+    (and Markdown in a label wrapped in backticks), so ``<``, ``>`` and
+    backticks become Mermaid entity codes (``#lt;``, ``#gt;``, ``#96;``) and
+    show as literal characters; control characters show as ``\\uXXXX``."""
+    return _mermaid_escape(visible_text(text)).replace("<", "#lt;").replace(">", "#gt;").replace("`", "#96;")
 
 
 # --- Graphviz DOT ----------------------------------------------------------
@@ -206,6 +216,9 @@ def _dot_edge_style(kind: str) -> str:
 
 
 def _dot_escape(text: str) -> str:
+    # Control characters as visible \uXXXX first, so a raw ESC from a scanned
+    # repo never reaches the terminal of whoever views the .dot file.
+    text = visible_text(text)
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
