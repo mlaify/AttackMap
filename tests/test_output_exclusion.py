@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -85,3 +84,116 @@ def test_dot_output_does_not_hide_the_repo(tmp_path: Path) -> None:
         assert result.exit_code == 0
     report = json.loads((repo / "attackmap-report.json").read_text(encoding="utf-8"))
     assert report["scan"]["files_scanned"] == 1
+
+
+# ---------------------------------------------------------------------------
+# A committed marker must not hide a directory from a gated scan
+# (GHSA-j544-8x8g-c3mw).
+# ---------------------------------------------------------------------------
+
+import shutil
+import subprocess
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+NEW_SECRET = "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com",
+         "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "init.defaultBranch=main", *args],
+        check=True, capture_output=True,
+    )
+
+
+def _base_repo(tmp_path: Path) -> Path:
+    """`src/app.py` with findings, committed and tagged `base`; a baseline
+    report in tmp_path/base."""
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "app.py").write_text(APP, encoding="utf-8")
+    (repo / "cli.py").write_text("def main():\n    print('hi')\n", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "tag", "base")
+    base = runner.invoke(app, ["analyze", str(repo), "-o", str(tmp_path / "base"), "--format", "json"])
+    assert base.exit_code == 0, base.output
+    return repo
+
+
+def _pr_with_marker(repo: Path) -> None:
+    (repo / "src" / OUTPUT_MARKER).write_text("", encoding="utf-8")
+    (repo / "src" / "new.py").write_text(f'TOKEN = "{NEW_SECRET}"\n', encoding="utf-8")
+
+
+def _gate(repo: Path, tmp_path: Path, *extra: str):
+    result = runner.invoke(app, [
+        "analyze", str(repo), "-o", str(tmp_path / "pr"), "--format", "json",
+        "--baseline", str(tmp_path / "base" / "attackmap-report.json"), "--fail-on-new-high",
+        "--pr-comment", str(tmp_path / "pr" / "pr-comment.md"), *extra,
+    ])
+    report = json.loads((tmp_path / "pr" / "attackmap-report.json").read_text(encoding="utf-8"))
+    return result, report
+
+
+@needs_git
+def test_marker_added_since_the_base_ref_does_not_exclude_its_directory(tmp_path: Path) -> None:
+    repo = _base_repo(tmp_path)
+    _pr_with_marker(repo)
+    result, report = _gate(repo, tmp_path, "--suppress-from-ref", "base")
+    assert result.exit_code == 1, result.output
+    secret = next(f for f in report["findings"] if f["rule_id"] == "hardcoded-secret")
+    assert "src/new.py" in {loc["file"] for loc in secret["locations"]}
+    assert f"output marker src/{OUTPUT_MARKER} was added since base" in result.output
+    assert report["scan"]["limitations"] == []
+
+
+@needs_git
+def test_marker_present_at_the_base_ref_is_still_honoured(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "reports").mkdir(parents=True)
+    (repo / "app.py").write_text(APP, encoding="utf-8")
+    (repo / "reports" / OUTPUT_MARKER).write_text("", encoding="utf-8")
+    (repo / "reports" / "old.py").write_text(f'TOKEN = "{NEW_SECRET}"\n', encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "tag", "base")
+    result = runner.invoke(app, ["analyze", str(repo), "-o", str(tmp_path / "o"), "--format", "json",
+                                 "--suppress-from-ref", "base"])
+    assert result.exit_code == 0, result.output
+    report = json.loads((tmp_path / "o" / "attackmap-report.json").read_text(encoding="utf-8"))
+    assert "was added since base" not in result.output
+    assert report["scan"]["limitations"] == ["directory skipped (output marker): reports"]
+    assert {loc["file"] for f in report["findings"] for loc in f.get("locations", [])} <= {"app.py"}
+
+
+@needs_git
+def test_own_output_dir_inside_the_repo_is_trusted_under_suppress_from_ref(tmp_path: Path) -> None:
+    repo = _base_repo(tmp_path)
+    out = repo / "reports"
+    first = runner.invoke(app, ["analyze", str(repo), "-o", str(out), "--format", "json", "--suppress-from-ref", "base"])
+    assert first.exit_code == 0, first.output
+    second = runner.invoke(app, ["analyze", str(repo), "-o", str(out), "--format", "json", "--suppress-from-ref", "base"])
+    assert second.exit_code == 0, second.output
+    assert "was added since base" not in second.output
+    report = json.loads((out / "attackmap-report.json").read_text(encoding="utf-8"))
+    assert report["scan"]["limitations"] == ["directory skipped (output marker): reports"]
+    assert {loc["file"] for f in report["findings"] for loc in f.get("locations", [])} <= {"src/app.py", "cli.py"}
+
+
+@needs_git
+def test_marker_without_a_trusted_ref_is_recorded_and_gated(tmp_path: Path) -> None:
+    repo = _base_repo(tmp_path)
+    _pr_with_marker(repo)
+    result, report = _gate(repo, tmp_path, "--fail-on-new-suppression")
+    assert report["scan"]["limitations"] == ["directory skipped (output marker): src"]
+    assert "newly excluded from the scan" in result.output
+    assert "failing per --fail-on-new-suppression" in result.output
+    assert result.exit_code == 1, result.output
+    comment = (tmp_path / "pr" / "pr-comment.md").read_text(encoding="utf-8")
+    assert "### Newly excluded from the scan" in comment
+    diff_md = (tmp_path / "pr" / "attackmap-diff.md").read_text(encoding="utf-8")
+    assert "## Newly excluded from the scan" in diff_md
+    assert "**0 resolved**" in diff_md

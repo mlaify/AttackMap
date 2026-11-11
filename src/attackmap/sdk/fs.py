@@ -53,8 +53,9 @@ def iter_repo_files(
       ``ATTACKMAP_MAX_FILE_BYTES``) are skipped.
     - ``include_tests=False`` drops test/spec/fixture files (see
       ``ATTACKMAP_INCLUDE_TESTS``).
-    - ``on_skip(path, reason)`` is called for each skipped symlink or
-      oversized file, so a plugin can report what it didn't analyze.
+    - ``on_skip(path, reason)`` is called for each skipped symlink,
+      oversized file or directory excluded by an AttackMap output marker, so
+      a plugin can report what it didn't analyze.
     """
     root_path = Path(root)
     wanted_suffixes = {s.lower() for s in suffixes} if suffixes is not None else None
@@ -66,7 +67,11 @@ def iter_repo_files(
         if on_skip is not None:
             on_skip(path, "symlink not followed")
 
-    for path in walk_repo(root_path, prune=skip.__contains__, on_symlink=_symlink):
+    def _pruned(path: Path) -> None:
+        if on_skip is not None:
+            on_skip(path, "directory skipped (output marker)")
+
+    for path in walk_repo(root_path, prune=skip.__contains__, on_symlink=_symlink, on_prune=_pruned):
         if wanted_suffixes is not None or wanted_names is not None:
             if not (
                 (wanted_suffixes is not None and path.suffix.lower() in wanted_suffixes)

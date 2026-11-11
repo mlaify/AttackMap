@@ -22,13 +22,39 @@ Write side:
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 FOLLOW_SYMLINKS_ENV = "ATTACKMAP_FOLLOW_SYMLINKS"
 # Written into every report directory (#216); walk_repo never descends into a
 # directory that contains it, whatever the directory is called.
 OUTPUT_MARKER = ".attackmap-output"
+
+# Marker files the current run must not honour (GHSA-j544-8x8g-c3mw): under
+# --suppress-from-ref the CLI registers every marker that is not present at
+# the trusted ref, so a pull request cannot exclude a directory from the scan
+# by committing an empty `.attackmap-output`. Absolute, normalized paths.
+_UNTRUSTED_MARKERS: set[str] = set()
+
+
+def set_untrusted_output_markers(markers: Iterable[str | Path]) -> None:
+    """Replace the set of marker files ``walk_repo`` must ignore."""
+    _UNTRUSTED_MARKERS.clear()
+    _UNTRUSTED_MARKERS.update(os.path.abspath(str(m)) for m in markers)
+
+
+def output_marker_files(root: str | Path) -> list[Path]:
+    """Every ``OUTPUT_MARKER`` file under ``root`` (not the root's own), as
+    paths relative to ``root``; symlinks are not followed."""
+    root_path = Path(root)
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = sorted(d for d in dirnames if not (Path(dirpath) / d).is_symlink())
+        if OUTPUT_MARKER in filenames and Path(dirpath) != root_path:
+            marker = Path(dirpath) / OUTPUT_MARKER
+            if marker.is_file() and not marker.is_symlink():
+                found.append(marker.relative_to(root_path))
+    return found
 MAX_FILE_BYTES_ENV = "ATTACKMAP_MAX_FILE_BYTES"
 # Files larger than this are not read (#236): a hostile or generated multi-MB
 # file must not stall a CI scan. Real source files are far smaller.
@@ -143,6 +169,7 @@ def walk_repo(
     *,
     prune: Callable[[str], bool] | None = None,
     on_symlink: Callable[[Path], None] | None = None,
+    on_prune: Callable[[Path], None] | None = None,
 ) -> Iterator[Path]:
     """Yield regular files under ``root`` (depth-first, sorted per directory).
 
@@ -151,7 +178,8 @@ def walk_repo(
     each. With ``ATTACKMAP_FOLLOW_SYMLINKS=1`` symlinks whose target resolves
     inside ``root`` are followed (cycle-safe); ones pointing outside are still
     skipped. ``prune(dirname)`` returning True skips descending into a
-    directory.
+    directory. ``on_prune(dir)`` is called for each directory skipped
+    because it carries an output marker, so the caller can record it.
     """
     root_path = Path(root)
     follow = follow_symlinks_enabled()
@@ -170,9 +198,15 @@ def walk_repo(
                 continue
             child = current / name
             # Our own report output, under any name (#216). Not checked for the
-            # root itself, so `-o .` can't make a repo unscannable.
-            if (child / OUTPUT_MARKER).is_file() and not (child / OUTPUT_MARKER).is_symlink():
-                continue
+            # root itself, so `-o .` can't make a repo unscannable. A marker the
+            # CLI registered as untrusted (added since the PR base) is ignored
+            # and the directory is scanned (GHSA-j544-8x8g-c3mw).
+            marker = child / OUTPUT_MARKER
+            if marker.is_file() and not marker.is_symlink():
+                if os.path.abspath(marker) not in _UNTRUSTED_MARKERS:
+                    if on_prune is not None:
+                        on_prune(child)
+                    continue
             if child.is_symlink() and not (follow and _resolved_within(root_path, child)):
                 if on_symlink is not None:
                     on_symlink(child)

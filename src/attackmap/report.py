@@ -294,6 +294,16 @@ def render_pr_comment(
             for s in sorted(newly_suppressed, key=lambda s: sev_rank.get(s.severity, 3)):
                 lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
             lines.append("")
+        newly_excluded = list(getattr(diff, "newly_excluded", []) or [])
+        if newly_excluded:
+            lines.append("### Newly excluded from the scan")
+            lines.append(
+                "_Active in the baseline, now under a directory skipped because of an "
+                "`.attackmap-output` marker committed here — the code was not analyzed._"
+            )
+            for s in sorted(newly_excluded, key=lambda s: sev_rank.get(s.severity, 3)):
+                lines.append(f"- **[{s.severity.upper()}]** {md_text(s.title)}")
+            lines.append("")
         if new_instances:
             lines.append("### New instances of existing findings")
             for s, labels in sorted(new_instances, key=lambda t: sev_rank.get(t[0].severity, 3)):

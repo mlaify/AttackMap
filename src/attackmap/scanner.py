@@ -425,6 +425,9 @@ def _redacted_snippet(
 
 # Package-manager trees (pnpm, venvs) are full of symlinks; don't list those
 # as scan limitations.
+# Prefix of the limitation recorded for a directory skipped because of an
+# output marker; the diff reads it back to classify vanished findings.
+EXCLUDED_DIR_LIMITATION = "directory skipped (output marker): "
 _NOISY_SYMLINK_PARTS = {"node_modules", ".git", ".venv", "venv", "dist", "build", "__pycache__"}
 
 
@@ -884,8 +887,14 @@ def scan_files(
         if not any(part in _NOISY_SYMLINK_PARTS for part in rel.parts):
             result.limitations.append(f"symlink not followed: {rel.as_posix()}")
 
+    def _record_prune(path: Path) -> None:
+        # A directory carrying an output marker is never scanned (#216); say so,
+        # since a committed marker would otherwise hide code silently
+        # (GHSA-j544-8x8g-c3mw).
+        result.limitations.append(f"{EXCLUDED_DIR_LIMITATION}{path.relative_to(root_path).as_posix()}")
+
     scan_files = []
-    for p in walk_repo(root_path, prune=is_skipped_dir, on_symlink=_record_symlink):
+    for p in walk_repo(root_path, prune=is_skipped_dir, on_symlink=_record_symlink, on_prune=_record_prune):
         if not should_scan_with_suffixes(p.relative_to(root_path), suffixes):
             continue
         if is_oversized(p):
