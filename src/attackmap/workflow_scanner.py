@@ -75,6 +75,7 @@ from pathlib import Path
 
 from .safe_fs import is_contained, is_oversized, is_unsafe_link, walk_repo
 from .models import WorkflowIssue
+from .srcpaths import split_lines
 
 # A pinned action ref is a full 40-hex commit SHA. Anything else is "unpinned".
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -260,7 +261,7 @@ def scan_workflows(root: str | Path) -> list[WorkflowIssue]:
             continue
         data, text = _load_yaml(path, yaml)
         if data is not None:
-            issues.extend(_scan_action(data, path.relative_to(root_path).as_posix(), text.splitlines()))
+            issues.extend(_scan_action(data, path.relative_to(root_path).as_posix(), split_lines(text)))
 
     workflows_dir = root_path / ".github" / "workflows"
     if not workflows_dir.is_dir() or not is_contained(root_path, workflows_dir):
@@ -282,7 +283,7 @@ def scan_workflows(root: str | Path) -> list[WorkflowIssue]:
         if not isinstance(data, dict):
             continue
         rel = str(path.relative_to(root_path))
-        lines = text.splitlines()
+        lines = split_lines(text)
         issues.extend(_scan_one(data, rel, lines))
     return issues
 

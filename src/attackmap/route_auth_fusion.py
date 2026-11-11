@@ -36,7 +36,7 @@ from pathlib import Path
 
 from .handler_auth import handler_body, mask, session_gate
 from .safe_fs import read_repo_text, walk_repo
-from .srcpaths import JS_TS_SUFFIXES
+from .srcpaths import JS_TS_SUFFIXES, split_lines
 from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
 
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -330,7 +330,7 @@ def _read(root: Path, rel: str, cache: dict[str, str | None]) -> str | None:
 def resolve_control(route: Route, content: str, java_global_auth: bool) -> str | None:
     """Return a short description of the control guarding `route`, or None."""
     suffix = Path(route.file).suffix.lower()
-    lines = content.splitlines()
+    lines = split_lines(content)
     if suffix in _JS_SUFFIXES:
         return _resolve_js(route, content, lines)
     if suffix in _PY_SUFFIXES:

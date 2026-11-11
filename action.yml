@@ -28,6 +28,17 @@ inputs:
     description: "Fail the job if the diff introduces new HIGH-severity findings (requires baseline)."
     required: false
     default: "false"
+  fail-on-new-suppression:
+    description: >-
+      Fail the job when a finding that was active in the baseline is suppressed in this run,
+      i.e. a suppression's scope or expiry grew between the two scans (requires baseline).
+      On by default as defence in depth: on pull requests it catches a silenced finding even
+      when the way it was silenced is not one AttackMap knows about. It fails on any severity,
+      not only HIGH, and it will fail legitimate changes too (an entry widened on the base
+      branch, an expiry extended in the PR) until they are re-trusted on the base. Set to
+      'false' only if you accept that a PR could silence a finding without failing the check.
+    required: false
+    default: "true"
   output:
     description: "Directory for generated reports. Defaults to $RUNNER_TEMP/attackmap-reports, outside the checkout, so a PR can't plant files or symlinks there."
     required: false
@@ -85,6 +96,7 @@ runs:
         ATTACKMAP_OUTPUT: ${{ inputs.output }}
         ATTACKMAP_BASELINE: ${{ inputs.baseline }}
         ATTACKMAP_FAIL_ON_NEW_HIGH: ${{ inputs.fail-on-new-high }}
+        ATTACKMAP_FAIL_ON_NEW_SUPPRESSION: ${{ inputs.fail-on-new-suppression }}
         ATTACKMAP_CVE: ${{ inputs.cve }}
         ATTACKMAP_ALLOW_PR_SUPPRESSIONS: ${{ inputs.allow-pr-suppressions }}
       run: |
@@ -96,6 +108,13 @@ runs:
               --pr-comment "$out/pr-comment.md")
         [ -n "$ATTACKMAP_BASELINE" ] && args+=(--baseline "$ATTACKMAP_BASELINE")
         [ "$ATTACKMAP_FAIL_ON_NEW_HIGH" = "true" ] && args+=(--fail-on-new-high)
+        if [ -n "$ATTACKMAP_BASELINE" ]; then
+          if [ "$ATTACKMAP_FAIL_ON_NEW_SUPPRESSION" = "true" ]; then
+            args+=(--fail-on-new-suppression)
+          else
+            echo "::warning::fail-on-new-suppression is off: a change that silences a baseline finding (any severity) will not fail this check. Newly suppressed findings are still listed in the PR comment."
+          fi
+        fi
         [ "$ATTACKMAP_CVE" = "true" ] && args+=(--cve)
         # On pull requests, trust only suppressions that already exist on the
         # base branch: a PR must not be able to silence its own findings.

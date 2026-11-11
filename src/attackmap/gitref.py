@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 from .safe_fs import UnsafePathError, read_repo_text
+from .srcpaths import split_lines
 
 
 class GitRefError(RuntimeError):
@@ -95,13 +96,13 @@ def added_lines(root: Path, ref: str, rel: str) -> set[int]:
     `--no-ext-diff` don't disable, so a scanned repo could execute code.
     """
     try:
-        current = read_repo_text(root, rel, errors="replace").splitlines()
+        current = split_lines(read_repo_text(root, rel, errors="replace"))
     except (OSError, UnsafePathError):
         return set()
     previous = show_file(root, ref, rel)
     if previous is None:
         return set(range(1, len(current) + 1))  # new since ref (or untracked)
-    matcher = difflib.SequenceMatcher(None, previous.splitlines(), current, autojunk=False)
+    matcher = difflib.SequenceMatcher(None, split_lines(previous), current, autojunk=False)
     lines: set[int] = set()
     for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
         if tag in ("replace", "insert"):
