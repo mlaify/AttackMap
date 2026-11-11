@@ -97,25 +97,79 @@ def defang_markdown(markdown: str) -> str:
     return "".join(out)
 
 
-_HTML_TAG = re.compile(r"</?[A-Za-z][^>\n]*>|<!--.*?-->", re.DOTALL)
+# CommonMark allows line endings inside an HTML tag, so the tag pattern must
+# not stop at a newline; a reference-link definition is `[label]: url` at the
+# start of a line; a protocol-relative `//host/x` destination has no scheme
+# for _AUTOLINK to break.
+_HTML_TAG = re.compile(r"</?[A-Za-z][^<>]*>|<!--.*?-->", re.DOTALL)
 _MD_IMAGE = re.compile(r"!\[([^\]\n]*)\]\(([^)\n]*)\)")
 _MD_LINK = re.compile(r"(?<!!)\[([^\]\n]+)\]\(([^)\n]*)\)")
+_REF_DEFINITION = re.compile(r"^([ \t]{0,3})\[(?=[^\]]*\]:)", re.MULTILINE)
+_PROTOCOL_RELATIVE = re.compile(r"(?<![\w:/\\;])//(?=[A-Za-z0-9\[])")
+_FENCE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<fence>`{3,}|~{3,})", re.MULTILINE)
+
+
+def _sanitize_prose(text: str) -> str:
+    """One stretch of LLM Markdown outside fenced code blocks and code spans."""
+    text = _HTML_TAG.sub("", text)
+    text = _MD_IMAGE.sub(lambda m: f"[image removed: {m.group(1)}]", text)
+    text = _MD_LINK.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
+    # Whatever link syntax the two patterns above did not recognise (an
+    # escaped `]` or a newline in the text, nested brackets, a reference
+    # definition) is neutralised in place rather than parsed.
+    text = _RAW_IMAGE.sub(r"\\![", text)
+    text = _RAW_LINK.sub(r"]\\(", text)
+    text = _REF_DEFINITION.sub(r"\1\\[", text)
+    text = _MENTION.sub("@" + _ZWSP, text)
+    text = _AUTOLINK.sub(lambda m: f"{m.group(1)}:{_ZWSP}//", text)
+    return _PROTOCOL_RELATIVE.sub(f"/{_ZWSP}/", text)
+
+
+def _sanitize_outside_code_spans(text: str) -> str:
+    out: list[str] = []
+    pos = 0
+    for match in _CODE_SPAN.finditer(text):
+        out.append(_sanitize_prose(text[pos : match.start()]))
+        out.append(match.group(0))
+        pos = match.end()
+    out.append(_sanitize_prose(text[pos:]))
+    return "".join(out)
+
+
+def _split_fences(text: str) -> list[tuple[bool, str]]:
+    """``(is_code, chunk)`` pairs: fenced code blocks (``` or ~~~, closed by a
+    fence of the same character at least as long, or by the end of the text)
+    are returned verbatim so their contents are never rewritten."""
+    chunks: list[tuple[bool, str]] = []
+    pos = 0
+    while True:
+        opening = _FENCE.search(text, pos)
+        if opening is None:
+            break
+        fence = opening.group("fence")
+        closer = re.compile(rf"^[ \t]{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}[ \t]*$", re.MULTILINE)
+        closing = closer.search(text, opening.end())
+        end = len(text) if closing is None else closing.end()
+        chunks.append((False, text[pos : opening.start()]))
+        chunks.append((True, text[opening.start() : end]))
+        pos = end
+    chunks.append((False, text[pos:]))
+    return chunks
 
 
 def sanitize_llm_markdown(markdown: str, *, max_chars: int = 200_000) -> str:
     """Defang Markdown written by an LLM that read untrusted repo content.
 
-    Raw HTML is removed, images are dropped, links become ``text (url)``
-    plain text with the URL defanged, mentions are broken, and invisible
-    characters are shown escaped. Headings, lists, emphasis and code are
-    kept, since that is the report's structure.
+    Outside fenced code blocks and code spans: raw HTML is removed, images
+    are dropped, links become ``text (url)`` plain text with the URL
+    defanged, every other link, image or reference-definition syntax is
+    escaped in place, mentions are broken, and absolute and
+    protocol-relative URLs are defanged. Invisible characters are shown
+    escaped everywhere. Headings, lists, emphasis and code are kept, since
+    that is the report's structure; code is kept verbatim.
     """
     text = _visible(markdown[:max_chars])
-    text = _HTML_TAG.sub("", text)
-    text = _MD_IMAGE.sub(lambda m: f"[image removed: {m.group(1)}]", text)
-    text = _MD_LINK.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
-    text = _MENTION.sub("@" + _ZWSP, text)
-    text = _AUTOLINK.sub(lambda m: f"{m.group(1)}:{_ZWSP}//", text)
+    text = "".join(chunk if is_code else _sanitize_outside_code_spans(chunk) for is_code, chunk in _split_fences(text))
     if len(markdown) > max_chars:
         text += "\n\n_[output truncated]_\n"
     return text
