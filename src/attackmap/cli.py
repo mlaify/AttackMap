@@ -59,6 +59,9 @@ from .report import OUTPUT_FORMATS, render_console_summary, render_pr_comment, w
 from .suggest import detect_ecosystems
 from .gitref import GitRefError
 from .suppress import apply_suppressions, collect_suppressions
+from .gitref import untrusted_output_markers
+from .safe_fs import set_untrusted_output_markers
+from .scanner import EXCLUDED_DIR_LIMITATION
 
 app = typer.Typer(help="AttackMap: understand your system and map your attack surface.")
 
@@ -109,6 +112,31 @@ def _warn_if_nothing_scanned(scan) -> None:  # type: ignore[no-untyped-def]
             "unsupported language.",
             err=True,
         )
+
+
+def _distrust_pr_markers(repo_path: Path, ref: str | None, output_dir: Path) -> None:
+    """Under --suppress-from-ref, an `.attackmap-output` marker that is not at
+    the ref was added by the PR: it must not exclude its directory from the
+    scan (GHSA-j544-8x8g-c3mw). The run's own output directory is trusted."""
+    if ref is None:
+        set_untrusted_output_markers(())
+        return
+    untrusted = untrusted_output_markers(repo_path, ref, keep_under=[output_dir])
+    for rel in untrusted:
+        typer.echo(
+            f"Scan warning: output marker {rel.as_posix()} was added since {ref}; "
+            "its directory is scanned anyway",
+            err=True,
+        )
+    set_untrusted_output_markers(repo_path / rel for rel in untrusted)
+
+
+def _excluded_dirs(scan) -> list[str]:  # noqa: ANN001
+    return [
+        note[len(EXCLUDED_DIR_LIMITATION):]
+        for note in getattr(scan, "limitations", [])
+        if note.startswith(EXCLUDED_DIR_LIMITATION)
+    ]
 
 
 def _ensure_output_dir(path: Path, *, mark: bool = False) -> Path:
@@ -304,6 +332,7 @@ def _run_fleet(
             )
             _echo_opt_in_hint(opt_in_matches)
             scan_progress = create_progress(progress_format, no_progress=no_progress)
+            _distrust_pr_markers(repo_path, suppress_from_ref, output_root)
             scan = analyze_repository(
                 repo_path,
                 analyzers=active_analyzers,
@@ -577,7 +606,7 @@ def analyze(
     fail_on_new_suppression: bool = typer.Option(
         False,
         "--fail-on-new-suppression",
-        help="Exit non-zero if a finding active in the baseline is suppressed in this run (e.g. a suppression added by the PR). Requires --baseline.",
+        help="Exit non-zero if a finding active in the baseline is suppressed in this run (e.g. a suppression added by the PR), or excluded from it by an .attackmap-output marker. Requires --baseline.",
     ),
     secrets_history: int = typer.Option(
         0,
@@ -715,6 +744,7 @@ def analyze(
     )
     _echo_opt_in_hint(opt_in_matches)
     scan_progress = create_progress(progress_format, no_progress=no_progress)
+    _distrust_pr_markers(repo_path, suppress_from_ref, Path(output))
     scan = analyze_repository(
         repo_path,
         analyzers=active_analyzers,
@@ -870,6 +900,7 @@ def analyze(
             baseline_snapshots,
             current_snapshots,
             suppressed=[FindingSnapshot.from_finding(s.finding) for s in suppressed_findings],
+            excluded_dirs=_excluded_dirs(scan),
         )
         counts = diff.counts()
         typer.echo("")
@@ -877,7 +908,8 @@ def analyze(
             f"Diff vs baseline: {counts['new']} new, "
             f"{counts['new_instances']} new instance(s) of existing findings, "
             f"{counts['persisted']} persisted, {counts['resolved']} resolved, "
-            f"{counts['newly_suppressed']} newly suppressed."
+            f"{counts['newly_suppressed']} newly suppressed"
+            + (f", {counts['newly_excluded']} newly excluded from the scan." if diff.newly_excluded else ".")
         )
         if diff.baseline_without_instances:
             typer.echo(
@@ -909,6 +941,16 @@ def analyze(
                 err=True,
             )
             for s_ in diff.newly_suppressed:
+                typer.echo(f"  - [{s_.severity.upper()}] {s_.title}", err=True)
+            diff_exit_code = 1
+        if fail_on_new_suppression and diff.newly_excluded:
+            typer.echo("", err=True)
+            typer.echo(
+                "Findings newly excluded from the scan by an output marker "
+                "(failing per --fail-on-new-suppression):",
+                err=True,
+            )
+            for s_ in diff.newly_excluded:
                 typer.echo(f"  - [{s_.severity.upper()}] {s_.title}", err=True)
             diff_exit_code = 1
 

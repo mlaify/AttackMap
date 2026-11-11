@@ -1,0 +1,200 @@
+From 4fb7219a70e07f54059eaafe4c56d85cf2b31f68 Mon Sep 17 00:00:00 2001
+From: "mlaify-agent (Claude)" <mlaify-agent@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:38:32 +0000
+Subject: [PATCH 1/3] Inline suppressions: a base directive doesn't cover a
+ line the PR added
+
+With --suppress-from-ref, an inline directive was trusted whenever its own
+line already existed at the ref, but it also covers the line below it. A
+PR could insert or change that line and have its new finding suppressed
+as trusted, so --fail-on-new-high stayed green. A trusted directive now
+skips the line below it when that line was added since the ref, with a
+warning; --allow-pr-suppressions keeps the old behaviour.
+
+Regression tests: a line inserted below, and the covered line changed,
+both fail the gate; an unchanged covered line stays suppressed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/attackmap/suppress.py            | 50 ++++++++++++++++++++++---
+ tests/test_suppression_governance.py | 56 ++++++++++++++++++++++++++++
+ 2 files changed, 100 insertions(+), 6 deletions(-)
+
+diff --git a/src/attackmap/suppress.py b/src/attackmap/suppress.py
+index f600972..8b75771 100644
+--- a/src/attackmap/suppress.py
++++ b/src/attackmap/suppress.py
+@@ -41,7 +41,10 @@ Entries past ``expires`` are not applied and are warned about
+ (``--strict-suppressions`` makes that exit 2). With
+ ``--suppress-from-ref <ref>`` (the GitHub Action passes the PR's base branch),
+ only entries that already exist at ``<ref>`` apply; ones added since are
+-reported as *pending* (``--allow-pr-suppressions`` applies them anyway).
++reported as *pending* (``--allow-pr-suppressions`` applies them anyway). An
++inline directive that exists at ``<ref>`` doesn't cover the line below it if
++that line was added or changed since: a PR can't place new code under an
++existing directive.
+ 
+ ## 2. Inline directives
+ 
+@@ -80,7 +83,7 @@ from __future__ import annotations
+ from datetime import date, datetime
+ 
+ import re
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, replace
+ from pathlib import Path
+ 
+ from .srcpaths import evidence_locations
+@@ -204,6 +207,11 @@ class Suppression:
+     # the line below; `attackmap:ignore-file` (and suppress-file `path:`
+     # entries) leave this None and cover the whole file.
+     line: int | None = None
++    # Lines this directive must not cover: lines added since the trusted ref
++    # (#238). A directive already on the base branch covers the line below
++    # it, but a PR that adds or changes that line must not inherit the
++    # suppression.
++    untrusted_lines: frozenset[int] = frozenset()
+     # Governance metadata (#238). An entry past `expires` is not applied.
+     expires: date | None = None
+     owner: str | None = None
+@@ -341,7 +349,12 @@ class SuppressionSet:
+             covering = None
+             for sup in candidates:
+                 if sup.line is not None:
+-                    if file == sup.path and line is not None and line in (sup.line, sup.line + 1):
++                    if (
++                        file == sup.path
++                        and line is not None
++                        and line in (sup.line, sup.line + 1)
++                        and line not in sup.untrusted_lines
++                    ):
+                         covering = sup
+                         break
+                 elif _glob_match(file, sup.path or ""):
+@@ -645,6 +658,23 @@ def _selector_key(sup: Suppression) -> tuple:
+     return (sup.id, sup.rule and rule_slug(sup.rule), sup.path, sup.line)
+ 
+ 
++def _narrow_to_trusted_lines(
++    sup: Suppression, added_by_file: dict[str, set[int]], trusted_ref: str, warnings: list[str]
++) -> Suppression:
++    """``sup`` minus coverage of the line below it when that line was added
++    since ``trusted_ref``, with a warning saying so."""
++    if sup.line is None:
++        return sup
++    untrusted = {sup.line + 1} & added_by_file.get(sup.path or "", set())
++    if not untrusted:
++        return sup
++    warnings.append(
++        f"inline attackmap:ignore at {sup.source} doesn't cover line {sup.line + 1}: "
++        f"added since {trusted_ref}, so the suppression isn't extended to it"
++    )
++    return replace(sup, untrusted_lines=frozenset(untrusted))
++
++
+ def collect_suppressions(
+     root: Path,
+     findings: list[Finding],
+@@ -660,7 +690,10 @@ def collect_suppressions(
+     git ref (the PR's base) take effect. Entries added or changed since, and
+     inline directives on lines added since, are *pending*: reported on the
+     returned set's ``pending`` list and not applied, unless
+-    ``allow_pr_suppressions``. Expired entries are never applied.
++    ``allow_pr_suppressions``. An inline directive that is itself trusted
++    still doesn't cover a line added since (the line below it): the
++    suppression would otherwise extend to code the PR wrote. Expired entries
++    are never applied.
+     """
+     warnings: list[str] = []
+     suppressions = load_suppress_file(root, warnings, explicit=explicit_file)
+@@ -684,13 +717,18 @@ def collect_suppressions(
+         for sup in inline:
+             if sup.path not in added_by_file:
+                 added_by_file[sup.path or ""] = added_lines(root, trusted_ref, sup.path or "")
++            added = added_by_file[sup.path or ""]
+             directive_line = int(sup.source.rsplit(":", 1)[1]) if ":" in sup.source else None
+-            if directive_line in added_by_file[sup.path or ""]:
++            if directive_line in added:
+                 pending.append(sup)
+         if not allow_pr_suppressions:
+             pending_ids = {id(s) for s in pending}
+             suppressions = [s for s in suppressions if id(s) not in pending_ids]
+-            inline = [s for s in inline if id(s) not in pending_ids]
++            inline = [
++                _narrow_to_trusted_lines(s, added_by_file, trusted_ref, warnings)
++                for s in inline
++                if id(s) not in pending_ids
++            ]
+ 
+     live, expired = drop_expired(suppressions + inline, warnings)
+     suppset = SuppressionSet(live)
+diff --git a/tests/test_suppression_governance.py b/tests/test_suppression_governance.py
+index 1664808..960b062 100644
+--- a/tests/test_suppression_governance.py
++++ b/tests/test_suppression_governance.py
+@@ -103,6 +103,62 @@ def test_inline_directive_added_by_the_pr_is_pending(tmp_path: Path) -> None:
+     assert "NOT applied" in _flat(result.output)
+ 
+ 
++SECRET_2 = "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
++DIRECTIVE = "# attackmap:ignore[hardcoded-secret] legacy fixture\n"
++
++
++def _gate(repo: Path, tmp_path: Path, pr_body: str, *extra: str):
++    """Baseline from the committed base, then the PR's app.py through the
++    --fail-on-new-high gate with suppressions trusted only from `base`."""
++    _, base_report = _run(repo, tmp_path / "base")
++    assert base_report is not None
++    (repo / "app.py").write_text(pr_body, encoding="utf-8")
++    return _run(
++        repo, tmp_path / "pr", "--suppress-from-ref", "base",
++        "--baseline", str(tmp_path / "base" / "attackmap-report.json"), "--fail-on-new-high", *extra,
++    )
++
++
++@needs_git
++def test_base_directive_does_not_cover_a_line_the_pr_inserts_below_it(tmp_path: Path) -> None:
++    repo = tmp_path / "repo"
++    _init(repo, {"app.py": f"import os\n{DIRECTIVE}DEBUG = True\n"})
++    result, report = _gate(repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nDEBUG = True\n')
++    assert "hardcoded-secret" in _rules(report)
++    assert result.exit_code == 1, result.output
++    assert "doesn't cover line 3: added since base" in _flat(result.output)
++
++
++@needs_git
++def test_base_directive_does_not_cover_a_line_the_pr_changes(tmp_path: Path) -> None:
++    repo = tmp_path / "repo"
++    _init(repo, {"app.py": f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\n'})
++    result, report = _gate(repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET_2}"\n')
++    assert "hardcoded-secret" in _rules(report)
++    assert result.exit_code == 1, result.output
++
++
++@needs_git
++def test_base_directive_still_covers_its_unchanged_line(tmp_path: Path) -> None:
++    repo = tmp_path / "repo"
++    _init(repo, {"app.py": f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\n'})
++    result, report = _gate(repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nDEBUG = False\n')
++    assert "hardcoded-secret" not in _rules(report)
++    assert result.exit_code == 0, result.output
++    assert "doesn't cover line" not in _flat(result.output)
++
++
++@needs_git
++def test_allow_pr_suppressions_still_extends_a_base_directive(tmp_path: Path) -> None:
++    repo = tmp_path / "repo"
++    _init(repo, {"app.py": f"import os\n{DIRECTIVE}DEBUG = True\n"})
++    result, report = _gate(
++        repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nDEBUG = True\n', "--allow-pr-suppressions"
++    )
++    assert "hardcoded-secret" not in _rules(report)
++    assert result.exit_code == 0, result.output
++
++
+ @needs_git
+ def test_unknown_ref_is_a_clear_error(tmp_path: Path) -> None:
+     repo = tmp_path / "repo"
+-- 
+2.53.0
+

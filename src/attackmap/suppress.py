@@ -41,7 +41,10 @@ Entries past ``expires`` are not applied and are warned about
 (``--strict-suppressions`` makes that exit 2). With
 ``--suppress-from-ref <ref>`` (the GitHub Action passes the PR's base branch),
 only entries that already exist at ``<ref>`` apply; ones added since are
-reported as *pending* (``--allow-pr-suppressions`` applies them anyway).
+reported as *pending* (``--allow-pr-suppressions`` applies them anyway). An
+inline directive that exists at ``<ref>`` doesn't cover the line below it if
+that line was added or changed since: a PR can't place new code under an
+existing directive.
 
 ## 2. Inline directives
 
@@ -80,10 +83,10 @@ from __future__ import annotations
 from datetime import date, datetime
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .srcpaths import evidence_locations
+from .srcpaths import evidence_locations, split_lines
 from .gitref import added_lines, show_file, validate_ref
 from .safe_fs import contained_file, read_repo_text
 from .diff import finding_id
@@ -204,6 +207,11 @@ class Suppression:
     # the line below; `attackmap:ignore-file` (and suppress-file `path:`
     # entries) leave this None and cover the whole file.
     line: int | None = None
+    # Lines this directive must not cover: lines added since the trusted ref
+    # (#238). A directive already on the base branch covers the line below
+    # it, but a PR that adds or changes that line must not inherit the
+    # suppression.
+    untrusted_lines: frozenset[int] = frozenset()
     # Governance metadata (#238). An entry past `expires` is not applied.
     expires: date | None = None
     owner: str | None = None
@@ -341,7 +349,12 @@ class SuppressionSet:
             covering = None
             for sup in candidates:
                 if sup.line is not None:
-                    if file == sup.path and line is not None and line in (sup.line, sup.line + 1):
+                    if (
+                        file == sup.path
+                        and line is not None
+                        and line in (sup.line, sup.line + 1)
+                        and line not in sup.untrusted_lines
+                    ):
                         covering = sup
                         break
                 elif _glob_match(file, sup.path or ""):
@@ -609,7 +622,7 @@ def scan_inline_suppressions(
             text = file_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for lineno, line in enumerate(text.splitlines(), start=1):
+        for lineno, line in enumerate(split_lines(text), start=1):
             if "attackmap:ignore" not in line.lower():
                 continue
             match = INLINE_DIRECTIVE.search(line)
@@ -642,7 +655,26 @@ def scan_inline_suppressions(
 
 
 def _selector_key(sup: Suppression) -> tuple:
-    return (sup.id, sup.rule and rule_slug(sup.rule), sup.path, sup.line)
+    # `expires` is part of the key: a PR that extends or removes the expiry of a
+    # base-trusted entry would otherwise revive it silently (GHSA-677m-4884-vg22).
+    return (sup.id, sup.rule and rule_slug(sup.rule), sup.path, sup.line, sup.expires)
+
+
+def _narrow_to_trusted_lines(
+    sup: Suppression, added_by_file: dict[str, set[int]], trusted_ref: str, warnings: list[str]
+) -> Suppression:
+    """``sup`` minus coverage of the line below it when that line was added
+    since ``trusted_ref``, with a warning saying so."""
+    if sup.line is None:
+        return sup
+    untrusted = {sup.line + 1} & added_by_file.get(sup.path or "", set())
+    if not untrusted:
+        return sup
+    warnings.append(
+        f"inline attackmap:ignore at {sup.source} doesn't cover line {sup.line + 1}: "
+        f"added since {trusted_ref}, so the suppression isn't extended to it"
+    )
+    return replace(sup, untrusted_lines=frozenset(untrusted))
 
 
 def collect_suppressions(
@@ -660,7 +692,10 @@ def collect_suppressions(
     git ref (the PR's base) take effect. Entries added or changed since, and
     inline directives on lines added since, are *pending*: reported on the
     returned set's ``pending`` list and not applied, unless
-    ``allow_pr_suppressions``. Expired entries are never applied.
+    ``allow_pr_suppressions``. An inline directive that is itself trusted
+    still doesn't cover a line added since (the line below it): the
+    suppression would otherwise extend to code the PR wrote. Expired entries
+    are never applied.
     """
     warnings: list[str] = []
     suppressions = load_suppress_file(root, warnings, explicit=explicit_file)
@@ -684,13 +719,18 @@ def collect_suppressions(
         for sup in inline:
             if sup.path not in added_by_file:
                 added_by_file[sup.path or ""] = added_lines(root, trusted_ref, sup.path or "")
+            added = added_by_file[sup.path or ""]
             directive_line = int(sup.source.rsplit(":", 1)[1]) if ":" in sup.source else None
-            if directive_line in added_by_file[sup.path or ""]:
+            if directive_line in added:
                 pending.append(sup)
         if not allow_pr_suppressions:
             pending_ids = {id(s) for s in pending}
             suppressions = [s for s in suppressions if id(s) not in pending_ids]
-            inline = [s for s in inline if id(s) not in pending_ids]
+            inline = [
+                _narrow_to_trusted_lines(s, added_by_file, trusted_ref, warnings)
+                for s in inline
+                if id(s) not in pending_ids
+            ]
 
     live, expired = drop_expired(suppressions + inline, warnings)
     suppset = SuppressionSet(live)

@@ -103,6 +103,119 @@ def test_inline_directive_added_by_the_pr_is_pending(tmp_path: Path) -> None:
     assert "NOT applied" in _flat(result.output)
 
 
+SECRET_2 = "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
+DIRECTIVE = "# attackmap:ignore[hardcoded-secret] legacy fixture\n"
+
+
+def _gate(repo: Path, tmp_path: Path, pr_body: str, *extra: str):
+    """Baseline from the committed base, then the PR's app.py through the
+    --fail-on-new-high gate with suppressions trusted only from `base`."""
+    _, base_report = _run(repo, tmp_path / "base")
+    assert base_report is not None
+    (repo / "app.py").write_text(pr_body, encoding="utf-8")
+    return _run(
+        repo, tmp_path / "pr", "--suppress-from-ref", "base",
+        "--baseline", str(tmp_path / "base" / "attackmap-report.json"), "--fail-on-new-high", *extra,
+    )
+
+
+@needs_git
+def test_base_directive_does_not_cover_a_line_the_pr_inserts_below_it(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo, {"app.py": f"import os\n{DIRECTIVE}DEBUG = True\n"})
+    result, report = _gate(repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nDEBUG = True\n')
+    assert "hardcoded-secret" in _rules(report)
+    assert result.exit_code == 1, result.output
+    assert "doesn't cover line 3: added since base" in _flat(result.output)
+
+
+@needs_git
+def test_base_directive_does_not_cover_a_line_the_pr_changes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo, {"app.py": f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\n'})
+    result, report = _gate(repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET_2}"\n')
+    assert "hardcoded-secret" in _rules(report)
+    assert result.exit_code == 1, result.output
+
+
+@needs_git
+def test_base_directive_still_covers_its_unchanged_line(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo, {"app.py": f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\n'})
+    result, report = _gate(repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nDEBUG = False\n')
+    assert "hardcoded-secret" not in _rules(report)
+    assert result.exit_code == 0, result.output
+    assert "doesn't cover line" not in _flat(result.output)
+
+
+@needs_git
+def test_allow_pr_suppressions_still_extends_a_base_directive(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init(repo, {"app.py": f"import os\n{DIRECTIVE}DEBUG = True\n"})
+    result, report = _gate(
+        repo, tmp_path, f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nDEBUG = True\n', "--allow-pr-suppressions"
+    )
+    assert "hardcoded-secret" not in _rules(report)
+    assert result.exit_code == 0, result.output
+
+
+@needs_git
+@pytest.mark.parametrize("splitter", ["\x0c", "\u2028", "\x0b", "\x85"], ids=["form-feed", "u2028", "vtab", "nel"])
+def test_line_splitting_character_cannot_shift_a_base_directive(tmp_path: Path, splitter: str) -> None:
+    """GHSA-677m-4884-vg22: directives and the trust check counted lines with
+    str.splitlines(), findings with "\n" only. One form feed (or U+2028, ...)
+    in a comment above a trusted directive shifted the directive by one line
+    in the suppression view, onto the line the PR added below the covered one."""
+    repo = tmp_path / "repo"
+    _init(repo, {"app.py": f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nx = 1\n'})
+    result, report = _gate(
+        repo, tmp_path, f'import os\n# {splitter} harmless\n{DIRECTIVE}TOKEN = "{SECRET}"\nSTRIPE = "{SECRET_2}"\nx = 1\n'
+    )
+    assert "hardcoded-secret" in _rules(report)
+    assert result.exit_code == 1, result.output
+    # The directive on physical line 3 still covers the old token on line 4;
+    # only the PR's line 5 is active.
+    finding = next(f for f in report["findings"] if f["rule_id"] == "hardcoded-secret")
+    assert {loc["line"] for loc in finding["locations"]} == {5}, finding["locations"]
+
+
+def _expiry_gate(tmp_path: Path, edit) -> tuple:
+    """Base: an expired suppress-file entry over src/ and the secret it used to
+    cover. PR: `edit` rewrites the suppress file and adds a second secret."""
+    past = (date.today() - timedelta(days=30)).isoformat()
+    repo = tmp_path / "repo"
+    _init(repo, {
+        "src/app.py": f'AWS_KEY = "{SECRET}"\n',
+        ".attackmap-suppress.yaml": f"suppress:\n  - rule: hardcoded-secret\n    reason: legacy\n    paths: ['src/**']\n    expires: {past}\n",
+    })
+    _, base_report = _run(repo, tmp_path / "base")
+    assert "hardcoded-secret" in _rules(base_report)
+    (repo / ".attackmap-suppress.yaml").write_text(edit((repo / ".attackmap-suppress.yaml").read_text()), encoding="utf-8")
+    (repo / "src" / "new.py").write_text(f'TOKEN = "{SECRET_2}"\n', encoding="utf-8")
+    return _run(
+        repo, tmp_path / "pr", "--suppress-from-ref", "base",
+        "--baseline", str(tmp_path / "base" / "attackmap-report.json"), "--fail-on-new-high",
+    )
+
+
+@needs_git
+def test_pr_cannot_extend_the_expiry_of_a_trusted_entry(tmp_path: Path) -> None:
+    """GHSA-677m-4884-vg22: `expires` wasn't part of the trusted key, so a PR
+    could set it to 2099 on an expired base entry and silence the rule again."""
+    result, report = _expiry_gate(tmp_path, lambda y: y.replace("expires: 2", "expires: 2099-01-01\n    # was 2"))
+    assert "hardcoded-secret" in _rules(report)
+    assert result.exit_code == 1, result.output
+    assert "added since base" in _flat(result.output)
+
+
+@needs_git
+def test_pr_cannot_remove_the_expiry_of_a_trusted_entry(tmp_path: Path) -> None:
+    result, report = _expiry_gate(tmp_path, lambda y: "\n".join(l for l in y.splitlines() if "expires" not in l) + "\n")
+    assert "hardcoded-secret" in _rules(report)
+    assert result.exit_code == 1, result.output
+    assert "added since base" in _flat(result.output)
+
+
 @needs_git
 def test_unknown_ref_is_a_clear_error(tmp_path: Path) -> None:
     repo = tmp_path / "repo"

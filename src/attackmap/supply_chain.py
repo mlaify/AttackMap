@@ -42,7 +42,7 @@ from pathlib import Path
 from .models import DependencyHint, SupplyChainIssue
 from .popular_packages import BY_ECOSYSTEM
 from .safe_fs import is_oversized, is_unsafe_link, walk_repo
-from .srcpaths import is_test_file
+from .srcpaths import is_test_file, split_lines
 
 _MAX_DEPTH = 4
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv", "target", "vendor"}
@@ -68,7 +68,7 @@ def _pep503(name: str) -> str:
 
 
 def _line_of(text: str, needle: str) -> int | None:
-    for idx, line in enumerate(text.splitlines(), start=1):
+    for idx, line in enumerate(split_lines(text), start=1):
         if needle in line:
             return idx
     return None
@@ -221,7 +221,7 @@ def _scan_npmrc(path: Path, rel: str, out: _Collector, ctx: _RegistryContext) ->
     text = _read(path)
     if text is None:
         return
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(split_lines(text), start=1):
         line = raw.strip()
         if not line or line.startswith(("#", ";")) or "=" not in line:
             continue
@@ -243,7 +243,7 @@ def _scan_yarnrc(path: Path, rel: str, out: _Collector) -> None:
     text = _read(path)
     if text is None:
         return
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(split_lines(text), start=1):
         line = raw.strip().replace('"', "").replace("'", "")
         lowered = line.lower()
         if lowered.startswith(("npmregistryserver:", "registry ", "registry:")):
@@ -313,7 +313,7 @@ def _scan_requirements(path: Path, rel: str, out: _Collector, ctx: _RegistryCont
     text = _read(path)
     if text is None:
         return
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(split_lines(text), start=1):
         line = re.sub(r"(^|\s)#.*$", "", raw).strip()
         if not line:
             continue
@@ -534,7 +534,7 @@ def _scan_go_mod(root: Path, path: Path, rel: str, out: _Collector) -> None:
     if text is None:
         return
     in_block = False
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(split_lines(text), start=1):
         line = raw.split("//", 1)[0].strip()
         if line.startswith("replace") and line.endswith("("):
             in_block = True

@@ -1,0 +1,483 @@
+From f7cdaf18ee4e1397d3dfe01caad14f7233cfcdf0 Mon Sep 17 00:00:00 2001
+From: "mlaify-agent (Claude)" <mlaify-agent@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 18:09:28 +0000
+Subject: [PATCH 2/3] Suppressions: one line convention, and `expires` is part
+ of the trusted key
+
+Two more ways a pull request could silence its own finding under
+--suppress-from-ref (GHSA-677m-4884-vg22), found while fixing the
+adjacent-line case:
+
+- Findings count lines with "\n" only (srcpaths.line_number), but inline
+  directives and gitref.added_lines used str.splitlines(), which also
+  breaks on \x0c, \x0b, \x1c-\x1e, \x85, U+2028 and U+2029. One such
+  character in a comment above a base-trusted directive shifted the
+  directive by one line in the suppression view only, onto the line the
+  PR added below the covered one; the new finding was suppressed and the
+  gate stayed green. New srcpaths.split_lines() is the single convention;
+  suppress.py, gitref.py and fingerprint.py use it, and so do the
+  detectors and helpers that number or index lines (supply_chain, sbom,
+  workflow_scanner, webhook_verification, route_auth_fusion, taint), so a
+  directive always covers the line it sits above.
+- _selector_key ignored `expires`, so a PR could set a base entry's
+  expiry to 2099, or delete it, and the expired entry was applied again
+  with no warning. `expires` is now part of the key: an edited expiry is
+  "changed since the ref" and pending.
+
+action.yml gains an opt-in `fail-on-new-suppression` input that passes
+--fail-on-new-suppression, which catches a baseline-active finding
+becoming suppressed by any route.
+
+Tests: a parametrized gate test with a form feed, U+2028, \x0b and \x85
+comment above a trusted directive, and two expiry tests (extended,
+removed).
+
+Co-Authored-By: Claude Mythos 5.1 <noreply@anthropic.com>
+---
+ action.yml                            |  6 +++
+ src/attackmap/fingerprint.py          |  3 +-
+ src/attackmap/gitref.py               |  5 ++-
+ src/attackmap/route_auth_fusion.py    |  4 +-
+ src/attackmap/sbom.py                 |  5 ++-
+ src/attackmap/srcpaths.py             | 21 ++++++++++
+ src/attackmap/supply_chain.py         | 12 +++---
+ src/attackmap/suppress.py             |  8 ++--
+ src/attackmap/taint.py                |  4 +-
+ src/attackmap/webhook_verification.py | 12 +++---
+ src/attackmap/workflow_scanner.py     |  5 ++-
+ tests/test_suppression_governance.py  | 57 +++++++++++++++++++++++++++
+ 12 files changed, 116 insertions(+), 26 deletions(-)
+
+diff --git a/action.yml b/action.yml
+index fd7bf1c..293780a 100644
+--- a/action.yml
++++ b/action.yml
+@@ -28,6 +28,10 @@ inputs:
+     description: "Fail the job if the diff introduces new HIGH-severity findings (requires baseline)."
+     required: false
+     default: "false"
++  fail-on-new-suppression:
++    description: "Also fail when a finding that was active in the baseline is suppressed in this run (a suppression's scope or expiry changed). Recommended with suppress-from-ref."
++    required: false
++    default: "false"
+   output:
+     description: "Directory for generated reports. Defaults to $RUNNER_TEMP/attackmap-reports, outside the checkout, so a PR can't plant files or symlinks there."
+     required: false
+@@ -85,6 +89,7 @@ runs:
+         ATTACKMAP_OUTPUT: ${{ inputs.output }}
+         ATTACKMAP_BASELINE: ${{ inputs.baseline }}
+         ATTACKMAP_FAIL_ON_NEW_HIGH: ${{ inputs.fail-on-new-high }}
++        ATTACKMAP_FAIL_ON_NEW_SUPPRESSION: ${{ inputs.fail-on-new-suppression }}
+         ATTACKMAP_CVE: ${{ inputs.cve }}
+         ATTACKMAP_ALLOW_PR_SUPPRESSIONS: ${{ inputs.allow-pr-suppressions }}
+       run: |
+@@ -96,6 +101,7 @@ runs:
+               --pr-comment "$out/pr-comment.md")
+         [ -n "$ATTACKMAP_BASELINE" ] && args+=(--baseline "$ATTACKMAP_BASELINE")
+         [ "$ATTACKMAP_FAIL_ON_NEW_HIGH" = "true" ] && args+=(--fail-on-new-high)
++        [ "$ATTACKMAP_FAIL_ON_NEW_SUPPRESSION" = "true" ] && args+=(--fail-on-new-suppression)
+         [ "$ATTACKMAP_CVE" = "true" ] && args+=(--cve)
+         # On pull requests, trust only suppressions that already exist on the
+         # base branch: a PR must not be able to silence its own findings.
+diff --git a/src/attackmap/fingerprint.py b/src/attackmap/fingerprint.py
+index 5a5a628..4b0f352 100644
+--- a/src/attackmap/fingerprint.py
++++ b/src/attackmap/fingerprint.py
+@@ -25,6 +25,7 @@ from pathlib import Path
+ 
+ from .models import Finding, finding_rule_id
+ from .safe_fs import contained_file, is_oversized
++from .srcpaths import split_lines
+ 
+ _STRING = re.compile(r"""(?:[rbuf]{0,2})("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)""", re.IGNORECASE)
+ _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
+@@ -56,7 +57,7 @@ def assign_fingerprints(findings: list[Finding], root: str | Path) -> None:
+             path = contained_file(root_path, rel)
+             try:
+                 line_cache[rel] = (
+-                    path.read_text(encoding="utf-8", errors="replace").splitlines()
++                    split_lines(path.read_text(encoding="utf-8", errors="replace"))
+                     if path is not None and not is_oversized(path)
+                     else None
+                 )
+diff --git a/src/attackmap/gitref.py b/src/attackmap/gitref.py
+index 2094439..4fb9123 100644
+--- a/src/attackmap/gitref.py
++++ b/src/attackmap/gitref.py
+@@ -12,6 +12,7 @@ import subprocess
+ from pathlib import Path
+ 
+ from .safe_fs import UnsafePathError, read_repo_text
++from .srcpaths import split_lines
+ 
+ 
+ class GitRefError(RuntimeError):
+@@ -95,13 +96,13 @@ def added_lines(root: Path, ref: str, rel: str) -> set[int]:
+     `--no-ext-diff` don't disable, so a scanned repo could execute code.
+     """
+     try:
+-        current = read_repo_text(root, rel, errors="replace").splitlines()
++        current = split_lines(read_repo_text(root, rel, errors="replace"))
+     except (OSError, UnsafePathError):
+         return set()
+     previous = show_file(root, ref, rel)
+     if previous is None:
+         return set(range(1, len(current) + 1))  # new since ref (or untracked)
+-    matcher = difflib.SequenceMatcher(None, previous.splitlines(), current, autojunk=False)
++    matcher = difflib.SequenceMatcher(None, split_lines(previous), current, autojunk=False)
+     lines: set[int] = set()
+     for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+         if tag in ("replace", "insert"):
+diff --git a/src/attackmap/route_auth_fusion.py b/src/attackmap/route_auth_fusion.py
+index 431f935..611ec97 100644
+--- a/src/attackmap/route_auth_fusion.py
++++ b/src/attackmap/route_auth_fusion.py
+@@ -36,7 +36,7 @@ from pathlib import Path
+ 
+ from .handler_auth import handler_body, mask, session_gate
+ from .safe_fs import read_repo_text, walk_repo
+-from .srcpaths import JS_TS_SUFFIXES
++from .srcpaths import JS_TS_SUFFIXES, split_lines
+ from .models import AttackSurface, AttackTechnique, Finding, FindingLocation, Route, ScanResult
+ 
+ _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+@@ -330,7 +330,7 @@ def _read(root: Path, rel: str, cache: dict[str, str | None]) -> str | None:
+ def resolve_control(route: Route, content: str, java_global_auth: bool) -> str | None:
+     """Return a short description of the control guarding `route`, or None."""
+     suffix = Path(route.file).suffix.lower()
+-    lines = content.splitlines()
++    lines = split_lines(content)
+     if suffix in _JS_SUFFIXES:
+         return _resolve_js(route, content, lines)
+     if suffix in _PY_SUFFIXES:
+diff --git a/src/attackmap/sbom.py b/src/attackmap/sbom.py
+index 88da0e9..2d44411 100644
+--- a/src/attackmap/sbom.py
++++ b/src/attackmap/sbom.py
+@@ -28,6 +28,7 @@ from pathlib import Path
+ from .safe_fs import is_unsafe_link
+ from .lockfiles import parse_lockfiles
+ from .models import DependencyHint
++from .srcpaths import split_lines
+ 
+ _MAX_DEPTH = 3
+ _SKIP_DIRS = {
+@@ -223,7 +224,7 @@ def _stringify_poetry_version(value: object) -> str:
+ 
+ def _parse_requirements(path: Path, rel: str) -> list[DependencyHint]:
+     hints: list[DependencyHint] = []
+-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
++    for lineno, raw in enumerate(split_lines(path.read_text(encoding="utf-8")), start=1):
+         line = raw.split("#", 1)[0].strip()
+         if not line:
+             continue
+@@ -287,7 +288,7 @@ def _parse_go_mod(path: Path, rel: str) -> list[DependencyHint]:
+     text = path.read_text(encoding="utf-8")
+     hints: list[DependencyHint] = []
+     in_block = False
+-    for lineno, raw in enumerate(text.splitlines(), start=1):
++    for lineno, raw in enumerate(split_lines(text), start=1):
+         stripped = raw.strip()
+         if not stripped or stripped.startswith("//"):
+             continue
+diff --git a/src/attackmap/srcpaths.py b/src/attackmap/srcpaths.py
+index b7ff74b..aada84e 100644
+--- a/src/attackmap/srcpaths.py
++++ b/src/attackmap/srcpaths.py
+@@ -278,3 +278,24 @@ def line_number(content: str, offset: int) -> int:
+     if offset <= 0:
+         return 1
+     return bisect.bisect_right(_line_starts(content), offset)
++
++
++def split_lines(content: str, *, keepends: bool = False) -> list[str]:
++    """``content`` as a list of lines, split on ``"\n"`` only, so that index
++    ``n - 1`` is the line ``line_number()`` calls ``n``.
++
++    Never ``str.splitlines()`` for anything that is numbered or indexed by a
++    line number: it also breaks on ``\x0b``, ``\x0c``, ``\x1c``-``\x1e``,
++    ``\x85``, U+2028 and U+2029, so one such character in a comment shifts
++    every later line by one relative to the findings, which let a pull
++    request move a trusted ``attackmap:ignore`` directive onto the line it
++    added (GHSA-677m-4884-vg22).
++    """
++    lines = content.split("\n")
++    if lines and lines[-1] == "":
++        lines.pop()
++    if keepends:
++        last = len(lines) - 1
++        ends_with_newline = content.endswith("\n")
++        return [line + "\n" if i < last or ends_with_newline else line for i, line in enumerate(lines)]
++    return lines
+diff --git a/src/attackmap/supply_chain.py b/src/attackmap/supply_chain.py
+index 6279e91..0ef5ed3 100644
+--- a/src/attackmap/supply_chain.py
++++ b/src/attackmap/supply_chain.py
+@@ -42,7 +42,7 @@ from pathlib import Path
+ from .models import DependencyHint, SupplyChainIssue
+ from .popular_packages import BY_ECOSYSTEM
+ from .safe_fs import is_oversized, is_unsafe_link, walk_repo
+-from .srcpaths import is_test_file
++from .srcpaths import is_test_file, split_lines
+ 
+ _MAX_DEPTH = 4
+ _SKIP_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", ".venv", "venv", "target", "vendor"}
+@@ -68,7 +68,7 @@ def _pep503(name: str) -> str:
+ 
+ 
+ def _line_of(text: str, needle: str) -> int | None:
+-    for idx, line in enumerate(text.splitlines(), start=1):
++    for idx, line in enumerate(split_lines(text), start=1):
+         if needle in line:
+             return idx
+     return None
+@@ -221,7 +221,7 @@ def _scan_npmrc(path: Path, rel: str, out: _Collector, ctx: _RegistryContext) ->
+     text = _read(path)
+     if text is None:
+         return
+-    for lineno, raw in enumerate(text.splitlines(), start=1):
++    for lineno, raw in enumerate(split_lines(text), start=1):
+         line = raw.strip()
+         if not line or line.startswith(("#", ";")) or "=" not in line:
+             continue
+@@ -243,7 +243,7 @@ def _scan_yarnrc(path: Path, rel: str, out: _Collector) -> None:
+     text = _read(path)
+     if text is None:
+         return
+-    for lineno, raw in enumerate(text.splitlines(), start=1):
++    for lineno, raw in enumerate(split_lines(text), start=1):
+         line = raw.strip().replace('"', "").replace("'", "")
+         lowered = line.lower()
+         if lowered.startswith(("npmregistryserver:", "registry ", "registry:")):
+@@ -313,7 +313,7 @@ def _scan_requirements(path: Path, rel: str, out: _Collector, ctx: _RegistryCont
+     text = _read(path)
+     if text is None:
+         return
+-    for lineno, raw in enumerate(text.splitlines(), start=1):
++    for lineno, raw in enumerate(split_lines(text), start=1):
+         line = re.sub(r"(^|\s)#.*$", "", raw).strip()
+         if not line:
+             continue
+@@ -534,7 +534,7 @@ def _scan_go_mod(root: Path, path: Path, rel: str, out: _Collector) -> None:
+     if text is None:
+         return
+     in_block = False
+-    for lineno, raw in enumerate(text.splitlines(), start=1):
++    for lineno, raw in enumerate(split_lines(text), start=1):
+         line = raw.split("//", 1)[0].strip()
+         if line.startswith("replace") and line.endswith("("):
+             in_block = True
+diff --git a/src/attackmap/suppress.py b/src/attackmap/suppress.py
+index 8b75771..65ffc20 100644
+--- a/src/attackmap/suppress.py
++++ b/src/attackmap/suppress.py
+@@ -86,7 +86,7 @@ import re
+ from dataclasses import dataclass, field, replace
+ from pathlib import Path
+ 
+-from .srcpaths import evidence_locations
++from .srcpaths import evidence_locations, split_lines
+ from .gitref import added_lines, show_file, validate_ref
+ from .safe_fs import contained_file, read_repo_text
+ from .diff import finding_id
+@@ -622,7 +622,7 @@ def scan_inline_suppressions(
+             text = file_path.read_text(encoding="utf-8", errors="replace")
+         except OSError:
+             continue
+-        for lineno, line in enumerate(text.splitlines(), start=1):
++        for lineno, line in enumerate(split_lines(text), start=1):
+             if "attackmap:ignore" not in line.lower():
+                 continue
+             match = INLINE_DIRECTIVE.search(line)
+@@ -655,7 +655,9 @@ def scan_inline_suppressions(
+ 
+ 
+ def _selector_key(sup: Suppression) -> tuple:
+-    return (sup.id, sup.rule and rule_slug(sup.rule), sup.path, sup.line)
++    # `expires` is part of the key: a PR that extends or removes the expiry of a
++    # base-trusted entry would otherwise revive it silently (GHSA-677m-4884-vg22).
++    return (sup.id, sup.rule and rule_slug(sup.rule), sup.path, sup.line, sup.expires)
+ 
+ 
+ def _narrow_to_trusted_lines(
+diff --git a/src/attackmap/taint.py b/src/attackmap/taint.py
+index 8ac86f7..1d53333 100644
+--- a/src/attackmap/taint.py
++++ b/src/attackmap/taint.py
+@@ -38,7 +38,7 @@ from pathlib import Path
+ 
+ from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
+ from .models import Route, ScanResult, TaintChain, TaintFlowStep
+-from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number
++from .srcpaths import JS_TS_SUFFIXES, is_infra_route, is_test_file, is_vendored_file, line_number, split_lines
+ from .taint_flow import REST, FileFlow, SinkFlow
+ from .taint_sinks import SINKS, all_sinks, call_receiver
+ from .taint_sources import GO, JS, PHP, PY, lang_for_suffix
+@@ -798,7 +798,7 @@ def _handler_seed_files(route: Route, content: str, name_to_module: dict[str, st
+     import-hub fan-out (#107)."""
+     if route.line is None:
+         return []
+-    lines = content.splitlines(keepends=True)
++    lines = split_lines(content, keepends=True)
+     idx = route.line - 1
+     if idx < 0 or idx >= len(lines):
+         return []
+diff --git a/src/attackmap/webhook_verification.py b/src/attackmap/webhook_verification.py
+index 20e9d72..d911ec3 100644
+--- a/src/attackmap/webhook_verification.py
++++ b/src/attackmap/webhook_verification.py
+@@ -32,7 +32,7 @@ from .authz import _block_from, _HopResolver, _read_file_content
+ from .handler_span import span_bounds
+ from .models import AttackSurface, ScanResult, WebhookVerification
+ from .safe_fs import walk_repo
+-from .srcpaths import JS_TS_SUFFIXES
++from .srcpaths import JS_TS_SUFFIXES, split_lines
+ 
+ # --- provider verifiers ------------------------------------------------------
+ 
+@@ -254,7 +254,7 @@ class _Line:
+ def _lines_of(file: str, start: int, text: str) -> list[_Line]:
+     return [
+         _Line(file, start + i, t)
+-        for i, t in enumerate(text.splitlines())
++        for i, t in enumerate(split_lines(text))
+         if t.strip() and not _COMMENT_LINE.match(t)
+     ]
+ 
+@@ -544,7 +544,7 @@ class _Assessor:
+         source = _read_file_content(rel, self.root, self.cache)
+         if not source:
+             return None
+-        lines = source.splitlines()
++        lines = split_lines(source)
+         decl = re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+|final\s+)?class\s+{re.escape(cls)}\b")
+         head = re.compile(
+             rf"^\s*(?:(?:public|private|protected|static|async|override|readonly|final)\s+)*(?:function\s+)?{re.escape(member)}\s*\("
+@@ -627,7 +627,7 @@ class _Assessor:
+         content = _read_file_content(surface.file, self.root, self.cache)
+         if not content:
+             return WebhookVerification(state="unknown", notes=["the handler's source could not be read"])
+-        file_lines = content.splitlines()
++        file_lines = split_lines(content)
+         if surface.line is not None:
+             start, end = span_bounds(surface.line, file_lines, self.route_lines.get(surface.file, []))
+         else:
+@@ -853,7 +853,7 @@ def _drf_model_viewset(base: Path, cache: dict[str, str | None], hop: _HopResolv
+ 
+ def _handler_text(base: Path, cache: dict[str, str | None], route, route_lines: list[int]) -> str:  # noqa: ANN001
+     content = _read_file_content(route.file, base, cache) or ""
+-    lines = content.splitlines()
++    lines = split_lines(content)
+     if route.line is None or not lines:
+         return ""
+     start, end = span_bounds(route.line, lines, route_lines)
+@@ -899,7 +899,7 @@ def _route_line(root: Path, cache: dict[str, str | None], route) -> str:  # noqa
+     if route.line is None:
+         return ""
+     content = _read_file_content(route.file, root, cache) or ""
+-    lines = content.splitlines()
++    lines = split_lines(content)
+     return lines[route.line - 1] if 0 < route.line <= len(lines) else ""
+ 
+ 
+diff --git a/src/attackmap/workflow_scanner.py b/src/attackmap/workflow_scanner.py
+index e7f6928..e17ea73 100644
+--- a/src/attackmap/workflow_scanner.py
++++ b/src/attackmap/workflow_scanner.py
+@@ -75,6 +75,7 @@ from pathlib import Path
+ 
+ from .safe_fs import is_contained, is_oversized, is_unsafe_link, walk_repo
+ from .models import WorkflowIssue
++from .srcpaths import split_lines
+ 
+ # A pinned action ref is a full 40-hex commit SHA. Anything else is "unpinned".
+ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+@@ -260,7 +261,7 @@ def scan_workflows(root: str | Path) -> list[WorkflowIssue]:
+             continue
+         data, text = _load_yaml(path, yaml)
+         if data is not None:
+-            issues.extend(_scan_action(data, path.relative_to(root_path).as_posix(), text.splitlines()))
++            issues.extend(_scan_action(data, path.relative_to(root_path).as_posix(), split_lines(text)))
+ 
+     workflows_dir = root_path / ".github" / "workflows"
+     if not workflows_dir.is_dir() or not is_contained(root_path, workflows_dir):
+@@ -282,7 +283,7 @@ def scan_workflows(root: str | Path) -> list[WorkflowIssue]:
+         if not isinstance(data, dict):
+             continue
+         rel = str(path.relative_to(root_path))
+-        lines = text.splitlines()
++        lines = split_lines(text)
+         issues.extend(_scan_one(data, rel, lines))
+     return issues
+ 
+diff --git a/tests/test_suppression_governance.py b/tests/test_suppression_governance.py
+index 960b062..1bc5ea3 100644
+--- a/tests/test_suppression_governance.py
++++ b/tests/test_suppression_governance.py
+@@ -159,6 +159,63 @@ def test_allow_pr_suppressions_still_extends_a_base_directive(tmp_path: Path) ->
+     assert result.exit_code == 0, result.output
+ 
+ 
++@needs_git
++@pytest.mark.parametrize("splitter", ["\x0c", "\u2028", "\x0b", "\x85"], ids=["form-feed", "u2028", "vtab", "nel"])
++def test_line_splitting_character_cannot_shift_a_base_directive(tmp_path: Path, splitter: str) -> None:
++    """GHSA-677m-4884-vg22: directives and the trust check counted lines with
++    str.splitlines(), findings with "\n" only. One form feed (or U+2028, ...)
++    in a comment above a trusted directive shifted the directive by one line
++    in the suppression view, onto the line the PR added below the covered one."""
++    repo = tmp_path / "repo"
++    _init(repo, {"app.py": f'import os\n{DIRECTIVE}TOKEN = "{SECRET}"\nx = 1\n'})
++    result, report = _gate(
++        repo, tmp_path, f'import os\n# {splitter} harmless\n{DIRECTIVE}TOKEN = "{SECRET}"\nSTRIPE = "{SECRET_2}"\nx = 1\n'
++    )
++    assert "hardcoded-secret" in _rules(report)
++    assert result.exit_code == 1, result.output
++    # The directive on physical line 3 still covers the old token on line 4;
++    # only the PR's line 5 is active.
++    finding = next(f for f in report["findings"] if f["rule_id"] == "hardcoded-secret")
++    assert {loc["line"] for loc in finding["locations"]} == {5}, finding["locations"]
++
++
++def _expiry_gate(tmp_path: Path, edit) -> tuple:
++    """Base: an expired suppress-file entry over src/ and the secret it used to
++    cover. PR: `edit` rewrites the suppress file and adds a second secret."""
++    past = (date.today() - timedelta(days=30)).isoformat()
++    repo = tmp_path / "repo"
++    _init(repo, {
++        "src/app.py": f'AWS_KEY = "{SECRET}"\n',
++        ".attackmap-suppress.yaml": f"suppress:\n  - rule: hardcoded-secret\n    reason: legacy\n    paths: ['src/**']\n    expires: {past}\n",
++    })
++    _, base_report = _run(repo, tmp_path / "base")
++    assert "hardcoded-secret" in _rules(base_report)
++    (repo / ".attackmap-suppress.yaml").write_text(edit((repo / ".attackmap-suppress.yaml").read_text()), encoding="utf-8")
++    (repo / "src" / "new.py").write_text(f'TOKEN = "{SECRET_2}"\n', encoding="utf-8")
++    return _run(
++        repo, tmp_path / "pr", "--suppress-from-ref", "base",
++        "--baseline", str(tmp_path / "base" / "attackmap-report.json"), "--fail-on-new-high",
++    )
++
++
++@needs_git
++def test_pr_cannot_extend_the_expiry_of_a_trusted_entry(tmp_path: Path) -> None:
++    """GHSA-677m-4884-vg22: `expires` wasn't part of the trusted key, so a PR
++    could set it to 2099 on an expired base entry and silence the rule again."""
++    result, report = _expiry_gate(tmp_path, lambda y: y.replace("expires: 2", "expires: 2099-01-01\n    # was 2"))
++    assert "hardcoded-secret" in _rules(report)
++    assert result.exit_code == 1, result.output
++    assert "added since base" in _flat(result.output)
++
++
++@needs_git
++def test_pr_cannot_remove_the_expiry_of_a_trusted_entry(tmp_path: Path) -> None:
++    result, report = _expiry_gate(tmp_path, lambda y: "\n".join(l for l in y.splitlines() if "expires" not in l) + "\n")
++    assert "hardcoded-secret" in _rules(report)
++    assert result.exit_code == 1, result.output
++    assert "added since base" in _flat(result.output)
++
++
+ @needs_git
+ def test_unknown_ref_is_a_clear_error(tmp_path: Path) -> None:
+     repo = tmp_path / "repo"
+-- 
+2.53.0
+

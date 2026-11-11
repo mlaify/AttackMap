@@ -28,6 +28,7 @@ from pathlib import Path
 from .safe_fs import is_unsafe_link
 from .lockfiles import parse_lockfiles
 from .models import DependencyHint
+from .srcpaths import split_lines
 
 _MAX_DEPTH = 3
 _SKIP_DIRS = {
@@ -223,7 +224,7 @@ def _stringify_poetry_version(value: object) -> str:
 
 def _parse_requirements(path: Path, rel: str) -> list[DependencyHint]:
     hints: list[DependencyHint] = []
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, raw in enumerate(split_lines(path.read_text(encoding="utf-8")), start=1):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
@@ -287,7 +288,7 @@ def _parse_go_mod(path: Path, rel: str) -> list[DependencyHint]:
     text = path.read_text(encoding="utf-8")
     hints: list[DependencyHint] = []
     in_block = False
-    for lineno, raw in enumerate(text.splitlines(), start=1):
+    for lineno, raw in enumerate(split_lines(text), start=1):
         stripped = raw.strip()
         if not stripped or stripped.startswith("//"):
             continue

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from typing import Protocol
 
 from urllib.error import URLError
@@ -621,7 +622,20 @@ def analyzer_install_url(repo_name: str) -> str:
 
 
 def analyzer_install_command(repo_name: str) -> list[str]:
-    return [sys.executable, "-m", "pip", "install", analyzer_install_url(repo_name)]
+    """``python -I -m pip install <pinned url>``. ``-I`` (isolated mode) keeps
+    the current directory off ``sys.path`` and ignores ``PYTHON*`` variables
+    and the user site, so a ``pip/`` package committed in the checkout the
+    user is standing in cannot run in place of pip (GHSA-qv53-p57x-x9m4)."""
+    return [sys.executable, "-I", "-m", "pip", "install", analyzer_install_url(repo_name)]
+
+
+def _install_env() -> dict[str, str]:
+    """The environment for the pip subprocess: the user's, minus every
+    ``PYTHON*`` variable (``PYTHONPATH``, ``PYTHONSTARTUP``, ...) and with
+    ``PYTHONSAFEPATH=1`` as a second guard beside ``-I``."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
+    env["PYTHONSAFEPATH"] = "1"
+    return env
 
 
 def install_analyzer_module(repo_name: str) -> None:
@@ -639,7 +653,12 @@ def install_analyzer_module(repo_name: str) -> None:
         )
     logger.info("Installing analyzer module: %s", " ".join(command))
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        # An empty working directory: pip never sees the scanned checkout,
+        # whatever the user's cwd is (GHSA-qv53-p57x-x9m4).
+        with tempfile.TemporaryDirectory(prefix="attackmap-pip-") as workdir:
+            subprocess.run(
+                command, check=True, capture_output=True, text=True, cwd=workdir, env=_install_env()
+            )
     except subprocess.CalledProcessError as exc:
         tail = "\n".join(((exc.stderr or "") + (exc.stdout or "")).strip().splitlines()[-15:])
         raise RuntimeError(f"pip install failed ({' '.join(command[3:])}):\n{tail}") from exc

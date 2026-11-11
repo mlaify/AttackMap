@@ -32,7 +32,7 @@ from .authz import _block_from, _HopResolver, _read_file_content
 from .handler_span import span_bounds
 from .models import AttackSurface, ScanResult, WebhookVerification
 from .safe_fs import walk_repo
-from .srcpaths import JS_TS_SUFFIXES
+from .srcpaths import JS_TS_SUFFIXES, split_lines
 
 # --- provider verifiers ------------------------------------------------------
 
@@ -254,7 +254,7 @@ class _Line:
 def _lines_of(file: str, start: int, text: str) -> list[_Line]:
     return [
         _Line(file, start + i, t)
-        for i, t in enumerate(text.splitlines())
+        for i, t in enumerate(split_lines(text))
         if t.strip() and not _COMMENT_LINE.match(t)
     ]
 
@@ -544,7 +544,7 @@ class _Assessor:
         source = _read_file_content(rel, self.root, self.cache)
         if not source:
             return None
-        lines = source.splitlines()
+        lines = split_lines(source)
         decl = re.compile(rf"^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+|final\s+)?class\s+{re.escape(cls)}\b")
         head = re.compile(
             rf"^\s*(?:(?:public|private|protected|static|async|override|readonly|final)\s+)*(?:function\s+)?{re.escape(member)}\s*\("
@@ -627,7 +627,7 @@ class _Assessor:
         content = _read_file_content(surface.file, self.root, self.cache)
         if not content:
             return WebhookVerification(state="unknown", notes=["the handler's source could not be read"])
-        file_lines = content.splitlines()
+        file_lines = split_lines(content)
         if surface.line is not None:
             start, end = span_bounds(surface.line, file_lines, self.route_lines.get(surface.file, []))
         else:
@@ -853,7 +853,7 @@ def _drf_model_viewset(base: Path, cache: dict[str, str | None], hop: _HopResolv
 
 def _handler_text(base: Path, cache: dict[str, str | None], route, route_lines: list[int]) -> str:  # noqa: ANN001
     content = _read_file_content(route.file, base, cache) or ""
-    lines = content.splitlines()
+    lines = split_lines(content)
     if route.line is None or not lines:
         return ""
     start, end = span_bounds(route.line, lines, route_lines)
@@ -899,7 +899,7 @@ def _route_line(root: Path, cache: dict[str, str | None], route) -> str:  # noqa
     if route.line is None:
         return ""
     content = _read_file_content(route.file, root, cache) or ""
-    lines = content.splitlines()
+    lines = split_lines(content)
     return lines[route.line - 1] if 0 < route.line <= len(lines) else ""
 
 

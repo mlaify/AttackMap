@@ -25,6 +25,7 @@ from pathlib import Path
 
 from .models import Finding, finding_rule_id
 from .safe_fs import contained_file, is_oversized
+from .srcpaths import split_lines
 
 _STRING = re.compile(r"""(?:[rbuf]{0,2})("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)""", re.IGNORECASE)
 _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
@@ -56,7 +57,7 @@ def assign_fingerprints(findings: list[Finding], root: str | Path) -> None:
             path = contained_file(root_path, rel)
             try:
                 line_cache[rel] = (
-                    path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    split_lines(path.read_text(encoding="utf-8", errors="replace"))
                     if path is not None and not is_oversized(path)
                     else None
                 )
