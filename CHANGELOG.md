@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+<!-- Before publishing: replace GHSA-xxxx-xxxx-xxxx with each advisory's id and the credit lines with the researcher's chosen name/handle (or "reported privately" if they stay anonymous). -->
+
+- **A pull request could hide its own new finding under an existing inline directive (GHSA-xxxx-xxxx-xxxx).** With `--suppress-from-ref` (the GitHub Action's default on pull requests), an `attackmap:ignore` comment already on the base branch was trusted because its own line hadn't changed, but it also covers the line below it. A PR that inserted a line there, or changed the line the directive already covered, had its new finding suppressed as trusted, so `--fail-on-new-high` stayed green. The finding was still listed as suppressed in the JSON report and SARIF.
+  - A trusted directive no longer covers the line below it when that line was added or changed since the ref; the new finding stays active and the run prints a suppression warning. `--allow-pr-suppressions` keeps the old behaviour.
+  - Reported by CREDIT-PENDING.
+- **Repo-derived text could inject Markdown into three reports (GHSA-xxxx-xxxx-xxxx).** `attack-surface.md`, `attackmap-exploitability.md` and `attackmap-paths.md` printed route paths, files, outbound URLs and package names raw, so a route string in a scanned repo could plant a live link, an image or HTML in them (the PR comment, diff, SARIF and defensive review were already escaped, #233).
+  - Both Markdown reports now escape every repo-derived value with `md_text`/`md_code`. Attack-path headings are escaped, and Mermaid labels show `<`, `>` and backticks as literal characters. JSON, SARIF and the PR comment keep the raw values; the JSON report's `attack_surface_summary` copy of the Markdown is escaped like the file.
+  - Reported by CREDIT-PENDING.
+
 ## [0.6.2] - 2026-11-04
 
 ### Fixed — packaging
