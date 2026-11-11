@@ -51,7 +51,17 @@ jobs:
           # The notes are this version's CHANGELOG section.
           awk -v v="$ver" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md >"$RUNNER_TEMP/notes.md"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/*
+            # A release that already exists (made by hand when Actions was
+            # unavailable, or a re-run) keeps its assets: upload only what is
+            # missing, never replace a file users may already have fetched.
+            existing=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+            for f in dist/*; do
+              if grep -qx "$(basename "$f")" <<<"$existing"; then
+                echo "already attached, left as is: $(basename "$f")"
+              else
+                gh release upload "$TAG" "$f"
+              fi
+            done
           elif [ -s "$RUNNER_TEMP/notes.md" ]; then
             gh release create "$TAG" dist/* --verify-tag --title "${GITHUB_REPOSITORY#*/} $ver" --notes-file "$RUNNER_TEMP/notes.md"
           else
