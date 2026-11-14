@@ -2,7 +2,7 @@
 
 This is the developer-facing guide for building an analyzer plugin that ships as
 its own Python package in its own repo. If you only want to *use* analyzers, run
-`uv tool install "attackmap[all]" --index mlaify=https://pkg.mlaify.io/pypi/simple/ --index-strategy first-index`
+`uv tool install "attackmap[all]"` (from PyPI)
 and stop reading.
 
 The contract itself is documented in code at

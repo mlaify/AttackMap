@@ -4,7 +4,7 @@
 > **Active development, slow pace.** AttackMap is under active development, but
 > progress may be slow until more contributors or co-maintainers join. Help is
 > very welcome with the core engine, an analyzer, the macOS app, or the docs —
-> see [CONTRIBUTING.md](CONTRIBUTING.md) or open an issue on
+> see [CONTRIBUTING.md](https://github.com/mlaify/AttackMap/blob/main/CONTRIBUTING.md) or open an issue on
 > [mlaify/AttackMap](https://github.com/mlaify/AttackMap/issues) to say hello.
 > Security reports are still welcome at [security@mlaify.io](mailto:security@mlaify.io).
 
@@ -15,11 +15,11 @@ request-to-sink data flow, and produces an evidence-grounded, prioritized securi
 review. It finds the cross-cutting weaknesses single-file scanners miss, and never
 sends your code anywhere.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/mlaify/AttackMap/blob/main/LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 
-> **Status: beta (v0.6.3).** Core engine + 15 analyzer plugins, installed straight
-> from GitHub and validated on real codebases. AttackMap is heuristic by
+> **Status: beta (v0.6.4).** Core engine + 15 analyzer plugins, published on
+> [PyPI](https://pypi.org/project/attackmap/) and validated on real codebases. AttackMap is heuristic by
 > design — findings are confidence-tiered evidence, not proof. Roadmap to 1.0:
 > [issue #209](https://github.com/mlaify/AttackMap/issues/209).
 
@@ -46,7 +46,7 @@ brew install --cask mlaify/tap/attackmap-app
 
 ```bash
 brew install mlaify/tap/attackmap         # Homebrew: CLI + all 15 analyzer plugins
-# or: uv tool install "attackmap[all]" --index mlaify=https://pkg.mlaify.io/pypi/simple/ --index-strategy first-index
+# or, from PyPI: uv tool install "attackmap[all]"   (or pipx install "attackmap[all]")
 attackmap analyze /path/to/repo           # heuristic review → reports/
 attackmap analyze /path/to/repo --llm     # + AI-narrated review (Claude or OpenAI)
 attackmap analyze ./svc-a ./svc-b ./gw    # cross-repo / fleet scan
@@ -99,7 +99,7 @@ Fourteen analyzer plugins (each installable on its own; `[all]` installs every o
 **AT Protocol**. Specialty and experimental analyzers are opt-in: when one
 matches a repo, `analyze` says so, and `-m <name>` runs it (`attackmap modules`
 shows which). Details: [analyzers reference](https://docs.mlaify.io/analyzers/).
-Write your own against the documented [analyzer SDK](docs/external-analyzers.md).
+Write your own against the documented [analyzer SDK](https://github.com/mlaify/AttackMap/blob/main/docs/external-analyzers.md).
 
 ## CLI cheat-sheet
 
@@ -142,8 +142,8 @@ documented in the [CLI reference](https://docs.mlaify.io/cli/).
   contributor references
 - **[Roadmap / Bug Triage / Kanban](https://github.com/orgs/mlaify/projects)** —
   project boards · [Road to 1.0](https://github.com/mlaify/AttackMap/issues/209)
-- [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) ·
-  [`SECURITY.md`](SECURITY.md) · [`VISION.md`](VISION.md)
+- [`CHANGELOG.md`](https://github.com/mlaify/AttackMap/blob/main/CHANGELOG.md) · [`CONTRIBUTING.md`](https://github.com/mlaify/AttackMap/blob/main/CONTRIBUTING.md) ·
+  [`SECURITY.md`](https://github.com/mlaify/AttackMap/blob/main/SECURITY.md) · [`VISION.md`](https://github.com/mlaify/AttackMap/blob/main/VISION.md)
 
 ## Special thanks
 
@@ -153,9 +153,9 @@ AttackMap is built by its contributors.
 
 ## Contributing
 
-Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). By contributing
+Issues and PRs welcome — see [CONTRIBUTING.md](https://github.com/mlaify/AttackMap/blob/main/CONTRIBUTING.md). By contributing
 you agree your contributions will be MIT-licensed.
 
 ## License
 
-[MIT](LICENSE). Copyright (c) 2026 Matthew Davis and AttackMap Contributors.
+[MIT](https://github.com/mlaify/AttackMap/blob/main/LICENSE). Copyright (c) 2026 Matthew Davis and AttackMap Contributors.
