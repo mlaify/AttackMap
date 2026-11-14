@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/pypi/approve-releases.sh`: approves a round of tag releases in one go (each run's `release` and then `pypi` wait), for the required reviewer. It approves only release.yml runs started by a signed tag on `main` whose version matches, publishes AttackMap after the analyzers its `[all]` pins, and checks PyPI's files against the release's.
+
 ### Changed
 
 - The external-analyzer guide's `pyproject.toml` template lists `attackmap>=0.6.0,<1.0.0` in `dependencies` instead of an optional `core` extra, so a plugin installed on its own works. The 15 official analyzers make the same change.
