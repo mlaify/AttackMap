@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/pypi/approve-releases.sh` retries the final `attackmap[all]` check for up to ten minutes (PyPI's CDN can serve a project's old index for a while after an upload) and exits with an error if it still fails; it used to print the pip error and then "Done." anyway.
+
 ## [0.6.5] - 2026-11-14
 
 ### Added

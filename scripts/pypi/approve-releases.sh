@@ -165,7 +165,16 @@ if [ ${#core[@]} -gt 0 ]; then
   venv=$(mktemp -d)
   trap 'rm -rf "$venv"' EXIT
   python3 -m venv "$venv"
-  "$venv/bin/pip" install -q --dry-run --only-binary :all: --index-url https://pypi.org/simple/ \
-    "attackmap[all]==$ver" && echo "  attackmap[all]==$ver resolves from PyPI"
+  # PyPI's CDN can serve a project's old index for some minutes after an upload: retry for ten.
+  for try in $(seq 20); do
+    if "$venv/bin/pip" install -q --dry-run --no-cache-dir --only-binary :all: \
+        --index-url https://pypi.org/simple/ "attackmap[all]==$ver" 2>"$venv/err"; then
+      echo "  attackmap[all]==$ver resolves from PyPI"
+      break
+    fi
+    [ "$try" -lt 20 ] || { cat "$venv/err" >&2; die "attackmap[all]==$ver does not resolve from PyPI"; }
+    echo "  not resolvable yet ($(grep -m1 -o 'No matching distribution found for [^;]*' "$venv/err" || echo 'pip failed')), retrying in 30s"
+    sleep 30
+  done
 fi
 echo "Done."
