@@ -1,5 +1,6 @@
 name: Bug or incorrect result
 description: Report a reproducible bug, crash, compatibility problem, false positive, false negative, or other incorrect result.
+labels: ["bug"]
 title: "[Bug]: "
 body:
   - type: markdown
