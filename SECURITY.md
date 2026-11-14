@@ -40,6 +40,29 @@ This is a coordinated vulnerability disclosure program, not a bug bounty. We do 
 ## Official Channel
 Report vulnerabilities through this repository's **Security** tab using **Report a vulnerability**. Do not put vulnerability details in a public issue, pull request, discussion, or comment.
 
+## What to include in a report
+
+GitHub's private reporting form has fixed fields, so cover these points in it:
+
+- **Affected repository, component, and version:** the release, build, or commit if known.
+- **Summary:** the security boundary that breaks.
+- **Realistic impact:** what an attacker can read, change, execute, impersonate, or make
+  unavailable, and who is affected.
+- **Attacker prerequisites:** network position, authentication or role, local or physical
+  access, user interaction, and configuration assumptions.
+- **Reproduction or proof of concept:** minimal, safe steps that let the maintainer validate the
+  issue, without data or credentials belonging to others.
+- **Sanitized evidence:** logs, screenshots, traces, or code excerpts with secrets, personal
+  data, proprietary source, and third-party data removed.
+- **Suggested remediation,** if you have one.
+- **Disclosure and credit preference:** timing constraints and the name or handle to credit, or
+  a request for anonymity.
+
+Before you submit, confirm that you tested only systems, devices, accounts, and data you own or
+had explicit permission to test, and that the report concerns this project itself rather than an
+ordinary bug, an incorrect result, or a third-party product. Automated scanner output without
+validation and a demonstrated impact is not sufficient by itself.
+
 ## Safe Harbor
 When conducting vulnerability research, according to this policy, we consider this research conducted under this policy to be:
 - Authorized concerning any applicable anti-hacking laws, and we will not initiate or support legal action against you for accidental, good-faith violations of this policy;

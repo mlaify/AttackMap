@@ -1,5 +1,6 @@
 name: Documentation problem
 description: Report missing, inaccurate, or confusing documentation.
+labels: ["documentation"]
 title: "[Docs]: "
 body:
   - type: input
