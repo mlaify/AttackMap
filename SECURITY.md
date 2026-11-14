@@ -23,7 +23,7 @@ In participating in our vulnerability disclosure program in good faith, we ask t
 - Play by the rules, including following this policy and any other relevant agreements. If there is any inconsistency between this policy and any other applicable terms, the terms of this policy will prevail;
 - Report any vulnerability you've discovered promptly;
 - Avoid violating the privacy of others, disrupting our systems, destroying data, and/or harming user experience;
-- Use only the Official Channels to discuss vulnerability information with us;
+- Use only the Official Channel to discuss vulnerability information with us;
 - Provide us a reasonable amount of time (at least 90 days from the initial report) to resolve the issue before you disclose it publicly;
 - Perform testing only on in-scope systems, and respect systems and activities which are out-of-scope;
 - If a vulnerability provides unintended access to data: Limit the amount of data you access to the minimum required for effectively demonstrating a Proof of Concept; and cease testing and submit a report immediately if you encounter any user data during testing, such as Personally Identifiable Information (PII), Personal Healthcare Information (PHI), credit card data, or proprietary information;
@@ -49,6 +49,6 @@ When conducting vulnerability research, according to this policy, we consider th
 
 You are expected, as always, to comply with all applicable laws. If legal action is initiated by a third party against you and you have complied with this policy, we will take steps to make it known that your actions were conducted in compliance with this policy.
 
-If at any time you have concerns or are uncertain whether your security research is consistent with this policy, please submit a report through one of our Official Channels before going any further.
+If at any time you have concerns or are uncertain whether your security research is consistent with this policy, please submit a report through the Official Channel before going any further.
 
 Note that the Safe Harbor applies only to legal claims under the control of the organization participating in this policy, and that the policy does not bind independent third parties.
