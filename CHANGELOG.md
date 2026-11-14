@@ -5,6 +5,12 @@ All notable changes to AttackMap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The external-analyzer guide's `pyproject.toml` template lists `attackmap>=0.6.0,<1.0.0` in `dependencies` instead of an optional `core` extra, so a plugin installed on its own works. The 15 official analyzers make the same change.
+
 ## [0.6.4] - 2026-11-14
 
 ### Security

@@ -62,12 +62,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = [
+  # A runtime dependency, so `pip install attackmap-analyzer-myframework`
+  # alone gives a working plugin.
+  "attackmap>=0.6.0,<1.0.0",
   "pydantic>=2.7.0",
 ]
 
 [project.optional-dependencies]
-core = ["attackmap>=0.1.0"]
-dev  = ["attackmap>=0.1.0", "pytest>=8.0.0", "build>=1.2.0"]
+dev = ["pytest>=8.0.0", "build>=1.2.0"]
 
 # This is what makes AttackMap discover your plugin.
 [project.entry-points."attackmap.analyzers"]
@@ -430,12 +432,12 @@ and installs from git. Source-read any of them for a real, working analyzer.
 
 The SDK surface (`attackmap.sdk`) is stable across minor releases of the
 `attackmap` package. Breaking changes only happen on a major-version bump;
-deprecations get one release of overlap. Pin a lower bound in your
-`pyproject.toml`:
+deprecations get one release of overlap. Depend on `attackmap` with a lower
+bound and `<1.0.0` in your `pyproject.toml`:
 
 ```toml
-[project.optional-dependencies]
-core = ["attackmap>=0.1.0,<1.0.0"]
+[project]
+dependencies = ["attackmap>=0.6.0,<1.0.0"]
 ```
 
 When you upgrade your lower bound, bump your analyzer's minor version.
