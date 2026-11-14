@@ -1,0 +1,74 @@
+name: Bug or incorrect result
+description: Report a reproducible bug, crash, compatibility problem, false positive, false negative, or other incorrect result.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is public. Do not include secrets, credentials, personal data, proprietary source code, or confidential vulnerability details.
+
+        A vulnerability in this project must be reported privately from the repository's Security tab. A finding in software analyzed or displayed by this project is normally a bug report here, not a vulnerability in this project.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Report type
+      options:
+        - Bug or crash
+        - Installation or compatibility problem
+        - Incorrect result or false positive
+        - Missed result or false negative
+        - Performance or reliability problem
+        - Other unexpected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the release version, build number, or commit SHA.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system, architecture, runtime, relevant dependencies, device, or client versions.
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and why it is incorrect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Give complete steps and the smallest safe example that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs or evidence
+      description: Remove secrets, credentials, personal data, proprietary source, and third-party data before posting.
+      render: shell
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing open and closed issues for this problem.
+          required: true
+        - label: This report does not contain confidential vulnerability details, secrets, credentials, personal data, or proprietary source code.
+          required: true
+        - label: I understand that an incorrect or disputed security result is normally a public bug report, not a vulnerability in this project.
+          required: true

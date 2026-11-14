@@ -23,17 +23,22 @@ In participating in our vulnerability disclosure program in good faith, we ask t
 - Play by the rules, including following this policy and any other relevant agreements. If there is any inconsistency between this policy and any other applicable terms, the terms of this policy will prevail;
 - Report any vulnerability you've discovered promptly;
 - Avoid violating the privacy of others, disrupting our systems, destroying data, and/or harming user experience;
-- Use only the Official Channels to discuss vulnerability information with us;
+- Use only the Official Channel to discuss vulnerability information with us;
 - Provide us a reasonable amount of time (at least 90 days from the initial report) to resolve the issue before you disclose it publicly;
 - Perform testing only on in-scope systems, and respect systems and activities which are out-of-scope;
 - If a vulnerability provides unintended access to data: Limit the amount of data you access to the minimum required for effectively demonstrating a Proof of Concept; and cease testing and submit a report immediately if you encounter any user data during testing, such as Personally Identifiable Information (PII), Personal Healthcare Information (PHI), credit card data, or proprietary information;
 - You should only interact with test accounts you own or with explicit permission from the account holder; and
 - Do not engage in extortion.
 
-## Official Channels
-Please report security issues via [security@mlaify.io](mailto:security@mlaify.io), providing all relevant information. The more details you provide, the easier it will be for us to triage and fix the issue.
+## Choosing the Right Channel
+Use a public GitHub issue for ordinary bugs, crashes, installation problems, false positives, false negatives, incorrect findings, severity disagreements, feature requests, and documentation corrections. A finding in software analyzed by AttackMap is not a vulnerability in AttackMap.
 
-To encrypt your report, use the [security@mlaify.io PGP key](https://mlaify.io/publickey.security.mlaify.io-38642d275f820a026f3bfc5e7e44d7d05bafd4df.asc) (fingerprint `3864 2D27 5F82 0A02 6F3B FC5E 7E44 D7D0 5BAF D4DF`).
+Use private vulnerability reporting only for a credible vulnerability in this project itself. Automated scanner output without validation and a demonstrated project-specific impact is not sufficient by itself.
+
+This is a coordinated vulnerability disclosure program, not a bug bounty. We do not offer or promise payment, rewards, or swag for reports.
+
+## Official Channel
+Report vulnerabilities through this repository's **Security** tab using **Report a vulnerability**. Do not put vulnerability details in a public issue, pull request, discussion, or comment.
 
 ## Safe Harbor
 When conducting vulnerability research, according to this policy, we consider this research conducted under this policy to be:
@@ -44,6 +49,6 @@ When conducting vulnerability research, according to this policy, we consider th
 
 You are expected, as always, to comply with all applicable laws. If legal action is initiated by a third party against you and you have complied with this policy, we will take steps to make it known that your actions were conducted in compliance with this policy.
 
-If at any time you have concerns or are uncertain whether your security research is consistent with this policy, please submit a report through one of our Official Channels before going any further.
+If at any time you have concerns or are uncertain whether your security research is consistent with this policy, please submit a report through the Official Channel before going any further.
 
 Note that the Safe Harbor applies only to legal claims under the control of the organization participating in this policy, and that the policy does not bind independent third parties.

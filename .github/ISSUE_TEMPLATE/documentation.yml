@@ -1,0 +1,28 @@
+name: Documentation problem
+description: Report missing, inaccurate, or confusing documentation.
+title: "[Docs]: "
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page or file
+      description: Link to the page or identify the repository path.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or unclear?
+    validations:
+      required: true
+  - type: textarea
+    id: suggested
+    attributes:
+      label: Suggested correction
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: This public report contains no secrets, personal data, proprietary source code, or confidential vulnerability details.
+          required: true
