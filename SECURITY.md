@@ -30,10 +30,15 @@ In participating in our vulnerability disclosure program in good faith, we ask t
 - You should only interact with test accounts you own or with explicit permission from the account holder; and
 - Do not engage in extortion.
 
-## Official Channels
-Please report security issues via [security@mlaify.io](mailto:security@mlaify.io), providing all relevant information. The more details you provide, the easier it will be for us to triage and fix the issue.
+## Choosing the Right Channel
+Use a public GitHub issue for ordinary bugs, crashes, installation problems, false positives, false negatives, incorrect findings, severity disagreements, feature requests, and documentation corrections. A finding in software analyzed by AttackMap is not a vulnerability in AttackMap.
 
-To encrypt your report, use the [security@mlaify.io PGP key](https://mlaify.io/publickey.security.mlaify.io-38642d275f820a026f3bfc5e7e44d7d05bafd4df.asc) (fingerprint `3864 2D27 5F82 0A02 6F3B FC5E 7E44 D7D0 5BAF D4DF`).
+Use private vulnerability reporting only for a credible vulnerability in this project itself. Automated scanner output without validation and a demonstrated project-specific impact is not sufficient by itself.
+
+This is a coordinated vulnerability disclosure program, not a bug bounty. We do not offer or promise payment, rewards, or swag for reports.
+
+## Official Channel
+Report vulnerabilities through this repository's **Security** tab using **Report a vulnerability**. Do not put vulnerability details in a public issue, pull request, discussion, or comment.
 
 ## Safe Harbor
 When conducting vulnerability research, according to this policy, we consider this research conducted under this policy to be:
