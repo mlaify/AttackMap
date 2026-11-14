@@ -5,6 +5,18 @@ All notable changes to AttackMap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-11-14
+
+### Security
+
+- **The GitHub Action's `extras: all` resolved the analyzer plugins from PyPI, where their names were unclaimed.** Since 0.6.2, `[all]` pins the analyzers' released versions (`attackmap-analyzer-python==0.2.0`, …), and the Action installs it with a plain `pip install`, which reads PyPI. None of those names existed on PyPI, so `extras: all` failed to install, and anyone who registered one of the names could have had their code installed in the workflows running the Action. All 15 analyzers are now published on PyPI by their own repositories, so the names are taken and `extras: all` installs them.
+
+### Changed
+
+- **Published on PyPI.** `pip install "attackmap[all]"` / `uv tool install "attackmap[all]"` now work with no extra index. Each repository's `release.yml` uploads the release's own wheel and sdist to PyPI with trusted publishing, in a `pypi` environment that needs the operator's approval, so PyPI and pkg.mlaify.io serve the same files (#417). `scripts/pypi/` sets up the environments and publishes releases that already exist (#418).
+- `[all]` pins `attackmap-analyzer-terraform==0.2.1`: PyPI refuses the 0.2.0 filenames, so terraform 0.2.1 is the same analyzer under a new version. `plugins_lock.py` is regenerated; the other analyzers' commits changed only by their release workflow.
+- README and the external-analyzer guide install from PyPI; the README's links are absolute, so they work on the PyPI project page.
+
 ## [0.6.3] - 2026-11-12
 
 ### Security
@@ -1472,7 +1484,9 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/mlaify/AttackMap/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/mlaify/AttackMap/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/mlaify/AttackMap/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mlaify/AttackMap/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mlaify/AttackMap/compare/v0.5.1...v0.6.0
