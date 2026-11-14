@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-11-14
+
 ### Added
 
 - `scripts/pypi/approve-releases.sh`: approves a round of tag releases in one go (each run's `release` and then `pypi` wait), for the required reviewer. It approves only release.yml runs started by a signed tag on `main` whose version matches, publishes AttackMap after the analyzers its `[all]` pins, and checks PyPI's files against the release's.
@@ -14,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The external-analyzer guide's `pyproject.toml` template lists `attackmap>=0.6.0,<1.0.0` in `dependencies` instead of an optional `core` extra, so a plugin installed on its own works. The 15 official analyzers make the same change.
+- `[all]` pins the analyzers' new patch releases, which depend on `attackmap>=0.6.0,<1.0.0`, so `pip install attackmap-analyzer-<name>` on its own installs a working analyzer: atproto, c, cpp, dotnet, go, iac, java-spring, omeka-s, php-laminas, php-web, python, rust and swift 0.2.1, node-service 0.3.1, terraform 0.2.2. No analyzer code changes. `plugins_lock.py` is regenerated to those releases' commits.
 
 ## [0.6.4] - 2026-11-14
 
@@ -1494,7 +1497,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/mlaify/AttackMap/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/mlaify/AttackMap/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/mlaify/AttackMap/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/mlaify/AttackMap/compare/v0.6.1...v0.6.2
