@@ -22,7 +22,7 @@ from .models import (
     TaintChain,
     TaintFlowStep,
 )
-from .srcpaths import evidence_locations
+from .srcpaths import evidence_locations, is_test_file
 from .taint_sinks import SINK_KINDS, canonical_kind, kind_label
 from .authz import find_bfla_routes
 from .route_auth_fusion import synthesize_unauthenticated_routes, unauthenticated_routes
@@ -348,7 +348,8 @@ def _cited(label: str, value: str, provenance: dict[str, str], hint_key: str) ->
 
 def _is_low_quality_source(path_or_text: str) -> bool:
     normalized = path_or_text.replace("\\", "/").lower()
-    return any(segment in f"/{normalized}/" for segment in LOW_QUALITY_SEGMENTS)
+    # Test code (`*.test.ts`, `test/`, `e2e/`, ...) doesn't serve routes (#386).
+    return any(segment in f"/{normalized}/" for segment in LOW_QUALITY_SEGMENTS) or is_test_file(path_or_text)
 
 
 def _runtime_routes(scan: ScanResult) -> list[Route]:
