@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .md import md_code, md_text
+from .chains import build_attack_chains
 from .context_pack import build_review_context_pack
 from .diagrams import (
     render_attack_paths_dot,
@@ -84,6 +85,7 @@ def write_reports(
     if emit_markdown:
         write("attackmap-exploitability.md", render_exploitability_ranking(exploitability) + "\n")
 
+    attack_chains = build_attack_chains(findings)
     json_report = {
         "scan": scan.model_dump(),
         "architecture_summary": architecture_md,
@@ -108,6 +110,7 @@ def write_reports(
             for s in suppressed
         ],
         "attack_paths": [path.model_dump() for path in attack_paths],
+        "attack_chains": [chain.model_dump() for chain in attack_chains],
         "exploitability": [score.model_dump() for score in exploitability],
     }
     if emit_json:
@@ -119,6 +122,7 @@ def write_reports(
             findings,
             attack_paths,
             suppressed=[(s.finding, s.reason) for s in suppressed],
+            attack_chains=attack_chains,
         )
         write("attackmap-report.sarif", json.dumps(sarif_report, indent=2) + "\n")
 

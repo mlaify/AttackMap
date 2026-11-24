@@ -999,6 +999,40 @@ class AttackPath(BaseModel):
     impact: str
 
 
+# Attacker capabilities that chain steps require and grant (#248).
+Capability = Literal[
+    "net_access_public", "fork_pr", "authn_user", "authn_admin", "code_exec_app", "read_fs",
+    "db_read", "db_write", "secrets", "internal_network", "ci_code_exec", "ci_token",
+    "cloud_creds", "node_root", "cluster_admin",
+]
+
+
+class ChainStep(BaseModel):
+    """One finding as a capability transition: `requires` → `grants`."""
+
+    id: str
+    rule_id: str
+    title: str
+    technique: AttackTechnique | None = None
+    requires: list[Capability]
+    grants: list[Capability]
+    # `<rule>@<file>:<line>` of the finding(s) that justify the step.
+    evidence_ids: list[str]
+    location: FindingLocation | None = None
+    confidence: float
+    precondition_notes: list[str] = Field(default_factory=list)
+
+
+class AttackChain(BaseModel):
+    """Steps ordered so each step's `requires` is met by `start` or an earlier step."""
+
+    id: str
+    start: list[Capability]
+    steps: list[ChainStep]
+    impact: Capability
+    likelihood: float  # product of step confidences
+
+
 AssetKind = Literal[
     "credentials",
     "session",

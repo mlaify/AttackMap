@@ -338,6 +338,191 @@
     "evidence_chains": {
       "type": "array"
     },
+    "attack_chains": {
+      "type": "array",
+      "description": "Findings composed into capability chains (#248): each step's requires is met by start or an earlier step's grants.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "start",
+          "steps",
+          "impact",
+          "likelihood"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "net_access_public",
+                "fork_pr",
+                "authn_user",
+                "authn_admin",
+                "code_exec_app",
+                "read_fs",
+                "db_read",
+                "db_write",
+                "secrets",
+                "internal_network",
+                "ci_code_exec",
+                "ci_token",
+                "cloud_creds",
+                "node_root",
+                "cluster_admin"
+              ]
+            }
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "rule_id",
+                "title",
+                "requires",
+                "grants",
+                "evidence_ids",
+                "confidence"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "rule_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "technique": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "requires": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "net_access_public",
+                      "fork_pr",
+                      "authn_user",
+                      "authn_admin",
+                      "code_exec_app",
+                      "read_fs",
+                      "db_read",
+                      "db_write",
+                      "secrets",
+                      "internal_network",
+                      "ci_code_exec",
+                      "ci_token",
+                      "cloud_creds",
+                      "node_root",
+                      "cluster_admin"
+                    ]
+                  }
+                },
+                "grants": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "net_access_public",
+                      "fork_pr",
+                      "authn_user",
+                      "authn_admin",
+                      "code_exec_app",
+                      "read_fs",
+                      "db_read",
+                      "db_write",
+                      "secrets",
+                      "internal_network",
+                      "ci_code_exec",
+                      "ci_token",
+                      "cloud_creds",
+                      "node_root",
+                      "cluster_admin"
+                    ]
+                  }
+                },
+                "evidence_ids": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "<rule_id>@<file>:<line> of the finding that justifies the step."
+                },
+                "location": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "file"
+                  ],
+                  "properties": {
+                    "file": {
+                      "type": "string"
+                    },
+                    "line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "precondition_notes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "impact": {
+            "type": "string",
+            "enum": [
+              "net_access_public",
+              "fork_pr",
+              "authn_user",
+              "authn_admin",
+              "code_exec_app",
+              "read_fs",
+              "db_read",
+              "db_write",
+              "secrets",
+              "internal_network",
+              "ci_code_exec",
+              "ci_token",
+              "cloud_creds",
+              "node_root",
+              "cluster_admin"
+            ]
+          },
+          "likelihood": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
     "recommendations": {
       "type": "array"
     },

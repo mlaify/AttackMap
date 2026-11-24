@@ -18,7 +18,7 @@ from typing import Any
 
 from .srcpaths import evidence_locations
 from .md import md_text
-from .models import AttackPath, Finding, TaintFlowStep, finding_rule_id
+from .models import AttackChain, AttackPath, Finding, TaintFlowStep, finding_rule_id
 from .taxonomy import CWE_NAMES, cwe_tag, cwe_url, taxonomy_for
 
 
@@ -317,11 +317,38 @@ def _build_code_flows_from_attack_paths(
     return flows
 
 
+def _attach_chain_flows(results: list[dict[str, Any]], chains: list[AttackChain]) -> None:
+    """Each attack chain (#248) becomes a codeFlow on the result of its final
+    step: one threadFlow location per step, at that step's finding."""
+    for chain in chains:
+        last = chain.steps[-1]
+        if last.location is None:
+            continue
+        target = _sarif_location(last.location.file, last.location.line)
+        result = next(
+            (r for r in results if r["ruleId"] == last.rule_id and r.get("locations") == [target]), None
+        )
+        if result is None:
+            continue
+        locations = []
+        for step in chain.steps:
+            loc = _sarif_location(step.location.file, step.location.line) if step.location else {}
+            loc["message"] = {"text": f"{step.title} ({' + '.join(step.requires)} -> {' + '.join(step.grants)})"}
+            locations.append({"location": loc})
+        result.setdefault("codeFlows", []).append(
+            {
+                "message": {"text": f"{chain.id}: {' + '.join(chain.start)} -> {chain.impact}"},
+                "threadFlows": [{"locations": locations}],
+            }
+        )
+
+
 def build_sarif(
     findings: list[Finding],
     attack_paths: list[AttackPath] | None = None,
     *,
     suppressed: list[tuple[Finding, str]] | None = None,
+    attack_chains: list[AttackChain] | None = None,
 ) -> dict[str, Any]:
     """Serialize `findings` (+ optional `attack_paths`) as a SARIF 2.1.0
     log dict. Caller is responsible for writing it to disk.
@@ -335,6 +362,7 @@ def build_sarif(
     # resolves in viewers.
     rules = _build_rules(findings + [f for f, _ in suppressed])
     results = _build_results(findings)
+    _attach_chain_flows(results, attack_chains or [])
     for f, reason in suppressed:
         results.extend(_build_result(f, suppression_reason=reason))
 

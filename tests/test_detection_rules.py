@@ -415,7 +415,7 @@ def test_review_json_validates_against_the_schema() -> None:
     payload = build_defensive_review_json(scan, surfaces, findings, generate_attack_paths(scan, surfaces))
     schema = json.loads((ROOT / "schemas" / "defensive-review.schema.json").read_text(encoding="utf-8"))
     jsonschema.validate(json.loads(json.dumps(payload)), schema)
-    assert payload["schema_version"] == "1.5.0"
+    assert payload["schema_version"] == "1.6.0"
     assert any(row["rule_id"] == "sql-injection" and row["sigma_rules"] == 1 for row in payload["detection_coverage"])
     assert any(o["sigma"] for o in payload["detection_opportunities"])
 
