@@ -171,6 +171,9 @@ class SinkFlow:
     sanitizer: str | None = None
     steps: list[Step] = field(default_factory=list)
     span: tuple[int, int] | None = None  # enclosing function (start_line, end_line), decorators included
+    # Untraced, but the enclosing function's own parameters reach the arg: (function name, parameter
+    # indexes). A caller in another file may pass request input there (one hop, `external_calls`).
+    helper: tuple[str, tuple[int, ...]] | None = None
 
 
 def _verdict(kind: str, atoms: list[Atom], sink_line: int, sink_note: str, span: tuple[int, int]) -> SinkFlow:
@@ -1606,7 +1609,48 @@ class _TextFlow:
                 if (a.kind, a.line) == (flow.source_kind, flow.source_line) and a.ident in self._caller_span:
                     flow.span = self._caller_span[a.ident]
                     break
+        elif not flow.sanitized:
+            flow.helper = self._helper_params(kind, hdr, atoms)
         return flow
+
+    def _helper_params(self, kind: str, hdr: tuple[int, int, int], atoms: list[Atom]) -> tuple[str, tuple[int, ...]] | None:
+        hs, po, _ = hdr
+        params = {a.label for a in atoms if a.weight == "param" and a.sanitizer_for(kind) is None}
+        order = self._param_order.get(po) if po >= 0 else None
+        word = _TRAILING_IDENT_RE.search(self.m[hs:po].rstrip()) if params and order else None
+        if word is None or word.group() in _KEYWORDS:
+            return None
+        idx = tuple(i for i, n in enumerate(order) if n in params)
+        return (word.group(), idx) if idx else None
+
+    def external_calls(self, name: str, idxs: tuple[int, ...], kind: str) -> list[tuple[Atom, tuple[int, int]]]:
+        """Request input this file passes to ``name`` (any receiver: ``svc.name(…)``) at ``idxs``, with the
+        calling function's span. The caller's sanitizers and dominating guards apply."""
+        out: list[tuple[Atom, tuple[int, int]]] = []
+        calls = 0
+        for mt in re.finditer(rf"(?<![\w$]){re.escape(name)}\s*\(", self.m):
+            p = mt.end() - 1
+            close = self._match_paren(p, _MAX_ARGS)
+            if self.m[close + 1 : close + 12].lstrip().startswith(("{", "throws")):
+                continue  # a definition, not a call
+            found = self._enclosing_fn(p)
+            if found is None or found[1][1] == p:
+                continue
+            if calls >= _MAX_CALLERS:
+                break
+            calls += 1
+            ck, chdr = found
+            env = self._env_at(ck, chdr, p)
+            args = self._split_args(p + 1, close)
+            line = line_number(self.raw, p)
+            got: list[Atom] = []
+            for i in idxs:
+                if i < len(args):
+                    got += [a.with_step(line, "propagation", f"passed to {name}()") for a in self._eval(*args[i], env)]
+            got = self._guards(kind, ck, chdr, p, env, _dedupe(got))
+            span = (line_number(self.raw, chdr[0]), line_number(self.raw, self._body(ck)[1]))
+            out += [(a, span) for a in got if a.weight == "high" and a.sanitizer_for(kind) is None]
+        return out
 
 
 # =============================================================================
@@ -1643,6 +1687,10 @@ class FileFlow:
                 self._failed = True
                 return None
         return self._impl
+
+    def external_calls(self, name: str, idxs: tuple[int, ...], kind: str) -> list[tuple[Atom, tuple[int, int]]]:
+        impl = self._get()
+        return impl.external_calls(name, idxs, kind) if isinstance(impl, _TextFlow) else []
 
     def in_comment(self, off: int) -> bool:
         """True when ``off`` sits in a comment (brace languages). A string literal isn't a comment: code in a
