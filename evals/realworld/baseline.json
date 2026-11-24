@@ -8,18 +8,18 @@
       "expected_total": 6
     },
     "crypto": {
-      "precision": 0.0,
-      "recall": 0.0,
-      "tp": 0,
-      "fp": 1,
-      "expected_total": 1
+      "precision": 0.5,
+      "recall": 0.5,
+      "tp": 2,
+      "fp": 2,
+      "expected_total": 6
     },
     "injection": {
-      "precision": 0.8333333333333334,
-      "recall": 0.5833333333333334,
-      "tp": 5,
+      "precision": 0.9,
+      "recall": 0.6785714285714286,
+      "tp": 9,
       "fp": 1,
-      "expected_total": 12
+      "expected_total": 28
     },
     "token_auth": {
       "precision": 1.0,
