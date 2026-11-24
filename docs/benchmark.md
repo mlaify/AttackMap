@@ -76,3 +76,19 @@ their known-clean twins (basename-reduced path, fixed-host URL).
 
 "Before" is v0.5.0 scored against the same (extended) corpus. The full run
 history lives in [`evals/benchmark/HISTORY.md`](../evals/benchmark/HISTORY.md).
+
+## Real-world corpus and scan-time budget
+
+`evals/realworld/benchmark.json` pins public repos (OWASP Juice Shop, DVWA) to
+a commit, with labels from each project's own vulnerability documentation.
+`python scripts/realworld_corpus.py DEST` fetches them and `attackmap bench
+--benchmark evals/realworld/benchmark.json --root DEST --baseline
+evals/realworld/baseline.json` scores them; it fails when a class drops more
+than 5 points below the committed baseline. `evals/realworld/HISTORY.md`
+records each change's delta.
+
+`evals/perf/budget.json` pins a large repo (the atproto monorepo, about 4,000
+files) with a wall-clock budget. Run `python scripts/realworld_corpus.py DEST
+evals/perf/budget.json`, then `python scripts/perf_budget.py DEST`. It prints
+seconds per phase and fails over budget. Phase times come from `ScanProgress`,
+which records them whether or not progress is drawn.

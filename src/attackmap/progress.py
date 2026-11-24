@@ -59,10 +59,22 @@ class ScanProgress:
         self._spin_stop: threading.Event | None = None
         self._spin_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        # Wall-clock seconds per phase label, recorded even when rendering is
+        # off, for the performance budget (#202).
+        self.timings: dict[str, float] = {}
+        self._phase: tuple[str, float] | None = None
+
+    def _mark(self, label: str | None) -> None:
+        now = time.monotonic()
+        if self._phase is not None:
+            name, started = self._phase
+            self.timings[name] = self.timings.get(name, 0.0) + now - started
+        self._phase = (label, now) if label is not None else None
 
     # --- per-file phase ---------------------------------------------------
 
     def begin(self, total: int, label: str = "Scanning files") -> None:
+        self._mark(label)
         if not self._enabled:
             return
         self._stop_spinner()
@@ -82,6 +94,7 @@ class ScanProgress:
 
     def stage(self, label: str) -> None:
         """Switch to an indeterminate phase with an animated spinner."""
+        self._mark(label)
         if not self._enabled:
             return
         self._stop_spinner()
@@ -104,6 +117,7 @@ class ScanProgress:
         thread.start()
 
     def done(self, summary: str = "") -> None:
+        self._mark(None)
         if not self._enabled:
             return
         self._stop_spinner()
