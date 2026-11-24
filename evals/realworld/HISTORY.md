@@ -74,3 +74,18 @@ injection), #457 (crypto matches in comments/HTML).
 | `unauth_state_change` | 0% | 0% | 0 / 1 / 1 |
 
 Crypto 50% / 50% → 80% / 83%: comments, prints and prose no longer match (#457), and an MD5 wrapper called with a password is found (#446). #455 and #456 change per-location results inside matched findings (DVWA `exec/impossible.php` is sanitized; `header()` Location is an open redirect).
+
+## PyGoat case and its fixes (2026-11-24)
+
+Corpus: + OWASP PyGoat v3.0.0 (`e5808dd`), 15 labels. 59 labels in total.
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 94% | 72% | 16 / 1 / 39 |
+| `bola` | 100% | 83% | 2 / 0 / 6 |
+| `token_auth` | 100% | 100% | 3 / 0 / 2 |
+| `session_auth` | 100% | 100% | 1 / 0 / 1 |
+| `crypto` | 86% | 89% | 6 / 1 / 9 |
+| `unauth_state_change` | 0% | 0% | 0 / 2 / 1 |
+
+Fixes found on PyGoat: `c`/`cur` cursors are SQL sinks (`sql_injection_lab` was missed); `yaml.load(Loader=yaml.Loader|UnsafeLoader|FullLoader)` is unsafe; a filename allow-list is no guard for deserialized content; SAX `setFeature(feature_external_ges, True)` is XXE; `redirect(request.referrer)` is not an open redirect. Still missed: Pillow `ImageMath.eval` (CVE-2023-50447) and the stored SSTI (template written to a file, then rendered).

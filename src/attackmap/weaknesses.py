@@ -141,6 +141,10 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
             r"|\.setExpandEntityReferences\s*\(\s*true\s*\)"
             r"|disallow-doctype-decl['\"]?\s*,\s*false"
             r"|FEATURE_SECURE_PROCESSING[^;\n]*false"
+            # SAX external entities on: Python's feature_external_ges/pes and
+            # the Java feature URIs; libxmljs `noent: true`.
+            r"|setFeature\s*\(\s*(?:feature_external_(?:ges|pes)|['\"]http://xml\.org/sax/features/external-(?:general|parameter)-entities['\"])\s*,\s*(?:True|true|1)\b"
+            r"|\bnoent\s*:\s*true\b"
         ),
     ),
     # --- ReDoS (catastrophic backtracking) ------------------------------
