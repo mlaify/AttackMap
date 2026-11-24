@@ -216,6 +216,166 @@
           "note": "changeProductChallenge: finale-generated PUT /api/Products/:id has no auth (server.ts:402 is commented out)"
         }
       ]
+    },
+    {
+      "id": "dvwa",
+      "path": "dvwa",
+      "repo": "https://github.com/digininja/DVWA.git",
+      "ref": "2.5",
+      "commit": "a96943dc1f52f390ee5df72144660636c4b7dd06",
+      "modules": [
+        "attackmap-analyzer-php-web"
+      ],
+      "label_source": "each module's source/{low,medium,high}.php is vulnerable by design and impossible.php is the fixed twin (no labels: a finding there is a false positive); checked against the code at the pinned commit",
+      "expected": [
+        {
+          "category": "injection",
+          "file": "vulnerabilities/sqli/source/low.php",
+          "line": 11,
+          "severity": "high",
+          "note": "SQL Injection (low): $_REQUEST['id'] quoted into the query"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/sqli/source/medium.php",
+          "line": 12,
+          "severity": "high",
+          "note": "SQL Injection (medium): escaped but unquoted numeric context"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/sqli/source/high.php",
+          "line": 11,
+          "severity": "high",
+          "note": "SQL Injection (high): id stored in the session by session-input.php (second order)"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/sqli_blind/source/low.php",
+          "line": 13,
+          "severity": "high",
+          "note": "Blind SQLi (low): $_GET['id']"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/sqli_blind/source/medium.php",
+          "line": 15,
+          "severity": "high",
+          "note": "Blind SQLi (medium): escaped, unquoted"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/sqli_blind/source/high.php",
+          "line": 13,
+          "severity": "high",
+          "note": "Blind SQLi (high): $_COOKIE['id']"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/brute/source/low.php",
+          "line": 13,
+          "severity": "high",
+          "note": "Brute Force (low): username and password concatenated into the login query"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/exec/source/low.php",
+          "line": 10,
+          "severity": "high",
+          "note": "Command Injection (low): ip appended to ping"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/exec/source/medium.php",
+          "line": 19,
+          "severity": "high",
+          "note": "Command Injection (medium): incomplete && / ; blacklist"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/exec/source/high.php",
+          "line": 26,
+          "severity": "high",
+          "note": "Command Injection (high): blacklist misses '|' without a trailing space"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/fi/index.php",
+          "line": 36,
+          "severity": "high",
+          "note": "File Inclusion: include($file) with $_GET['page'] set by source/{low,medium,high}.php"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/open_redirect/source/low.php",
+          "line": 4,
+          "severity": "high",
+          "note": "Open HTTP Redirect (low)"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/open_redirect/source/medium.php",
+          "line": 11,
+          "severity": "high",
+          "note": "Open HTTP Redirect (medium): only http(s):// blocked; //host works"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/open_redirect/source/high.php",
+          "line": 5,
+          "severity": "high",
+          "note": "Open HTTP Redirect (high): any URL containing info.php"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/view_source.php",
+          "line": 60,
+          "severity": "high",
+          "note": "id and security from $_GET form the path; the switch default doesn't stop (reads any .php source)"
+        },
+        {
+          "category": "injection",
+          "file": "vulnerabilities/view_help.php",
+          "line": 20,
+          "severity": "high",
+          "note": "id from $_GET forms a path whose contents are eval'd"
+        },
+        {
+          "category": "crypto",
+          "file": "dvwa/includes/DBMS/MySQL.php",
+          "line": 55,
+          "severity": "medium",
+          "note": "seed users' passwords stored as unsalted MD5"
+        },
+        {
+          "category": "crypto",
+          "file": "vulnerabilities/brute/source/low.php",
+          "line": 9,
+          "severity": "medium",
+          "note": "login compares md5($_GET['password'])"
+        },
+        {
+          "category": "crypto",
+          "file": "vulnerabilities/cryptography/source/ecb_attack.php",
+          "line": 3,
+          "severity": "medium",
+          "note": "AES-128-ECB"
+        },
+        {
+          "category": "crypto",
+          "file": "vulnerabilities/cryptography/source/medium.php",
+          "line": 3,
+          "severity": "medium",
+          "note": "AES-128-ECB"
+        },
+        {
+          "category": "crypto",
+          "file": "vulnerabilities/cryptography/source/token_library_high.php",
+          "line": 5,
+          "severity": "medium",
+          "note": "static IV define(\"IV\", \"1234567812345678\")"
+        }
+      ]
     }
   ]
 }

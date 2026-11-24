@@ -42,3 +42,23 @@ Labels: +4 BOLA on Juice Shop (checkout, coupon, BasketItems, Recycles), found b
   location 5 of 9 candidates are real. Public catalog lookups (deliveries, product
   reviews, order tracking) remain false positives.
 - #441: `hardcoded-secret` 686 → 38 locations (advisory, unscored).
+
+## #453 — PHP script entry points; DVWA case (2026-11-24)
+
+Corpus: + DVWA 2.5 (`a96943d`), 21 labels (low/medium/high are vulnerable by
+design, `impossible.php` is the clean twin). 43 labels in total.
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 83% → 90% | 58% → 68% | 9 / 1 / 28 |
+| `bola` | 100% | 83% | 2 / 0 / 6 |
+| `token_auth` | 100% | 100% | 3 / 0 / 2 |
+| `crypto` | 0% → 50% | 0% → 50% | 2 / 2 / 6 |
+| `unauth_state_change` | 0% | 0% | 0 / 1 / 1 |
+
+DVWA injection 100% P / 75% R per finding. Before #453 DVWA had no injection
+finding. Misses: escaped-but-unquoted numeric SQL (medium), the session-stored
+id (high, second order), `fi/index.php` include (source in another file).
+Per-location false positives inside matched findings are filed: #455
+(`exec/impossible.php`), #456 (`header()` Location reported as header
+injection), #457 (crypto matches in comments/HTML).

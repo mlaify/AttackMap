@@ -92,7 +92,9 @@ def _chains(lang: str, name: str, method: str, route: str) -> list[TaintChain]:
         root=str(root),
         routes=[Route(path=route, method=method, file=name, line=_route_line(root / name, route))],
     )
-    return analyze_taint(scan, root)
+    # Only the fixture's own route: the other PHP fixtures in the directory are
+    # script entry points of their own (#453).
+    return [c for c in analyze_taint(scan, root) if c.route_file == name]
 
 
 def _at_sink(chains: list[TaintChain], kind: str, line: int) -> TaintChain:
