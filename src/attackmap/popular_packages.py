@@ -163,7 +163,7 @@ NPM: frozenset[str] = frozenset((
     "package-json", "papaparse", "parcel", "parent-module", "passport", "passport-jwt",
     "passport-local", "path-exists", "path-is-absolute", "path-key", "path-parse",
     "path-to-regexp", "pdfkit", "pg", "pg-promise", "picocolors", "picomatch", "pino",
-    "pkg-dir", "playwright", "postcss", "postcss-loader", "prebuild-install",
+    "pkg-dir", "playwright", "postcss", "postcss-loader", "preact", "prebuild-install",
     "prettier", "prisma", "process-nextick-args", "prompts", "prop-types",
     "proxy-addr", "psl", "pug", "pump", "punycode", "puppeteer", "qs", "query-string",
     "querystring", "range-parser", "raw-body", "rc", "react", "react-bootstrap",

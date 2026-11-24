@@ -508,7 +508,11 @@ def _check_oauth(c: _Collector, suffix: str) -> None:
             c.weakness("oauth_missing_pkce", "medium", m.start(), "public client without `code_challenge`")
     for m in _PKCE_DISABLED.finditer(content):
         if not c.commented(m.start()):
-            c.weakness("oauth_missing_pkce", "medium", m.start(), "PKCE disabled or `plain`")
+            plain = "plain" in m.group(0).lower()
+            c.weakness(
+                "oauth_missing_pkce", "medium", m.start(),
+                "`plain` PKCE accepted (OAuth 2.1 requires S256)" if plain else "PKCE disabled",
+            )
     if suffix in JS_TS_SUFFIXES and _PASSPORT_IMPORT.search(content):
         for m in _PASSPORT_STRATEGY.finditer(content):
             if c.commented(m.start()) or _PASSPORT_SKIP.search(m.group(1)):

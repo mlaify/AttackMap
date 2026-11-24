@@ -191,6 +191,18 @@ _PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
 )
 
 
+_CSRF_COOKIE_NAME = re.compile(r"csrf|xsrf", re.IGNORECASE)
+_CSRF_COOKIE_WINDOW = 300
+
+
+def _is_csrf_cookie_http_only(content: str, match: re.Match[str]) -> bool:
+    """`httpOnly: false` on a double-submit CSRF cookie: the page's script must
+    read the token, so it isn't a weakness (#387). Only `httpOnly`."""
+    if not match.group(0).lower().startswith("httponly"):
+        return False
+    return _CSRF_COOKIE_NAME.search(content, max(0, match.start() - _CSRF_COOKIE_WINDOW), match.start()) is not None
+
+
 def find_web_hardening_issues(content: str, rel_file: str) -> list[WebHardeningIssue]:
     """Return web-hardening issues in one file's ``content`` (deduped by
     (kind, line))."""
@@ -234,6 +246,8 @@ def find_web_hardening_issues(content: str, rel_file: str) -> list[WebHardeningI
 
     for kind, severity, pattern in _PATTERNS:
         for match in pattern.finditer(content):
+            if kind == "insecure_cookie" and _is_csrf_cookie_http_only(content, match):
+                continue
             _add(kind, severity, match.start())
 
     return out

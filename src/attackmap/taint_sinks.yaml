@@ -286,8 +286,7 @@ sinks:
      regex: '\b(?:response|resp|res|r)\s*\.\s*headers\s*\[[^\]\n]{1,200}\]\s*=(?!=)'}
   - {id: py-set-header, kind: header_injection, langs: [python], cwe: 113, gate: tainted, args: [1],
      regex: '\.\s*(?:set_header|add_header)\s*\('}
-  - {id: express-set-header, kind: header_injection, langs: [js], cwe: 113, gate: tainted, args: [1],
-     regex: '\bres\s*\.\s*(?:setHeader|header|set|append)\s*\('}
+  # No Node sink: node:http rejects CR/LF in header values (ERR_INVALID_CHAR) (#387).
   - {id: go-header-set, kind: header_injection, langs: [go], cwe: 113, gate: tainted, args: [1],
      regex: '\.\s*Header\s*\(\s*\)\s*\.\s*(?:Set|Add)\s*\('}
   - {id: php-header, kind: header_injection, langs: [php], cwe: 113, gate: tainted,
