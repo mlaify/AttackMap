@@ -46,6 +46,7 @@ def write_reports(
     analyzer_metadata: list[dict[str, object]] | None = None,
     suppressed: list[SuppressedFinding] | None = None,
     output_format: str = "all",
+    confidence_filter: dict[str, object] | None = None,
 ) -> None:
     """Write the report set for one scan.
 
@@ -111,6 +112,8 @@ def write_reports(
             }
             for s in suppressed
         ],
+        # `--min-confidence` (#198): the threshold and how many findings it hid.
+        **({"confidence_filter": confidence_filter} if confidence_filter else {}),
         "attack_paths": [path.model_dump() for path in attack_paths],
         "attack_chains": [chain.model_dump() for chain in attack_chains],
         "exploitability": [score.model_dump() for score in exploitability],

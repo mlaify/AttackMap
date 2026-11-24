@@ -86,6 +86,21 @@
         ]
       }
     },
+    "confidence_filter": {
+      "type": "object",
+      "properties": {
+        "min_confidence": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "filtered": {
+          "type": "integer"
+        }
+      }
+    },
     "attack_paths": {
       "type": "array",
       "items": {
