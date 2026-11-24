@@ -351,6 +351,14 @@ GENERIC_GUARDS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
+        # A value checked to be a number (or an IP) can't carry a payload (#455).
+        "numeric validation",
+        re.compile(
+            r"\b(?:is_numeric|ctype_digit|is_int|Number\s*\.\s*isInteger|Number\s*\.\s*isSafeInteger)\s*\("
+            r"|\bfilter_var\s*\([^;]{0,200}?FILTER_VALIDATE_(?:INT|FLOAT|IP)\b|\.(?:isdigit|isdecimal)\s*\(\s*\)"
+        ),
+    ),
+    (
         "regex validation",
         re.compile(r"\bre\.fullmatch\s*\(|\bpreg_match\s*\(|\.MatchString\s*\(|\.matches\s*\(\s*\"\^"),
     ),
