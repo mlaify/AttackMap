@@ -669,3 +669,49 @@ def test_java_string_matches_is_a_full_match_guard(tmp_path: Path) -> None:
     scan = ScanResult(root=str(tmp_path), routes=[Route(path="/s", method="POST", file="S.java", line=3)])
     [chain] = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "ssrf"]
     assert chain.sanitized
+
+
+def test_a_not_found_exit_after_a_lookup_validates_the_key(tmp_path: Path) -> None:
+    # Juice Shop vulnCodeSnippet (#444): the key named a stored record, or the handler returned. The record
+    # itself may hold attacker-written data (Juice Shop's stored username SSTI), and a bare presence check
+    # of the raw input proves nothing.
+    (tmp_path / "app.js").write_text(
+        "app.post('/a', async (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  const snippet = await retrieveSnippet(key)\n"
+        "  if (snippet == null) { return res.status(404).end() }\n"
+        "  fs.readFileSync('./data/' + key + '.yml')\n"
+        "})\n"
+        "app.post('/b', (req, res) => {\n"
+        "  const user = sessions.get(req.cookies.token)\n"
+        "  if (!user) { return next(new Error('blocked')) }\n"
+        "  fs.writeFileSync(`uploads/${user.data.id}.png`, buf)\n"
+        "})\n"
+        "app.post('/c', (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  if (!key) { return res.status(400).end() }\n"
+        "  fs.readFileSync('./data/' + key)\n"
+        "})\n"
+        "app.post('/d', async (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  let rec\n"
+        "  try {\n"
+        "    rec = await retrieveSnippet(key)\n"
+        "    if (rec == null) { return res.status(404).end() }\n"
+        "  } catch (e) { return next(e) }\n"
+        "  fs.readFileSync('./data/' + key)\n"
+        "})\n"
+        "app.post('/e', (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  const fixes = readFixes(key)\n"
+        "  if (fixes.items.length === 0) { res.status(404).end() } else { fs.readFileSync('./f/' + key) }\n"
+        "  if (fixes) { res.end() } else { fs.readFileSync('./g/' + key) }\n"
+        "})\n",
+        encoding="utf-8",
+    )
+    spec = (("/a", 1), ("/b", 7), ("/c", 12), ("/d", 17), ("/e", 26))
+    routes = [Route(path=p, method="POST", file="app.js", line=n) for p, n in spec]
+    chains = [c for c in analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path) if c.sink_kind == "dynamic_open"]
+    assert sorted((c.sink_line, c.sanitized) for c in chains) == [
+        (5, True), (10, False), (15, False), (24, True), (29, True), (30, False)
+    ]

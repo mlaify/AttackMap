@@ -108,3 +108,7 @@ WebGoat injection went from 67% / 19% to 100% / 82%. Fixes: request input passed
 ## #472 Java JWT (2026-11-24)
 
 token_auth 100% / 40% → 100% / 100% (5 / 0 / 5); no other class changes. Core now checks jjwt and auth0 java-jwt in Java/Kotlin: `Jwts.parser()…parse(token)` accepts unsigned tokens, short hard-coded HMAC keys are reported at the literal or its constant, and `Algorithm.none()` and `JWT.decode` without `JWT.require` are flagged. On WebGoat this reports 7 locations, all in the JWT lessons.
+
+## #444 lookup validation (2026-11-25)
+
+No class totals change: Juice Shop's path-traversal finding is aggregated, and it keeps one flow (`profileImageFileUpload.ts:42`, a path built from the session record's `data.id`). The `vulnCodeSnippet.ts:90` / `vulnCodeFixes.ts:83` sinks behind it are gone. The stored-username SSTI (`GET /profile:65`) stays matched: a lookup validates its key, not the record it returns.
