@@ -204,6 +204,10 @@ NOT_GATED = NOT_GATED + [
     "const isAnon = req.user == null;\nif (!isAnon) return res.redirect('/');",
     # the rejection itself writes
     "const session = await getSession(req);\nif (!session) return json(await db.item.deleteMany());",
+    # #390: the rejection hands the request to a guest flow
+    "const session = await getSession(req);\nif (!session) return res.json(processGuestOrder(req.body));",
+    # #390: a non-awaited call acts on the request before the gate
+    "spawn('sh', ['-c', req.body.cmd]);\nconst session = await getSession(req);\nif (!session) return res.status(401).end();",
 ]
 
 

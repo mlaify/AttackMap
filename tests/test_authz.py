@@ -1733,3 +1733,21 @@ def test_java_class_level_role_annotation_is_judged_by_its_role() -> None:
     cls = '@RestController\n@PreAuthorize("hasRole(\'{}\')")\npublic class AdminController {{\n}}\n'
     assert _chain_roles("A.java", cls.format("ADMIN")) is True
     assert _chain_roles("A.java", cls.format("USER")) is False
+
+
+def test_line_separators_do_not_shift_the_bfla_handler_span(tmp_path: Path) -> None:
+    # #391: Route.line counts `\n` only; a U+2028 or `\f` above must not make
+    # the open admin route borrow the guarded handler's role check.
+    for sep in ("\u2028", "\f"):
+        (tmp_path / "admin.js").write_text(
+            f"// note{sep}more\n"
+            "app.delete('/admin/a/:id', requireAuth, async (req, res) => { requireAdmin(req); await A.remove(req.params.id); });\n"
+            "app.delete('/admin/b/:id', requireAuth, async (req, res) => { await B.remove(req.params.id); });\n",
+            newline="",
+        )
+        routes = [
+            Route(path=f"/admin/{n}/:id", method="DELETE", file="admin.js", line=line, auth="required", guards=["requireAuth"])
+            for n, line in (("a", 2), ("b", 3))
+        ]
+        [finding] = _bfla_findings(ScanResult(root=str(tmp_path), routes=routes))
+        assert {loc.line for loc in finding.locations} == {3}, sep

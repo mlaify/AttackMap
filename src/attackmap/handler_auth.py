@@ -141,6 +141,25 @@ _TRY_OPEN = re.compile(r"\btry\s*\Z")
 _BRANCH_WRITE = re.compile(
     r"(?<![\w$.])await\s|\.\s*(?:create|update|upsert|delete|insert|save|remove|destroy|exec|execute|query|run)\w{0,40}\s*\("
 )
+# A call handed request input (`processGuestOrder(req.body)`,
+# `spawn('sh', ['-c', req.body.cmd])`): it acts on the request whatever its
+# name, so it is neither a rejection nor safe before a gate (#390).
+_REQUEST_DATA_CALL = re.compile(
+    r"(?<![\w$])([A-Za-z_$][\w$]{0,60})\s*\((?=[^;{}()]{0,300}?(?<![\w$.])(?:req|request)\s*\.\s*(?:body|query|params|files?)\b)"
+)
+# Keywords, and validators that only read the input (`schema.parseAsync(req.body)`).
+_NOT_A_HANDOFF = re.compile(
+    r"(?:if|while|for|switch|catch|return|typeof|await|Boolean|String|Number|"
+    r"(?:safe)?[pP]arse\w*|validate\w*|is[A-Z]\w*|assert\w*)"
+)
+
+
+def _request_data_call(code: str, start: int = 0, end: int | None = None) -> re.Match[str] | None:
+    end = len(code) if end is None else end
+    for match in _REQUEST_DATA_CALL.finditer(code, start, end):
+        if not _NOT_A_HANDOFF.fullmatch(match.group(1)):
+            return match
+    return None
 _LITERAL_START = re.compile(r"(?<!\s)\s*+(?:['\"`\d]|null\b|false\b|undefined\b)")
 # A literal return and nothing else (strings are masked to spaces by now).
 _LITERAL_ONLY = re.compile(
@@ -299,7 +318,7 @@ def _rejects(statements: list[str]) -> bool:
         return False
     first = statements[0]
     second = statements[1] if len(statements) > 1 else ""
-    if _BRANCH_WRITE.search(first) or _BRANCH_WRITE.search(second):
+    if any(_BRANCH_WRITE.search(s) or _request_data_call(s) for s in (first, second)):
         return False  # `return json(await db.item.deleteMany())`: the rejection writes
     if _REJECTING_FIRST.match(first):
         return True
@@ -508,9 +527,9 @@ def _first_unsafe(code: str, body_open: int, body_close: int) -> int:
     handleGuest(req, res)`). Computed once per body; a gate counts only
     before it."""
     first = body_close
-    mutation = _MUTATION.search(code, body_open, body_close)
-    if mutation is not None:
-        first = mutation.start()
+    for hit in (_MUTATION.search(code, body_open, first), _request_data_call(code, body_open, first)):
+        if hit is not None and hit.start() < first:
+            first = hit.start()
     for match in _AWAIT.finditer(code, body_open, first):
         if _unsafe_await(code, match, first):
             first = match.start()
