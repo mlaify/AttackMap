@@ -560,7 +560,7 @@ class _ConfigControllerResolver:
             text = _read_file_content("composer.json", self.root, self.cache)
             try:
                 data = json.loads(text) if text else {}
-            except ValueError:
+            except (ValueError, RecursionError):
                 data = {}
             psr4 = data.get("autoload", {}).get("psr-4", {}) if isinstance(data, dict) else {}
             if isinstance(psr4, dict):

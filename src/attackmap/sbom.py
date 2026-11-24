@@ -61,7 +61,7 @@ def analyze_sbom(root: str | Path) -> list[DependencyHint]:
         rel = str(manifest.relative_to(root_path)).replace("\\", "/")
         try:
             manifest_hints.extend(_parse_manifest(manifest, rel))
-        except (OSError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError, json.JSONDecodeError, RecursionError):
             # A malformed manifest shouldn't sink the whole scan; skip it.
             continue
 

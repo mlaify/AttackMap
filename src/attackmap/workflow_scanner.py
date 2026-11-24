@@ -241,8 +241,8 @@ def _load_yaml(path: Path, yaml):  # type: ignore[no-untyped-def]
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
         data = yaml.safe_load(text)
-    except (OSError, yaml.YAMLError):  # type: ignore[attr-defined]
-        return None, None
+    except (OSError, RecursionError, yaml.YAMLError):  # type: ignore[attr-defined]
+        return None, None  # deeply nested input exhausts the recursive parser (#199)
     return (data, text) if isinstance(data, dict) else (None, None)
 
 
@@ -278,7 +278,7 @@ def scan_workflows(root: str | Path) -> list[WorkflowIssue]:
             continue
         try:
             data = yaml.safe_load(text)
-        except yaml.YAMLError:  # type: ignore[attr-defined]
+        except (RecursionError, yaml.YAMLError):  # type: ignore[attr-defined]
             continue
         if not isinstance(data, dict):
             continue
