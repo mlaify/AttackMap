@@ -612,12 +612,18 @@ _ROUTER_RECEIVERS = frozenset(
 )
 
 
+_URL_SCHEME_PREFIX_RE = re.compile(r"[A-Za-z][\w+.-]{0,30}://")
+
+
 def _looks_like_route(receiver: str, raw_path: str) -> bool:
     """True when `<receiver>.<verb>("<raw_path>")` is plausibly a real HTTP
-    route: either the path is URL-shaped (leading `/` or a `*` wildcard) or the
-    receiver looks like an app/router. Cuts the `xxx.get("config-key")` and
-    `headers.delete("content-type")` false routes (#99)."""
-    if raw_path.startswith("/") or raw_path == "*":
+    route: either the path starts with `/` or the receiver looks like an
+    app/router. Cuts the `xxx.get("config-key")`, `headers.delete("content-type")`
+    (#99) and `map.get('*')` false routes. An absolute URL is a client call
+    (`http.post('http://host/...')`), never a route (#386)."""
+    if _URL_SCHEME_PREFIX_RE.match(raw_path):
+        return False
+    if raw_path.startswith("/"):
         return True
     lower = receiver.lower()
     return lower in _ROUTER_RECEIVERS or lower.endswith("router") or lower.endswith("app")

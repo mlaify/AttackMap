@@ -1,3 +1,6 @@
+from pathlib import Path
+
+from attackmap.scanner import scan_repo
 from attackmap.models import AttackSurface, AuthHint, DatabaseHint, EdgeHint, ExternalCall, FrameworkHint, ProtocolHint, Route, ScanResult, SecretHint, ServiceHint
 from attackmap.threat_model import (
     _build_probable_chains,
@@ -780,3 +783,20 @@ def test_unauth_outbound_integration_is_decided_per_route() -> None:
     finding = _rules(scan)["unauth-outbound-integration"]
     assert [loc.file for loc in finding.locations] == ["hooks.js"]
     assert finding.confidence == "low"
+
+
+def test_test_and_e2e_routes_do_not_reach_route_findings(tmp_path: Path) -> None:
+    # #386: e2e servers and plugin-reported routes in test files aren't the app.
+    src = (
+        "const express=require('express');const {Pool}=require('pg');const pool=new Pool();const app=express();\n"
+        "app.get('/items', async (req,res)=>{ const r = await pool.query('SELECT * FROM items'); res.json(r.rows) });\n"
+    )
+    for name in ("src/items.js", "__e2e__/server.js"):
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).write_text(src)
+    scan = scan_repo(tmp_path)
+    plugin_route = scan.routes[0].model_copy(update={"file": "src/items.test.ts"})
+    scan.routes.append(plugin_route)
+    scan.databases.append(scan.databases[0].model_copy(update={"file": "src/items.test.ts"}))
+    [finding] = [f for f in generate_findings(scan) if f.rule_id == "public-data-route"]
+    assert {loc.file for loc in finding.locations} == {"src/items.js"}

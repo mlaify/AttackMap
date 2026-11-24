@@ -1292,3 +1292,15 @@ def test_routes_still_get_their_mount_prefix() -> None:
     content = "app.use('/api', router);\nrouter.use('/v1', v1);\nv1.post('/users', handler);\n"
     routes = _extract_javascript_routes(content, "server.js")
     assert ("/api/v1/users", "POST") in {(r.path, r.method) for r in routes}
+
+
+def test_client_calls_and_map_lookups_are_not_express_routes(tmp_path: Path) -> None:
+    # #386: an absolute URL is a client call; `map.get('*')` is a Map lookup.
+    (tmp_path / "setup.js").write_text(
+        "http.post('http://localhost:1986/' + SERVER_PATH, {a: 1})\n"
+        "axios.get('https://api.example.com/x')\n"
+        "const star = nsidActions.get('*')\n"
+        "app.get('*', (req, res) => res.sendFile('index.html'))\n"
+        "router.post('/upload', handler)\n"
+    )
+    assert {(r.method, r.path) for r in scan_repo(tmp_path).routes} == {("GET", "/*"), ("POST", "/upload")}

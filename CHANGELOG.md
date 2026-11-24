@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Routes: an Express-style call whose first argument is an absolute URL (`http.post('http://localhost:1986/' + path)`) is a client call, not a route, and a bare `*` path counts only on an app/router receiver (`nsidActions.get('*')` is a Map lookup). `__e2e__/` is a test directory, and routes in test files (`*.test.ts`, `test/`, `e2e/`, ...) no longer feed route findings such as `public-data-route`, whichever analyzer reported them (#386).
 - BFLA role checks: `hasRole`, `hasAnyRole`, `hasAuthority`, `hasAnyAuthority`, `requireRole` / `require_role`, `roles_required`, Ruby `has_role?` and Spring `@PreAuthorize` / `@PostAuthorize` expressions count only when every role they list is privileged (admin, owner, staff, ...). `hasRole('user')` no longer exempts a route from `bfla-privileged-route`. Named arguments (`@hasRole(role: ADMIN)`) and Ruby symbols are read (#389).
 - `framework-sink-chain` needs a real sink on the chain; route naming alone ("privileged action") no longer raises a high finding. The chain still appears in attack paths (#403).
 - `exposed-admin-route` skips admin routes a plugin declares `auth=required`; a missing role check on them stays `bfla-privileged-route`'s finding (#404).
