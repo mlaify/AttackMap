@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Taint: a URLconf whose many views live in one module is no longer quadratic. Each route selects its view's sinks by bisecting a sorted line index instead of scanning every sink in the module (4,000 views: 3.9 s → 1.0 s).
+- `hardcoded-secret` no longer counts UI text as credentials (#441): a value of plain words (`"Please provide a password."`, `"Change Password"`) isn't a secret, and key-based config secrets skip locale catalogs (`i18n/`, `locales/`, `translations/`, `de_DE.json`, ...). On OWASP Juice Shop the finding drops from 686 locations to 38. Provider-shaped tokens are still found everywhere.
 
 ## [0.7.0] - 2026-11-24
 

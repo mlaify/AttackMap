@@ -1196,8 +1196,24 @@ def is_placeholder_secret(value: str) -> bool:
     return False
 
 
+# A sentence, not a credential: three or more space-separated words, the
+# first a plain word (`"Please provide a password."`, an i18n label) (#441).
+_PROSE_FIRST_WORD_RE = re.compile(r"[^\W\d_]{2,64}[,.!?:;]?")
+
+
+def is_prose_value(value: str) -> bool:
+    """Three or more words led by a plain word, or two or more plain words
+    (`Change Password`): text, not a secret."""
+    words = value.split()
+    if len(words) >= 3 and _PROSE_FIRST_WORD_RE.fullmatch(words[0]):
+        return True
+    return len(words) >= 2 and all(_PROSE_FIRST_WORD_RE.fullmatch(w) for w in words)
+
+
 def _credential_assignment_ok(key: str, value: str) -> bool:
     key_l = key.lower()
+    if is_prose_value(value):
+        return False
     if any(part in key_l for part in _NON_SECRET_KEY_PARTS):
         return False
     if is_placeholder_secret(value) or value.lower() == key_l:

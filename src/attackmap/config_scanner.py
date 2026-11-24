@@ -23,7 +23,7 @@ from .srcpaths import SKIP_DIRS, in_skipped_dir, is_skipped_dir
 from .redact import mask_secret
 from .safe_fs import max_file_bytes, walk_repo
 from .models import DatabaseHint, ExternalCall, ScanResult, SecretHint
-from .scanner import _append_hardcoded_secret_hints, _line_snippet
+from .scanner import _append_hardcoded_secret_hints, _line_snippet, is_prose_value
 
 # Config files larger than this are skipped — at that size they're invariably
 # generated (lock files, minified bundles, or AttackMap's own JSON reports)
@@ -350,14 +350,26 @@ def _masked_kv_snippet(content: str, match: re.Match[str], value: str) -> str:
     return f"{head}{_redact(value)}{quote}"
 
 
+# UI-string catalogs: keys like `LABEL_PASSWORD` map to translated text (#441).
+_LOCALE_DIRS = frozenset({"i18n", "l10n", "locale", "locales", "lang", "langs", "translations"})
+_LOCALE_NAME_RE = re.compile(r"(?:^|[._-])[a-z]{2}(?:[_-][A-Za-z]{2,4})?\.(?:json|ya?ml|properties)$")
+
+
+def _is_locale_file(relative: str) -> bool:
+    parts = relative.replace("\\", "/").split("/")
+    return any(p.lower() in _LOCALE_DIRS for p in parts[:-1]) or bool(_LOCALE_NAME_RE.search(parts[-1]))
+
+
 def _extract_secret_kvs(content: str, relative: str, result: ScanResult) -> None:
+    if _is_locale_file(relative):
+        return
     seen: set[tuple[str, int]] = {(h.name, h.line or 0) for h in result.secret_hints if h.file == relative}
     index = _LineIndex(content)
     for match in _SECRET_KEY_RE.finditer(content):
         key = match.group("key")
         value = match.group("value") or match.group("bare") or ""
-        if not value or _is_placeholder(value):
-            continue
+        if not value or _is_placeholder(value) or is_prose_value(value):
+            continue  # a sentence (an i18n label) isn't a secret (#441)
         # Line from the key itself: the pattern's leading `\s` alternative can
         # consume the previous line's newline, so match.start() may sit one
         # line early (#235).
