@@ -692,3 +692,35 @@ def test_php_unserialize_sink(tmp_path: Path) -> None:
     )
     scan = scan_repo(tmp_path)
     assert any(c.sink_kind == "unsafe_deserialization" for c in scan.taint_chains)
+
+
+def test_laravel_routes_seed_from_their_controller_method(tmp_path: Path) -> None:
+    # #399: `[C::class, 'm']`, `'C@m'` and `Route::resource` start from the
+    # named controller method, not routes/web.php; other methods don't count.
+    (tmp_path / "routes").mkdir()
+    (tmp_path / "app" / "Http" / "Controllers").mkdir(parents=True)
+    (tmp_path / "routes" / "web.php").write_text(
+        "<?php\nuse App\\Http\\Controllers\\PostController;\n"
+        "Route::post('/run', [PostController::class, 'update']);\n"
+        "Route::middleware('auth')->group(fn () => Route::resource('posts', PostController::class));\n"
+        "Route::get('/legacy', 'App\\\\Http\\\\Controllers\\\\PostController@show');\n"
+    )
+    (tmp_path / "app" / "Http" / "Controllers" / "PostController.php").write_text(
+        "<?php\nnamespace App\\Http\\Controllers;\nclass PostController extends Controller\n{\n"
+        "    public function update(Request $request) { system($request->input('cmd')); }\n\n"
+        "    public function show(Request $request) {\n"
+        "        return DB::select(\"SELECT * FROM posts WHERE id = \" . $request->input('id'));\n    }\n\n"
+        "    public function index() { return view('posts'); }\n}\n"
+    )
+    routes = [
+        Route(path="/run", method="POST", file="routes/web.php", line=3),
+        Route(path="/posts", method="GET", file="routes/web.php", line=4),
+        Route(path="/posts/{post}", method="GET", file="routes/web.php", line=4),
+        Route(path="/legacy", method="GET", file="routes/web.php", line=5),
+    ]
+    got = {(c.route_path, c.sink_kind, c.sink_line) for c in analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)}
+    assert got == {
+        ("/run", "subprocess_shell", 5),
+        ("/posts/{post}", "sql_execute", 8),
+        ("/legacy", "sql_execute", 8),
+    }

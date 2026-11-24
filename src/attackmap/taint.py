@@ -349,6 +349,15 @@ def analyze_taint(
     import_cache: dict[str, dict[str, str]] = {}
     py_bindings_cache: dict[str, tuple[dict[str, _PyBinding], list[int], frozenset[str]]] = {}
     defs_cache: dict[str, _ModuleDefs] = {}
+    php_classes: dict[str, list[str]] | None = None
+
+    def read(rel: str) -> str:
+        if rel not in content_cache:
+            try:
+                content_cache[rel] = files[rel].read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                content_cache[rel] = ""
+        return content_cache[rel]
 
     for route in scan.routes:
         route_file = _normalize_rel(route.file)
@@ -414,6 +423,19 @@ def analyze_taint(
                     # The view is a library class (`TemplateView.as_view()`):
                     # nothing in the repo runs but the URLconf itself.
                     walk_recall = replace(recall, max_hops=0)
+
+        if route_file.endswith(".php") and route.line is not None:
+            # A Laravel route naming a controller (`[C::class, 'm']`, `'C@m'`,
+            # `Route::resource`) starts from that method, not routes/*.php (#399).
+            ref = _php_controller_ref(read(route_file), route)
+            if ref is not None:
+                if php_classes is None:
+                    php_classes = _php_class_index(files, read)
+                targets = [rel for rel in php_classes.get(ref[0], []) if rel != route_file]
+                if targets:
+                    seed_files = targets
+                    for rel in targets:
+                        seed_spans[rel] = _php_method_spans(read(rel), ref[1])
 
         for seed in seed_files:
             for chain in _walk_from_route(
@@ -818,6 +840,100 @@ def _handler_seed_files(route: Route, content: str, name_to_module: dict[str, st
         if mod is not None and mod not in seeds:
             seeds.append(mod)
     return seeds
+
+
+# Laravel controller references on a route registration (#399).
+_PHP_CLASS_REF = r"\\?((?:\w+\\{1,2})*\w+)::class"
+_PHP_ACTION_ARRAY_RE = re.compile(r"\[\s*" + _PHP_CLASS_REF + r"\s*,\s*['\"](\w+)['\"]\s*\]")
+_PHP_ACTION_AT_RE = re.compile(r"['\"]\\?((?:\w+\\{1,2})*\w+)@(\w+)['\"]")
+_PHP_RESOURCE_RE = re.compile(r"\b(?:api)?[rR]esource\s*\(\s*['\"][^'\"\n]{0,200}['\"]\s*,\s*" + _PHP_CLASS_REF)
+_PHP_INVOKABLE_RE = re.compile(r",\s*" + _PHP_CLASS_REF + r"\s*\)")
+_PHP_CLASS_DECL_RE = re.compile(r"^[ \t]*(?:(?:final|abstract|readonly)[ \t]+)*class[ \t]+(\w+)", re.MULTILINE)
+
+
+def _php_resource_action(route: Route) -> str:
+    """The Laravel resource action a generated route maps to."""
+    path = route.path.rstrip("/")
+    if path.endswith("/create"):
+        return "create"
+    if path.endswith("/edit"):
+        return "edit"
+    if path.endswith("}"):
+        return {"GET": "show", "PUT": "update", "PATCH": "update", "DELETE": "destroy"}.get(route.method, "show")
+    return "store" if route.method == "POST" else "index"
+
+
+def _php_controller_ref(content: str, route: Route) -> tuple[str, str] | None:
+    """(class short name, method) a Laravel route registration names, read from
+    the statement starting on the route's line; None for a closure or none."""
+    starts = _line_starts(content)
+    if route.line is None or not 1 <= route.line <= len(starts):
+        return None
+    lo = starts[route.line - 1]
+    end = content.find(";", lo, lo + 600)
+    stmt = content[lo : end if end != -1 else min(len(content), lo + 600)]
+    for pattern in (_PHP_ACTION_ARRAY_RE, _PHP_ACTION_AT_RE):
+        m = pattern.search(stmt)
+        if m:
+            return m.group(1).split("\\")[-1], m.group(2)
+    m = _PHP_RESOURCE_RE.search(stmt)
+    if m:
+        return m.group(1).split("\\")[-1], _php_resource_action(route)
+    m = _PHP_INVOKABLE_RE.search(stmt)
+    if m:
+        return m.group(1).split("\\")[-1], "__invoke"
+    return None
+
+
+def _php_class_index(files: dict[str, Path], read) -> dict[str, list[str]]:  # type: ignore[no-untyped-def]
+    index: dict[str, list[str]] = {}
+    for rel in files:
+        if rel.endswith(".php"):
+            for m in _PHP_CLASS_DECL_RE.finditer(read(rel)):
+                index.setdefault(m.group(1), []).append(rel)
+    return index
+
+
+def _php_method_spans(content: str, method: str) -> list[tuple[int, int]] | None:
+    """Line span of ``function method(...) { ... }``; None (whole file) when
+    it isn't found."""
+    m = re.search(rf"\bfunction\s+&?{re.escape(method)}\s*\(", content)
+    if m is None:
+        return None
+    close = _call_close_paren(content, m.end() - 1)
+    brace = content.find("{", close if close is not None else m.end())
+    if brace == -1:
+        return None
+    depth, i, quote = 0, brace, ""
+    while i < len(content):
+        ch = content[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return [(line_number(content, m.start()), line_number(content, i))]
+        i += 1
+    return None
+
+
+def _call_close_paren(content: str, open_paren: int) -> int | None:
+    depth = 0
+    for i in range(open_paren, min(len(content), open_paren + 2000)):
+        if content[i] == "(":
+            depth += 1
+        elif content[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
 
 
 # A URL registration whose view argument names the handler: Django `path`,
