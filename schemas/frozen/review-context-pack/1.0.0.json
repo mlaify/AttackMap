@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://attackmap.dev/schemas/review-context-pack.schema.json",
+  "title": "AttackMap Review Context Pack",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "attackmap_review_json",
+    "analyzer_metadata_used",
+    "source_quality_rules",
+    "output_hints",
+    "domain_hints",
+    "rag_expansion_hooks",
+    "limitations_meta"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "artifact_type": {
+      "type": "string"
+    },
+    "attackmap_review_json": {
+      "type": "object"
+    },
+    "analyzer_metadata_used": {
+      "type": "array"
+    },
+    "source_quality_rules": {
+      "type": "object"
+    },
+    "output_hints": {
+      "type": "object"
+    },
+    "domain_hints": {
+      "type": "object"
+    },
+    "rag_expansion_hooks": {
+      "type": "object"
+    },
+    "limitations_meta": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

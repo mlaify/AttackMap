@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Report schema contract (#200): `attackmap-report.json` carries `schema_version` (1.0.0) and has a JSON Schema generated from the models (`schemas/attackmap-report.schema.json`). Every released schema version is frozen in `schemas/frozen/`, and a contract test fails if a schema changes without a version bump, or breaks a consumer (removes or retypes a property, removes an enum value) within a major version. `docs/schemas.md` states the guarantee; `scripts/schemas.py write|freeze` maintains it.
 - Real-world benchmark (#197, #209): `evals/realworld/benchmark.json` pins public repos to a commit with labels taken from each project's own vulnerability documentation (first case: OWASP Juice Shop v20.4.0, 18 labels). `scripts/realworld_corpus.py` fetches them, `attackmap bench --baseline <json>` fails when a class drops more than 5 points below a committed baseline. The scorer also credits a finding whose structured location sits at a labeled line, and no longer scores prompt-injection text as code injection.
 
 ### Fixed
