@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-24
+
 ### Added
 
 - Java/Kotlin JWT checks (#472): jjwt `parse()` / `parseClaimsJwt` / `unsecured()` accept unsigned (`alg: none`) tokens, and auth0 `Algorithm.none()` does too (`jwt_alg_confusion`). Short hard-coded HMAC keys in `setSigningKey` / `signWith` / `verifyWith` / `Keys.hmacShaKeyFor` / `Algorithm.HMAC*` are cited at the literal or its constant (`jwt_weak_secret`). `JWT.decode` claims are flagged when the file never calls `JWT.require` (`jwt_unverified_decode`). `parseClaimsJws` / `parseSignedClaims` / `JWT.require` count as the `jwt_verified` control. These run in the repo pass with the JVM crypto rules.
@@ -1569,7 +1571,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/mlaify/AttackMap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mlaify/AttackMap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mlaify/AttackMap/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/mlaify/AttackMap/compare/v0.6.4...v0.6.5
