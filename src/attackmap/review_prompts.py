@@ -75,7 +75,7 @@ Your job is NOT to report confirmed vulnerabilities. It is to reason over the st
 
 Hard rules (violating any of these makes the output worthless):
 - These are HYPOTHESES / LEADS, not detections. Every hypothesis is something a human must verify by reading the code.
-- Ground everything. Each hypothesis MUST cite specific evidence IDs from the pack (surface:N, finding:N, path:N, chain:N, taint:N, exploit:N, anomaly:N, asset:*, control:*, insight:*). Do NOT invent routes, files, sinks, data stores, or CVEs. If you cannot ground a hypothesis in provided evidence, do not emit it.
+- Ground everything. Each hypothesis MUST cite specific evidence IDs from the pack (surface:N, finding:N, path:N, chain:N, taint:N, exploit:N, anomaly:N, logic:N, asset:*, control:*, insight:*). Do NOT invent routes, files, sinks, data stores, or CVEs. If you cannot ground a hypothesis in provided evidence, do not emit it.
 - Do NOT assign CVE identifiers. Do NOT write exploit code, payloads, or step-by-step exploitation instructions. Describe the *chain* and the *class* of weakness only.
 - Be honest about uncertainty. Prefer fewer, higher-quality hypotheses over speculation. If the evidence is thin, say the hypothesis is speculative and rank it low.
 
@@ -450,6 +450,18 @@ def _hunt_evidence_pack(
             "confidence": a.confidence,
         }
         for idx, a in enumerate(scan.anomalies[:30])
+    ]
+    # Business-logic / race leads (#245) for the verifier to adjudicate.
+    pack["logic_flaws"] = [
+        {
+            "id": f"logic:{idx + 1}",
+            "kind": c.kind,
+            "route": f"{c.route_method} {c.route_path}",
+            "location": f"{c.file}:{c.line}",
+            **({"field": c.field} if c.field else {}),
+            "confidence": c.confidence,
+        }
+        for idx, c in enumerate(scan.logic_flaws[:20])
     ]
     # Composed chains (#248): already-grounded multi-step leads to extend or kill.
     pack["attack_chains"] = [
