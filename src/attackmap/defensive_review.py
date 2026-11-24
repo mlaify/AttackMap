@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from .chains import build_attack_chains
 from .md import defang_markdown, md_code, md_text
 from .models import (
     Asset,
@@ -388,6 +389,26 @@ def _weaknesses(attack_surfaces: list[AttackSurface], findings: list[Finding], a
     return items[:12]
 
 
+def _attack_chains(findings: list[Finding]) -> list[str]:
+    """Composed attack chains (#248), most likely first: each step names the
+    finding (rule and location) that enables it."""
+    chains = sorted(build_attack_chains(findings), key=lambda c: -c.likelihood)
+    if not chains:
+        return ["- No combination of findings forms a multi-step chain."]
+    lines: list[str] = []
+    for chain in chains[:5]:
+        lines.append(
+            f"- {md_code(chain.impact)} from {', '.join(md_code(s) for s in chain.start)} "
+            f"(likelihood {chain.likelihood:.2f}, {chain.id})"
+        )
+        for number, step in enumerate(chain.steps, 1):
+            loc = step.location
+            where = f" at {md_code(loc.file if loc.line is None else f'{loc.file}:{loc.line}')}" if loc else ""
+            notes = f"; {md_text(step.precondition_notes[0])}" if step.precondition_notes else ""
+            lines.append(f"  {number}. {md_code(step.rule_id)}{where} grants {', '.join(step.grants)}{notes}")
+    return lines
+
+
 def _evidence_chains(attack_paths: list[AttackPath]) -> list[str]:
     if not attack_paths:
         return ["- No explicit attack path was generated from current signals."]
@@ -629,6 +650,9 @@ def render_defensive_review(
         "",
         "## Weaknesses / Risk Hotspots",
         *_weaknesses(attack_surfaces, findings, attack_paths),
+        "",
+        "## Attack Chains",
+        *_attack_chains(findings),
         "",
         "## Key Evidence Chains",
         *_evidence_chains(attack_paths),

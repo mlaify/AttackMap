@@ -75,7 +75,7 @@ Your job is NOT to report confirmed vulnerabilities. It is to reason over the st
 
 Hard rules (violating any of these makes the output worthless):
 - These are HYPOTHESES / LEADS, not detections. Every hypothesis is something a human must verify by reading the code.
-- Ground everything. Each hypothesis MUST cite specific evidence IDs from the pack (surface:N, finding:N, path:N, taint:N, exploit:N, anomaly:N, asset:*, control:*, insight:*). Do NOT invent routes, files, sinks, data stores, or CVEs. If you cannot ground a hypothesis in provided evidence, do not emit it.
+- Ground everything. Each hypothesis MUST cite specific evidence IDs from the pack (surface:N, finding:N, path:N, chain:N, taint:N, exploit:N, anomaly:N, asset:*, control:*, insight:*). Do NOT invent routes, files, sinks, data stores, or CVEs. If you cannot ground a hypothesis in provided evidence, do not emit it.
 - Do NOT assign CVE identifiers. Do NOT write exploit code, payloads, or step-by-step exploitation instructions. Describe the *chain* and the *class* of weakness only.
 - Be honest about uncertainty. Prefer fewer, higher-quality hypotheses over speculation. If the evidence is thin, say the hypothesis is speculative and rank it low.
 
@@ -409,6 +409,7 @@ def _hunt_evidence_pack(
     """Base evidence pack augmented with the raw signals a hunter reasons over
     directly: taint chains, fused exploitability scores, and anomalies. These
     carry their own citable IDs (taint:N, exploit:N, anomaly:N)."""
+    from .chains import build_attack_chains
     from .exploitability import score_exploitability
 
     pack = _evidence_pack(scan, attack_surfaces, findings, attack_paths)
@@ -449,6 +450,21 @@ def _hunt_evidence_pack(
             "confidence": a.confidence,
         }
         for idx, a in enumerate(scan.anomalies[:30])
+    ]
+    # Composed chains (#248): already-grounded multi-step leads to extend or kill.
+    pack["attack_chains"] = [
+        {
+            "id": c.id,
+            "impact": c.impact,
+            "start": c.start,
+            "likelihood": c.likelihood,
+            "steps": [
+                {"rule_id": s.rule_id, "evidence_ids": s.evidence_ids, "grants": s.grants,
+                 **({"assumes": s.precondition_notes} if s.precondition_notes else {})}
+                for s in c.steps
+            ],
+        }
+        for c in build_attack_chains(findings)[:10]
     ]
     return pack
 
