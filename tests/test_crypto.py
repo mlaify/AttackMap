@@ -283,3 +283,22 @@ def test_php_mcrypt_and_tls() -> None:
 
 def test_php_weak_hash_over_password() -> None:
     assert "weak_password_hash" in _kinds("$h = md5($password);\n", "x.php")
+
+
+def test_crypto_matches_code_not_comments_prints_or_prose() -> None:
+    # #457: DVWA's cryptography module.
+    from attackmap.crypto import find_crypto_weaknesses
+
+    php = (
+        "<?php\n"
+        'define ("IV", "1234567812345678");\n'
+        '# print "IV: " . byte_array_to_string ($iv) . "\\n";\n'
+        'print "IV: " . (IV) . "\\n";\n'
+        '$fields = array("iv:",     // Required value\n    "key:");\n'
+        '$e = openssl_encrypt($p, \'aes-128-ecb\', $key, OPENSSL_PKCS1_PADDING);\n'
+        "echo \"<li>Implementing and breaking AES ECB</li>\";\n"
+        "// cipher = AES.new(key, AES.MODE_ECB)\n"
+    )
+    assert [(w.kind, w.line) for w in find_crypto_weaknesses(php, "c.php")] == [("ecb_mode", 7), ("static_iv_salt", 2)]
+    py = "from cryptography.hazmat.primitives.ciphers import modes\nc = Cipher(algorithms.AES(k), modes.ECB())\n"
+    assert [(w.kind, w.line) for w in find_crypto_weaknesses(py, "c.py")] == [("ecb_mode", 2)]

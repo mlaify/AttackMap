@@ -88,7 +88,8 @@ _CRYPTO_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     (
         "ecb_mode",
         "medium",
-        re.compile(r"MODE_ECB|['\"/](?:AES|DES)/ECB|\bECB\b"),
+        # `ECB` as a code token (`modes.ECB()`, `CipherMode.ECB`), not prose (#457).
+        re.compile(r"MODE_ECB|['\"/](?:AES|DES)/ECB|\.ECB\b|\bECB\s*\("),
     ),
     (
         "ecb_mode",
@@ -109,7 +110,14 @@ _CRYPTO_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         # iv = b"...." / IV: "...." / salt = '....'  (a string/bytes literal).
         # `nonce` is deliberately excluded — hardcoded nonces are mostly
         # HTTP-auth / protocol test data, not cipher-IV misuse.
-        _rx(r"\b(?:iv|salt)\s*[:=]\s*(?:b|rb|u)?['\"][^'\"]{4,}['\"]"),
+        # The key isn't itself inside a string (`"IV: " . $iv`, a `"iv:"` label) (#457).
+        _rx(r"(?<!['\"])\b(?:iv|salt)\s*[:=]\s*(?:b|rb|u)?['\"][^'\"]{4,}['\"]"),
+    ),
+    (
+        "static_iv_salt",
+        "medium",
+        # PHP `define("IV", "1234567812345678")`.
+        _rx(r"\bdefine\s*\(\s*['\"](?:\w*_)?(?:iv|salt)['\"]\s*,\s*['\"][^'\"]{4,}['\"]"),
     ),
     # --- insecure randomness (gated on security context) -----------------
     (
@@ -208,8 +216,9 @@ def find_crypto_weaknesses(content: str, rel_file: str) -> list[CryptoWeakness]:
     """
     seen: set[tuple[str, int]] = set()
     out: list[CryptoWeakness] = []
+    code = _mask_comments(content)
     for kind, severity, pattern in _CRYPTO_PATTERNS:
-        for match in pattern.finditer(content):
+        for match in pattern.finditer(code):
             line = line_number(content, match.start())
             key = (kind, line)
             if key in seen:
@@ -226,6 +235,16 @@ def find_crypto_weaknesses(content: str, rel_file: str) -> list[CryptoWeakness]:
                 )
             )
     return out
+
+
+# Line and block comments (not `://` in URLs, not PHP `#[` attributes). A
+# commented-out `# print "IV: " …` isn't a weakness (#457).
+_COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:'\"\w])//[^\n]*|(?<![\w'\"&$])#(?![\[!{])[^\n]*", re.S)
+
+
+def _mask_comments(content: str) -> str:
+    """``content`` with comments blanked, offsets and newlines preserved."""
+    return _COMMENT_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), content)
 
 
 def _snippet(content: str, offset: int, radius: int = 120) -> str:
