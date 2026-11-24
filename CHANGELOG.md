@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Taint: a URLconf whose many views live in one module is no longer quadratic. Each route selects its view's sinks by bisecting a sorted line index instead of scanning every sink in the module (4,000 views: 3.9 s → 1.0 s).
+
 ## [0.7.0] - 2026-11-24
 
 ### Added
