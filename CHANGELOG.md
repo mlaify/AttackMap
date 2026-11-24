@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Real-world benchmark (#197, #209): `evals/realworld/benchmark.json` pins public repos to a commit with labels taken from each project's own vulnerability documentation (first case: OWASP Juice Shop v20.4.0, 18 labels). `scripts/realworld_corpus.py` fetches them, `attackmap bench --baseline <json>` fails when a class drops more than 5 points below a committed baseline, and `realworld-bench.yml` runs it weekly. The scorer also credits a finding whose structured location sits at a labeled line, and no longer scores prompt-injection text as code injection.
+
 ### Fixed
 
 - Taint: a URLconf whose many views live in one module is no longer quadratic. Each route selects its view's sinks by bisecting a sorted line index instead of scanning every sink in the module (4,000 views: 3.9 s → 1.0 s).

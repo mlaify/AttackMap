@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "description": "Real-world precision corpus (#197, #209): public repos pinned to a commit, labeled independently of AttackMap's output from each project's own documentation (vulnerable-line markers, challenge lists) and a read of the code. Fetch with scripts/realworld_corpus.py; never executed, only scanned.",
+  "scored_categories": [
+    "injection",
+    "bola",
+    "unauth_state_change",
+    "webhook_exposure",
+    "crypto",
+    "token_auth",
+    "session_auth"
+  ],
+  "line_window": 4,
+  "cases": [
+    {
+      "id": "juice-shop",
+      "path": "juice-shop",
+      "repo": "https://github.com/juice-shop/juice-shop.git",
+      "ref": "v20.4.0",
+      "commit": "266448aba68cd8ba5915f526a128da4fa7bc3f9f",
+      "modules": [
+        "attackmap-analyzer-node-service"
+      ],
+      "label_source": "vuln-code-snippet vuln-line markers and the challenge list (https://pwning.owasp-juice.shop), each checked against the code at the pinned commit",
+      "expected": [
+        {
+          "category": "injection",
+          "route": "/rest/products/search",
+          "method": "GET",
+          "file": "routes/search.ts",
+          "line": 23,
+          "severity": "high",
+          "note": "unionSqlInjectionChallenge: criteria interpolated into sequelize.query"
+        },
+        {
+          "category": "injection",
+          "route": "/rest/user/login",
+          "method": "POST",
+          "file": "routes/login.ts",
+          "line": 34,
+          "severity": "high",
+          "note": "loginAdminChallenge: email interpolated into sequelize.query"
+        },
+        {
+          "category": "injection",
+          "route": "/rest/products/reviews",
+          "method": "PATCH",
+          "file": "routes/updateProductReviews.ts",
+          "line": 18,
+          "severity": "high",
+          "note": "noSqlReviewsChallenge: req.body.id as a query object with multi:true (operator injection)"
+        },
+        {
+          "category": "injection",
+          "route": "/rest/track-order/:id",
+          "method": "GET",
+          "file": "routes/trackOrder.ts",
+          "line": 18,
+          "severity": "high",
+          "note": "noSqlOrdersChallenge: id concatenated into $where"
+        },
+        {
+          "category": "injection",
+          "route": "/rest/products/:id/reviews",
+          "method": "GET",
+          "file": "routes/showProductReviews.ts",
+          "line": 36,
+          "severity": "high",
+          "note": "noSqlCommandChallenge: id concatenated into $where"
+        },
+        {
+          "category": "injection",
+          "route": "/profile/image/url",
+          "method": "POST",
+          "file": "routes/profileImageUrlUpload.ts",
+          "line": 24,
+          "severity": "medium",
+          "note": "ssrfChallenge: req.body.imageUrl fetched server-side"
+        },
+        {
+          "category": "injection",
+          "route": "/profile",
+          "method": "GET",
+          "file": "routes/userProfile.ts",
+          "line": 65,
+          "severity": "high",
+          "note": "sstiChallenge: #{...} in the username is eval'd"
+        },
+        {
+          "category": "injection",
+          "route": "/file-upload",
+          "method": "POST",
+          "file": "routes/fileUpload.ts",
+          "line": 114,
+          "severity": "medium",
+          "note": "yamlBombChallenge: uploaded YAML parsed with yaml.load"
+        },
+        {
+          "category": "injection",
+          "route": "/file-upload",
+          "method": "POST",
+          "file": "routes/fileUpload.ts",
+          "line": 80,
+          "severity": "high",
+          "note": "xxeFileDisclosureChallenge: uploaded XML parsed with external entities resolved (lib/xml.ts)"
+        },
+        {
+          "category": "injection",
+          "route": "/b2b/v2/orders",
+          "method": "POST",
+          "file": "routes/b2bOrder.ts",
+          "line": 23,
+          "severity": "high",
+          "note": "rceChallenge: orderLinesData evaluated by notevil inside vm"
+        },
+        {
+          "category": "injection",
+          "route": "/dataerasure",
+          "method": "POST",
+          "file": "routes/dataErasure.ts",
+          "line": 104,
+          "severity": "medium",
+          "note": "lfrChallenge: req.body.layout resolved as the template path"
+        },
+        {
+          "category": "injection",
+          "route": "/redirect",
+          "method": "GET",
+          "file": "routes/redirect.ts",
+          "line": 18,
+          "severity": "medium",
+          "note": "redirectChallenge: allowlist checked with url.includes (lib/insecurity.ts:136)"
+        },
+        {
+          "category": "bola",
+          "route": "/rest/basket/:id",
+          "method": "GET",
+          "file": "routes/basket.ts",
+          "line": 19,
+          "severity": "medium",
+          "note": "basketAccessChallenge: basket loaded by id with no owner check"
+        },
+        {
+          "category": "bola",
+          "route": "/rest/products/reviews",
+          "method": "PATCH",
+          "file": "routes/updateProductReviews.ts",
+          "line": 18,
+          "severity": "medium",
+          "note": "forgedReviewChallenge: any review edited by id; author not checked"
+        },
+        {
+          "category": "token_auth",
+          "file": "lib/insecurity.ts",
+          "line": 189,
+          "severity": "high",
+          "note": "jwtForgedChallenge: jwt.verify with the RSA public key and no algorithms list (RS256/HS256 confusion)"
+        },
+        {
+          "category": "token_auth",
+          "file": "frontend/src/app/login/login.component.ts",
+          "line": 173,
+          "severity": "medium",
+          "note": "googleLogin: OAuth implicit flow (response_type=token) with no state parameter (login CSRF, token in URL fragment)"
+        },
+        {
+          "category": "crypto",
+          "file": "lib/insecurity.ts",
+          "line": 41,
+          "severity": "medium",
+          "note": "weakPasswordChallenge: passwords hashed with unsalted MD5"
+        },
+        {
+          "category": "unauth_state_change",
+          "route": "/api/Products/:id",
+          "method": "PUT",
+          "file": "server.ts",
+          "line": 540,
+          "severity": "high",
+          "note": "changeProductChallenge: finale-generated PUT /api/Products/:id has no auth (server.ts:402 is commented out)"
+        }
+      ]
+    }
+  ]
+}

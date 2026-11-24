@@ -247,3 +247,43 @@ def test_shipped_benchmark_manifest_is_valid_and_scores():
     for cs in aggregate(results).values():
         if cs.precision is not None:
             assert cs.precision == 1.0, f"{cs.category} precision regressed: {cs.false_positives}"
+
+
+def test_structured_location_matches_an_instance_the_evidence_does_not_name():
+    # #197: an aggregated finding names its top route in the evidence but
+    # cites every instance in `locations`.
+    finding = _finding(
+        "Request-reachable NoSQL injection", ["taint-chain"],
+        ["route GET /rest/chat in routes/chat.ts", "sink at routes/chat.ts:150"])
+    finding["locations"] = [{"file": "routes/chat.ts", "line": 150}, {"file": "routes/trackOrder.ts", "line": 18}]
+    label = Expected(category="injection", route="/rest/track-order/:id", method="GET", file="routes/trackOrder.ts", line=18)
+    assert score_case([finding], [label], ["injection"], window=4)["injection"].recall == 1.0
+    label.line = 30  # outside the window: no credit
+    assert score_case([finding], [label], ["injection"], window=4)["injection"].recall == 0.0
+
+
+def test_prompt_injection_text_is_advisory():
+    finding = _finding("Text aimed at automated reviewers (possible prompt injection)", ["novel-vuln"], [])
+    assert canonical_category(finding) == "advisory"
+
+
+def test_realworld_manifest_pins_every_case():
+    data = json.loads((REPO_ROOT / "evals" / "realworld" / "benchmark.json").read_text())
+    for case in data["cases"]:
+        assert case["repo"].startswith("https://") and len(case["commit"]) == 40 and case["ref"], case["id"]
+    assert load_benchmark(REPO_ROOT / "evals" / "realworld" / "benchmark.json").cases
+
+
+def test_baseline_regression_gate():
+    from attackmap.bench import CaseResult, CategoryScore, regressions
+
+    def run(tp, fp):
+        cs = CategoryScore("injection", tp=tp, fp=fp)
+        cs.matched_expected = [f"m{i}" for i in range(tp)]
+        cs.missed_expected = [f"x{i}" for i in range(4 - tp)]
+        return [CaseResult(id="c", scores={"injection": cs}, finding_count=tp + fp)]
+
+    baseline = {"overall": {"injection": {"precision": 0.8, "recall": 0.5}}}
+    assert regressions(run(2, 0), baseline) == []
+    assert regressions(run(1, 1), baseline) == ["injection precision 80% -> 50%", "injection recall 50% -> 25%"]
+    assert regressions([], baseline) == ["injection precision 80% -> 0%", "injection recall 50% -> 0%"]

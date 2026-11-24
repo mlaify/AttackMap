@@ -1,0 +1,39 @@
+{
+  "overall": {
+    "bola": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 2,
+      "expected_total": 2
+    },
+    "crypto": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 1,
+      "expected_total": 1
+    },
+    "injection": {
+      "precision": 0.8,
+      "recall": 0.4166666666666667,
+      "tp": 4,
+      "fp": 1,
+      "expected_total": 12
+    },
+    "token_auth": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "tp": 3,
+      "fp": 0,
+      "expected_total": 2
+    },
+    "unauth_state_change": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "tp": 0,
+      "fp": 1,
+      "expected_total": 1
+    }
+  }
+}
