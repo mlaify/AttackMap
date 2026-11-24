@@ -1081,6 +1081,7 @@ class _TextFlow:
             raw_seg = self.raw[s:e]
             kind = next((k for k, pat in annotations if pat.search(raw_seg)), None)
             masked = self.m[s:e]
+            tokens: list[str] = []
             if self.lang == PHP:
                 names = _PHP_VAR_RE.findall(masked)
                 name = names[-1] if names else None
@@ -1090,10 +1091,18 @@ class _TextFlow:
                 cleaned = cleaned.split("=", 1)[0]
                 if self.lang == JS:
                     cleaned = cleaned.split(":", 1)[0]
-                ids = [x for x in _IDENT_RE[self.lang].findall(cleaned) if x not in _KEYWORDS]
+                if self.lang == CSHARP:
+                    cleaned = re.sub(r"\[[^\[\]]*\]", " ", cleaned)  # [FromQuery], [Required]
+                tokens = _IDENT_RE[self.lang].findall(cleaned)
+                ids = [x for x in tokens if x not in _KEYWORDS]
                 name = ids[-1] if ids else None
             if not name:
                 continue
+            if kind is None and self.lang == CSHARP and len(tokens) >= 2 and tokens[-2] in _CSHARP_BOUND_TYPES:
+                # ASP.NET Core binds simple-type action parameters from the
+                # route or query string without an attribute (#400).
+                if "FromServices" not in raw_seg:
+                    kind = "query"
             if kind is not None:
                 label = f"handler parameter `{name}`"
                 env[name] = [Atom(kind, line, "high", label, (), ((line, "source", f"{kind}: {label}"),))]
@@ -1369,6 +1378,11 @@ class _TextFlow:
 # =============================================================================
 
 
+# Simple types ASP.NET Core model-binds from route / query by default (#400).
+_CSHARP_BOUND_TYPES = frozenset(
+    "string int long short uint ulong ushort byte sbyte decimal double float bool char Guid DateTime "
+    "DateTimeOffset DateOnly TimeOnly String Int32 Int64".split()
+)
 _FLOW_LANGS = frozenset({PY, JS, GO, PHP, JAVA, CSHARP})
 
 

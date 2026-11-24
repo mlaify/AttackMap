@@ -72,6 +72,16 @@ sinks:
      regex: '\$\w+->(?:query|exec)\s*\(|\bDB::(?:select|statement|insert|update|delete|raw|unprepared)\s*\('}
   - {id: java-jdbc, kind: sql_execute, langs: [java], cwe: 89,
      regex: '\b(?:stmt|statement|st|conn|connection|jdbcTemplate|jdbc|em|entityManager|session)\s*\.\s*(?:executeQuery|executeUpdate|execute|prepareStatement|createQuery|createNativeQuery|query|queryForObject|queryForList|update)\s*\('}
+  # C# (#400): ADO.NET commands, Dapper and EF Core's raw-SQL methods (not
+  # FromSqlInterpolated / FromSql, which parameterize interpolations).
+  - {id: dotnet-sql-command, kind: sql_execute, langs: [csharp], cwe: 89,
+     regex: '\bnew\s+(?:Sql|Npgsql|MySql|Sqlite|SQLite|OleDb|Odbc|Oracle)Command\s*\('}
+  - {id: dotnet-command-text, kind: sql_execute, langs: [csharp], cwe: 89, args: rest,
+     regex: '\.\s*CommandText\s*=(?!=)'}
+  - {id: dotnet-dapper, kind: sql_execute, langs: [csharp], cwe: 89,
+     regex: '\b_?(?:conn|connection|db|cn|cnn|dbConnection|sqlConnection)\s*\.\s*(?:Query|QueryAsync|QueryFirst|QueryFirstOrDefault|QuerySingle|QuerySingleOrDefault|QueryMultiple|Execute|ExecuteAsync|ExecuteScalar|ExecuteReader)(?:Async)?\s*(?:<[^<>()\n]{1,100}>)?\s*\('}
+  - {id: dotnet-ef-raw-sql, kind: sql_execute, langs: [csharp], cwe: 89,
+     regex: '\.\s*(?:FromSqlRaw|ExecuteSqlRaw|ExecuteSqlRawAsync|SqlQueryRaw)\s*(?:<[^<>()\n]{1,100}>)?\s*\('}
 
   # --- OS command execution ------------------------------------------------
   - {id: py-subprocess-shell, kind: subprocess_shell, langs: [python, js, go, php], cwe: 78, flags: [dotall],
