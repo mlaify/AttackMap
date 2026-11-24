@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Real-world benchmark (#197, #209): `evals/realworld/benchmark.json` pins public repos to a commit with labels taken from each project's own vulnerability documentation (first case: OWASP Juice Shop v20.4.0, 18 labels). `scripts/realworld_corpus.py` fetches them, `attackmap bench --baseline <json>` fails when a class drops more than 5 points below a committed baseline, and `realworld-bench.yml` runs it weekly. The scorer also credits a finding whose structured location sits at a labeled line, and no longer scores prompt-injection text as code injection.
+- Real-world benchmark (#197, #209): `evals/realworld/benchmark.json` pins public repos to a commit with labels taken from each project's own vulnerability documentation (first case: OWASP Juice Shop v20.4.0, 18 labels). `scripts/realworld_corpus.py` fetches them, `attackmap bench --baseline <json>` fails when a class drops more than 5 points below a committed baseline. The scorer also credits a finding whose structured location sits at a labeled line, and no longer scores prompt-injection text as code injection.
 
 ### Fixed
 

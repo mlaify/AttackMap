@@ -2,8 +2,8 @@
 
 Per-finding precision/recall per scored class on `evals/realworld/benchmark.json`
 (pinned public repos, labels from each project's own vulnerability documentation,
-checked against the code). `baseline.json` is the gate: the weekly
-`realworld-bench.yml` run fails if a class drops more than 5 points below it.
+checked against the code). `baseline.json` is the gate: `attackmap bench --baseline` fails if a class
+drops more than 5 points below it.
 Each detection PR records its delta here.
 
 ## Baseline — core 0.7.0, node-service 0.3.1 (2026-11-24)
