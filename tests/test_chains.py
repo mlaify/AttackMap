@@ -146,3 +146,32 @@ def test_step_library_names_only_real_rules() -> None:
     from attackmap.threat_model import rule_catalog
 
     assert set(STEP_LIBRARY) <= {rule for rule, _, _ in rule_catalog()}
+
+
+def test_defensive_review_lists_the_chain_with_its_evidence(tmp_path: Path) -> None:
+    from attackmap.analyzer import identify_attack_surfaces
+    from attackmap.defensive_review import render_defensive_review
+
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "pr.yml").write_text(_PR_TARGET)
+    scan = scan_repo(tmp_path)
+    surfaces = identify_attack_surfaces(scan)
+    review = render_defensive_review(scan, surfaces, generate_findings(scan, surfaces), [])
+    section = review.split("## Attack Chains\n", 1)[1].split("\n## ", 1)[0]
+    assert "`secrets` from `fork_pr`" in section
+    assert "1. `pr-target-checkout` at `.github/workflows/pr.yml:" in section
+    assert "2. `secret-in-run` at `.github/workflows/pr.yml:" in section
+
+
+def test_hunt_pack_cites_chains_by_id(tmp_path: Path) -> None:
+    import json
+
+    from attackmap.review_prompts import render_hunt_prompts
+
+    findings = _workflow_findings(tmp_path, pr=_PR_TARGET)
+    pack = json.loads(render_hunt_prompts(scan_repo(tmp_path), [], findings, []).evidence_json)
+    chain = next(c for c in pack["attack_chains"] if c["impact"] == "secrets")
+    assert chain["id"].startswith("chain:")
+    assert [s["rule_id"] for s in chain["steps"]] == ["pr-target-checkout", "secret-in-run"]
+    assert all(s["evidence_ids"] for s in chain["steps"])
