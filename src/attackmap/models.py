@@ -739,6 +739,11 @@ class TaintChain(_RedactedEvidence):
     source_kind: str | None = None
     source_line: int | None = None
     flow: list[TaintFlowStep] = Field(default_factory=list)
+    # SSRF only (#241): which part of the URL the call's argument leaves open.
+    # `full` (the whole URL is a value), `host` (scheme fixed, authority
+    # open), `path` / `query` (scheme and host fixed), `unknown` (built on a
+    # variable base). Only `full` and `host` can reach 169.254.169.254.
+    url_control: Literal["full", "host", "path", "query", "unknown"] | None = None
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 

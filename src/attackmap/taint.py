@@ -1212,6 +1212,37 @@ def _is_parameterized_sql(content: str, match: re.Match[str], suffix: str = "") 
     return _SQL_PLACEHOLDER_RE.search(args) is not None
 
 
+_URL_METHOD_ARG_RE = re.compile(r"""^\s*["'](?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)["']\s*,""", re.IGNORECASE)
+_URL_LITERAL_RE = re.compile(r"""^\s*[fFrRbBuU]{0,2}(["'`])""")
+_URL_SCHEME_RE = re.compile(r"[a-zA-Z][\w+.-]{0,31}://")
+
+
+def url_control(args: str) -> str:
+    """Which part of the URL an SSRF call's first argument leaves open (#241),
+    from its constant prefix: `"https://api.x.com/" + id` fixes the host
+    (`path`), `"https://" + host` doesn't (`host`), a bare value is `full`."""
+    args = _URL_METHOD_ARG_RE.sub("", args, count=1)  # requests.request("GET", url)
+    literal = _URL_LITERAL_RE.match(args)
+    if literal is None:
+        # A bare name, attribute or call is the URL itself; arithmetic or
+        # formatting on it builds on a base we can't see.
+        first = args.split(",", 1)[0]
+        return "unknown" if re.search(r"[+%]", first) else "full"
+    quote = literal.group(1)
+    # Constant text before the first interpolation or the closing quote.
+    prefix = re.split(r"\{|%[sd(]|" + re.escape(quote), args[literal.end():], maxsplit=1)[0]
+    if not prefix:
+        return "full"
+    scheme = _URL_SCHEME_RE.match(prefix)
+    if scheme is None:
+        return "path" if prefix.startswith("/") else "unknown"
+    rest = prefix[scheme.end():]
+    authority_end = min((i for i in (rest.find("/"), rest.find("?")) if i >= 0), default=-1)
+    if authority_end <= 0:
+        return "host"
+    return "query" if "?" in rest else "path"
+
+
 @dataclass
 class _SinkHit:
     kind: str
@@ -1228,6 +1259,7 @@ class _SinkHit:
     # The request gate was satisfied only by the traced flow (no same-call
     # request token) — such a hit belongs to the handler that encloses it.
     flow_only: bool = False
+    url_control: str | None = None
 
 
 def _call_paren(content: str, match: re.Match[str]) -> int:
@@ -1342,7 +1374,8 @@ def _find_sinks(
                         sanitizer_by_kind[kind] = _find_sanitizer(kind, content)
                     sanitizer = sanitizer_by_kind[kind]
                 line = line_number(content, match.start())
-                hits.append(_SinkHit(kind, line, snippet, sanitizer, relaxed, flow, flow_only))
+                control = url_control(arg_text) if kind == "ssrf" else None
+                hits.append(_SinkHit(kind, line, snippet, sanitizer, relaxed, flow, flow_only, control))
                 emitted.add((kind, line))
 
         # Capability-reach pass (#148b, recall only): the bare-call form of the
@@ -1466,6 +1499,7 @@ def _walk_from_route(
                     sanitized=hit.sanitizer is not None,
                     sanitizer_evidence=hit.sanitizer,
                     speculative=speculative,
+                    url_control=hit.url_control,  # type: ignore[arg-type]
                     source_kind=flow.source_kind if traced and flow is not None else None,
                     source_line=flow.source_line if traced and flow is not None else None,
                     flow=(
