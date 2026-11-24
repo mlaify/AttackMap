@@ -1,8 +1,10 @@
 name: Real-world benchmark
 
-# Precision/recall on pinned public repos (evals/realworld, #197). Weekly and
-# on demand; a PR that changes detection runs it by hand. Fails if any scored
-# class drops more than 5 points below evals/realworld/baseline.json.
+# Precision/recall on pinned public repos (evals/realworld, #197) and the
+# scan-time budget on a large one (evals/perf, #202). Weekly and on demand; a
+# PR that changes detection or scanning runs it by hand. Fails if any scored
+# class drops more than 5 points below evals/realworld/baseline.json, or a
+# budget case runs over its budget_seconds.
 on:
   schedule:
     - cron: "17 6 * * 1"
@@ -14,7 +16,7 @@ permissions:
 jobs:
   bench:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -37,6 +39,14 @@ jobs:
           attackmap bench --benchmark evals/realworld/benchmark.json --root "$RUNNER_TEMP/corpus" \
             --output "$RUNNER_TEMP/bench" --baseline evals/realworld/baseline.json
 
+      - name: Scan-time budget (pinned atproto monorepo)
+        if: always()
+        run: |
+          python scripts/realworld_corpus.py "$RUNNER_TEMP/perf" evals/perf/budget.json
+          python scripts/perf_budget.py "$RUNNER_TEMP/perf" | tee "$RUNNER_TEMP/perf.txt"
+
       - name: Job summary
         if: always()
-        run: cat "$RUNNER_TEMP/bench/benchmark-results.md" >> "$GITHUB_STEP_SUMMARY" || true
+        run: |
+          cat "$RUNNER_TEMP/bench/benchmark-results.md" >> "$GITHUB_STEP_SUMMARY" || true
+          { echo '```'; cat "$RUNNER_TEMP/perf.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
