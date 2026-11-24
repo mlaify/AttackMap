@@ -1,0 +1,16 @@
+{
+  "description": "Scan-time budget (#202): a core-only `analyze` of a large real repo must finish within budget_seconds on a CI runner. measured_seconds is the reference run that set it.",
+  "cases": [
+    {
+      "id": "atproto",
+      "path": "atproto",
+      "repo": "https://github.com/bluesky-social/atproto.git",
+      "ref": "@atproto/xrpc-server@0.13.17",
+      "commit": "b642ec489196aa0c934b20c061de784345e71d3c",
+      "files": 4357,
+      "budget_seconds": 180,
+      "measured_seconds": 51,
+      "measured_on": "core 0.7.0+, 4-core dev VM, 2026-11-24"
+    }
+  ]
+}
