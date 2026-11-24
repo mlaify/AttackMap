@@ -1304,3 +1304,21 @@ def test_client_calls_and_map_lookups_are_not_express_routes(tmp_path: Path) -> 
         "router.post('/upload', handler)\n"
     )
     assert {(r.method, r.path) for r in scan_repo(tmp_path).routes} == {("GET", "/*"), ("POST", "/upload")}
+
+
+def test_php_script_reading_superglobals_is_an_entry_point(tmp_path: Path) -> None:
+    # #453: DVWA-style scripts have no framework routes; the file is the handler.
+    (tmp_path / "vuln").mkdir()
+    (tmp_path / "vuln" / "low.php").write_text(
+        "<?php\n// $_POST['x'] in a comment doesn't count\n$id = $_REQUEST['id'];\n"
+        "$r = mysqli_query($GLOBALS['conn'], \"SELECT first_name FROM users WHERE user_id = '$id';\");\n"
+    )
+    (tmp_path / "vuln" / "form.php").write_text("<?php\n$f = $_FILES['upload'];\nmove_uploaded_file($f['tmp_name'], 'x');\n")
+    (tmp_path / "lib.php").write_text("<?php\nfunction h($s) { return htmlspecialchars($s); }\n")
+    (tmp_path / "routes.php").write_text("<?php\nRoute::get('/users', function () { return $_GET['q']; });\n")
+    scan = scan_repo(tmp_path)
+    # Taint-only entry points: the route inventory keeps framework routes only.
+    assert {(r.method, r.path) for r in scan.routes} == {("GET", "/users")}
+    assert [(c.route_method, c.sink_kind, c.source_kind) for c in scan.taint_chains if c.route_path == "/vuln/low.php"] == [
+        ("ANY", "sql_execute", "body")
+    ]

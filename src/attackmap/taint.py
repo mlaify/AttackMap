@@ -361,7 +361,7 @@ def analyze_taint(
                 content_cache[rel] = ""
         return content_cache[rel]
 
-    for route in scan.routes:
+    for route in [*scan.routes, *_php_script_entries(scan, files, read)]:
         route_file = _normalize_rel(route.file)
         if route_file not in files:
             continue
@@ -852,6 +852,30 @@ _PHP_ACTION_AT_RE = re.compile(r"['\"]\\?((?:\w+\\{1,2})*\w+)@(\w+)['\"]")
 _PHP_RESOURCE_RE = re.compile(r"\b(?:api)?[rR]esource\s*\(\s*['\"][^'\"\n]{0,200}['\"]\s*,\s*" + _PHP_CLASS_REF)
 _PHP_INVOKABLE_RE = re.compile(r",\s*" + _PHP_CLASS_REF + r"\s*\)")
 _PHP_CLASS_DECL_RE = re.compile(r"^[ \t]*(?:(?:final|abstract|readonly)[ \t]+)*class[ \t]+(\w+)", re.MULTILINE)
+
+
+# A request superglobal read: a plain PHP script is its own entry point (#453).
+_PHP_SUPERGLOBAL_RE = re.compile(r"\$_(GET|POST|REQUEST|COOKIE|FILES)\s*\[")
+_PHP_COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*|#(?!\[)[^\n]*", re.S)
+
+
+def _php_script_entries(scan: ScanResult, files: dict[str, Path], read) -> list[Route]:  # type: ignore[no-untyped-def]
+    """Taint entry points for plain PHP scripts (`low.php` reading
+    `$_REQUEST['id']`): every `.php` file with no reported route that reads a
+    request superglobal, served at its own path, the whole file its handler.
+    Only taint uses them: they aren't added to the route inventory, so route
+    findings (auth, exposure) don't judge include-only fragments."""
+    routed = {_normalize_rel(r.file) for r in scan.routes}
+    out: list[Route] = []
+    for rel in files:
+        if not rel.endswith(".php") or rel in routed or is_test_file(rel) or is_vendored_file(rel):
+            continue
+        kinds = {m.group(1) for m in _PHP_SUPERGLOBAL_RE.finditer(_PHP_COMMENT_RE.sub(" ", read(rel)))}
+        if not kinds:
+            continue
+        reads = {"GET" if k in ("GET", "COOKIE") else "POST" if k in ("POST", "FILES") else "ANY" for k in kinds}
+        out.append(Route(path="/" + rel, method=reads.pop() if len(reads) == 1 else "ANY", file=rel, line=None))
+    return out
 
 
 def _php_resource_action(route: Route) -> str:

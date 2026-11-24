@@ -393,7 +393,8 @@ def test_markdown_has_rules_and_a_coverage_table() -> None:
     md = render_defensive_review(scan, surfaces, findings, generate_attack_paths(scan, surfaces))
     assert "### Deployable Sigma rules" in md
     assert "### Detection coverage" in md
-    assert "| `ldap-injection` | yes (1) | webserver |" in md
+    # PHP and Python positives (#453: the PHP fixture script is its own entry point).
+    assert "| `ldap-injection` | yes (2) | webserver |" in md
     # regex-injection has no template: shown as a gap, not hidden.
     assert "| `regex-injection` | no | — |" in md
 
