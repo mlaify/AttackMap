@@ -124,6 +124,9 @@ OBJECT_AUTHZ_MARKERS = re.compile(
     (?:owner|user|tenant|account|org|organization|created_by|author)(?:_?id|Id)?
         \s*(?:===?|!==?|=|:|__exact\s*=)\s*[^,;\n)]{{0,40}}?{_PRINCIPAL}
     | {_PRINCIPAL}[^\n]{{0,60}}?(?:===?|!==?)\s*[\w.\[\]'"]*(?:owner|user|author|tenant|account)(?:_?id|Id)\b
+    # a query filter keyed by the owner column (`where: {{ id, UserId: … }}`),
+    # unless the value is the caller-chosen path or query parameter (#443)
+    | \b(?:[Uu]ser|[Oo]wner|[Tt]enant)_?[Ii]d\s*:\s*(?!(?:req|request|ctx)\s*\.\s*(?:params|query)\b)[\w$.]
     # an ownership field compared with anything
     | \b(?:owner|author)(?:_?id|Id)?\s*(?:!==?|===?)
     | \b(?:\w+\.)?user_?[iI]d\s*(?:!==?|===?)
@@ -1055,7 +1058,7 @@ _AUTHZ_SPAN = 150
 # One-hop delegation budget per route (#242).
 _MAX_HOPS = 6
 _MAX_HOP_LINES = 80
-_MAX_IMPORTS = 40
+_MAX_IMPORTS = 400  # a central server.ts imports every handler (#443)
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -1123,20 +1126,6 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         # write a specific object by id — so the "reaches a datastore" condition
         # is satisfied intrinsically. HTTP path/query surfaces still require an
         # observed datastore link (#139).
-        if surface_kind == "rpc_method":
-            reaches_db, db_evidence = True, "RPC object-access method"
-        else:
-            reaches_db, db_evidence = _db_reachability(
-                route, db_files, db_modules, taint_sql_routes
-            )
-        if not reaches_db:
-            continue
-
-        key = (route.method, route.path, route.file, id_param)
-        if key in seen:
-            continue
-        seen.add(key)
-
         handler = ""
         if content:
             if route.file not in lines_cache:
@@ -1145,8 +1134,30 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
                 route.file,
                 span_text(route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN),
             )
-        delegated = hop.delegated_text(route.file, content, handler) if handler else ""
+        located: list[tuple[str, int, str]] = []
+        delegated = hop.delegated_text(route.file, content, handler, located) if handler else ""
         scope = handler + "\n" + delegated
+
+        if surface_kind == "rpc_method":
+            reaches_db, db_evidence = True, "RPC object-access method"
+        else:
+            reaches_db, db_evidence = _db_reachability(
+                route, db_files, db_modules, taint_sql_routes
+            )
+        if not reaches_db:
+            # The handler a central registration delegates to (#443): its module
+            # holds a datastore hint, or its body loads a record through an ORM.
+            for file, line, body in located:
+                if _norm(file) in db_files or _ORM_RECORD_ACCESS.search(body):
+                    reaches_db, db_evidence = True, f"delegated handler in {file}:{line} reaches a datastore"
+                    break
+        if not reaches_db:
+            continue
+
+        key = (route.method, route.path, route.file, id_param)
+        if key in seen:
+            continue
+        seen.add(key)
         if OBJECT_AUTHZ_MARKERS.search(scope):
             # Object-level authorization is (probably) enforced — not a candidate.
             continue
@@ -1281,6 +1292,15 @@ def _read_file_content(rel_file: str, root: Path, cache: dict[str, str | None]) 
         content = None
     cache[rel_file] = content
     return content
+
+
+# A record loaded or changed through an ORM model or repository (#443):
+# Sequelize, Mongoose, Prisma, TypeORM.
+_ORM_RECORD_ACCESS = re.compile(
+    r"\b(?:[A-Z][\w$]{0,60}|prisma\s*\.\s*[\w$]{1,60}|[\w$]{0,40}[Rr]epo(?:sitory)?)\s*\.\s*"
+    r"(?:findOne|findByPk|findById|findAll|findMany|findUnique|findFirst|findOneBy|findByIdAndUpdate"
+    r"|findByIdAndDelete|findOneAndUpdate|findOneAndDelete|update|updateOne|destroy|deleteOne|remove)\s*\("
+)
 
 
 def _db_reachability(

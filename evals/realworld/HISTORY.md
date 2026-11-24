@@ -23,3 +23,22 @@ positives behind these numbers are filed as #441 (i18n prose as secrets, 647
 locations), #442 (`sequelize.query` SQLi missed), #443 (BOLA from snippet
 files; basket IDOR missed), #444 (injection FPs), #445 (injection recall) and
 #446 (crypto recall).
+
+## #441, #442, #443 (2026-11-24)
+
+Labels: +4 BOLA on Juice Shop (checkout, coupon, BasketItems, Recycles), found by
+#443's handler resolution and confirmed against the code. 22 labels.
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 80% → 83% | 42% → 58% | 5 / 1 / 12 |
+| `bola` | 0% → 100% | 0% → 83% | 2 / 0 / 6 |
+| `token_auth` | 100% | 100% | 3 / 0 / 2 |
+| `crypto` | 0% | 0% | 0 / 1 / 1 |
+| `unauth_state_change` | 0% | 0% | 0 / 1 / 1 |
+
+- #442: both SQL injections found (`sequelize.query`, TS-annotated declarations).
+- #443: BOLA follows the imported handler; 77 snippet-file locations gone. Per
+  location 5 of 9 candidates are real. Public catalog lookups (deliveries, product
+  reviews, order tracking) remain false positives.
+- #441: `hardcoded-secret` 686 → 38 locations (advisory, unscored).
