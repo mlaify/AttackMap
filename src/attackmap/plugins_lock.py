@@ -44,8 +44,8 @@ OFFICIAL_PLUGINS: list[dict] = [
     {
         'repo': 'attackmap-analyzer-terraform',
         'package': 'attackmap-analyzer-terraform',
-        'version': '0.2.2',
-        'git_sha': '8856e56969e8e4ace98a0a395417fa5899a71151',
+        'version': '0.3.0',
+        'git_sha': '67612b35783a971fc187a8c982f9538009eb9598',
         'entry_points': ['terraform'],
     },
     {
