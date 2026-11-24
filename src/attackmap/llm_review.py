@@ -75,7 +75,7 @@ OPENAI_EFFORT_MAP = {
     "max": "high",
 }
 
-LlmProvider = Literal["claude", "openai"]
+LlmProvider = Literal["claude", "openai", "local"]
 LlmBackend = Literal["auto", "api", "cli"]
 
 
@@ -443,6 +443,87 @@ def _run_via_claude_cli(
     )
 
 
+# ---------- Local model backend (#203) ----------
+# Any OpenAI-compatible Chat Completions server on this machine or network:
+# Ollama, llama.cpp `llama-server`, vLLM, LM Studio. Standard library only, and
+# the evidence pack stays local: a host that isn't loopback, private or
+# link-local is refused unless ATTACKMAP_LOCAL_LLM_ALLOW_REMOTE=1.
+
+LOCAL_DEFAULT_URL = "http://127.0.0.1:11434/v1"  # Ollama
+LOCAL_TIMEOUT_SECONDS = 900  # local models are slow on long evidence packs
+
+
+def _local_host_ok(url: str) -> bool:
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def _run_via_local(
+    rendered_system: str,
+    rendered_user: str,
+    *,
+    model: str | None,
+    max_tokens: int,
+    base_url: str | None = None,
+    opener: Any | None = None,
+) -> LlmReviewResult:
+    import urllib.request
+
+    url = (base_url or os.environ.get("ATTACKMAP_LOCAL_LLM_URL") or LOCAL_DEFAULT_URL).rstrip("/")
+    resolved_model = model or os.environ.get("ATTACKMAP_LOCAL_LLM_MODEL")
+    if not resolved_model:
+        raise LlmReviewError(
+            "--llm-provider local needs a model: pass --llm-model (e.g. qwen2.5-coder:32b) "
+            "or set ATTACKMAP_LOCAL_LLM_MODEL."
+        )
+    if not url.startswith(("http://", "https://")):
+        raise LlmReviewError(f"Local model URL must be http(s): {url}")
+    if not _local_host_ok(url) and os.environ.get("ATTACKMAP_LOCAL_LLM_ALLOW_REMOTE") != "1":
+        raise LlmReviewError(
+            f"{url} isn't on this machine or a private network, so the evidence pack would leave it. "
+            "Point --llm-base-url at a local server, or set ATTACKMAP_LOCAL_LLM_ALLOW_REMOTE=1 to allow it."
+        )
+    body = json.dumps({
+        "model": resolved_model,
+        "messages": [{"role": "system", "content": rendered_system}, {"role": "user", "content": rendered_user}],
+        "max_tokens": max_tokens,
+        "stream": False,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        f"{url}/chat/completions", data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with (opener or urllib.request.urlopen)(request, timeout=LOCAL_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise LlmReviewError(f"Local model call to {url} failed: {exc}") from exc
+    try:
+        choice = payload["choices"][0]
+        markdown = (choice["message"]["content"] or "").strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LlmReviewError(f"Local model at {url} returned no chat completion: {str(payload)[:200]}") from exc
+    usage = payload.get("usage") or {}
+    return LlmReviewResult(
+        markdown=markdown,
+        model=str(payload.get("model") or resolved_model),
+        stop_reason=choice.get("finish_reason"),
+        usage={
+            k: v for k, v in (("input_tokens", usage.get("prompt_tokens")), ("output_tokens", usage.get("completion_tokens")))
+            if isinstance(v, int)
+        },
+        backend="api",
+    )
+
+
 # ---------- OpenAI SDK backend (Responses API) ----------
 
 
@@ -779,6 +860,9 @@ def generate_llm_review(
             "triage": render_triage_prompts,
         }.get(mode, render_review_prompts)
         rendered = render(scan, attack_surfaces, findings, attack_paths)
+
+    if provider == "local":
+        return _run_via_local(rendered.system, rendered.user, model=model, max_tokens=max_tokens)
 
     if provider == "openai":
         resolved_model = (

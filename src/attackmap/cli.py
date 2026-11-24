@@ -207,7 +207,7 @@ TRIAGE_BANNER = (
 
 
 PROGRESS_FORMATS = ("auto", "tty", "json", "none")
-LLM_PROVIDERS = ("claude", "openai")
+LLM_PROVIDERS = ("claude", "openai", "local")
 LLM_SPEEDS = ("standard", "fast")
 LLM_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 LLM_BACKENDS = ("auto", "api", "cli")
@@ -525,7 +525,12 @@ def analyze(
     llm_provider: str = typer.Option(
         "claude",
         "--llm-provider",
-        help="LLM provider for --llm/--hunt/--remediate: 'claude' (default, Anthropic) or 'openai' (OpenAI/Codex).",
+        help="LLM provider for --llm/--hunt/--remediate: 'claude' (default, Anthropic), 'openai' (OpenAI/Codex) or 'local' (an OpenAI-compatible server on this machine or network: Ollama, llama.cpp, vLLM, LM Studio; see --llm-base-url).",
+    ),
+    llm_base_url: str | None = typer.Option(
+        None,
+        "--llm-base-url",
+        help="With --llm-provider local: the server's OpenAI-compatible base URL (default http://127.0.0.1:11434/v1, Ollama). Non-local hosts are refused unless ATTACKMAP_LOCAL_LLM_ALLOW_REMOTE=1. Also ATTACKMAP_LOCAL_LLM_URL.",
     ),
     llm_model: str | None = typer.Option(
         None,
@@ -686,6 +691,17 @@ def analyze(
                 os.environ[TRUSTED_ONLY_ENV] = previous
 
         ctx.call_on_close(_restore_trust_env)
+    if llm_base_url:
+        previous_url = os.environ.get("ATTACKMAP_LOCAL_LLM_URL")
+        os.environ["ATTACKMAP_LOCAL_LLM_URL"] = llm_base_url
+
+        def _restore_url_env() -> None:
+            if previous_url is None:
+                os.environ.pop("ATTACKMAP_LOCAL_LLM_URL", None)
+            else:
+                os.environ["ATTACKMAP_LOCAL_LLM_URL"] = previous_url
+
+        ctx.call_on_close(_restore_url_env)
     _validate_analyze_options(
         ctx,
         progress_format=progress_format,
@@ -760,7 +776,7 @@ def analyze(
 
     # (Enum/range/dependency options are validated up front, #229.)
     # Provider-aware label for the "via X" progress/echo strings.
-    llm_display = "Codex" if llm_provider == "openai" else "Claude"
+    llm_display = {"openai": "Codex", "local": "the local model"}.get(llm_provider, "Claude")
     if llm_provider == "openai" and llm_speed == "fast" and (llm or hunt or remediate):
         typer.echo(
             "Note: --llm-speed fast is Claude-only; ignoring it for the OpenAI provider.",
