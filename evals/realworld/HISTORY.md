@@ -62,3 +62,15 @@ id (high, second order), `fi/index.php` include (source in another file).
 Per-location false positives inside matched findings are filed: #455
 (`exec/impossible.php`), #456 (`header()` Location reported as header
 injection), #457 (crypto matches in comments/HTML).
+
+## #455, #456, #457, #446 (2026-11-24)
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 90% | 68% | 9 / 1 / 28 |
+| `bola` | 100% | 83% | 2 / 0 / 6 |
+| `token_auth` | 100% | 100% | 3 / 0 / 2 |
+| `crypto` | 80% | 83% | 4 / 1 / 6 |
+| `unauth_state_change` | 0% | 0% | 0 / 1 / 1 |
+
+Crypto 50% / 50% → 80% / 83%: comments, prints and prose no longer match (#457), and an MD5 wrapper called with a password is found (#446). #455 and #456 change per-location results inside matched findings (DVWA `exec/impossible.php` is sanitized; `header()` Location is an open redirect).
