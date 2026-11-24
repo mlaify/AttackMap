@@ -86,6 +86,19 @@ def test_findings_compose_across_classes_into_cluster_admin() -> None:
     assert build_attack_chains(findings[:1]) == []
 
 
+def test_ssrf_reaches_cloud_admin_only_through_imds_v1() -> None:
+    findings = [
+        _finding("ssrf", "app/preview.py", 8),
+        _finding("imds-v1-enabled", "infra/ec2.tf", 14, "medium"),
+        _finding("iam-privilege-escalation", "infra/iam.tf", 3),
+    ]
+    chain = _chain(build_attack_chains(findings), "cloud_admin")
+    assert [s.rule_id for s in chain.steps] == ["ssrf", "imds-v1-enabled", "iam-privilege-escalation"]
+    assert all(s.precondition_notes for s in chain.steps[1:])
+    # IMDSv2 required (no imds finding): SSRF alone yields no cloud chain.
+    assert _chain(build_attack_chains([findings[0], findings[2]]), "cloud_admin") is None
+
+
 def test_sarif_puts_the_chain_on_its_final_steps_result() -> None:
     findings = [_finding("ssti", "app/views.py", 12), _finding("cluster-admin-binding", "k8s/rbac.yaml", 3)]
     chains = build_attack_chains(findings)

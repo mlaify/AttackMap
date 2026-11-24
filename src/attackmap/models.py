@@ -480,6 +480,8 @@ CloudMisconfigKind = Literal[
     "unencrypted_storage",
     "public_data_access",
     "public_invoker",
+    "imds_v1_enabled",
+    "iam_privilege_escalation",
     # Workloads (Kubernetes / Helm / compose / Dockerfile)
     "privileged_container",
     "privilege_escalation_allowed",
@@ -1003,7 +1005,7 @@ class AttackPath(BaseModel):
 Capability = Literal[
     "net_access_public", "fork_pr", "authn_user", "authn_admin", "code_exec_app", "read_fs",
     "db_read", "db_write", "secrets", "internal_network", "ci_code_exec", "ci_token",
-    "cloud_creds", "node_root", "cluster_admin",
+    "cloud_creds", "cloud_admin", "node_root", "cluster_admin",
 ]
 
 

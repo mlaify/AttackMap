@@ -37,6 +37,8 @@ _RECORDS = [
     CloudMisconfig(kind="public_data_access", file="tf/s3.tf", line=6, platform="aws", resource="aws_s3_bucket_acl.site"),
     CloudMisconfig(kind="public_data_access", file="tf/s3.tf", line=16, platform="aws", resource="aws_s3_bucket_policy.site"),
     CloudMisconfig(kind="public_cluster_endpoint", file="tf/eks.tf", line=7, platform="aws", resource="aws_eks_cluster.main"),
+    CloudMisconfig(kind="iam_privilege_escalation", file="tf/iam.tf", line=9, platform="aws", resource="aws_iam_policy.ci"),
+    CloudMisconfig(kind="imds_v1_enabled", file="tf/vm.tf", line=11, platform="aws", resource="aws_instance.web"),
 ]
 
 

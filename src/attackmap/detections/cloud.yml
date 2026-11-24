@@ -565,6 +565,87 @@ templates:
           eventName: UpdateClusterConfig
           requestParameters.name: main
 
+  aws-iam-privilege-escalation:
+    date: "2026-11-24"
+    title: "AWS IAM policy version set as default or administrator policy attached"
+    description: >-
+      CreatePolicyVersion that makes the new version the default, or
+      AttachUserPolicy / AttachRolePolicy / AttachGroupPolicy of
+      AdministratorAccess: the two calls a principal uses to turn IAM-write
+      permissions into administrator access. AttackMap found policies that
+      allow this escalation in ${locations} (rule ${rule_id}).
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, requestParameters.setAsDefault, requestParameters.policyArn]
+    detection:
+      selection_iam:
+        eventSource: iam.amazonaws.com
+      new_default_version:
+        eventName: CreatePolicyVersion
+        requestParameters.setAsDefault: true
+      admin_attach:
+        eventName: [AttachUserPolicy, AttachRolePolicy, AttachGroupPolicy]
+        requestParameters.policyArn|endswith: ":policy/AdministratorAccess"
+      condition: selection_iam and (new_default_version or admin_attach)
+    falsepositives:
+      - IAM administrators and infrastructure pipelines that manage policies; exclude their role ARNs
+    level: high
+    test_events:
+      positive:
+        - eventSource: iam.amazonaws.com
+          eventName: CreatePolicyVersion
+          requestParameters.setAsDefault: true
+        - eventSource: iam.amazonaws.com
+          eventName: AttachRolePolicy
+          requestParameters.policyArn: "arn:aws:iam::aws:policy/AdministratorAccess"
+      negative:
+        - eventSource: iam.amazonaws.com
+          eventName: CreatePolicyVersion
+          requestParameters.setAsDefault: false
+        - eventSource: iam.amazonaws.com
+          eventName: AttachRolePolicy
+          requestParameters.policyArn: "arn:aws:iam::aws:policy/ReadOnlyAccess"
+
+  aws-imds-v1-allowed:
+    date: "2026-11-24"
+    title: "AWS EC2 instance launched or changed to accept IMDSv1"
+    description: >-
+      RunInstances or ModifyInstanceMetadataOptions with HttpTokens set to
+      optional, so the instance metadata service answers unauthenticated
+      GETs and an SSRF on the host can read the instance role's credentials.
+      AttackMap found instances that allow IMDSv1 in ${locations} (rule
+      ${rule_id}). Launches that leave the option unset use the account or
+      AMI default and aren't matched.
+    logsource: {product: aws, service: cloudtrail}
+    fields_required: [eventSource, eventName, userIdentity.arn, requestParameters.metadataOptions.httpTokens, requestParameters.ModifyInstanceMetadataOptionsRequest.HttpTokens]
+    detection:
+      selection:
+        eventSource: ec2.amazonaws.com
+      launch_v1:
+        eventName: RunInstances
+        requestParameters.metadataOptions.httpTokens: optional
+      modify_v1:
+        eventName: ModifyInstanceMetadataOptions
+        requestParameters.ModifyInstanceMetadataOptionsRequest.HttpTokens: optional
+      condition: selection and (launch_v1 or modify_v1)
+    falsepositives:
+      - Legacy AMIs whose software still needs IMDSv1; track them as exceptions with an end date
+    level: medium
+    test_events:
+      positive:
+        - eventSource: ec2.amazonaws.com
+          eventName: RunInstances
+          requestParameters.metadataOptions.httpTokens: optional
+        - eventSource: ec2.amazonaws.com
+          eventName: ModifyInstanceMetadataOptions
+          requestParameters.ModifyInstanceMetadataOptionsRequest.HttpTokens: optional
+      negative:
+        - eventSource: ec2.amazonaws.com
+          eventName: RunInstances
+          requestParameters.metadataOptions.httpTokens: required
+        - eventSource: ec2.amazonaws.com
+          eventName: ModifyInstanceMetadataOptions
+          requestParameters.ModifyInstanceMetadataOptionsRequest.HttpTokens: required
+
 data:
   # Rule id -> the templates that detect it. `platforms` limits a template to
   # records on those platforms; `resource_types` (AWS) to Terraform resource
@@ -607,3 +688,7 @@ data:
       - {template: aws-rds-publicly-accessible, platforms: [aws], resource_types: [aws_db_instance, aws_rds_cluster, aws_rds_cluster_instance]}
     public-cluster-endpoint:
       - {template: aws-eks-public-endpoint, platforms: [aws], resource_types: [aws_eks_cluster]}
+    iam-privilege-escalation:
+      - {template: aws-iam-privilege-escalation, platforms: [aws]}
+    imds-v1-enabled:
+      - {template: aws-imds-v1-allowed, platforms: [aws], resource_types: [aws_instance]}

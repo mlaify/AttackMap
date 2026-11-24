@@ -367,6 +367,8 @@ RULE_TAXONOMY: dict[str, RuleTaxonomy] = {
     "unencrypted-storage": RuleTaxonomy(cwe=(311,), owasp=("A02:2021",), asvs=("V6.1.1",), attack=("T1530",)),
     "public-data-access": RuleTaxonomy(cwe=(732, 200), owasp=("A01:2021",), attack=("T1530",)),
     "public-invoker": RuleTaxonomy(cwe=(284, 306), owasp=("A01:2021",), attack=("T1190",)),
+    "imds-v1-enabled": RuleTaxonomy(cwe=(1188, 918), owasp=("A05:2021",), attack=("T1552.005",)),
+    "iam-privilege-escalation": RuleTaxonomy(cwe=(269,), owasp=("A01:2021",), attack=("T1098", "T1078.004")),
     "privileged-container": RuleTaxonomy(cwe=(250,), owasp=("A05:2021",), attack=("T1611",)),
     "privilege-escalation-allowed": RuleTaxonomy(cwe=(269, 250), owasp=("A05:2021",), attack=("T1548.001",)),
     "container-runs-as-root": RuleTaxonomy(cwe=(250,), owasp=("A05:2021",), attack=("T1611",)),
