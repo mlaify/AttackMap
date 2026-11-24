@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "attackmap-analyzer-example"
+version = "0.1.0"
+description = "Example AttackMap analyzer plugin"
+requires-python = ">=3.11"
+dependencies = ["attackmap>=0.8,<2"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.entry-points."attackmap.analyzers"]
+example = "attackmap_analyzer_example:ExampleAnalyzer"
+
+[tool.setuptools.packages.find]
+where = ["src"]

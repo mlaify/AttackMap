@@ -246,7 +246,13 @@ from .models import (
     WebHardeningIssue,
 )
 
+# The SDK contract version (#201): names in __all__ keep working across every
+# SDK 1.x release; removals and renames wait for SDK 2 and get a release of
+# deprecation first. Independent of the attackmap package version.
+SDK_VERSION = "1.0.0"
+
 __all__ = [
+    "SDK_VERSION",
     "AnalyzerResult",
     "AnalyzerMetadata",
     "AnalyzerRepositoryModule",
