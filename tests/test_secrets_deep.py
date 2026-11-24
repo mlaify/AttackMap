@@ -265,3 +265,26 @@ def test_cli_rejects_out_of_range_history() -> None:
 
 def test_history_rule_is_catalogued() -> None:
     assert "secret-in-git-history" in {r for r, _, _ in rule_catalog()}
+
+
+def test_i18n_prose_is_not_a_credential() -> None:
+    # #441: Juice Shop's i18n files ("MANDATORY_PASSWORD": "Please provide a password.").
+    from attackmap.scanner import iter_secret_matches
+
+    i18n = '{\n  "MANDATORY_PASSWORD": "Please provide a password.",\n  "LABEL_NEW_TOKEN": "Your new token is ready"\n}\n'
+    assert [k for k, *_ in iter_secret_matches(i18n, entropy=False)] == []
+    real = 'db_password = "S3cr3t-Pa55word!"\n'
+    assert [k for k, *_ in iter_secret_matches(real, entropy=False)] == ["credential_assignment"]
+
+
+def test_i18n_json_prose_is_not_a_config_secret(tmp_path: Path) -> None:
+    (tmp_path / "i18n").mkdir()
+    (tmp_path / "i18n" / "en.json").write_text(
+        '{\n  "MANDATORY_PASSWORD": "Please provide a password.",\n  "api_token": "tok_9f8a7b6c5d4e3f2a"\n}\n'
+    )
+    assert [(h.name, h.line) for h in scan_config_repo(tmp_path).secret_hints] == []
+    (tmp_path / "config.json").write_text(
+        '{\n  "MANDATORY_PASSWORD": "Please provide a password.",\n  "LABEL_PASSWORD": "Change Password",\n  "api_token": "tok_9f8a7b6c5d4e3f2a"\n}\n'
+    )
+    (tmp_path / "de_DE.json").write_text('{\n  "LABEL_PASSWORD": "Passwort"\n}\n')
+    assert [(h.file, h.name) for h in scan_config_repo(tmp_path).secret_hints] == [("config.json", "api_token")]
