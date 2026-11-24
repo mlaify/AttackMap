@@ -274,3 +274,19 @@ def test_scan_repo_populates_code_weaknesses(tmp_path: Path) -> None:
     scan = scan_repo(tmp_path)
     assert any(w.kind == "mass_assignment" for w in scan.code_weaknesses)
     assert [f for f in generate_findings(scan) if "novel-vuln" in f.tags]
+
+
+@pytest.mark.parametrize(
+    ("code", "flagged"),
+    [
+        # PyGoat xxe_lab: SAX with external general entities on.
+        ("parser = make_parser()\nparser.setFeature(feature_external_ges, True)\n", True),
+        ('factory.setFeature("http://xml.org/sax/features/external-general-entities", true);\n', True),
+        ("const doc = libxmljs.parseXml(xml, { noent: true })\n", True),
+        ("parser.setFeature(feature_external_ges, False)\n", False),
+    ],
+)
+def test_xxe_external_entity_features(code: str, flagged: bool) -> None:
+    from attackmap.weaknesses import find_code_weaknesses
+
+    assert any(w.kind == "xxe" for w in find_code_weaknesses(code, "x.py")) is flagged

@@ -376,6 +376,124 @@
           "note": "static IV define(\"IV\", \"1234567812345678\")"
         }
       ]
+    },
+    {
+      "id": "pygoat",
+      "path": "pygoat",
+      "repo": "https://github.com/adeyosemanputra/pygoat.git",
+      "ref": "v3.0.0",
+      "commit": "e5808ddd8aa653eaf7418260afcf6db0ac5b4b48",
+      "modules": [
+        "attackmap-analyzer-python"
+      ],
+      "label_source": "OWASP PyGoat v3 lab apps (dockerized_labs/*), each marked intentionally vulnerable in its code; checked against the code at the pinned commit",
+      "expected": [
+        {
+          "category": "injection",
+          "file": "dockerized_labs/sql_injection_lab/app.py",
+          "line": 57,
+          "severity": "high",
+          "note": "SQL injection lab: username/password f-string into c.execute"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/command_injection_lab/app.py",
+          "line": 29,
+          "severity": "high",
+          "note": "command injection lab: domain into an nslookup/dig shell command"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/command_injection_lab/app.py",
+          "line": 49,
+          "severity": "high",
+          "note": "eval lab: request expression eval'd"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/ssrf_lab/app.py",
+          "line": 37,
+          "severity": "high",
+          "note": "SSRF lab: requests.get(url) on a request URL"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/ssrf_lab/app.py",
+          "line": 22,
+          "severity": "high",
+          "note": "lab1: request 'blog' joined into a file path (directory traversal)"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/xxe_lab/app.py",
+          "line": 58,
+          "severity": "high",
+          "note": "XXE lab: SAX parser with feature_external_ges on request XML"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/insec_des_lab/main.py",
+          "line": 40,
+          "severity": "high",
+          "note": "insecure deserialization lab: pickle.loads of a cookie"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/software_integrity_lab/app.py",
+          "line": 44,
+          "severity": "high",
+          "note": "software integrity lab: pickle.loads of uploaded data"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/a9_uckv_lab/app.py",
+          "line": 62,
+          "severity": "high",
+          "note": "vulnerable components lab: yaml.load(Loader=yaml.Loader) on an upload"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/a9_uckv_lab/app.py",
+          "line": 94,
+          "severity": "high",
+          "note": "vulnerable components lab: Pillow ImageMath.eval on a request expression (CVE-2023-50447)"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/template_injection_lab/app.py",
+          "line": 111,
+          "severity": "high",
+          "note": "SSTI lab: user content written into a template file, then render_template(f'blogs/{filename}') (stored SSTI)"
+        },
+        {
+          "category": "crypto",
+          "file": "dockerized_labs/crypto_failure_lab/app.py",
+          "line": 38,
+          "severity": "medium",
+          "note": "crypto failure lab: unsalted MD5 password hash"
+        },
+        {
+          "category": "crypto",
+          "file": "dockerized_labs/crypto_failure_lab/app.py",
+          "line": 25,
+          "severity": "medium",
+          "note": "crypto failure lab: SHA-1 password hash"
+        },
+        {
+          "category": "session_auth",
+          "file": "dockerized_labs/broken_auth_lab/app.py",
+          "line": 16,
+          "severity": "medium",
+          "note": "broken auth lab: hard-coded Flask secret_key (marked vulnerable in the code)"
+        },
+        {
+          "category": "crypto",
+          "file": "dockerized_labs/auth_failure_lab/app.py",
+          "line": 99,
+          "severity": "medium",
+          "note": "auth failure lab: OTP from random.randint (marked vulnerable in the code)"
+        }
+      ]
     }
   ]
 }
