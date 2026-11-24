@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from .chains import build_attack_chains
 from .detection_opportunities import detection_coverage
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .security_overlay import build_security_overlay
 
 # 1.3.0: weaknesses[].locations (#214); 1.4.0: weaknesses[].rule_id/taxonomy
 # (#250); 1.5.0: detection_opportunities[].sigma/... and detection_coverage (#251)
-SCHEMA_VERSION = "1.5.0"
+SCHEMA_VERSION = "1.6.0"
 LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
 
 
@@ -270,6 +271,7 @@ def build_defensive_review_json(
             "risk_hotspots": hotspots,
         },
         "evidence_chains": _evidence_chains(attack_paths),
+        "attack_chains": [chain.model_dump() for chain in build_attack_chains(findings)],
         "recommendations": _recommendations(overlay.findings, attack_surfaces),
         "raw_structured_signals": {
             "scan": scan.model_dump(),

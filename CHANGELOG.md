@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Attack chains (#248, first part). Findings are composed into precondition → postcondition chains over attacker capabilities (`net_access_public`, `fork_pr`, `authn_user`, `code_exec_app`, `secrets`, `ci_token`, `cluster_admin`, ...). Each step cites the finding that enables it (`<rule>@<file>:<line>`), and no step comes from a template. Chains appear as `attack_chains` in `attackmap-report.json` and `defensive-review.json` (schema 1.6.0), and as SARIF `codeFlows` on the final step's result. CI code execution chains only within the workflow file that grants it. The templated `attack_paths` are unchanged.
+
 ### Fixed
 
 - `framework-sink-chain` needs a real sink on the chain; route naming alone ("privileged action") no longer raises a high finding. The chain still appears in attack paths (#403).
