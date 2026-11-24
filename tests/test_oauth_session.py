@@ -148,6 +148,11 @@ def test_plain_pkce_is_flagged() -> None:
     url = "const u = `https://id.example.com/authorize?response_type=code&client_id=${c}&state=${s}&code_challenge=${x}&code_challenge_method=plain`\n"
     assert _kinds(url, "server.js") == {"oauth_missing_pkce"}
     assert _kinds(url.replace("plain", "S256"), "server.js") == set()
+    # #387: the evidence says plain PKCE is accepted, not that PKCE is off.
+    [weakness] = find_oauth_session_issues("parameters = { code_challenge_method: 'plain' }\n", "rm.ts")[0]
+    assert "`plain` PKCE accepted" in weakness.evidence_text
+    [weakness] = find_oauth_session_issues("new Client({ usePKCE: false })\n", "c.ts")[0]
+    assert "PKCE disabled" in weakness.evidence_text
 
 
 def test_fastify_session_registration() -> None:

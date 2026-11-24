@@ -465,3 +465,11 @@ def test_jvm_csrf_pass_is_linear_on_large_files() -> None:
     issues = _jvm_csrf_issues(java, "Big.java")
     assert len(issues) == 30_000 and all(i.severity == "low" for i in issues)
     assert time.perf_counter() - start < 5.0
+
+
+def test_csrf_cookie_may_be_readable_by_script() -> None:
+    # #387: a double-submit CSRF token must be readable; other flags still count.
+    csrf = "const CSRF_COOKIE_OPTIONS = {\n  secure: true,\n  httpOnly: false,\n  sameSite: 'lax',\n}\n"
+    assert _kinds(csrf) == set()
+    assert _kinds(csrf.replace("secure: true", "secure: false")) == {"insecure_cookie"}
+    assert _kinds(csrf.replace("CSRF_COOKIE_OPTIONS", "SESSION_COOKIE_OPTIONS")) == {"insecure_cookie"}

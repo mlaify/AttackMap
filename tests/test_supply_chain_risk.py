@@ -136,6 +136,10 @@ def test_typosquat_skips_short_and_popular_near_twins(tmp_path: Path) -> None:
     # boto vs boto3 / scipy vs scapy are both popular; short names are skipped.
     reqs = "boto\nscapy\nattr\n"
     assert scan_supply_chain(_write(tmp_path, {"requirements.txt": reqs})) == []
+    # #387: preact is itself popular, not a react typosquat.
+    pkg = '{"dependencies": {"preact": "^10.0.0"}}'
+    issues = scan_supply_chain(_write(tmp_path / "npm", {"package.json": pkg}))
+    assert [i for i in issues if i.kind == "typosquat_candidate"] == []
 
 
 def test_within_one_edit() -> None:

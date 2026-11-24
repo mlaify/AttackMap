@@ -261,3 +261,16 @@ def test_call_receiver_stays_linear_over_a_file_full_of_calls() -> None:
     small, large = run(14_000), run(56_000)  # ~250 KB and ~1 MB
     assert large < 3.0
     assert large < small * 10  # 4x the input: linear ~4x, quadratic ~16x
+
+
+def test_node_set_header_is_not_a_header_injection_sink(tmp_path: Path) -> None:
+    # #387: node:http rejects CR/LF in header values (ERR_INVALID_CHAR).
+    (tmp_path / "app.js").write_text(
+        'const express = require("express");\nconst app = express();\n'
+        'app.get("/exports/csv", (req, res) => {\n'
+        '  res.setHeader("Content-Disposition", `attachment; filename=${req.query.name}.csv`);\n'
+        '  res.setHeader("Location", req.query.next);\n'
+        "});\n"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/exports/csv", method="GET", file="app.js", line=3)])
+    assert [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "header_injection"] == []
