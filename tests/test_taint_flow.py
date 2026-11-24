@@ -738,3 +738,23 @@ def test_destructured_express_request_and_vm_context_eval(tmp_path: Path) -> Non
         ("code_injection", 3, "body"),
         ("open_redirect", 7, "query"),
     }
+
+
+def test_the_whole_request_as_render_locals_is_template_injection(tmp_path: Path) -> None:
+    # Juice Shop dataErasure (#445): `layout` and engine options come from the request. Picking fields is fine.
+    (tmp_path / "a.js").write_text(
+        "app.post('/a', (req, res) => {\n"
+        "  res.render('result', { ...req.body, ...themeVars }, (e, html) => res.send(html))\n"
+        "})\n"
+        "app.post('/b', (req, res) => {\n"
+        "  res.render('result', req.query)\n"
+        "})\n"
+        "app.post('/c', (req, res) => {\n"
+        "  res.render('profile', { username: req.body.name, title: 'x' })\n"
+        "})\n",
+        encoding="utf-8",
+    )
+    routes = [Route(path=p, method="POST", file="a.js", line=n) for p, n in (("/a", 1), ("/b", 4), ("/c", 7))]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    assert {(c.route_path, c.sink_line, c.source_kind) for c in chains if c.source_kind} == {("/a", 2, "body"), ("/b", 5, "query")}
+    assert not [c for c in chains if c.sink_line == 8]
