@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Java precision from OWASP WebGoat (real-world benchmark): taint flow follows request input into same-file helpers, up to two calls deep (JS/TS, PHP, Java, C#). The caller's sanitizers and guards still apply at the call site. Spring `"redirect:" + x` views, `RedirectView` and `sendRedirect` are open-redirect sinks. Java `String.matches("…")` is a full-match validation guard. Core's crypto rules now run on Java/Kotlin sources, which no scan checked before. The Java MD5/SHA-1 rule needs a secret passed to `update`/`digest`. The benchmark adds WebGoat v2026.5 (21 labels).
 - Python precision from OWASP PyGoat (real-world benchmark): `c` / `cur` cursor names are SQL sinks; `yaml.load` with `Loader=yaml.Loader` / `UnsafeLoader` / `FullLoader` is unsafe deserialization (only Safe/Base loaders are exempt); an allow-list check on a file *name* no longer guards deserialization of its content; SAX `setFeature(feature_external_ges, True)` (and the Java external-entity feature URIs, libxmljs `noent: true`) is XXE; `redirect(request.referrer)` is no longer an open redirect. The benchmark adds PyGoat v3.0.0 (15 labels).
 
 ## [0.8.0] - 2026-11-24

@@ -27,8 +27,8 @@ def _kinds(content: str) -> set[str]:
         "import hashlib\nh = hashlib.md5(password.encode()).hexdigest()\n",
         "digest = hashlib.sha1(user_password)\n",
         "const h = createHash('md5').update(password).digest('hex')\n",
-        'MessageDigest md = MessageDigest.getInstance("MD5");\n',
-        'MessageDigest.getInstance("SHA-1")\n',
+        'MessageDigest md = MessageDigest.getInstance("MD5");\nmd.update(secret.getBytes());\n',
+        'byte[] h = MessageDigest.getInstance("SHA-1").digest(password.getBytes());\n',
     ],
 )
 def test_weak_password_hash_detected(content: str) -> None:
@@ -39,6 +39,23 @@ def test_md5_without_security_context_not_flagged() -> None:
     # Hashing a file for a cache key is not a password-hash weakness.
     content = "etag = hashlib.md5(file_bytes).hexdigest()\n"
     assert "weak_password_hash" not in _kinds(content)
+    content = 'MessageDigest md = MessageDigest.getInstance("MD5");\nmd.update(fileBytes);\n'
+    assert "weak_password_hash" not in _kinds(content)
+
+
+def test_jvm_sources_get_the_crypto_rules(tmp_path: Path) -> None:
+    # Core's per-file pass doesn't read .java (the language plugin does); the
+    # repo pass still applies the crypto rules there (WebGoat HashingAssignment).
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Hashing.java").write_text(
+        'class Hashing {\n  String h(String secret) throws Exception {\n'
+        '    MessageDigest md = MessageDigest.getInstance("MD5");\n    md.update(secret.getBytes());\n'
+        '    Cipher c = Cipher.getInstance("DES/CBC/PKCS5Padding");\n    return "";\n  }\n}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "HashingTest.java").write_text('class HashingTest { Cipher c = Cipher.getInstance("RC4"); }\n')
+    found = {(w.kind, w.file, w.line) for w in scan_repo(tmp_path).crypto_weaknesses}
+    assert found == {("weak_password_hash", "src/Hashing.java", 3), ("weak_cipher", "src/Hashing.java", 5)}
 
 
 # ---------------------------------------------------------------------------

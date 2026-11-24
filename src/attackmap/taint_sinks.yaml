@@ -302,6 +302,13 @@ sinks:
      regex: '\bredirect\s*\('}
   - {id: express-redirect, kind: open_redirect, langs: [python, js, go, php], cwe: 601, gate: tainted, args: all,
      regex: '\bres\s*\.\s*(?:redirect|location)\s*\('}
+  # Spring MVC: a "redirect:" view name, a RedirectView, a servlet sendRedirect.
+  - {id: java-redirect-view, kind: open_redirect, langs: [java], cwe: 601, gate: tainted,
+     when: '^\s*"redirect:', regex: '\bnew\s+ModelAndView\s*\('}
+  - {id: java-return-redirect, kind: open_redirect, langs: [java], cwe: 601, gate: tainted, args: rest,
+     regex: '\breturn(?=\s+"redirect:)'}
+  - {id: java-send-redirect, kind: open_redirect, langs: [java], cwe: 601, gate: tainted,
+     regex: '\.\s*sendRedirect\s*\(|\bnew\s+RedirectView\s*\('}
 
   # --- HTTP response headers (CRLF / header value control) ---------------
   - {id: py-response-header-assign, kind: header_injection, langs: [python], cwe: 113, gate: tainted, args: rest,
