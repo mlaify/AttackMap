@@ -67,7 +67,7 @@ all = [
   "attackmap-analyzer-go==0.2.1",
   "attackmap-analyzer-java-spring==0.2.1",
   "attackmap-analyzer-dotnet==0.2.1",
-  "attackmap-analyzer-terraform==0.2.2",
+  "attackmap-analyzer-terraform==0.3.0",
   "attackmap-analyzer-c==0.2.1",
   "attackmap-analyzer-cpp==0.2.1",
   "attackmap-analyzer-swift==0.2.1",

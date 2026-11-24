@@ -7,15 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-24
+
 ### Added
 
-- Attack chains (#248, first part). Findings are composed into precondition → postcondition chains over attacker capabilities (`net_access_public`, `fork_pr`, `authn_user`, `code_exec_app`, `secrets`, `ci_token`, `cluster_admin`, ...). Each step cites the finding that enables it (`<rule>@<file>:<line>`), and no step comes from a template. Chains appear as `attack_chains` in `attackmap-report.json` and `defensive-review.json` (schema 1.6.0), and as SARIF `codeFlows` on the final step's result. CI code execution chains only within the workflow file that grants it. The templated `attack_paths` are unchanged. `defensive-review.md` lists the five most likely chains under "Attack Chains", step by step with each finding's location, and the `--hunt` evidence pack carries them as citable `chain:N` leads.
+- Attack chains (#248). Findings are composed into precondition → postcondition chains over attacker capabilities (`net_access_public`, `fork_pr`, `authn_user`, `code_exec_app`, `secrets`, `ci_token`, `cluster_admin`, ...). Each step cites the finding that enables it (`<rule>@<file>:<line>`), and no step comes from a template. Chains appear as `attack_chains` in `attackmap-report.json` and `defensive-review.json` (schema 1.6.0), and as SARIF `codeFlows` on the final step's result. CI code execution chains only within the workflow file that grants it. The templated `attack_paths` are unchanged. `defensive-review.md` lists the five most likely chains under "Attack Chains", step by step with each finding's location, and the `--hunt` evidence pack carries them as citable `chain:N` leads.
 - Cloud misconfiguration kinds `imds_v1_enabled` (an EC2 instance whose metadata service accepts IMDSv1) and `iam_privilege_escalation` (an IAM policy with IAM-write actions such as `iam:CreatePolicyVersion`, `iam:Attach*Policy` or `iam:PassRole` on `*`), with taxonomy entries (T1552.005; T1098, T1078.004) and CloudTrail templates `aws-imds-v1-allowed` and `aws-iam-privilege-escalation` (#241, #370). They add the attack-chain steps SSRF → IMDSv1 → `cloud_creds` → IAM escalation → `cloud_admin`. attackmap-analyzer-terraform emits them in its next release.
 - SSRF taint chains record `url_control` (`full`, `host`, `path`, `query`, `unknown`): which part of the URL the request value sets, read from the call's constant prefix (#241). Exploitability adds 15 points for full-URL control and 10 for host control, plus 15 more for either when an EC2 instance in the repo accepts IMDSv1. A path-only SSRF (`f"https://api.example.com/users/{id}"`) now scores at least 15 below a full-URL one. When every SSRF sink fixes the scheme and host, the `ssrf` finding is tagged `ssrf-fixed-host` and starts no attack chain into instance metadata.
 - `attackmap.sdk` exports `CryptoWeakness`, `WebHardeningIssue`, `TaintChain` and `TaintFlowStep`, so a plugin for a language core's taint pass doesn't cover (C, C++, Rust, Swift) can report route → sink chains that core turns into findings and ranks by exploitability (#257). Plugin helpers: `SignalCollector` (O(1) first-wins dedup of routes and hints), `snippet_at(content, offset)` (O(line) snippets) and `plugin_version(dist)` for `AnalyzerMetadata.version` (#382, #384).
 - C# taint (#400): SQL sinks for ADO.NET commands (`new SqlCommand(...)` and the Npgsql / MySql / Sqlite / OleDb / Odbc / Oracle forms, `CommandText =`), Dapper `Query*` / `Execute*` on a connection, and EF Core `FromSqlRaw` / `ExecuteSqlRaw` / `SqlQueryRaw` (not the parameterizing `FromSqlInterpolated`). Simple-type action parameters (`string q`, `int? id`, `Guid`, ...) are request sources without `[FromQuery]` / `[FromRoute]`, as ASP.NET Core binds them; `[FromServices]` and complex types aren't.
 - PHP taint (#399): a Laravel route that names a controller (`[PostController::class, 'update']`, `'PostController@update'`, `Route::resource` / `apiResource`, an invokable `PostController::class`) starts the taint walk from that controller method instead of `routes/*.php`, so request input reaching a sink in a controller is reported, and only for the routes whose method contains it.
 - Business-logic and race-condition leads (#245), always low confidence and marked "needs human review": `race-check-then-act` (medium) when a mutating handler compares a balance-like field (`balance`, `credits`, `stock`, `quota`, ...) and then writes it with no row lock or atomic update (`select_for_update`, `FOR UPDATE`, `$inc`, `F()`, Redis `WATCH`/`SETNX`, ...), and `idempotency-gap` (low) for a redeem / checkout / transfer / withdraw / vote / invite / claim / purchase POST with no idempotency, uniqueness or rate-limit signal. The records are `ScanResult.logic_flaws`, and the `--hunt` evidence pack cites them as `logic:N`.
+
+### Changed
+
+- `[all]` pins attackmap-analyzer-terraform 0.3.0, which emits the `imds_v1_enabled` and `iam_privilege_escalation` records; `plugins_lock.py` pins its v0.3.0 tag commit. The other analyzers are unchanged.
 
 ### Fixed
 
@@ -1518,7 +1524,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mlaify/AttackMap/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/mlaify/AttackMap/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/mlaify/AttackMap/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/mlaify/AttackMap/compare/v0.6.2...v0.6.3
