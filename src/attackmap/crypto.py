@@ -22,10 +22,8 @@ pattern alone.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-from .safe_fs import is_oversized, walk_repo
-from .srcpaths import is_skipped_dir, is_test_file, is_vendored_file, line_number
+from .srcpaths import line_number
 from .models import CryptoWeakness
 
 # Identifiers that mark a value as security-sensitive. Gate the noisy
@@ -243,30 +241,6 @@ def find_crypto_weaknesses(content: str, rel_file: str) -> list[CryptoWeakness]:
     return out
 
 
-_JVM_SUFFIXES = frozenset({".java", ".kt"})
-
-
-def find_jvm_crypto_weaknesses(root: str | Path) -> list[CryptoWeakness]:
-    """The same rules over Java/Kotlin sources: core's per-file pass doesn't
-    read JVM files (their analyzer plugins do), so ``MessageDigest`` /
-    ``Cipher.getInstance`` were never checked in a real scan. Test and vendored
-    files are skipped, like the per-file pass."""
-    root_path = Path(root)
-    out: list[CryptoWeakness] = []
-    for path in walk_repo(root_path, prune=is_skipped_dir):
-        if path.suffix not in _JVM_SUFFIXES or is_oversized(path):
-            continue
-        rel = path.relative_to(root_path).as_posix()
-        if is_test_file(rel) or is_vendored_file(rel):
-            continue
-        try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        out.extend(find_crypto_weaknesses(content, rel))
-    return out
-
-
 # Line and block comments (not `://` in URLs, not PHP `#[` attributes). A
 # commented-out `# print "IV: " …` isn't a weakness (#457).
 _COMMENT_RE = re.compile(r"/\*.*?\*/|(?<![:'\"\w])//[^\n]*|(?<![\w'\"&$])#(?![\[!{])[^\n]*", re.S)
@@ -319,4 +293,4 @@ def _snippet(content: str, offset: int, radius: int = 120) -> str:
     return line[:radius] + ("…" if len(line) > radius else "")
 
 
-__all__ = ["find_crypto_weaknesses", "find_jvm_crypto_weaknesses"]
+__all__ = ["find_crypto_weaknesses"]

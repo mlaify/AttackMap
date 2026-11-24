@@ -30,8 +30,8 @@
     },
     "token_auth": {
       "precision": 1.0,
-      "recall": 0.4,
-      "tp": 3,
+      "recall": 1.0,
+      "tp": 5,
       "fp": 0,
       "expected_total": 5
     },

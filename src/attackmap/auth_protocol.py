@@ -205,6 +205,9 @@ def find_jwt_issues(content: str, rel_file: str) -> tuple[list[CodeWeakness], li
     elif suffix == ".go":
         collector = _Collector(content, rel_file, "//")
         _check_go(collector)
+    elif suffix in (".java", ".kt"):
+        collector = _Collector(content, rel_file, "//")
+        _check_java(collector)
     else:
         return [], []
     return collector.weaknesses, collector.verified
@@ -407,6 +410,87 @@ def _check_go(c: _Collector) -> None:
         if _GO_SECRET_CONTEXT.search(line):
             c.weakness("jwt_weak_secret", "high", m.start(), f"hard-coded secret under {_MIN_SECRET_LEN} chars")
     c.header_trust()
+
+
+# --- Java / Kotlin: jjwt + auth0 java-jwt (#472) -----------------------------
+
+_JAVA_JWT = _rx(r"\bio\.jsonwebtoken\b|\bcom\.auth0\.jwt\b")
+# jjwt's parse() takes any token, unsigned (`alg: none`) ones included; only
+# parseClaimsJws / parseSignedClaims require a signature.
+_JJWT_PARSER = _rx(r"\bJwts\s*\.\s*parser(?:Builder)?\s*\(")
+_JJWT_UNSIGNED = _rx(r"\.\s*(?:parse|parseUnsecuredClaims|parseClaimsJwt)\s*\(|\.\s*unsecured\s*\(\s*\)")
+_JJWT_SIGNED = _rx(r"\.\s*(?:parseClaimsJws|parseSignedClaims)\s*\(|\bJWT\s*\.\s*require\s*\(")
+_JAVA_KEY_USE = _rx(
+    r"\.\s*(?:setSigningKey|signWith|verifyWith)\s*\(|\bKeys\s*\.\s*hmacShaKeyFor\s*\("
+    r"|\bAlgorithm\s*\.\s*HMAC(?:256|384|512)\s*\("
+)
+_JAVA_ALG_NONE = _rx(r"\bAlgorithm\s*\.\s*none\s*\(\s*\)")
+# A key literal, bare or through a Base64 codec / getBytes: `"k"`,
+# `"k".getBytes(UTF_8)`, `TextCodec.BASE64.encode("k")`. Not `getenv("K")`.
+_JAVA_KEY_LITERAL = (
+    r"(?:(?:TextCodec\s*\.\s*BASE64|Base64\s*\.\s*get(?:Url)?(?:En|De)coder\s*\(\s*\)|(?:Decoders|Encoders)\s*\.\s*BASE64)"
+    r"\s*\.\s*(?:encode|decode)\w*\s*\(\s*)?\"((?:[^\"\\\n]|\\.)*)\"(?:\s*\.\s*getBytes\s*\([^)]*\))?"
+)
+
+
+def _java_secret_literal(content: str, arg: str) -> tuple[str, int] | None:
+    """(literal, offset) of a hard-coded key: a literal in the call, or a
+    constant initialized with one (its offset, so the finding cites it)."""
+    arg = arg.strip()
+    m = re.fullmatch(_JAVA_KEY_LITERAL + r"\s*\)?", arg)
+    if m is not None:
+        return m.group(1), -1
+    name = re.fullmatch(r"([A-Za-z_]\w*)(?:\s*\.\s*getBytes\s*\([^)]*\))?", arg)
+    if name is None:
+        return None
+    decl = re.search(
+        r"\b(?:val|var|String)\s+" + re.escape(name.group(1)) + r"\s*(?::\s*String\s*)?=\s*" + _JAVA_KEY_LITERAL,
+        content,
+    )
+    return (decl.group(1), decl.start()) if decl is not None else None
+
+
+def _check_java(c: _Collector) -> None:
+    content = c.content
+    if not _JAVA_JWT.search(content):
+        return
+    for m in _JJWT_PARSER.finditer(content):
+        end = content.find(";", m.end())
+        chain = content[m.end() : end if end != -1 else m.end() + _CALL_SCAN_LIMIT]
+        if c.commented(m.start()):
+            continue
+        signed = _JJWT_SIGNED.search(chain)
+        unsigned = _JJWT_UNSIGNED.search(chain)
+        if signed is not None:
+            c.verified_at(m.end() + signed.start())
+        elif unsigned is not None:
+            c.weakness(
+                "jwt_alg_confusion", "high", m.end() + unsigned.start(),
+                "jjwt parse() accepts unsigned (alg: none) tokens; use parseClaimsJws / parseSignedClaims",
+            )
+    for m in _JJWT_SIGNED.finditer(content):
+        if "require" in m.group() and not c.commented(m.start()):
+            c.verified_at(m.start())
+    for m in _JAVA_ALG_NONE.finditer(content):
+        if not c.commented(m.start()):
+            c.weakness("jwt_alg_confusion", "high", m.start(), "Algorithm.none() accepts unsigned tokens")
+    if "JWT.require" not in content.replace(" ", ""):
+        for m in _rx(r"\bJWT\s*\.\s*decode\s*\(").finditer(content):
+            if not c.commented(m.start()):
+                c.unverified_decode(m.start())
+    for m in _JAVA_KEY_USE.finditer(content):
+        if c.commented(m.start()):
+            continue
+        args = _call_args(content, m.end())
+        if not args:
+            continue
+        key_arg = args[-1] if "signWith" in m.group() and len(args) > 1 and "SignatureAlgorithm" in args[0] else args[0]
+        found = _java_secret_literal(content, key_arg)
+        if found is None or len(found[0]) >= _MIN_SECRET_LEN:
+            continue
+        at = found[1] if found[1] >= 0 else m.start()
+        c.weakness("jwt_weak_secret", "high", at, f"hard-coded secret under {_MIN_SECRET_LEN} chars")
+    c.header_trust(_HEADER_TRUST_STRICT)
 
 
 # --- OAuth clients (#243, part 2) ---------------------------------------------

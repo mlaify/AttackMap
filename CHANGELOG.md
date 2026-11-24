@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Java/Kotlin JWT checks (#472): jjwt `parse()` / `parseClaimsJwt` / `unsecured()` accept unsigned (`alg: none`) tokens, and auth0 `Algorithm.none()` does too (`jwt_alg_confusion`). Short hard-coded HMAC keys in `setSigningKey` / `signWith` / `verifyWith` / `Keys.hmacShaKeyFor` / `Algorithm.HMAC*` are cited at the literal or its constant (`jwt_weak_secret`). `JWT.decode` claims are flagged when the file never calls `JWT.require` (`jwt_unverified_decode`). `parseClaimsJws` / `parseSignedClaims` / `JWT.require` count as the `jwt_verified` control. These run in the repo pass with the JVM crypto rules.
+
 ### Fixed
 
 - Java precision from OWASP WebGoat (real-world benchmark): taint flow follows request input into same-file helpers, up to two calls deep (JS/TS, PHP, Java, C#). The caller's sanitizers and guards still apply at the call site. Spring `"redirect:" + x` views, `RedirectView` and `sendRedirect` are open-redirect sinks. Java `String.matches("…")` is a full-match validation guard. Core's crypto rules now run on Java/Kotlin sources, which no scan checked before. The Java MD5/SHA-1 rule needs a secret passed to `update`/`digest`. The benchmark adds WebGoat v2026.5 (21 labels).
