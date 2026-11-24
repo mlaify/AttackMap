@@ -257,3 +257,54 @@ def test_test_files_are_skipped(tmp_path: Path) -> None:
 def test_rules_are_registered(kind: str) -> None:
     entry = taxonomy_for(kind.replace("_", "-"))
     assert entry is not None and "API2:2023" in entry.owasp
+
+
+# ---------- Java / Kotlin (#472, WebGoat jwt lessons) ----------
+
+_JJWT = (
+    "import io.jsonwebtoken.Jwts;\n"
+    "class Votes {\n"
+    '  private static final String JWT_PASSWORD = "bm5n3SkxCX4kKRy4";\n'
+    "  Object read(String token) {\n"
+    "    return Jwts.parser().setSigningKey(JWT_PASSWORD).parse(token);\n"
+    "  }\n"
+    "}\n"
+)
+
+
+def _java(content: str) -> tuple[set[tuple[str, int]], bool]:
+    weaknesses, verified = find_jwt_issues(content, "Votes.java")
+    return {(w.kind, w.line or 0) for w in weaknesses}, bool(verified)
+
+
+def test_jjwt_parse_and_short_constant_key() -> None:
+    # parse() accepts alg:none; the short key is cited at its constant.
+    assert _java(_JJWT) == ({("jwt_alg_confusion", 5), ("jwt_weak_secret", 3)}, False)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        _JJWT.replace(".parse(token)", ".parseClaimsJws(token)").replace('"bm5n3SkxCX4kKRy4"', "System.getenv(\"JWT_KEY\")"),
+        "import io.jsonwebtoken.Jwts;\nclass A {\n  Object r(String t) {\n"
+        "    return Jwts.parser().verifyWith(key).build().parseSignedClaims(t);\n  }\n}\n",
+    ],
+)
+def test_jjwt_signed_parse_with_an_external_key_is_verified(content: str) -> None:
+    assert _java(content) == (set(), True)
+
+
+def test_auth0_none_algorithm_and_literal_hmac_key() -> None:
+    content = (
+        "import com.auth0.jwt.JWT;\nimport com.auth0.jwt.algorithms.Algorithm;\nclass B {\n"
+        '  Algorithm a = Algorithm.HMAC256("victory".getBytes());\n'
+        "  Algorithm n = Algorithm.none();\n}\n"
+    )
+    assert _java(content)[0] == {("jwt_weak_secret", 4), ("jwt_alg_confusion", 5)}
+
+
+def test_jvm_jwt_rules_run_in_a_real_scan(tmp_path: Path) -> None:
+    # Core's per-file pass doesn't read .java; the JVM pass applies the rules.
+    _write(tmp_path, {"src/Votes.java": _JJWT, "src/VotesTest.java": _JJWT})
+    found = {(w.kind, w.file, w.line) for w in scan_repo(tmp_path).code_weaknesses if w.kind in JWT_KINDS}
+    assert found == {("jwt_alg_confusion", "src/Votes.java", 5), ("jwt_weak_secret", "src/Votes.java", 3)}

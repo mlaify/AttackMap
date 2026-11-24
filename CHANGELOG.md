@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Java/Kotlin JWT checks (#472): jjwt `parse()` / `parseClaimsJwt` / `unsecured()` accept unsigned (`alg: none`) tokens, and auth0 `Algorithm.none()` does too (`jwt_alg_confusion`). Short hard-coded HMAC keys in `setSigningKey` / `signWith` / `verifyWith` / `Keys.hmacShaKeyFor` / `Algorithm.HMAC*` are cited at the literal or its constant (`jwt_weak_secret`). `JWT.decode` claims are flagged when the file never calls `JWT.require` (`jwt_unverified_decode`). `parseClaimsJws` / `parseSignedClaims` / `JWT.require` count as the `jwt_verified` control. These run in the repo pass with the JVM crypto rules.
+
 ### Fixed
 
+- Third-party scripts in a `lib`/`libs` directory under a static-asset directory (`static/js/libs/ace.js`, `public/lib/jquery.js`) count as vendored, which removes 20 WebGoat noise locations (secrets, prototype pollution, ReDoS in `ace.js`). A top-level `lib/` or `libs/` is still first-party.
 - Java precision from OWASP WebGoat (real-world benchmark): taint flow follows request input into same-file helpers, up to two calls deep (JS/TS, PHP, Java, C#). The caller's sanitizers and guards still apply at the call site. Spring `"redirect:" + x` views, `RedirectView` and `sendRedirect` are open-redirect sinks. Java `String.matches("…")` is a full-match validation guard. Core's crypto rules now run on Java/Kotlin sources, which no scan checked before. The Java MD5/SHA-1 rule needs a secret passed to `update`/`digest`. The benchmark adds WebGoat v2026.5 (21 labels).
 - Python precision from OWASP PyGoat (real-world benchmark): `c` / `cur` cursor names are SQL sinks; `yaml.load` with `Loader=yaml.Loader` / `UnsafeLoader` / `FullLoader` is unsafe deserialization (only Safe/Base loaders are exempt); an allow-list check on a file *name* no longer guards deserialization of its content; SAX `setFeature(feature_external_ges, True)` (and the Java external-entity feature URIs, libxmljs `noent: true`) is XXE; `redirect(request.referrer)` is no longer an open redirect. The benchmark adds PyGoat v3.0.0 (15 labels).
 

@@ -16,7 +16,7 @@ from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .logic_flaws import find_logic_flaws
-from .crypto import find_crypto_weaknesses, find_jvm_crypto_weaknesses, secret_callees, weak_hash_helpers
+from .crypto import find_crypto_weaknesses, secret_callees, weak_hash_helpers
 from .sbom import analyze_sbom
 from .supply_chain import scan_supply_chain
 from .workflow_scanner import scan_workflows
@@ -1097,15 +1097,43 @@ def run_repo_passes(
     result.web_hardening_issues = result.web_hardening_issues + [
         i for i in find_jvm_csrf_disabled(root_path) if (i.kind, i.file, i.line) not in seen
     ]
-    seen = {(w.kind, w.file, w.line) for w in result.crypto_weaknesses}
-    result.crypto_weaknesses = result.crypto_weaknesses + [
-        w for w in find_jvm_crypto_weaknesses(root_path) if (w.kind, w.file, w.line) not in seen
-    ]
+    _jvm_file_pass(result, root_path)
     # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
     # Runs last so the full route list is assembled into cohorts. It drives its
     # own determinate per-cohort progress (the slow tail on big route surfaces).
     result.anomalies = result.anomalies + find_anomalies(result, root_path, progress=progress)
     return result
+
+
+_JVM_SUFFIXES = frozenset({".java", ".kt"})
+
+
+def _jvm_file_pass(result: ScanResult, root_path: Path) -> None:
+    """Core's crypto and JWT rules over Java/Kotlin sources (#472). The
+    per-file pass doesn't read JVM files (their analyzer plugins do), so before
+    this `MessageDigest`, `Cipher.getInstance` and jjwt were never checked in a
+    real scan. Test and vendored files are skipped, like the per-file pass."""
+    seen = {(w.kind, w.file, w.line) for w in result.crypto_weaknesses} | {
+        (w.kind, w.file, w.line) for w in result.code_weaknesses
+    }
+    crypto: list[CryptoWeakness] = []
+    weaknesses = []
+    for path in walk_repo(root_path, prune=is_skipped_dir):
+        if path.suffix not in _JVM_SUFFIXES or is_oversized(path):
+            continue
+        rel = path.relative_to(root_path).as_posix()
+        if is_test_file(rel) or is_vendored_file(rel):
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        crypto += [w for w in find_crypto_weaknesses(content, rel) if (w.kind, w.file, w.line) not in seen]
+        jwt_weaknesses, jwt_verified = find_jwt_issues(content, rel)
+        weaknesses += [w for w in jwt_weaknesses if (w.kind, w.file, w.line) not in seen]
+        result.auth_hints = result.auth_hints + jwt_verified
+    result.crypto_weaknesses = result.crypto_weaknesses + crypto
+    result.code_weaknesses = result.code_weaknesses + weaknesses
 
 
 def _redact_secret(value: str) -> str:

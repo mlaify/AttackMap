@@ -91,6 +91,8 @@ def test_include_tests_env_disables_exclusion(monkeypatch: pytest.MonkeyPatch) -
         "app/static/app.min.js",
         "app/main.bundle.js",
         "sdk/js/types.d.ts",
+        "src/main/resources/webgoat/static/js/libs/ace.js",  # WebGoat
+        "public/lib/jquery.js",
     ],
 )
 def test_vendored_paths_detected(rel: str) -> None:
@@ -104,6 +106,9 @@ def test_vendored_paths_detected(rel: str) -> None:
         "UserInterface/Models/PropertyPath.js",  # not under External/
         "services/external_api.py",              # 'external_api' file, not an 'external' dir
         "vendored_notes.md",                     # not a dir segment
+        "lib/insecurity.ts",                     # top-level lib/ is first-party (Juice Shop)
+        "libs/shared/auth.ts",                   # Nx workspace libs/
+        "static/js/app/lib.js",                  # a lib.js file, not a lib/ dir
     ],
 )
 def test_non_vendored_paths_not_detected(rel: str) -> None:

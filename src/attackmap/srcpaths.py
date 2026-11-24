@@ -115,6 +115,14 @@ _VENDORED_DIR_SEGMENTS = frozenset(
     }
 )
 
+# Third-party scripts copied into a web app's static assets
+# (`src/main/resources/static/js/libs/ace.js`, `public/lib/jquery.js`): a
+# `lib`/`libs` directory *under* a static-asset directory. A top-level `lib/`
+# or `libs/` (Juice Shop's `lib/insecurity.ts`, an Nx workspace) stays
+# first-party.
+_STATIC_ASSET_SEGMENTS = frozenset({"static", "public", "assets", "wwwroot", "webapp", "www"})
+_STATIC_LIB_SEGMENTS = frozenset({"lib", "libs"})
+
 # Minified / bundled build artifacts and generated TypeScript declaration
 # stubs (`*.d.ts`) — not human-authored, executable source.
 _MINIFIED_FILE_RE = re.compile(
@@ -132,7 +140,11 @@ def is_vendored_file(rel_path: str) -> bool:
         return False
     norm = rel_path.replace("\\", "/")
     parts = norm.split("/")
-    if any(segment.lower() in _VENDORED_DIR_SEGMENTS for segment in parts[:-1]):
+    dirs = [segment.lower() for segment in parts[:-1]]
+    if any(segment in _VENDORED_DIR_SEGMENTS for segment in dirs):
+        return True
+    static = next((i for i, segment in enumerate(dirs) if segment in _STATIC_ASSET_SEGMENTS), None)
+    if static is not None and any(segment in _STATIC_LIB_SEGMENTS for segment in dirs[static + 1 :]):
         return True
     return _MINIFIED_FILE_RE.search(parts[-1]) is not None
 
