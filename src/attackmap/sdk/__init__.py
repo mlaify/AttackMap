@@ -169,6 +169,28 @@ Manifest-level supply-chain risks an analyzer understands better than core
 ``result.supply_chain_issues`` as :class:`SupplyChainIssue` records, using
 the kinds core already reports (``mutable_vcs_dependency``, ...).
 
+## Route → sink chains and deep-pass records (#257)
+
+Core's taint pass reads the route files any analyzer reports, with sinks
+for Python, JS/TS, Go, PHP, Java, C# and Ruby (plus the ones plugins
+contribute above). For a language it doesn't cover (C, C++, Rust, Swift), a
+plugin that can tie a handler to a dangerous call reports the chain itself as
+a :class:`TaintChain` in ``ScanResult.taint_chains``: ``route_*`` from the
+route, ``sink_kind`` from :data:`TAINT_SINK_KINDS`, ``hops=0`` for a sink in
+the handler, ``source_kind`` / ``flow`` when the argument is traced to request
+input. Core raises the per-kind finding and ranks its exploitability like its
+own chains. :class:`CryptoWeakness` and :class:`WebHardeningIssue` records
+become the same findings core's built-in finders produce.
+
+## Plugin helpers (#382, #384)
+
+- :class:`SignalCollector` appends recon records once per identity (route:
+  path, method, file; hints: name, file), first one wins, in O(1).
+- :func:`snippet_at` is the offset-based, O(line) form of
+  :func:`line_snippet`.
+- :func:`plugin_version` reads your installed distribution's version for
+  ``AnalyzerMetadata.version``.
+
 ## Versioning
 
 The names exported below are stable across minor releases of the
@@ -187,7 +209,8 @@ from .contracts import (
 )
 from ..safe_fs import contained_file, is_contained, read_repo_text, walk_repo
 from . import fs
-from .fs import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, line_snippet, read_source, rel
+from .collect import SignalCollector, plugin_version
+from .fs import DEFAULT_SKIP_DIRS, iter_repo_files, line_of, line_snippet, read_source, rel, snippet_at
 from ..taint_sinks import PLUGIN_GROUP as TAINT_SINK_PLUGIN_GROUP
 from ..taint_sinks import SINK_KINDS as TAINT_SINK_KINDS
 from ..taint_sinks import validate_sink_entry as validate_taint_sink
@@ -204,6 +227,7 @@ from .models import (
     CloudMisconfigKind,
     CloudMisconfigPlatform,
     CodeWeakness,
+    CryptoWeakness,
     DatabaseHint,
     DependencyEcosystem,
     DependencyHint,
@@ -217,6 +241,9 @@ from .models import (
     SecretHint,
     ServiceHint,
     SupplyChainIssue,
+    TaintChain,
+    TaintFlowStep,
+    WebHardeningIssue,
 )
 
 __all__ = [
@@ -255,6 +282,16 @@ __all__ = [
     "CodeWeakness",
     "CODE_WEAKNESS_KINDS",
     "SupplyChainIssue",
+    # Deep-pass records a plugin may emit for languages core's own passes
+    # don't cover (#257): crypto and web-hardening issues, and route → sink
+    # chains (core ranks their exploitability like its own).
+    "CryptoWeakness",
+    "WebHardeningIssue",
+    "TaintChain",
+    "TaintFlowStep",
+    # Plugin helpers (#382, #384).
+    "SignalCollector",
+    "plugin_version",
     # Repo-confined filesystem helpers (#234): walk and read the scanned repo
     # without following symlinks out of it. Plugins should use these instead
     # of Path.rglob / read_text.
@@ -271,6 +308,7 @@ __all__ = [
     "rel",
     "line_of",
     "line_snippet",
+    "snippet_at",
     # Plugin-contributed taint sinks (#240).
     "TAINT_SINK_PLUGIN_GROUP",
     "TAINT_SINK_KINDS",

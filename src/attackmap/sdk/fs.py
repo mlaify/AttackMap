@@ -146,6 +146,16 @@ def line_snippet(content: str, line: int, max_len: int = 200) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
 
+def snippet_at(content: str, offset: int, max_len: int = 200) -> str:
+    """The stripped text of the line holding ``offset``, truncated like
+    :func:`line_snippet`. O(line length), so a plugin can snippet every match
+    in a large file (#382)."""
+    start = content.rfind("\n", 0, offset) + 1
+    end = content.find("\n", offset)
+    text = content[start : len(content) if end == -1 else end].strip()
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
 __all__ = [
     "DEFAULT_SKIP_DIRS",
     "iter_repo_files",
@@ -153,4 +163,5 @@ __all__ = [
     "rel",
     "line_of",
     "line_snippet",
+    "snippet_at",
 ]
