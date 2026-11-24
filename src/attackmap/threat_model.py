@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .confidence import normalize_confidence
 from .analyzer import identify_attack_surfaces
 from .webhook_verification import describe as describe_webhook
 from .exploitability import best_by_sink_kind, score_exploitability
@@ -3069,6 +3070,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         )
 
     _fill_missing_locations(findings)
+    normalize_confidence(findings)
 
     # #4: attach numeric score for triage ordering, then sort by
     # (severity, -score, title). Same-severity findings surface in

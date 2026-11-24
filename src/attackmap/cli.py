@@ -58,6 +58,7 @@ from .safe_fs import UnsafePathError, ensure_output_dir, safe_write_text
 from .report import OUTPUT_FORMATS, render_console_summary, render_pr_comment, write_reports
 from .suggest import detect_ecosystems
 from .gitref import GitRefError
+from .confidence import CONFIDENCE_LEVELS, filter_by_confidence
 from .suppress import apply_suppressions, collect_suppressions
 from .gitref import untrusted_output_markers
 from .safe_fs import set_untrusted_output_markers
@@ -286,6 +287,19 @@ def _echo_opt_in_hint(names: list[str]) -> None:
         )
 
 
+def _apply_min_confidence(findings, minimum: str):  # type: ignore[no-untyped-def]
+    """Drop findings below ``minimum`` (#198); the report notes the cut."""
+    minimum = minimum.lower()
+    if minimum not in CONFIDENCE_LEVELS:
+        raise typer.BadParameter(f"--min-confidence must be one of: {', '.join(CONFIDENCE_LEVELS)}.")
+    if minimum == "low":
+        return findings, None
+    kept, dropped = filter_by_confidence(findings, minimum)
+    if dropped:
+        typer.echo(f"Hid {dropped} finding(s) below --min-confidence {minimum}.")
+    return kept, {"min_confidence": minimum, "filtered": dropped}
+
+
 def _run_fleet(
     repo_paths: list[Path],
     *,
@@ -298,6 +312,7 @@ def _run_fleet(
     progress_format: str,
     no_progress: bool,
     fleet_incompatible: dict[str, bool],
+    min_confidence: str = "low",
     output_format: str = "all",
     install_missing: bool = False,
     suppress_from_ref: str | None = None,
@@ -376,6 +391,7 @@ def _run_fleet(
                 findings = outcome.active
                 suppressed_findings = outcome.suppressed
 
+            findings, confidence_filter = _apply_min_confidence(findings, min_confidence)
             defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
             repo_out = output_root / repo_id
             try:
@@ -398,6 +414,7 @@ def _run_fleet(
                         for metadata in (get_analyzer_metadata(a) for a in active_analyzers)
                     ],
                     suppressed=suppressed_findings,
+                    confidence_filter=confidence_filter,
                     output_format=output_format,
                 )
             except UnsafePathError as exc:
@@ -470,6 +487,13 @@ def analyze(
         "subdirectory and a fleet summary is written alongside. Defaults to '.'.",
     ),
     output: str = typer.Option("reports", "--output", "-o", help="Directory for generated reports."),
+    min_confidence: str = typer.Option(
+        "low",
+        "--min-confidence",
+        help="Report only findings at or above this confidence: low (everything), medium or high (#198, docs/confidence.md). "
+        "The report records the threshold and how many findings it hid.",
+        case_sensitive=False,
+    ),
     format: str = typer.Option(
         "all",
         "--format",
@@ -694,6 +718,7 @@ def analyze(
             suppress_file=suppress_file,
             progress_format=progress_format,
             no_progress=no_progress,
+            min_confidence=min_confidence,
             output_format=format,
             install_missing=install_missing,
             suppress_from_ref=suppress_from_ref,
@@ -719,6 +744,9 @@ def analyze(
     # Validate diff-mode flag combinations before doing any real work.
     if fail_on_new_high and baseline is None:
         raise typer.BadParameter("--fail-on-new-high requires --baseline to be set.")
+    min_confidence = min_confidence.lower()
+    if min_confidence not in CONFIDENCE_LEVELS:
+        raise typer.BadParameter(f"--min-confidence must be one of: {', '.join(CONFIDENCE_LEVELS)}.")
     if fail_on_new_suppression and baseline is None:
         raise typer.BadParameter("--fail-on-new-suppression requires --baseline to be set.")
     if baseline is not None:
@@ -855,6 +883,7 @@ def analyze(
             for summary_line in outcome.summary_lines():
                 typer.echo(summary_line)
 
+    findings, confidence_filter = _apply_min_confidence(findings, min_confidence)
     defensive_review_md = render_defensive_review(scan, attack_surfaces, findings, attack_paths)
 
     try:
@@ -878,6 +907,7 @@ def analyze(
             ],
             suppressed=suppressed_findings,
             output_format=format,
+            confidence_filter=confidence_filter,
         )
     except UnsafePathError as exc:
         typer.echo(f"Error: {exc}", err=True)

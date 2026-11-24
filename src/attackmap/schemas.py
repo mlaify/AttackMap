@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-REPORT_SCHEMA_VERSION = "1.0.0"
+REPORT_SCHEMA_VERSION = "1.1.0"
 _DRAFT = "https://json-schema.org/draft/2020-12/schema"
 
 
@@ -64,6 +64,10 @@ def report_schema() -> dict[str, Any]:
                     "Finding",
                     {"id": text, "rule": text, "reason": text, "suppressed_by": {"type": "array", "items": text}},
                 ),
+            },
+            "confidence_filter": {
+                "type": "object",
+                "properties": {"min_confidence": {"enum": ["low", "medium", "high"]}, "filtered": {"type": "integer"}},
             },
             "attack_paths": {"type": "array", "items": ref("AttackPath")},
             "attack_chains": {"type": "array", "items": ref("AttackChain")},
