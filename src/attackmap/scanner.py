@@ -15,6 +15,7 @@ from .redact import mask_secret
 from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
 from .authz import analyze_authz
+from .logic_flaws import find_logic_flaws
 from .crypto import find_crypto_weaknesses
 from .sbom import analyze_sbom
 from .supply_chain import scan_supply_chain
@@ -1066,6 +1067,7 @@ def run_repo_passes(
     if progress is not None:
         progress.stage("Authorization (BOLA/IDOR)")
     result.authz_candidates = result.authz_candidates + analyze_authz(result, root_path)
+    result.logic_flaws = result.logic_flaws + find_logic_flaws(result, root_path)
     # Field-level mass assignment (#242): binders and models live in
     # different files, so this can't ride the per-file weakness pass.
     result.code_weaknesses = result.code_weaknesses + analyze_mass_assignment(root_path)

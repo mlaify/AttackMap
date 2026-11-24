@@ -633,6 +633,25 @@ class CryptoWeakness(_RedactedEvidence):
     source_analyzer: str | None = _PROVENANCE_FIELD
 
 
+class LogicFlawCandidate(_RedactedEvidence):
+    """A business-logic or race-condition lead on a mutating route (#245):
+    `check_then_act` (a balance-like `field` checked, then written, with no
+    lock) or `idempotency_gap` (a redeem/checkout/transfer POST with no
+    idempotency, uniqueness or rate-limit signal). Always needs human review."""
+
+    kind: Literal["check_then_act", "idempotency_gap"]
+    route_method: str
+    route_path: str
+    route_file: str
+    route_line: int | None = None
+    file: str
+    line: int | None = None
+    field: str | None = None
+    evidence_text: str | None = None
+    confidence: float = 0.4
+    source_analyzer: str | None = _PROVENANCE_FIELD
+
+
 class BolaCandidate(_RedactedEvidence):
     """A route that may be missing object-level authorization (#69).
 
@@ -1198,6 +1217,7 @@ class ScanResult(BaseModel):
     dependencies: list[DependencyHint] = Field(default_factory=list)
     vulnerabilities: list[Vulnerability] = Field(default_factory=list)
     authz_candidates: list[BolaCandidate] = Field(default_factory=list)
+    logic_flaws: list[LogicFlawCandidate] = Field(default_factory=list)
     crypto_weaknesses: list[CryptoWeakness] = Field(default_factory=list)
     web_hardening_issues: list[WebHardeningIssue] = Field(default_factory=list)
     code_weaknesses: list[CodeWeakness] = Field(default_factory=list)

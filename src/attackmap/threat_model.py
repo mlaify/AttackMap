@@ -2243,6 +2243,30 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     findings.extend(synthesize_unauthenticated_routes(scan, runtime_surfaces, unauth_routes))
     unauth_keys = {(r.method, r.path, r.file) for r, _ in unauth_routes}
 
+    # Business-logic / race leads (#245): always "needs human review".
+    logic = [c for c in scan.logic_flaws if not _is_low_quality_source(c.route_file)]
+    for kind, rule, title, severity, mitigation in _LOGIC_FINDINGS:
+        cands = [c for c in logic if c.kind == kind]
+        if not cands:
+            continue
+        findings.append(
+            Finding(
+                title=title,
+                rule_id=rule,
+                severity=severity,  # type: ignore[arg-type]
+                evidence=[
+                    f"{c.route_method} {c.route_path} in {c.route_file}"
+                    + (f": `{c.field}` checked then written at line {c.line}" if c.field else "")
+                    + " (needs human review)"
+                    for c in cands[:10]
+                ],
+                locations=_locs(cands),
+                mitigation=mitigation,
+                confidence="low",
+                tags=["business-logic", "needs-review"],
+            )
+        )
+
     # Function-level authorization (#242, OWASP API5): privileged routes that
     # check authentication but never a role or permission.
     bfla = find_bfla_routes(scan, runtime_surfaces)
@@ -3430,6 +3454,23 @@ def generate_attack_paths(scan: ScanResult, attack_surfaces: list[AttackSurface]
     return paths[:MAX_ATTACK_PATHS]
 
 
+_LOGIC_FINDINGS: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "check_then_act", "race-check-then-act",
+        "Balance or quota is checked, then updated, without a lock (race condition)", "medium",
+        "Make the check and the write one atomic step: a conditional update (`UPDATE … SET balance = balance - ? WHERE balance >= ?`, "
+        "Mongo `findOneAndUpdate` with `$gte` and `$inc`, Django `F()`), or lock the row first (`select_for_update()` inside "
+        "`transaction.atomic()`). Then check the affected-row count.",
+    ),
+    (
+        "idempotency_gap", "idempotency-gap",
+        "Redemption or payment route has no idempotency or uniqueness guard", "low",
+        "Require an idempotency key (stored with a unique constraint) or a unique constraint on the redeemed resource, "
+        "and rate-limit the route, so a replayed or concurrent request can't redeem, pay or transfer twice.",
+    ),
+)
+
+
 def rule_catalog() -> list[tuple[str, str, str]]:
     """Every core rule id with its finding title and severity (#223), for
     `attackmap rules` and the docs. Family specs are expanded per kind."""
@@ -3453,6 +3494,7 @@ def rule_catalog() -> list[tuple[str, str, str]]:
         ("bola-read", "Possible broken object-level authorization (BOLA/IDOR) on read routes", "medium"),
         ("unauth-state-change", "State-changing routes are reachable without an authentication control", "high"),
         ("bfla-privileged-route", "Privileged route checks authentication but not role (BFLA)", "high"),
+        *((rule, title, severity) for _, rule, title, severity, _ in _LOGIC_FINDINGS),
     ]
     for spec_table in (
         _TAINT_FINDING_SPEC, _CRYPTO_FINDING_SPEC, _WEB_HARDENING_FINDING_SPEC,
