@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Plugin CI (#254): a reusable workflow, `.github/workflows/plugin-ci.yml`, tests an analyzer against its minimum declared core, the latest release and `main`. Core CI's new `plugin-matrix` job runs all 15 official analyzers' tests against every core change.
+
 ## [0.8.0] - 2026-11-24
 
 ### Added
