@@ -598,3 +598,74 @@ def test_numeric_validation_guards_command_injection(tmp_path: Path, guard: str,
     scan = ScanResult(root=str(tmp_path), routes=[Route(path="/ping.php", method="POST", file="ping.php")])
     [chain] = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "subprocess_shell"]
     assert chain.sanitized is sanitized and chain.source_kind == "body"
+
+
+_HELPER_CONTROLLER = (
+    "@RestController\n"
+    "public class Lesson {\n"
+    '    @PostMapping("/a")\n'
+    "    public String a(@RequestParam String name) {\n"
+    "        return injectable(name);\n"
+    "    }\n\n"
+    '    @PostMapping("/b")\n'
+    "    public String b(@RequestParam String name) {\n"
+    "        String safe = String.valueOf(name.length());\n"
+    "        return run(safe);\n"
+    "    }\n\n"
+    "    protected String injectable(String accountName) {\n"
+    "        String query = \"SELECT * FROM t WHERE n = '\" + accountName + \"'\";\n"
+    "        return run(query);\n"
+    "    }\n\n"
+    "    private String run(String query) {\n"
+    "        Statement statement = connection.createStatement();\n"
+    "        statement.executeQuery(query);\n"  # line 21
+    '        return "ok";\n'
+    "    }\n"
+    "}\n"
+)
+
+
+def test_request_input_is_followed_into_same_file_helpers(tmp_path: Path) -> None:
+    # WebGoat: completed(@RequestParam q) -> injectableQuery(q) -> helper -> executeQuery.
+    (tmp_path / "Lesson.java").write_text(_HELPER_CONTROLLER, encoding="utf-8")
+    routes = [Route(path=p, method="POST", file="Lesson.java", line=ln) for p, ln in (("/a", 3), ("/b", 8))]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    traced = [c for c in chains if c.sink_kind == "sql_execute" and c.source_kind]
+    # Two calls up from the sink to /a's handler parameter; /b passes a length,
+    # and /a's input is not credited to /b.
+    assert [(c.route_path, c.sink_line, c.source_line) for c in traced] == [("/a", 21, 4)]
+
+
+@pytest.mark.parametrize(
+    ("ret", "fires"),
+    [
+        ('return new ModelAndView("redirect:" + url);', True),
+        ('return "redirect:" + url;', True),
+        ('response.sendRedirect(url); return null;', True),
+        ('return new ModelAndView("redirect:/home?u=" + url);', False),  # same-site path pinned
+        ('return new ModelAndView("lessons/" + url);', False),  # a view name, not a redirect
+    ],
+)
+def test_spring_redirect_sinks(tmp_path: Path, ret: str, fires: bool) -> None:
+    (tmp_path / "R.java").write_text(
+        '@Controller\npublic class R {\n  @GetMapping("/r")\n'
+        f"  public ModelAndView r(@RequestParam String url, HttpServletResponse response) {{\n    {ret}\n  }}\n}}\n",
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/r", method="GET", file="R.java", line=3)])
+    hits = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "open_redirect" and c.source_kind and not c.sanitized]
+    assert bool(hits) is fires
+
+
+def test_java_string_matches_is_a_full_match_guard(tmp_path: Path) -> None:
+    # WebGoat SSRFTask2: only the exact allowed URL is ever fetched.
+    (tmp_path / "S.java").write_text(
+        '@RestController\npublic class S {\n  @PostMapping("/s")\n  public String s(@RequestParam String url) {\n'
+        '    if (url.matches("http://ifconfig\\\\.pro")) {\n'
+        "      try (InputStream in = new URL(url).openStream()) { return \"x\"; }\n"
+        '    }\n    return "no";\n  }\n}\n',
+        encoding="utf-8",
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/s", method="POST", file="S.java", line=3)])
+    [chain] = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "ssrf"]
+    assert chain.sanitized

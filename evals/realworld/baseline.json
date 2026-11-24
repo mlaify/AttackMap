@@ -8,18 +8,18 @@
       "expected_total": 6
     },
     "crypto": {
-      "precision": 0.8571428571428571,
-      "recall": 0.8888888888888888,
-      "tp": 6,
+      "precision": 0.875,
+      "recall": 0.9,
+      "tp": 7,
       "fp": 1,
-      "expected_total": 9
+      "expected_total": 10
     },
     "injection": {
-      "precision": 0.9411764705882353,
-      "recall": 0.717948717948718,
-      "tp": 16,
+      "precision": 0.9523809523809523,
+      "recall": 0.75,
+      "tp": 20,
       "fp": 1,
-      "expected_total": 39
+      "expected_total": 56
     },
     "session_auth": {
       "precision": 1.0,
@@ -30,16 +30,16 @@
     },
     "token_auth": {
       "precision": 1.0,
-      "recall": 1.0,
+      "recall": 0.4,
       "tp": 3,
       "fp": 0,
-      "expected_total": 2
+      "expected_total": 5
     },
     "unauth_state_change": {
       "precision": 0.0,
       "recall": 0.0,
       "tp": 0,
-      "fp": 2,
+      "fp": 3,
       "expected_total": 1
     }
   }

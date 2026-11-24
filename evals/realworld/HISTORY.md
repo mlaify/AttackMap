@@ -89,3 +89,18 @@ Corpus: + OWASP PyGoat v3.0.0 (`e5808dd`), 15 labels. 59 labels in total.
 | `unauth_state_change` | 0% | 0% | 0 / 2 / 1 |
 
 Fixes found on PyGoat: `c`/`cur` cursors are SQL sinks (`sql_injection_lab` was missed); `yaml.load(Loader=yaml.Loader|UnsafeLoader|FullLoader)` is unsafe; a filename allow-list is no guard for deserialized content; SAX `setFeature(feature_external_ges, True)` is XXE; `redirect(request.referrer)` is not an open redirect. Still missed: Pillow `ImageMath.eval` (CVE-2023-50447) and the stored SSTI (template written to a file, then rendered).
+
+## WebGoat case and its fixes (2026-11-24)
+
+Corpus: + OWASP WebGoat v2026.5 (`7e198f3`), 21 labels (lessons under `src/main/java/org/owasp/webgoat/lessons`). 80 labels in total.
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 95% | 75% | 20 / 1 / 56 |
+| `bola` | 100% | 83% | 2 / 0 / 6 |
+| `token_auth` | 100% | 40% | 3 / 0 / 5 |
+| `session_auth` | 100% | 100% | 1 / 0 / 1 |
+| `crypto` | 88% | 90% | 7 / 1 / 10 |
+| `unauth_state_change` | 0% | 0% | 0 / 3 / 1 |
+
+WebGoat injection went from 67% / 19% to 100% / 82%. Fixes: request input passed to a same-file helper is now traced up to two calls deep (WebGoat's SQL lessons call `injectableQuery(query)`); Spring `"redirect:" + url` views, `RedirectView` and `sendRedirect` are open-redirect sinks; Java `String.matches("…")` counts as a full-match guard (SSRF task 2 only fetches one exact URL); core's crypto rules now run on `.java`/`.kt` files (before this, `MessageDigest.getInstance("MD5")` was never checked in a real scan), and the Java MD5/SHA-1 rule needs a secret passed to `update`/`digest`. token_auth recall is down only because the new labels are Java JWT cases, and core has no Java JWT checks yet (#472). Still missed: helpers in another class (`CommandExecutionService`, `CommentsCache.parseXml`, `ProfileUploadBase.execute`).

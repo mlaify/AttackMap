@@ -360,7 +360,8 @@ GENERIC_GUARDS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "regex validation",
-        re.compile(r"\bre\.fullmatch\s*\(|\bpreg_match\s*\(|\.MatchString\s*\(|\.matches\s*\(\s*\"\^"),
+        # Java's String.matches is always a full match: no anchor needed.
+        re.compile(r"\bre\.fullmatch\s*\(|\bpreg_match\s*\(|\.MatchString\s*\(|\.matches\s*\(\s*\""),
     ),
 )
 

@@ -16,7 +16,7 @@ from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .logic_flaws import find_logic_flaws
-from .crypto import find_crypto_weaknesses, secret_callees, weak_hash_helpers
+from .crypto import find_crypto_weaknesses, find_jvm_crypto_weaknesses, secret_callees, weak_hash_helpers
 from .sbom import analyze_sbom
 from .supply_chain import scan_supply_chain
 from .workflow_scanner import scan_workflows
@@ -1096,6 +1096,10 @@ def run_repo_passes(
     seen = {(i.kind, i.file, i.line) for i in result.web_hardening_issues}
     result.web_hardening_issues = result.web_hardening_issues + [
         i for i in find_jvm_csrf_disabled(root_path) if (i.kind, i.file, i.line) not in seen
+    ]
+    seen = {(w.kind, w.file, w.line) for w in result.crypto_weaknesses}
+    result.crypto_weaknesses = result.crypto_weaknesses + [
+        w for w in find_jvm_crypto_weaknesses(root_path) if (w.kind, w.file, w.line) not in seen
     ]
     # Anomaly / outlier pass (#78): the odd-one-out among sibling routes.
     # Runs last so the full route list is assembled into cohorts. It drives its

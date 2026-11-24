@@ -1,4 +1,4 @@
-"""Intra-procedural def-use taint propagation (#239).
+"""Def-use taint propagation within a function and its same-file callers (#239).
 
 The import-graph walk in :mod:`attackmap.taint` decides *which* sinks a route
 can reach. This module decides, for one sink call, whether a request-derived
@@ -35,11 +35,14 @@ How it works:
 
 Documented limits (precision-first, heuristic — evidence, not proof):
 
-- **Intra-procedural only.** Taint does not cross a call boundary: a value
-  passed to a helper that runs the sink is not followed into the helper (the
-  helper's own parameters are treated as *unknown*, never as request input).
-  Cross-file reach is still the file-granular import walk in ``taint.py``;
-  there is no function-level call graph. Cross-repo taint is #196.
+- **Same-file helpers only, two calls deep.** In JS/TS, PHP, Java and C#, a
+  helper parameter that reaches the sink is traced back to the same-file
+  callers that pass it request input (bare or ``this``/``self`` calls, at most
+  two calls up and eight call sites); the caller's sanitizers and guards
+  apply at the call site. Python and Go helpers are not followed. Otherwise a
+  helper's own parameters are *unknown*, never request input. Cross-file
+  reach is still the file-granular import walk in ``taint.py``; there is no
+  repo-wide call graph. Cross-repo taint is #196.
 - **Flow-insensitive within a function.** Assignments are replayed in source
   order up to the sink; branches are not distinguished, loops are a single
   pass, and a guard's polarity (``if ok`` vs ``if not ok``) is not checked —
@@ -91,6 +94,8 @@ _MAX_STEPS = 8          # flow steps kept per value
 _MAX_ATOMS = 6          # distinct sources tracked per variable
 _MAX_RHS = 1500         # chars scanned for one right-hand side
 _MAX_ARGS = 4000        # chars scanned for one sink call's arguments
+_MAX_CALLERS = 8        # same-file call sites followed into one helper
+_MAX_CALL_DEPTH = 2     # helper-of-a-helper, no further
 _MAX_HEADER = 600       # chars scanned back for a block's header
 _MAX_EVAL_DEPTH = 60    # Python expression recursion bound
 
@@ -210,6 +215,7 @@ def _fixed_prefix(kind: str, literal: str | None) -> bool:
     if kind == "ssrf":
         return _FIXED_HOST_RE.match(literal) is not None
     if kind == "open_redirect":
+        literal = literal.removeprefix("redirect:")  # a Spring MVC redirect view name
         return _FIXED_PATH_RE.match(literal) is not None or _FIXED_REDIRECT_HOST_RE.match(literal) is not None
     return False
 
@@ -729,6 +735,7 @@ _IF_RE = re.compile(r"\bif\b")
 _FN_KEYWORD_RE = re.compile(r"\b(?:function|func)\b")
 _NEW_CLASS_RE = re.compile(r"\bnew\s+[\w.<>]+\s*$")
 _TRAILING_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*$")
+_SELF_RECEIVER_RE = re.compile(r"(?:\bthis|\bself|\$this|\bstatic)\s*(?:\.|->|::)$")
 _FMT_SPRINTF_RE = re.compile(r"(?:fmt\.Sprintf|String\.format|sprintf)\s*\(\s*")
 _CONTROL = frozenset(
     {
@@ -887,6 +894,9 @@ class _TextFlow:
         self.open_index = {o: k for k, o in enumerate(opens) if k not in self._concise}
         self._is_fn: dict[int, tuple[int, int, int] | None] = {}
         self._fn_state: dict[int, tuple[list, dict]] = {}
+        self._param_order: dict[int, list[str | None]] = {}
+        self._call_sites: dict[str, list[int]] = {}
+        self._caller_span: dict[tuple[str, int, str], tuple[int, int]] = {}  # caller-sourced atom -> its function
 
     # -- structure --
     def _concise_bodies(self) -> list[tuple[int, int]]:
@@ -1077,6 +1087,8 @@ class _TextFlow:
             return env
         line = line_number(self.raw, po)
         annotations = PARAM_ANNOTATIONS.get(self.lang, ())
+        order: list[str | None] = []
+        self._param_order[po] = order
         for s, e in self._split_args(po + 1, pc):
             raw_seg = self.raw[s:e]
             kind = next((k for k, pat in annotations if pat.search(raw_seg)), None)
@@ -1096,6 +1108,7 @@ class _TextFlow:
                 tokens = _IDENT_RE[self.lang].findall(cleaned)
                 ids = [x for x in tokens if x not in _KEYWORDS]
                 name = ids[-1] if ids else None
+            order.append(name)
             if not name:
                 continue
             if kind is None and self.lang == CSHARP and len(tokens) >= 2 and tokens[-2] in _CSHARP_BOUND_TYPES:
@@ -1331,6 +1344,59 @@ class _TextFlow:
                 break
         return s, e
 
+    def _caller_atoms(self, kind: str, k: int, hdr: tuple[int, int, int], atoms: list[Atom], depth: int = 1) -> list[Atom]:
+        """Up to two calls up: request input that a same-file caller passes to the
+        helper parameters reaching this sink (``completed(@RequestParam q)``
+        → ``injectableQuery(q)`` → ``executeQuery(q)``). Only bare or
+        ``this``/``self`` calls of the helper's name count; the caller's own
+        sanitizers and dominating guards apply at the call site."""
+        hs, po, _ = hdr
+        params = {a.label for a in atoms if a.weight == "param" and a.sanitizer_for(kind) is None}
+        order = self._param_order.get(po) if po >= 0 else None
+        word = _TRAILING_IDENT_RE.search(self.m[hs:po].rstrip()) if params and order else None
+        if word is None or word.group() in _KEYWORDS:
+            return []
+        name = word.group()
+        idx = [i for i, n in enumerate(order) if n in params]
+        out: list[Atom] = []
+        calls = 0
+        if name not in self._call_sites:
+            self._call_sites[name] = [
+                mt.end() - 1
+                for mt in re.finditer(rf"(?<![\w$]){re.escape(name)}\s*\(", self.m)
+                if not self.m[max(0, mt.start() - 8) : mt.start()].endswith((".", "->", "::"))
+                or _SELF_RECEIVER_RE.search(self.m[max(0, mt.start() - 8) : mt.start()])
+            ]
+        for p in self._call_sites[name]:
+            if p == po or self.opens[k] < p < self.closes[k]:
+                continue  # the helper's own header, or a recursive call
+            close = self._match_paren(p, _MAX_ARGS)
+            if self.m[close + 1 : close + 12].lstrip().startswith(("{", "throws")):
+                continue  # another definition of the same name, not a call
+            found = self._enclosing_fn(p)
+            if found is None:
+                continue
+            if calls >= _MAX_CALLERS:
+                break
+            calls += 1
+            ck, chdr = found
+            env = self._env_at(ck, chdr, p)
+            args = self._split_args(p + 1, close)
+            line = line_number(self.raw, p)
+            got: list[Atom] = []
+            for i in idx:
+                if i < len(args):
+                    got += [a.with_step(line, "propagation", f"passed to {name}()") for a in self._eval(*args[i], env)]
+            got = self._guards(kind, ck, chdr, p, env, _dedupe(got))
+            span = (line_number(self.raw, chdr[0]), line_number(self.raw, self._body(ck)[1]))
+            for a in got:
+                if a.weight == "high":
+                    self._caller_span.setdefault(a.ident, span)
+                    out.append(a)
+            if depth < _MAX_CALL_DEPTH:
+                out += self._caller_atoms(kind, ck, chdr, got, depth + 1)
+        return out
+
     def _body(self, k: int) -> tuple[int, int]:
         if k < 0:  # PHP top-level script scope
             return 0, len(self.m)
@@ -1369,10 +1435,19 @@ class _TextFlow:
                 continue
             atoms += self._eval(s, e, env)
         atoms = self._guards(kind, k, hdr, paren, env, _dedupe(atoms))
+        if not any(a.weight == "high" and a.sanitizer_for(kind) is None for a in atoms):
+            atoms = _dedupe(atoms + self._caller_atoms(kind, k, hdr, atoms))
         line = line_number(self.raw, paren)
         body_lo, body_hi = self._body(k)
         span = (line_number(self.raw, hdr[0]), line_number(self.raw, body_hi))
-        return _verdict(kind, atoms, line, snippet, span)
+        flow = _verdict(kind, atoms, line, snippet, span)
+        if flow.source_line is not None:
+            # Input from a caller belongs to the caller's route, not the helper's.
+            for a in atoms:
+                if (a.kind, a.line) == (flow.source_kind, flow.source_line) and a.ident in self._caller_span:
+                    flow.span = self._caller_span[a.ident]
+                    break
+        return flow
 
 
 # =============================================================================
