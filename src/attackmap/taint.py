@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from bisect import bisect_left, bisect_right
 import warnings
 from collections import deque
 from dataclasses import dataclass, replace
@@ -350,6 +351,7 @@ def analyze_taint(
     py_bindings_cache: dict[str, tuple[dict[str, _PyBinding], list[int], frozenset[str]]] = {}
     defs_cache: dict[str, _ModuleDefs] = {}
     php_classes: dict[str, list[str]] | None = None
+    sink_index: dict[str, tuple[list[int], list[int]]] = {}
 
     def read(rel: str) -> str:
         if rel not in content_cache:
@@ -446,6 +448,7 @@ def analyze_taint(
                 walk_recall,
                 route_lines.get(route_file, []),
                 handler_span=seed_spans.get(seed) if seed != route_file else None,
+                sink_index=sink_index,
             ):
                 key = (
                     f"{chain.route_method} {chain.route_path}",
@@ -1527,6 +1530,23 @@ def _line_snippet(content: str, offset: int, radius: int = 80) -> str:
     return line
 
 
+def _hits_in_spans(
+    file: str,
+    hits: list[_SinkHit],
+    spans: list[tuple[int, int]],
+    index: dict[str, tuple[list[int], list[int]]],
+) -> list[_SinkHit]:
+    """The hits whose line falls in ``spans``, in their original order, by
+    bisecting a per-file sorted line index: a URLconf with n views seeded into
+    one module stays O(n log n), not O(n²)."""
+    if file not in index:
+        order = sorted(range(len(hits)), key=lambda i: hits[i].line)
+        index[file] = ([hits[i].line for i in order], order)
+    lines, order = index[file]
+    picked = {order[i] for lo, hi in spans for i in range(bisect_left(lines, lo), bisect_right(lines, hi))}
+    return [hits[i] for i in sorted(picked)]
+
+
 def _walk_from_route(
     route: Route,
     route_file: str,
@@ -1535,6 +1555,7 @@ def _walk_from_route(
     recall: RecallConfig = DEFAULT_RECALL,
     route_lines: list[int] | None = None,
     handler_span: list[tuple[int, int]] | None = None,
+    sink_index: dict[str, tuple[list[int], list[int]]] | None = None,
 ) -> list[TaintChain]:
     """BFS out from route_file, up to ``recall.max_hops``. Emit chains at each
     sink; tag as speculative any chain that only exists because a recall knob
@@ -1567,7 +1588,10 @@ def _walk_from_route(
         current = queue.popleft()
         current_hops = visited[current]
 
-        for hit in sinks_by_file.get(current, []):
+        hits = sinks_by_file.get(current, [])
+        if current_hops == 0 and handler_span is not None and sink_index is not None:
+            hits = _hits_in_spans(current, hits, handler_span, sink_index)
+        for hit in hits:
             flow = hit.flow
             if current_hops == 0 and handler_span is not None:
                 # Seeded from the view a URLconf names (#372): that view's sinks,
