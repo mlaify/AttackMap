@@ -738,3 +738,45 @@ def test_hardcoded_finding_ranks_above_env_reference_finding() -> None:
     hard_idx = titles.index("Hard-coded secret literals were found in source or config")
     env_idx = titles.index("Secret-bearing environment variables are referenced in executable paths")
     assert hard_idx < env_idx  # HIGH sorts above MEDIUM
+
+
+def _rules(scan: ScanResult) -> dict[str, object]:
+    return {f.rule_id: f for f in generate_findings(scan)}
+
+
+def test_framework_chain_needs_a_sink_not_route_naming() -> None:
+    # #403: a Laminas router config with no sink anywhere is not a sink chain.
+    file = "module/Admin/config/module.config.php"
+    scan = ScanResult(
+        root=".",
+        routes=[Route(path="/admin", method="ANY", file=file)],
+        framework_hints=[FrameworkHint(hint="controller:Admin\\Controller\\IndexController", file=file)],
+    )
+    assert "framework-sink-chain" not in _rules(scan)
+    scan.databases = [DatabaseHint(kind="sql", file="module/Admin/src/Service/AdminService.php")]
+    assert _rules(scan)["framework-sink-chain"].severity == "high"
+
+
+def test_admin_route_declared_auth_required_is_not_exposed() -> None:
+    # #404: plugin-declared route auth beats the path heuristic.
+    route = Route(path="/admin/reports", method="GET", file="module/Reports/config/module.config.php")
+    scan = ScanResult(root=".", routes=[route])
+    assert "exposed-admin-route" in _rules(scan)
+    route.auth, route.guards = "required", ["omeka:admin_login"]
+    assert "exposed-admin-route" not in _rules(scan)
+
+
+def test_unauth_outbound_integration_is_decided_per_route() -> None:
+    # #395: a JWT verifier in another file no longer hides an unauthenticated route.
+    scan = ScanResult(
+        root=".",
+        routes=[
+            Route(path="/hooks/partner", method="POST", file="hooks.js", line=3),
+            Route(path="/api/internal/sync", method="POST", file="api.js", line=3),
+        ],
+        external_calls=[ExternalCall(target="https://partner.example.com/push", file="hooks.js")],
+        auth_hints=[AuthHint(hint="jwt_verified", file="api.js", line=4)],
+    )
+    finding = _rules(scan)["unauth-outbound-integration"]
+    assert [loc.file for loc in finding.locations] == ["hooks.js"]
+    assert finding.confidence == "low"
