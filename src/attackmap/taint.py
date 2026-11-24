@@ -1318,14 +1318,20 @@ def _is_parameterized_sql(content: str, match: re.Match[str], suffix: str = "") 
         if re.search(r'["\']\s*\.|\.\s*\$|\bsprintf\s*\(', args) or re.search(r'"[^"]*\$', args):
             return False
         return True
+    # Only the SQL argument is judged: interpolation in the bound values
+    # (`{ replacements: { q: `%${q}%` } }`) is data, not SQL (#442).
+    spans = _top_level_args(args)
+    sql = args[spans[0][0] : spans[0][1]] if spans else args
     # Interpolation OUTSIDE string literals ⇒ raw/dynamic ⇒ NOT safe.
-    if "${" in args or re.search(r"\bf['\"]", args):  # template literal / f-string
+    if "${" in sql or re.search(r"\bf['\"]", sql):  # template literal / f-string
         return False
-    no_str = re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "", args)  # drop quoted spans
+    no_str = re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "", sql)  # drop quoted spans
     # concat / .format() / %-format / Go fmt.Sprintf — string building, not binding.
     if re.search(r"\+|\.format\s*\(|%\s*[(\w]|\bSprintf\b|\bfmt\.", no_str):
         return False
-    no_tmpl = re.sub(r"`[^`]*`", "", no_str)  # drop (now interp-free) template literals
+    if spans is not None and len(spans) > 1:
+        return True  # query + params bind
+    no_tmpl = re.sub(r"`[^`]*`", "", re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", "", args))
     if "," in no_tmpl:
         return True  # query + params bind
     return _SQL_PLACEHOLDER_RE.search(args) is not None

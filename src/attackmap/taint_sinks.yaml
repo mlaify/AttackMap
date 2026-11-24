@@ -72,6 +72,15 @@ sinks:
      regex: '\$\w+->(?:query|exec)\s*\(|\bDB::(?:select|statement|insert|update|delete|raw|unprepared)\s*\('}
   - {id: java-jdbc, kind: sql_execute, langs: [java], cwe: 89,
      regex: '\b(?:stmt|statement|st|conn|connection|jdbcTemplate|jdbc|em|entityManager|session)\s*\.\s*(?:executeQuery|executeUpdate|execute|prepareStatement|createQuery|createNativeQuery|query|queryForObject|queryForList|update)\s*\('}
+  # JS ORMs' raw-SQL escape hatches (#442): Sequelize `query`, Prisma's
+  # `*RawUnsafe`, knex `raw`. Bind/replacement forms stay suppressed unless a
+  # traced flow reaches the SQL string itself.
+  - {id: js-sequelize-query, kind: sql_execute, langs: [js], cwe: 89,
+     regex: '\bsequelize\s*\.\s*query\s*\('}
+  - {id: js-prisma-raw-unsafe, kind: sql_execute, langs: [js], cwe: 89,
+     regex: '\$(?:query|execute)RawUnsafe\s*\('}
+  - {id: js-knex-raw, kind: sql_execute, langs: [js], cwe: 89,
+     regex: '\bknex\s*\.\s*raw\s*\('}
   # C# (#400): ADO.NET commands, Dapper and EF Core's raw-SQL methods (not
   # FromSqlInterpolated / FromSql, which parameterize interpolations).
   - {id: dotnet-sql-command, kind: sql_execute, langs: [csharp], cwe: 89,

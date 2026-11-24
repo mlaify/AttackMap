@@ -1155,6 +1155,8 @@ class _TextFlow:
             if "->" in lhs or "::" in lhs:
                 return [], []
             return names[-1:], []
+        if self.lang == JS:
+            lhs = lhs.split(":", 1)[0]  # TypeScript `let x: any = …` binds x (#442)
         ids = [x for x in _IDENT_RE[self.lang].findall(lhs) if x not in _KEYWORDS]
         if not ids:
             return [], []
