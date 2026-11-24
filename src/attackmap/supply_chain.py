@@ -348,7 +348,7 @@ def _scan_pyproject(path: Path, rel: str, out: _Collector, ctx: _RegistryContext
         return
     try:
         data = tomllib.loads(text)
-    except (tomllib.TOMLDecodeError, ValueError):
+    except (tomllib.TOMLDecodeError, ValueError, RecursionError):
         return
     locked = _has_lock(path.parent, path.parent, _PY_LOCKS)
     project = data.get("project") if isinstance(data.get("project"), dict) else {}
@@ -432,7 +432,7 @@ def _scan_package_json(root: Path, path: Path, rel: str, out: _Collector, ctx: _
         return
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return
     if not isinstance(data, dict):
         return
@@ -487,7 +487,7 @@ def _scan_package_lock(path: Path, rel: str, out: _Collector) -> None:
         return
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return
     packages = data.get("packages") if isinstance(data, dict) else None
     if not isinstance(packages, dict):
@@ -567,7 +567,7 @@ def _scan_cargo_toml(root: Path, path: Path, rel: str, out: _Collector) -> None:
         return
     try:
         data = tomllib.loads(text)
-    except (tomllib.TOMLDecodeError, ValueError):
+    except (tomllib.TOMLDecodeError, ValueError, RecursionError):
         return
     locked = _has_lock(root, path.parent, ("Cargo.lock",))
     tables = [data.get(k) for k in ("dependencies", "dev-dependencies", "build-dependencies")]
@@ -590,7 +590,7 @@ def _scan_unlocked_json(root: Path, path: Path, rel: str, out: _Collector, secti
     text = _read(path)
     try:
         data = json.loads(text) if text else None
-    except ValueError:
+    except (ValueError, RecursionError):
         return
     if not isinstance(data, dict) or _has_lock(root, path.parent, locks):
         return

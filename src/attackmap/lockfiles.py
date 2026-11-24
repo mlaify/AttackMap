@@ -96,7 +96,7 @@ def parse_lockfiles(root: str | Path) -> tuple[list[DependencyHint], set[tuple[s
         directory = str(Path(rel).parent).replace("\\", "/")
         try:
             graph = _parse_lockfile(lockfile)
-        except (OSError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError, json.JSONDecodeError, RecursionError):
             continue
         if graph is None or not graph.instances:
             continue
@@ -293,7 +293,7 @@ def _parse_pnpm_lock(path: Path) -> _Graph | None:
             for doc in yaml.safe_load_all(path.read_text(encoding="utf-8"))
             if isinstance(doc, dict)
         ]
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
         return None
     if not documents:
         return None
@@ -459,7 +459,7 @@ def _parse_composer_lock(path: Path) -> _Graph:
     manifest = path.with_name("composer.json")
     try:
         manifest_data = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {}
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         manifest_data = {}
     if isinstance(manifest_data, dict):
         for section in ("require", "require-dev"):

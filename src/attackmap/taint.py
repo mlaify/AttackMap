@@ -556,7 +556,7 @@ def _php_psr4_map(root: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     try:
         data = json.loads(read_repo_text(root, composer, errors="ignore"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return out
     for section in ("autoload", "autoload-dev"):
         psr4 = data.get(section, {}).get("psr-4", {}) if isinstance(data.get(section), dict) else {}

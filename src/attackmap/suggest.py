@@ -106,7 +106,7 @@ def _laminas_extras(
     for p in manifests.get("composer.json", ()):
         try:
             data = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, RecursionError):
             continue
         deps: dict = {}
         for key in ("require", "require-dev"):
@@ -126,7 +126,7 @@ def _omeka_extras(
     for p in manifests.get("composer.json", ()):
         try:
             data = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, RecursionError):
             continue
         deps: dict = {}
         for key in ("require", "require-dev"):
@@ -151,7 +151,7 @@ def _atproto_extras(
     for p in manifests.get("package.json", ()):
         try:
             data = json.loads(p.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, RecursionError):
             continue
         deps: dict = {}
         for key in ("dependencies", "devDependencies"):
