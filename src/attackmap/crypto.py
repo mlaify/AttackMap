@@ -247,6 +247,39 @@ def _mask_comments(content: str) -> str:
     return _COMMENT_RE.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), content)
 
 
+# A small helper that wraps MD5/SHA-1 (`hash = (d) => createHash('md5')…`,
+# `def h(s): return hashlib.md5(…)`, PHP `function h($s) { return md5(…`).
+# Its password use is at a call site, often in another file (#446).
+_WEAK_HASH_HELPER_RE = re.compile(
+    r"(?:\b(?:const|let|var)\s+([A-Za-z_$][\w$]{0,60})\s*=\s*(?:async\s*)?\([^()\n]{0,80}\)\s*(?::\s*[\w<>\[\]| ]{1,40})?\s*=>"
+    r"|\bfunction\s+([A-Za-z_$][\w$]{0,60})\s*\([^()\n]{0,80}\)|\bdef\s+([A-Za-z_]\w{0,60})\s*\([^()\n]{0,80}\)[^:\n]{0,40}:)"
+    r"[^\n]{0,200}(?:\n[^\n]{0,200}){0,2}?"
+    r"(?:createHash\s*\(\s*['\"](?:md5|sha1)['\"]|\bhashlib\.(?:md5|sha1)\s*\(|(?<![\w.$>])(?:md5|sha1)\s*\()",
+    re.IGNORECASE,
+)
+
+
+def weak_hash_helpers(content: str) -> list[tuple[str, int, str]]:
+    """(name, line, snippet) of each small MD5/SHA-1 wrapper in ``content``."""
+    out = []
+    for m in _WEAK_HASH_HELPER_RE.finditer(_mask_comments(content)):
+        name = m.group(1) or m.group(2) or m.group(3)
+        if name and not re.search(_SECURITY_CTX, name, re.IGNORECASE):  # `hashPassword` is already matched
+            out.append((name, line_number(content, m.start()), _snippet(content, m.start())))
+    return out
+
+
+_SECRET_CALL_RE = re.compile(
+    rf"(?<!\bdef\s)(?<!\bfunction\s)(?<![\w$])([A-Za-z_$][\w$]{{0,60}})\s*\((?=[^()\n]{{0,120}}?{_SECURITY_CTX})", re.IGNORECASE
+)
+
+
+def secret_callees(content: str) -> set[str]:
+    """Names of the functions ``content`` calls with a password-like argument
+    (`security.hash(clearTextPassword)` → `hash`)."""
+    return {m.group(1) for m in _SECRET_CALL_RE.finditer(_mask_comments(content))}
+
+
 def _snippet(content: str, offset: int, radius: int = 120) -> str:
     start = max(0, content.rfind("\n", 0, offset) + 1)
     end = content.find("\n", offset)

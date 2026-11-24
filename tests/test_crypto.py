@@ -302,3 +302,25 @@ def test_crypto_matches_code_not_comments_prints_or_prose() -> None:
     assert [(w.kind, w.line) for w in find_crypto_weaknesses(php, "c.php")] == [("ecb_mode", 7), ("static_iv_salt", 2)]
     py = "from cryptography.hazmat.primitives.ciphers import modes\nc = Cipher(algorithms.AES(k), modes.ECB())\n"
     assert [(w.kind, w.line) for w in find_crypto_weaknesses(py, "c.py")] == [("ecb_mode", 2)]
+
+
+def test_weak_hash_helper_called_with_a_password_is_flagged_at_its_definition(tmp_path) -> None:
+    # #446: Juice Shop's `security.hash(clearTextPassword)` wraps MD5 in lib/insecurity.ts.
+    from attackmap.scanner import scan_repo
+
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "models").mkdir()
+    (tmp_path / "lib" / "insecurity.ts").write_text(
+        "import crypto from 'node:crypto'\n"
+        "export const hash = (data: string) => crypto.createHash('md5').update(data).digest('hex')\n"
+        "export const etag = (body: string) => crypto.createHash('md5').update(body).digest('hex')\n"
+    )
+    (tmp_path / "util.py").write_text("import hashlib\n\ndef digest(s):\n    return hashlib.md5(s.encode()).hexdigest()\n")
+    (tmp_path / "models" / "user.ts").write_text(
+        "import * as security from '../lib/insecurity'\n"
+        "this.setDataValue('password', security.hash(clearTextPassword))\n"
+        "const e = security.etag(responseBody)\n"
+    )
+    (tmp_path / "cache.py").write_text("from util import digest\nkey = digest(url)\n")
+    got = [(w.kind, w.file, w.line) for w in scan_repo(tmp_path).crypto_weaknesses]
+    assert got == [("weak_password_hash", "lib/insecurity.ts", 2)]

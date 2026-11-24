@@ -16,7 +16,7 @@ from .safe_fs import is_oversized, max_file_bytes, walk_repo
 from .anomalies import find_anomalies
 from .authz import analyze_authz
 from .logic_flaws import find_logic_flaws
-from .crypto import find_crypto_weaknesses
+from .crypto import find_crypto_weaknesses, secret_callees, weak_hash_helpers
 from .sbom import analyze_sbom
 from .supply_chain import scan_supply_chain
 from .workflow_scanner import scan_workflows
@@ -26,6 +26,7 @@ from .weaknesses import find_code_weaknesses
 from .auth_protocol import _GO_JWT, _JS_JWT_DEFAULT, _JS_JWT_NAMED, find_jwt_issues, find_oauth_session_issues
 from .webhardening import find_jvm_csrf_disabled, find_web_hardening_issues, has_csrf_protection
 from .sdk.models import AuthHint, DatabaseHint, ExternalCall, Route, ScanResult, SecretHint
+from .models import CryptoWeakness
 from .taint import DEFAULT_RECALL, analyze_taint, recall_config
 
 # Scanner responsibilities are intentionally generic-only:
@@ -918,6 +919,9 @@ def scan_files(
 
     csrf_protected = False
     server_session_store = False
+    # Weak-hash helpers and the names called with secrets (#446), joined below.
+    hash_helpers: list[tuple[str, str, int, str]] = []
+    callees: set[str] = set()
     for file_path in scan_files:
         if progress is not None:
             progress.advance(str(file_path.relative_to(root_path)))
@@ -994,6 +998,8 @@ def scan_files(
             # Insecure crypto / weak randomness (#70). Content is already
             # read, so this rides the per-file pass rather than re-walking.
             result.crypto_weaknesses.extend(find_crypto_weaknesses(content, relative))
+            hash_helpers.extend((name, relative, line, snippet) for name, line, snippet in weak_hash_helpers(content))
+            callees |= secret_callees(content)
             # Web-hardening gaps (#71): CORS, CSRF, cookies, CSP, debug.
             result.web_hardening_issues.extend(find_web_hardening_issues(content, relative))
             csrf_protected = csrf_protected or has_csrf_protection(content)
@@ -1008,6 +1014,20 @@ def scan_files(
             oauth_session, file_server_store = find_oauth_session_issues(content, relative)
             result.code_weaknesses.extend(oauth_session)
             server_session_store = server_session_store or file_server_store
+
+    seen_crypto = {(w.kind, w.file, w.line) for w in result.crypto_weaknesses}
+    for name, relative, line, snippet in hash_helpers:
+        # Skip a helper whose body already holds a direct hit (`def h(password): md5(password…)`).
+        direct = any(("weak_password_hash", relative, n) in seen_crypto for n in range(line, line + 4))
+        if name in callees and not direct:
+            seen_crypto.add(("weak_password_hash", relative, line))
+            result.crypto_weaknesses.append(
+                CryptoWeakness(
+                    kind="weak_password_hash", file=relative, line=line,
+                    evidence_text=f"{snippet} (called with a password-like value: {name}(…))",
+                    severity="high", source_analyzer="crypto",
+                )
+            )
 
     if not server_session_store:
         # Session fixation needs a server-side session id; with cookie
