@@ -579,3 +579,22 @@ def test_typescript_annotated_declarations_carry_taint(tmp_path: Path) -> None:
     )
     scan = ScanResult(root=str(tmp_path), routes=[Route(path="/s", method="GET", file="s.ts", line=2)])
     assert [(c.sink_kind, c.source_kind) for c in analyze_taint(scan, tmp_path)] == [("sql_execute", "query")]
+
+
+@pytest.mark.parametrize(
+    ("guard", "sanitized"),
+    [
+        # #455: DVWA exec/impossible.php — each octet checked numeric in an enclosing if.
+        ("if (is_numeric($octet[0]) && is_numeric($octet[1]) && sizeof($octet) == 2) {", True),
+        ("if (filter_var($target, FILTER_VALIDATE_IP)) {", True),
+        ("if (strlen($target) < 64) {", False),
+    ],
+)
+def test_numeric_validation_guards_command_injection(tmp_path: Path, guard: str, sanitized: bool) -> None:
+    (tmp_path / "ping.php").write_text(
+        "<?php\n$target = $_REQUEST['ip'];\n$octet = explode('.', $target);\n"
+        f"{guard}\n    $target = $octet[0] . '.' . $octet[1];\n    $cmd = shell_exec('ping ' . $target);\n}}\n"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/ping.php", method="POST", file="ping.php")])
+    [chain] = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "subprocess_shell"]
+    assert chain.sanitized is sanitized and chain.source_kind == "body"
