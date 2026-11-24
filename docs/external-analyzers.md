@@ -176,18 +176,35 @@ Reference: the official analyzers ([`mlaify/attackmap-analyzer-python`](https://
 [`mlaify/attackmap-analyzer-rust`](https://github.com/mlaify/attackmap-analyzer-rust), and the
 others listed below) all follow this pattern.
 
-### CI tip: install attackmap from git
+### Conformance check (SDK 1.0)
 
-`attackmap` is distributed from GitHub, not a package index, so install it
-from git in CI so `pip install -e ".[dev]"` doesn't fail resolving the
-constraint:
+Run `attackmap.sdk.testing.assert_conforms` on a fixture your analyzer detects.
+It checks what core relies on: valid metadata (and a `requires_core` that
+matches the running core), `detect()` returning a bool without raising on an
+empty directory, `analyze()` returning an `AnalyzerResult` with repo-relative
+paths and 1-based lines, and nothing raising on empty, binary or non-UTF-8
+files. It returns the result for your own assertions:
+
+```python
+from attackmap.sdk.testing import assert_conforms
+
+def test_conforms() -> None:
+    result = assert_conforms(MyFrameworkAnalyzer(), FIXTURES / "myframework-app")
+    assert result.routes
+```
+
+`templates/analyzer-plugin/` in the AttackMap repository is a complete,
+working plugin (pyproject, entry point, analyzer, conformance test) to copy.
+
+### CI
+
+`attackmap` is on PyPI: `pip install -e ".[dev]"` resolves it from your
+`dependencies`. Test against the oldest core you declare and the latest
+release, and optionally against `main` (allowed to fail):
 
 ```yaml
-- name: Install attackmap core from main
-  run: pip install "attackmap @ git+https://github.com/mlaify/AttackMap@main"
-
-- name: Install package
-  run: pip install -e ".[dev]"
+- run: pip install "attackmap==0.8.0" -e ".[dev]"   # your lower bound
+- run: pytest
 ```
 
 ## Merge semantics — what to expect when other analyzers also run
@@ -430,17 +447,28 @@ and installs from git. Source-read any of them for a real, working analyzer.
 
 ## Versioning
 
-The SDK surface (`attackmap.sdk`) is stable across minor releases of the
-`attackmap` package. Breaking changes only happen on a major-version bump;
-deprecations get one release of overlap. Depend on `attackmap` with a lower
-bound and `<1.0.0` in your `pyproject.toml`:
+The SDK is versioned on its own: `attackmap.sdk.SDK_VERSION` (1.0.0). Every
+name in `attackmap.sdk.__all__` keeps working across SDK 1.x. Removals and
+renames wait for SDK 2 and get a release of deprecation first. Records gain
+optional fields in minor releases, so read them by name and ignore what you
+don't know. The report formats your signals end up in are versioned
+separately (docs/schemas.md).
+
+Declare the core range twice: as a dependency, so pip resolves it, and as
+`metadata.requires_core`, so core skips your analyzer with an upgrade hint
+instead of failing at import when someone runs it on an older or newer core:
 
 ```toml
 [project]
-dependencies = ["attackmap>=0.6.0,<1.0.0"]
+dependencies = ["attackmap>=0.8,<2"]
 ```
 
-When you upgrade your lower bound, bump your analyzer's minor version.
+```python
+metadata = AnalyzerMetadata(name="myframework", requires_core=">=0.8,<2", ...)
+```
+
+`requires_core` takes comma-separated `>=`, `>`, `<=`, `<`, `==`, `!=` clauses.
+When you raise your lower bound, bump your analyzer's minor version.
 
 ## Where to ask for help
 

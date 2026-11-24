@@ -18,6 +18,32 @@ AnalyzerResult = ScanResult
 _ANALYZER_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
+_CLAUSE_RE = re.compile(r"\s{0,8}(>=|<=|==|!=|>|<)\s{0,8}(\d{1,9}(?:\.\d{1,9}){0,8})\s{0,8}")
+
+
+def _release(version: str) -> tuple[int, ...]:
+    """The numeric release part of a version (`0.8.0rc1` → (0, 8, 0))."""
+    parts = re.match(r"\d{1,9}(?:\.\d{1,9}){0,8}", version.strip())
+    return tuple(int(p) for p in parts.group().split(".")) if parts else (0,)
+
+
+def core_version_matches(version: str, spec: str) -> bool:
+    """Whether ``version`` satisfies ``spec`` (`>=0.8,<2`). Releases compare
+    numerically with missing parts as 0; pre-release tags are ignored."""
+    have = _release(version)
+    for clause in filter(None, (c.strip() for c in spec.split(","))):
+        m = _CLAUSE_RE.fullmatch(clause)
+        if m is None:
+            raise ValueError(f"requires_core clause {clause!r} isn't `<op><version>` (>=, >, <=, <, ==, !=)")
+        op, want = m.group(1), _release(m.group(2))
+        width = max(len(have), len(want))
+        a, b = have + (0,) * (width - len(have)), want + (0,) * (width - len(want))
+        ok = {">=": a >= b, ">": a > b, "<=": a <= b, "<": a < b, "==": a == b, "!=": a != b}[op]
+        if not ok:
+            return False
+    return True
+
+
 class AnalyzerMetadata(BaseModel):
     """Static, self-describing metadata every analyzer exposes.
 
@@ -88,6 +114,22 @@ class AnalyzerMetadata(BaseModel):
         "analyzer matched but didn't run. Broad language analyzers set this "
         "True; specialty framework/app analyzers usually leave it False.",
     )
+
+    requires_core: str = Field(
+        default="",
+        description="Core versions this analyzer works with, as comma-separated "
+        "clauses (`>=0.8,<2`; operators >=, >, <=, <, ==, !=). Core skips the "
+        "analyzer at load time, with an upgrade hint, when the running version "
+        "doesn't match. Empty means any (#254).",
+    )
+
+    @field_validator("requires_core")
+    @classmethod
+    def _validate_requires_core(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            core_version_matches("0", value)  # raises on a malformed specifier
+        return value
 
     @field_validator("name")
     @classmethod

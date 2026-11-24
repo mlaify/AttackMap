@@ -25,6 +25,8 @@ from .plugins_lock import OFFICIAL_PLUGINS
 from .safe_fs import walk_repo
 from .merge import MERGE_SCHEMA, initial_seen, merge_into, superseded_builtin_routes
 
+from . import __version__
+from .analyzer_contracts import core_version_matches
 from .sdk.contracts import (
     AnalyzerMetadata,
     AnalyzerProtocol,
@@ -508,6 +510,14 @@ def _load_discovered_analyzer(analyzer_entry_point: object) -> Analyzer | None:
 
     if not _is_valid_analyzer(analyzer):
         logger.warning("Skipping entry point '%s': loaded object is not a valid analyzer.", entry_name)
+        return None
+    spec = canonical_metadata.requires_core
+    if spec and not core_version_matches(__version__, spec):
+        logger.warning(
+            "Skipping analyzer '%s': it requires attackmap %s and %s is installed. "
+            "Run `pip install -U \"attackmap%s\"` or install an analyzer release built for this core.",
+            entry_name, spec, __version__, spec.split(",")[0].strip(),
+        )
         return None
     return analyzer
 
