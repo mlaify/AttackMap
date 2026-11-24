@@ -2087,8 +2087,13 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     service_chains = [
         c for c in _build_service_chains(scan) if c.next_service and _sink_on_chain(c.evidence)
     ]
+    # "privileged action" comes from route naming, not from a sink (#403).
     chains = (
-        [c for c in _build_probable_chains(scan) if _sink_on_chain(c.evidence)]
+        [
+            c
+            for c in _build_probable_chains(scan)
+            if c.sink != "privileged action" and _sink_on_chain(c.evidence)
+        ]
         if _is_framework_mvc_scan(scan)
         else []
     )
@@ -2113,7 +2118,14 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
         and surface.method in {"POST", "PUT", "PATCH", "DELETE", "ANY"}
         and _webhook_state(surface) in {"weak_compare", "no_replay_guard"}
     ]
-    admin_surfaces = [surface for surface in runtime_surfaces if surface.category == "admin"]
+    # A plugin-declared `auth=required` admin route is not exposed (#404); a
+    # missing role check on it is bfla-privileged-route's finding.
+    required_routes = {(r.method, r.path, r.file) for r in scan.routes if r.auth == "required"}
+    admin_surfaces = [
+        surface
+        for surface in runtime_surfaces
+        if surface.category == "admin" and (surface.method, surface.route, surface.file) not in required_routes
+    ]
     upload_surfaces = [surface for surface in runtime_surfaces if surface.category == "upload"]
     auth_surfaces = [surface for surface in runtime_surfaces if surface.category == "auth"]
     public_data_surfaces = [
@@ -2124,7 +2136,8 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
     public_integration_surfaces = [
         surface
         for surface in runtime_surfaces
-        if surface.exposure == "public" and surface.outbound_integration
+        # Per surface (#395): a verifier elsewhere in the repo only lowers confidence.
+        if surface.exposure == "public" and surface.outbound_integration and not surface.auth_signals
     ]
 
     if webhook_surfaces:
@@ -2253,9 +2266,10 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             )
         )
 
-    if public_integration_surfaces and not any(
-        h.hint in {"jwt", "jwt_verified", "oauth", "bearer", "token"} for h in scan.auth_hints
-    ):
+    if public_integration_surfaces:
+        repo_token_auth = any(
+            h.hint in {"jwt", "jwt_verified", "oauth", "bearer", "token"} for h in scan.auth_hints
+        )
         findings.append(
             Finding(
                 title="Public routes appear to influence outbound integrations without clear auth signals",
@@ -2264,7 +2278,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
                 evidence=[_finding_evidence(surface) for surface in public_integration_surfaces[:10]],
                 locations=_locs(public_integration_surfaces),
                 mitigation="Check how outbound requests are authenticated, signed, and authorized, and confirm that untrusted route input cannot directly steer third-party actions.",
-                confidence="medium",
+                confidence="low" if repo_token_auth else "medium",
                 tags=["integration-risk", "auth-missing"],
             )
         )
@@ -2398,7 +2412,7 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             Finding(
                 title="Framework route-to-service chain reaches a sensitive sink",
                 rule_id="framework-sink-chain",
-                severity="high" if top_chain.sink in {"database", "privileged action"} else "medium",
+                severity="high" if top_chain.sink == "database" else "medium",
                 evidence=[f"confidence={top_chain.confidence:.2f}", *top_chain.evidence[:6]],
                 mitigation=(
                     "Validate and authorize at the route boundary, enforce controller-level policy checks, and gate "

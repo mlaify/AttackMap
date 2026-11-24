@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `framework-sink-chain` needs a real sink on the chain; route naming alone ("privileged action") no longer raises a high finding. The chain still appears in attack paths (#403).
+- `exposed-admin-route` skips admin routes a plugin declares `auth=required`; a missing role check on them stays `bfla-privileged-route`'s finding (#404).
+- `unauth-outbound-integration` is decided per route from that route's own auth signals. A JWT/OAuth verifier elsewhere in the repo lowers the finding's confidence to low instead of suppressing it everywhere (#395).
 - `scripts/pypi/approve-releases.sh` retries the final `attackmap[all]` check for up to ten minutes (PyPI's CDN can serve a project's old index for a while after an upload) and exits with an error if it still fails; it used to print the pip error and then "Done." anyway.
 
 ## [0.6.5] - 2026-11-14
