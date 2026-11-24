@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- BFLA role checks: `hasRole`, `hasAnyRole`, `hasAuthority`, `hasAnyAuthority`, `requireRole` / `require_role`, `roles_required`, Ruby `has_role?` and Spring `@PreAuthorize` / `@PostAuthorize` expressions count only when every role they list is privileged (admin, owner, staff, ...). `hasRole('user')` no longer exempts a route from `bfla-privileged-route`. Named arguments (`@hasRole(role: ADMIN)`) and Ruby symbols are read (#389).
 - `framework-sink-chain` needs a real sink on the chain; route naming alone ("privileged action") no longer raises a high finding. The chain still appears in attack paths (#403).
 - `exposed-admin-route` skips admin routes a plugin declares `auth=required`; a missing role check on them stays `bfla-privileged-route`'s finding (#404).
 - `unauth-outbound-integration` is decided per route from that route's own auth signals. A JWT/OAuth verifier elsewhere in the repo lowers the finding's confidence to low instead of suppressing it everywhere (#395).
