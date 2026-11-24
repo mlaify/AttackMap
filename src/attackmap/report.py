@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+from .schemas import REPORT_SCHEMA_VERSION
 from .md import md_code, md_text
 from .chains import build_attack_chains
 from .context_pack import build_review_context_pack
@@ -87,6 +88,7 @@ def write_reports(
 
     attack_chains = build_attack_chains(findings)
     json_report = {
+        "schema_version": REPORT_SCHEMA_VERSION,
         "scan": scan.model_dump(),
         "architecture_summary": architecture_md,
         "attack_surface_summary": attack_surface_md,

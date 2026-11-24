@@ -1,0 +1,541 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://attackmap.dev/schemas/defensive-review.schema.json",
+  "title": "AttackMap Defensive Review",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "target_metadata",
+    "system_overview",
+    "attack_surface",
+    "strengths",
+    "weaknesses_risk_hotspots",
+    "evidence_chains",
+    "recommendations",
+    "raw_structured_signals",
+    "limitations_meta"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "target_metadata": {
+      "type": "object"
+    },
+    "system_overview": {
+      "type": "object"
+    },
+    "attack_surface": {
+      "type": "object"
+    },
+    "assets": {
+      "type": "array",
+      "description": "Inferred high-value assets and their locations.",
+      "items": {
+        "type": "object"
+      }
+    },
+    "controls": {
+      "type": "array",
+      "description": "Defensive controls observed in code and expected-but-absent controls.",
+      "items": {
+        "type": "object"
+      }
+    },
+    "notable_observations": {
+      "type": "array",
+      "description": "Cross-cutting insights connecting assets, controls, surfaces, and chains.",
+      "items": {
+        "type": "object"
+      }
+    },
+    "detection_opportunities": {
+      "type": "array",
+      "description": "Defender-facing detection-engineering hints derived from insights and findings. Opportunities generated per finding class also carry a deployable Sigma rule (added in 1.5.0, #251).",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "rationale",
+          "signal_kind",
+          "suggested_rule"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "signal_kind": {
+            "type": "string"
+          },
+          "suggested_rule": {
+            "type": "string"
+          },
+          "related_insight_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "related_finding_titles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "related_rule_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "attack_techniques": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "sigma": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A Sigma detection rule (status experimental, deterministic UUID id); null on prose-only opportunities (added in 1.5.0, #251).",
+            "required": [
+              "title",
+              "id",
+              "status",
+              "description",
+              "author",
+              "date",
+              "logsource",
+              "detection",
+              "level"
+            ]
+          },
+          "sigma_correlation": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "A Sigma correlation rule over `sigma` (BOLA cardinality); null when there is none (added in 1.5.0, #251).",
+            "required": [
+              "title",
+              "id",
+              "status",
+              "correlation"
+            ]
+          },
+          "logsource": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The Sigma rule's log source (added in 1.5.0, #251).",
+            "properties": {
+              "product": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "service": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "category": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "fields_required": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Log fields the rule reads (added in 1.5.0, #251)."
+          },
+          "false_positive_notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Known benign causes of a match (added in 1.5.0, #251)."
+          },
+          "test_events": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Sample events: every `positive` matches the rule, no `negative` does (added in 1.5.0, #251).",
+            "properties": {
+              "positive": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              "negative": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "detection_coverage": {
+      "type": "array",
+      "description": "Per finding class (rule id) in this report: how many deployable Sigma rules cover it and from which log sources (added in 1.5.0, #251).",
+      "items": {
+        "type": "object",
+        "required": [
+          "rule_id",
+          "sigma_rules",
+          "logsources"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "sigma_rules": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "correlation_rules": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "logsources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "attack_techniques_observed": {
+      "type": "array",
+      "description": "Deduplicated MITRE ATT&CK techniques observed across findings and insights.",
+      "items": {
+        "type": "object"
+      }
+    },
+    "strengths": {
+      "type": "array"
+    },
+    "weaknesses_risk_hotspots": {
+      "type": "object",
+      "properties": {
+        "weaknesses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "locations": {
+                "type": "array",
+                "description": "Every file (and line, when known) the finding covers \u2014 structured, not parsed from evidence text and not capped like `evidence` (added in 1.3.0, #214).",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "file"
+                  ],
+                  "properties": {
+                    "file": {
+                      "type": "string"
+                    },
+                    "line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1
+                    },
+                    "fingerprint": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Per-instance identity across runs (#222); allowed by the schema from 1.4.0."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "rule_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Stable detector rule id (#223); `null` for findings without one (added in 1.4.0, #250)."
+              },
+              "taxonomy": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Standard ids for the finding's rule, looked up by rule id in the taxonomy registry; `null` for unregistered rules (added in 1.4.0, #250).",
+                "required": [
+                  "cwe",
+                  "owasp",
+                  "asvs",
+                  "attack"
+                ],
+                "properties": {
+                  "cwe": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^CWE-[0-9]+$"
+                    }
+                  },
+                  "owasp": {
+                    "type": "array",
+                    "description": "OWASP Top 10 2021 (A01:2021), API Security Top 10 2023 (API1:2023) or LLM Top 10 2025 ids.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "asvs": {
+                    "type": "array",
+                    "description": "OWASP ASVS 4.0.3 requirement ids.",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "attack": {
+                    "type": "array",
+                    "description": "MITRE ATT&CK Enterprise technique ids.",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "evidence_chains": {
+      "type": "array"
+    },
+    "attack_chains": {
+      "type": "array",
+      "description": "Findings composed into capability chains (#248): each step's requires is met by start or an earlier step's grants.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "start",
+          "steps",
+          "impact",
+          "likelihood"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "net_access_public",
+                "fork_pr",
+                "authn_user",
+                "authn_admin",
+                "code_exec_app",
+                "read_fs",
+                "db_read",
+                "db_write",
+                "secrets",
+                "internal_network",
+                "ci_code_exec",
+                "ci_token",
+                "cloud_creds",
+                "node_root",
+                "cluster_admin",
+                "cloud_admin"
+              ]
+            }
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "rule_id",
+                "title",
+                "requires",
+                "grants",
+                "evidence_ids",
+                "confidence"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "rule_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "technique": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "requires": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "net_access_public",
+                      "fork_pr",
+                      "authn_user",
+                      "authn_admin",
+                      "code_exec_app",
+                      "read_fs",
+                      "db_read",
+                      "db_write",
+                      "secrets",
+                      "internal_network",
+                      "ci_code_exec",
+                      "ci_token",
+                      "cloud_creds",
+                      "node_root",
+                      "cluster_admin",
+                      "cloud_admin"
+                    ]
+                  }
+                },
+                "grants": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "net_access_public",
+                      "fork_pr",
+                      "authn_user",
+                      "authn_admin",
+                      "code_exec_app",
+                      "read_fs",
+                      "db_read",
+                      "db_write",
+                      "secrets",
+                      "internal_network",
+                      "ci_code_exec",
+                      "ci_token",
+                      "cloud_creds",
+                      "node_root",
+                      "cluster_admin",
+                      "cloud_admin"
+                    ]
+                  }
+                },
+                "evidence_ids": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "<rule_id>@<file>:<line> of the finding that justifies the step."
+                },
+                "location": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "required": [
+                    "file"
+                  ],
+                  "properties": {
+                    "file": {
+                      "type": "string"
+                    },
+                    "line": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "precondition_notes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "impact": {
+            "type": "string",
+            "enum": [
+              "net_access_public",
+              "fork_pr",
+              "authn_user",
+              "authn_admin",
+              "code_exec_app",
+              "read_fs",
+              "db_read",
+              "db_write",
+              "secrets",
+              "internal_network",
+              "ci_code_exec",
+              "ci_token",
+              "cloud_creds",
+              "node_root",
+              "cluster_admin",
+              "cloud_admin"
+            ]
+          },
+          "likelihood": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "recommendations": {
+      "type": "array"
+    },
+    "raw_structured_signals": {
+      "type": "object"
+    },
+    "limitations_meta": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}
