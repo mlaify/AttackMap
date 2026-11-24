@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP `header()` (#456): a request value in a `Location:` header is an open redirect (CWE-601), not header injection (CWE-113). PHP has rejected CR/LF in `header()` since 5.1.2, so other `header()` calls are no longer sinks.
 - Taint (#455): a numeric check that dominates the sink (`is_numeric`, `ctype_digit`, `is_int`, `filter_var(…, FILTER_VALIDATE_INT|FLOAT|IP)`, `Number.isInteger`, `.isdigit()`) neutralizes every injection kind, like a cast. DVWA's `exec/impossible.php`, which validates each IP octet, is no longer command injection.
 - Crypto (#457): ECB, IV and salt patterns match code only. Comments are masked, `ECB` must be a code token (`modes.ECB()`, `CipherMode.ECB`) rather than prose, and an IV key inside a string (`print "IV: " …`) doesn't count. PHP `define("IV", "…")` is a static IV. On DVWA, five false locations drop out and the IV is reported at its definition.
+- Crypto (#446): a small MD5/SHA-1 wrapper (`export const hash = (d) => createHash('md5')…`, `def digest(s): return hashlib.md5(…)`) is a weak password hash when any file calls it with a password-like value (`security.hash(clearTextPassword)`). It is reported at the wrapper's definition. Wrappers only called with other values (an ETag, a cache key) aren't.
 
 ## [0.7.0] - 2026-11-24
 
