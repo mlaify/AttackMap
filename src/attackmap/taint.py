@@ -803,7 +803,14 @@ def _named_import_modules(
                 continue
             for name in _binding_names(match.group("clause")):
                 out.setdefault(name, rel)
+    # `const handler = new Handler(db)`: the instance's methods live in Handler's module (NodeGoat).
+    for match in _JS_NEW_INSTANCE_RE.finditer(content):
+        if match.group(2) in out:
+            out.setdefault(match.group(1), out[match.group(2)])
     return out
+
+
+_JS_NEW_INSTANCE_RE = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]{0,80})\s*=\s*new\s+([A-Za-z_$][\w$]{0,80})\s*\(")
 
 
 _ROUTE_CALL_RE = re.compile(
@@ -1467,6 +1474,8 @@ def _find_sinks(
                 continue
             kind = sink.kind
             for match in sink.pattern.finditer(content):
+                if flows.in_comment(match.start()):
+                    continue  # `// insecure use of eval()`, a commented-out query
                 # A "dangerous-regardless" sink whose argument is a static
                 # literal / local-file read (#88 follow-up): the default pass
                 # suppresses it; recall keeps it as a speculative lead.

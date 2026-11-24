@@ -278,7 +278,7 @@ sinks:
   - {id: py-urlopen, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
      regex: '\b(?:urlopen|urlretrieve)\s*\('}
   - {id: js-http-client, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
-     regex: '\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\('}
+     regex: '\b(?:(?:axios|needle|got|superagent)\s*\.\s*(?:get|post|put|delete|patch|head)|axios\s*\.\s*request|fetch|(?<![\w$.])got|https?\.(?:get|request))\s*\('}
   - {id: go-http-get, kind: ssrf, langs: [go], cwe: 918, gate: tainted,
      regex: '\bhttp\.(?:Get|Head|Post|PostForm)\s*\('}
   - {id: go-http-new-request, kind: ssrf, langs: [go], cwe: 918, gate: tainted, args: [1],

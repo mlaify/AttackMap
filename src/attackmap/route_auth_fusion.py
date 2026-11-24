@@ -52,7 +52,7 @@ _JAVA_SUFFIXES = {".java", ".kt"}
 # handler code.
 _JS_AUTH_TOKEN = re.compile(
     r"\b(?:require(?:Auth|Login|User|Token|Admin)|requiresAuth|isAuthenticated|"
-    r"ensureAuth\w*|ensureLoggedIn|ensureAuthenticated|authenticat\w*|authGuard|"
+    r"ensureAuth\w*|ensureLoggedIn|ensureAuthenticated|isLoggedIn\w*|requireSession|authenticat\w*|authGuard|"
     r"authMiddleware|authenticateJWT|checkAuth|checkJwt|verify(?:Token|Jwt|Auth)|"
     r"jwtMiddleware|passport|protect(?:ed)?Route|withAuth|guard)\b",
     re.IGNORECASE,

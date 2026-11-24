@@ -654,6 +654,80 @@
           "note": "hashing lesson: MD5 digest of a secret"
         }
       ]
+    },
+    {
+      "id": "nodegoat",
+      "path": "nodegoat",
+      "repo": "https://github.com/OWASP/NodeGoat.git",
+      "ref": "master",
+      "commit": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "modules": [
+        "attackmap-analyzer-node-service"
+      ],
+      "label_source": "OWASP Top 10 markers in the code (\"Insecure ...\", \"Fix for A1..A10\" with the fix commented out) and the in-app tutorial, each checked against the code at the pinned commit",
+      "expected": [
+        {
+          "category": "injection",
+          "route": "/contributions",
+          "method": "POST",
+          "file": "app/routes/contributions.js",
+          "line": 32,
+          "severity": "high",
+          "note": "A1-1 SSJS injection: eval(req.body.preTax / afterTax / roth)"
+        },
+        {
+          "category": "injection",
+          "route": "/allocations/:userId",
+          "method": "GET",
+          "file": "app/data/allocations-dao.js",
+          "line": 78,
+          "severity": "high",
+          "note": "A1-2 NoSQL injection: req.query.threshold in $where (via allocationsDAO)"
+        },
+        {
+          "category": "injection",
+          "route": "/research",
+          "method": "GET",
+          "file": "app/routes/research.js",
+          "line": 16,
+          "severity": "high",
+          "note": "SSRF: needle.get(req.query.url + req.query.symbol)"
+        },
+        {
+          "category": "injection",
+          "route": "/learn",
+          "method": "GET",
+          "file": "app/routes/index.js",
+          "line": 72,
+          "severity": "medium",
+          "note": "A10 open redirect: res.redirect(req.query.url)"
+        },
+        {
+          "category": "bola",
+          "route": "/allocations/:userId",
+          "method": "GET",
+          "file": "app/routes/allocations.js",
+          "line": 18,
+          "severity": "high",
+          "note": "A4 insecure direct object reference: userId from req.params instead of the session"
+        },
+        {
+          "category": "session_auth",
+          "route": "/login",
+          "method": "POST",
+          "file": "app/routes/session.js",
+          "line": 116,
+          "severity": "medium",
+          "note": "A2 session fixation: req.session.userId set without req.session.regenerate()"
+        },
+        {
+          "category": "crypto",
+          "file": "app/data/user-dao.js",
+          "line": 25,
+          "severity": "high",
+          "note": "A2-1 passwords stored in plaintext (bcrypt fix commented out)"
+        }
+      ]
     }
   ]
 }

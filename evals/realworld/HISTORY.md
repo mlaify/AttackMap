@@ -124,3 +124,22 @@ Juice Shop injection 83% / 58% → 88% / 75%: `POST /b2b/v2/orders:23` (notevil 
 ## #445 request body as render locals (2026-11-25)
 
 injection 96% / 79% → 96% / 80% (23 / 1 / 56): `POST /dataerasure:104` is matched (`res.render(…, { ...req.body, … })`). No new false positives. Still missed in #445: the XXE upload (`parseXmlString` in `lib/xml.ts`, a cross-file helper) and finale routes (node-service).
+
+## NodeGoat (2026-11-25)
+
+Corpus: + OWASP NodeGoat master (`c5cb68a`), 7 labels from its OWASP Top 10 markers ("Insecure ..." and "Fix for A1..A10" comments with the fix commented out): SSJS `eval`, `$where` NoSQL injection, SSRF (`needle.get`), open redirect, IDOR on `/allocations/:userId`, session fixation on login, plaintext password storage. 5 cases, 87 labels.
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 96% | 80% → 82% | 27 / 1 / 60 |
+| `bola` | 100% | 83% → 86% | 3 / 0 / 7 |
+| `session_auth` | 100% | 100% | 2 / 0 / 2 |
+| `crypto` | 88% | 90% → 82% | 7 / 1 / 11 |
+
+NodeGoat scores 6 of 7 labels with no false positives. The miss is plaintext password storage (`user-dao.js:25`), which no detector covers. Before the fixes: injection 100% / 75%, BOLA, session fixation and SSRF missed, plus an unauthenticated state-change false positive (`isLoggedIn` wasn't read as auth). The fixes:
+- sinks in comments no longer match;
+- constructor-function handlers (`new Handler(db)` / `this.method =`) and `…DAO.` calls resolve;
+- fixation is judged per login write;
+- `needle` is an SSRF sink.
+
+The other four cases are unchanged.

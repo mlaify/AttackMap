@@ -1083,6 +1083,19 @@ class _TextFlow:
     def _is_code(self, off: int) -> bool:
         return self.m[off] == self.raw[off]
 
+    def _in_comment(self, off: int) -> bool:
+        m, raw = self.m, self.raw
+        if m[off] == raw[off]:
+            return False
+        # Back to the start of the masked run: comments are blanked from their opener on, string
+        # literals only inside their (kept) quotes.
+        j = off
+        while j > 0 and (m[j - 1] != raw[j - 1] or raw[j - 1].isspace()):
+            j -= 1
+        while j < off and raw[j].isspace():
+            j += 1
+        return raw.startswith(("//", "/*"), j) or (self.lang == PHP and raw[j] == "#")
+
     def _eval(self, a: int, b: int, env: dict[str, list[Atom]]) -> list[Atom]:
         if b <= a:
             return []
@@ -1630,6 +1643,12 @@ class FileFlow:
                 self._failed = True
                 return None
         return self._impl
+
+    def in_comment(self, off: int) -> bool:
+        """True when ``off`` sits in a comment (brace languages). A string literal isn't a comment: code in a
+        string can still run (`vm.runInContext('yaml.load(data)', …)`)."""
+        impl = self._get()
+        return isinstance(impl, _TextFlow) and impl._in_comment(off)
 
     def sink_flow(
         self,

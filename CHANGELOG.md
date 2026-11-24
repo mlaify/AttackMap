@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Precision and recall from OWASP NodeGoat (real-world benchmark):
+  - Sinks named in a comment no longer match (`// Insecure use of eval()`, a commented-out `$where` query). Code in a string still counts (`vm.runInContext('yaml.load(data)', …)`).
+  - Constructor-function handlers resolve. `const h = new Handler(db)` maps `h.method` to `this.method = (req, res) =>` in Handler's module, for taint seeding and the BOLA hop. A `…DAO.method(` call counts as datastore access.
+  - `isLoggedIn` route middleware counts as authentication.
+  - Session fixation is judged per login write: a write inside or right after a live `regenerate()` is safe, and a `regenerate()` in a comment no longer clears the whole file.
+  - `needle`, `got`, `superagent` and `https.get` / `https.request` are SSRF sinks.
+  - The benchmark adds NodeGoat (7 labels).
 - `res.render(view, { ...req.body })` / `res.render(view, req.query)` is template injection (#445): the whole request becomes the template locals, so `layout`, `settings` and engine options come from the request (Juice Shop dataErasure local file read). Picking fields (`{ name: req.body.name }`) isn't flagged.
 - Juice Shop recall (#445): Express handlers that destructure the request (`({ body }: Request, res) =>`, `({ query: q }, res) =>`) take `body` / `query` / `params` / `headers` / `cookies` / `files` as request sources, when the parameter is typed `Request` or followed by `res` / `response` / `reply`. The JS function-header scan no longer stops at a brace inside the parameter list, which dropped every destructured parameter. `vm.runInContext` / `runInNewContext` with fixed code that evaluates a context variable (`'safeEval(x)'`) is code injection when request input reaches the context object.
 - Lookup validation (#444): `rec = find(key); if (!rec) return` (also `rec == null`, `rec.items.length === 0`, or the sink in the `else` branch) validates `key` for later sinks built from `key` itself, when the lookup is a single-argument `map.get` / `set.has` / `find*` / `retrieve*` / `lookup*` / `read*` call whose receiver isn't tainted. What the record holds stays tainted (stored data, such as Juice Shop's username SSTI). A check that returns inside a `try` whose `catch` also exits now counts as dominating the code after the try. Removes the Juice Shop `vulnCodeSnippet` / `vulnCodeFixes` path-traversal flows.
