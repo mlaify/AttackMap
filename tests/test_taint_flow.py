@@ -566,3 +566,14 @@ def test_concise_bodies_do_not_swallow_their_neighbours(tmp_path: Path) -> None:
     flow = _TextFlow(src, "js")
     bodies = [src[o + 1 : c].strip() for o, c in flow._concise_bodies()]
     assert bodies == ["a + b", "({ y: x })", "i.id", "req.query.x"]
+
+
+def test_typescript_annotated_declarations_carry_taint(tmp_path: Path) -> None:
+    # #442: `let x: T = req…` binds x, not the type name.
+    (tmp_path / "s.ts").write_text(
+        "export function s () {\n  return (req, res) => {\n"
+        "    const criteria: string | undefined = req.query.q as string\n"
+        "    models.sequelize.query(`SELECT * FROM P WHERE name LIKE '%${criteria}%'`, { model: P })\n  }\n}\n"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/s", method="GET", file="s.ts", line=2)])
+    assert [(c.sink_kind, c.source_kind) for c in analyze_taint(scan, tmp_path)] == [("sql_execute", "query")]

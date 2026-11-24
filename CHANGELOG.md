@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Taint: a URLconf whose many views live in one module is no longer quadratic. Each route selects its view's sinks by bisecting a sorted line index instead of scanning every sink in the module (4,000 views: 3.9 s → 1.0 s).
 - `hardcoded-secret` no longer counts UI text as credentials (#441): a value of plain words (`"Please provide a password."`, `"Change Password"`) isn't a secret, and key-based config secrets skip locale catalogs (`i18n/`, `locales/`, `translations/`, `de_DE.json`, ...). On OWASP Juice Shop the finding drops from 686 locations to 38. Provider-shaped tokens are still found everywhere.
+- SQL injection on JS ORMs (#442): Sequelize `query`, Prisma `$queryRawUnsafe` / `$executeRawUnsafe` and knex `raw` are sinks. The parameterized-query check judges only the SQL argument, so interpolation in bound values (`{ replacements: { q: `%${q}%` } }`) doesn't count. A TypeScript annotation (`let criteria: any = req.query.q`) no longer hides the declared name from the flow pass. On Juice Shop this finds both labeled SQL injections (injection recall 42% → 58%).
 
 ## [0.7.0] - 2026-11-24
 
