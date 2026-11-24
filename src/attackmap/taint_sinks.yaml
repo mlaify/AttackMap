@@ -308,7 +308,10 @@ sinks:
   # No Node sink: node:http rejects CR/LF in header values (ERR_INVALID_CHAR) (#387).
   - {id: go-header-set, kind: header_injection, langs: [go], cwe: 113, gate: tainted, args: [1],
      regex: '\.\s*Header\s*\(\s*\)\s*\.\s*(?:Set|Add)\s*\('}
-  - {id: php-header, kind: header_injection, langs: [php], cwe: 113, gate: tainted,
+  # PHP's header() has rejected CR/LF since 5.1.2, so it can't inject a header;
+  # a request value in a `Location:` header is an open redirect (#456).
+  - {id: php-header-location, kind: open_redirect, langs: [php], cwe: 601, gate: tainted, args: all,
+     when: '(?i)^\s*[''"]\s*location\s*:',
      regex: '(?<![\w>$:])header\s*\('}
   - {id: java-set-header, kind: header_injection, langs: [java], cwe: 113, gate: tainted, args: [1],
      regex: '\b(?:response|resp|res|httpResponse|servletResponse)\s*\.\s*(?:setHeader|addHeader)\s*\('}
