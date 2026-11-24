@@ -715,3 +715,26 @@ def test_a_not_found_exit_after_a_lookup_validates_the_key(tmp_path: Path) -> No
     assert sorted((c.sink_line, c.sanitized) for c in chains) == [
         (5, True), (10, False), (15, False), (24, True), (29, True), (30, False)
     ]
+
+
+def test_destructured_express_request_and_vm_context_eval(tmp_path: Path) -> None:
+    # Juice Shop b2bOrder / redirect (#445): `({ body }: Request, res)` destructures the request; the fixed
+    # vm code `safeEval(x)` evaluates a context variable. Destructured props of a non-handler stay untainted.
+    (tmp_path / "a.ts").write_text(
+        "app.post('/b', ({ body }: Request, res: Response) => {\n"
+        "  const lines = body.orderLinesData || ''\n"
+        "  vm.runInContext('safeEval(lines)', { safeEval, lines }, { timeout: 2000 })\n"
+        "  vm.runInContext('render(lines)', { lines })\n"
+        "})\n"
+        "app.get('/r', ({ query: q }, res) => {\n"
+        "  res.redirect(q.to)\n"
+        "})\n"
+        "function Search({ query }) { return eval(query) }\n",
+        encoding="utf-8",
+    )
+    routes = [Route(path="/b", method="POST", file="a.ts", line=1), Route(path="/r", method="GET", file="a.ts", line=6)]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    assert {(c.sink_kind, c.sink_line, c.source_kind) for c in chains if c.source_kind} == {
+        ("code_injection", 3, "body"),
+        ("open_redirect", 7, "query"),
+    }

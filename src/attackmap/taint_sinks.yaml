@@ -145,6 +145,10 @@ sinks:
      regex: '\bnew\s+Function\s*\('}
   - {id: js-vm-run, kind: code_injection, langs: [js], cwe: 94, gate: tainted,
      regex: '\bvm\s*\.\s*(?:runInNewContext|runInThisContext|runInContext|compileFunction)\s*\(|\bnew\s+vm\s*\.\s*Script\s*\('}
+  - {id: js-vm-context-eval, kind: code_injection, langs: [js], cwe: 94, gate: tainted, args: [1],
+     note: "fixed code that evaluates a context variable (Juice Shop b2bOrder: notevil safeEval); the context carries the input",
+     when: '^\s*[''"`][^''"`\n]{0,200}?\b(?:safeEval|eval|evaluate|Function)\s*\(',
+     regex: '\bvm\s*\.\s*(?:runInNewContext|runInContext)\s*\('}
   - {id: js-timer-string, kind: code_injection, langs: [js], cwe: 94, gate: tainted,
      note: "setTimeout/setInterval with a string body; function callbacks are ignored",
      unless: '^\s*(?:async\b|function\b|\(|[A-Za-z_$][\w$]*\s*=>)',
