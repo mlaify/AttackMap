@@ -274,3 +274,26 @@ def test_node_set_header_is_not_a_header_injection_sink(tmp_path: Path) -> None:
     )
     scan = ScanResult(root=str(tmp_path), routes=[Route(path="/exports/csv", method="GET", file="app.js", line=3)])
     assert [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "header_injection"] == []
+
+
+@pytest.mark.parametrize(
+    ("signature", "statement", "traced"),
+    [
+        # #400: simple-type action parameters are bound from route / query.
+        ("int? id", 'var rows = _db.Users.FromSqlRaw("SELECT * FROM Users WHERE id = " + id).ToList();', True),
+        ("string name", 'var rows = _connection.Query<User>("SELECT * FROM Users WHERE name = \'" + name + "\'");', True),
+        ("string name", 'cmd.CommandText = "SELECT * FROM Users WHERE name = \'" + name + "\'";', True),
+        # Services and complex types aren't request values; interpolated EF is parameterized.
+        ("[FromServices] string q", 'var cmd = new SqlCommand("SELECT * FROM T WHERE a = \'" + q + "\'");', False),
+        ("OrderFilter f", 'var cmd = new SqlCommand("SELECT * FROM T WHERE a = \'" + f + "\'");', False),
+        ("string q", 'var rows = _db.Users.FromSqlInterpolated($"SELECT * FROM Users WHERE name = {q}").ToList();', False),
+    ],
+)
+def test_csharp_action_parameters_and_sql_sinks(tmp_path: Path, signature: str, statement: str, traced: bool) -> None:
+    (tmp_path / "C.cs").write_text(
+        "public class XController : ControllerBase {\n  [HttpGet(\"x\")]\n"
+        f"  public IActionResult X({signature}) {{\n    {statement}\n    return Ok();\n  }}\n}}\n"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/x", method="GET", file="C.cs", line=2)])
+    flows = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "sql_execute" and c.source_kind]
+    assert bool(flows) is traced
