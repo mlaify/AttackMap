@@ -1751,3 +1751,46 @@ def test_line_separators_do_not_shift_the_bfla_handler_span(tmp_path: Path) -> N
         ]
         [finding] = _bfla_findings(ScanResult(root=str(tmp_path), routes=routes))
         assert {loc.line for loc in finding.locations} == {3}, sep
+
+
+def _central_app(tmp_path: Path, handler_body: str, extra_imports: int = 0) -> ScanResult:
+    # #443: Express app that registers every route in server.js and imports
+    # each handler from routes/ (Juice Shop's layout).
+    (tmp_path / "routes").mkdir()
+    for i in range(extra_imports):
+        (tmp_path / "routes" / f"h{i}.js").write_text(f"exports.h{i} = () => (req, res) => res.end()\n")
+    (tmp_path / "routes" / "basket.js").write_text(
+        "exports.retrieveBasket = () => async (req, res) => {\n" + handler_body + "  res.json(basket)\n}\n"
+    )
+    imports = "".join(f"const {{ h{i} }} = require('./routes/h{i}')\n" for i in range(extra_imports))
+    (tmp_path / "server.js").write_text(
+        imports + "const { retrieveBasket } = require('./routes/basket')\n"
+        "app.get('/rest/basket/:id', security.isAuthorized(), utils.asyncHandler(retrieveBasket()))\n"
+    )
+    line = extra_imports + 2
+    return ScanResult(root=str(tmp_path), routes=[Route(path="/rest/basket/:id", method="GET", file="server.js", line=line, auth="required", guards=["security.isAuthorized()"])])
+
+
+def test_bola_follows_the_imported_handler_to_an_orm_lookup(tmp_path: Path) -> None:
+    scan = _central_app(tmp_path, "  const basket = await BasketModel.findOne({ where: { id: req.params.id } })\n", extra_imports=45)
+    [cand] = analyze_authz(scan, tmp_path)
+    assert (cand.route_path, cand.db_evidence.startswith("delegated handler in routes/basket.js")) == ("/rest/basket/:id", True)
+
+
+def test_bola_owner_keyed_filter_is_an_ownership_check(tmp_path: Path) -> None:
+    scan = _central_app(tmp_path, "  const basket = await BasketModel.findOne({ where: { id: req.params.id, UserId: req.body.UserId } })\n")
+    assert analyze_authz(scan, tmp_path) == []
+
+
+def test_bola_owner_filter_from_the_path_is_not_a_check(tmp_path: Path) -> None:
+    scan = _central_app(tmp_path, "  const basket = await BasketModel.findOne({ where: { id: req.params.id, UserId: req.params.uid } })\n")
+    assert len(analyze_authz(scan, tmp_path)) == 1
+
+
+def test_routes_in_static_asset_dirs_do_not_feed_bola(tmp_path: Path) -> None:
+    cand = BolaCandidate(
+        route_path="/api/Products/:id", route_method="PUT", route_file="data/static/codefixes/fix_1.ts",
+        id_param="id", surface="path_param", reaches_db=True, db_evidence="x", has_ownership_check=False,
+    )
+    scan = ScanResult(root=str(tmp_path), authz_candidates=[cand])
+    assert [f for f in generate_findings(scan) if f.rule_id.startswith("bola")] == []

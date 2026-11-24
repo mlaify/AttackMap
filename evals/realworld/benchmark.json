@@ -150,6 +150,42 @@
           "note": "forgedReviewChallenge: any review edited by id; author not checked"
         },
         {
+          "category": "bola",
+          "route": "/rest/basket/:id/checkout",
+          "method": "POST",
+          "file": "routes/order.ts",
+          "line": 35,
+          "severity": "high",
+          "note": "placeOrder checks out any basket by id; no owner check (found by #443's handler resolution, confirmed by reading the code)"
+        },
+        {
+          "category": "bola",
+          "route": "/rest/basket/:id/coupon/:coupon",
+          "method": "PUT",
+          "file": "routes/coupon.ts",
+          "line": 18,
+          "severity": "medium",
+          "note": "applyCoupon updates any basket by id (#443)"
+        },
+        {
+          "category": "bola",
+          "route": "/api/BasketItems/:id",
+          "method": "PUT",
+          "file": "routes/basketItems.ts",
+          "line": 68,
+          "severity": "medium",
+          "note": "basket item loaded and updated by id with no owner check; basketManipulateChallenge family (#443)"
+        },
+        {
+          "category": "bola",
+          "route": "/api/Recycles/:id",
+          "method": "GET",
+          "file": "routes/recycles.ts",
+          "line": 12,
+          "severity": "medium",
+          "note": "any user's recycle request (UserId, AddressId) returned by id (#443)"
+        },
+        {
           "category": "token_auth",
           "file": "lib/insecurity.ts",
           "line": 189,

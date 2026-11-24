@@ -28,7 +28,8 @@ from .authz import find_bfla_routes
 from .route_auth_fusion import synthesize_unauthenticated_routes, unauthenticated_routes
 from .taxonomy import cwe_tag, taxonomy_for
 
-LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/")
+# `static/` holds assets served as files (#443: code snippets read as text).
+LOW_QUALITY_SEGMENTS = ("/tests/", "/__tests__/", "/fixtures/", "/mocks/", "/examples/", "/static/")
 
 # Cap on the number of basic-archetype attack paths emitted per scan.
 # Lifted from 1 in #24; capped here to keep reports focused — anything
