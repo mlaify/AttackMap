@@ -159,14 +159,13 @@ OBJECT_AUTHZ_MARKERS = re.compile(
 ROLE_MARKERS = re.compile(
     r"""
     \bis_?[aA]dmin\b | \bisSuper\w* | \bis_staff\b | \bis_superuser\b
-    | \bhas_?[rR]oles?\b | hasAnyRole | hasAuthority | hasAnyAuthority
-    | \brequires?_?[rR]oles?\b | \broles?_required\b | \badmin_required\b | \bsuperuser_required\b
+    | \badmin_required\b | \bsuperuser_required\b
     | \brequires?_?[aA]dmin\w* | \badmin_?[oO]nly\b | \bonlyAdmin\b | \bensureAdmin\b
     | \bcheckAdmin\b | \bverifyAdmin\b | \bisAdminMiddleware\b
     | \bIsAdminUser\b | @staff_member_required | \buser_passes_test\b
     | permission_classes\s*=\s*[\[(][^\])]*(?:Admin|Staff|Superuser|Perm|Role)
     | @Secured | @RolesAllowed
-    | @PreAuthorize\([^)]*(?:hasRole|hasAuthority|hasAnyRole|hasAnyAuthority|hasPermission)
+    | @PreAuthorize\([^)]*hasPermission
     | \bpermission_required\b | \bhas_perm\b | \bhasPermission\b | \brequires?_?[pP]ermissions?\b
     | \bcheck_?[pP]ermissions?\b | \bcan\?\s*\( | \.can\s*\( | ->can\s*\( | \bauthorize(?!_?roles?)[!\w]*\s*\(
     | Gate:: | \.roles?\s*(?:!==?|===?|\bin\b|\bnot\s+in\b) | \brole\s*(?:!==?|===?)\s*['"]
@@ -224,7 +223,12 @@ def _symfony_role_check(text: str) -> bool:
 def has_role_check(text: str, *, python: bool = False) -> bool:
     """A role or permission check in ``text`` (handler code or guards);
     ``python`` masks Python comments and docstrings for the role-call check."""
-    return bool(ROLE_MARKERS.search(text)) or _symfony_role_check(text) or _role_call_check(text, python=python)
+    return (
+        bool(ROLE_MARKERS.search(text))
+        or _symfony_role_check(text)
+        or _role_call_check(text, python=python)
+        or _spring_expression_role_check(text)
+    )
 
 
 # Guard *names* (as plugins put them in Route.guards, #349) that are a role or
@@ -271,9 +275,26 @@ _ROLE_CONSTANT_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 # their arguments. Metadata guards (`RolesGuard`, `PermissionsGuard`) are not
 # role checks on their own: they enforce this metadata, and allow all without it.
 _ROLE_CALL_RE = re.compile(
-    r"(?:\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorize_?[rR]oles?(?:For|To)?|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
+    r"(?:\bhas_?[rR]oles?\??|\bhasAny[rR]oles?|\bhas(?:Any)?Authorit(?:y|ies)|\brequires?_?[rR]oles?|\broles?_required"
+    r"|\brestrictTo|\bcheck_?[rR]oles?|\ballow(?:ed)?_?[rR]oles|\bauthorize_?[rR]oles?(?:For|To)?|@Permissions|@CheckPolicies|@MembershipRoles|@Pbac|@Roles)\s*+\("
 )
 _MAX_ROLE_ARGS = 400
+_ROLE_SYMBOL_RE = re.compile(r":\w{1,80}")
+_NAMED_ARG_RE = re.compile(r"^\w{1,40}\s*+[:=]\s*+(?=[\[\w'\"])")
+# Spring Security expressions live in a string (`@PreAuthorize("hasRole('ADMIN')")`),
+# which the role-call check masks: their role calls are judged here.
+_SPRING_EXPR_RE = re.compile(r"@(?:Pre|Post)Authorize\s*+\(\s*+(?:value\s*+=\s*+)?\"([^\"\n]{0,400})\"")
+_SPRING_ROLE_FN_RE = re.compile(r"\bhas(?:Any)?(?:Role|Authority)\s*+\(([^()]{0,400})\)")
+
+
+def _spring_expression_role_check(text: str) -> bool:
+    if "Authorize" not in text:
+        return False
+    return any(
+        _privileged_args(args)
+        for expr in _SPRING_EXPR_RE.findall(text)
+        for args in _SPRING_ROLE_FN_RE.findall(expr)
+    )
 
 
 def _privileged_args(args: str) -> bool:
@@ -281,7 +302,8 @@ def _privileged_args(args: str) -> bool:
     member (`Role.ADMIN`) or an ALL_CAPS constant (`ADMIN`) naming a
     privileged role. Other identifiers, members of lower-case receivers
     (`doc.owner`, `req.query.admin`), spreads and `Object.values(...)` don't count."""
-    inner = args.strip()
+    # A named argument (`@hasRole(role: ADMIN)`, `roles=[...]`) is its value.
+    inner = _NAMED_ARG_RE.sub("", args.strip(), count=1)
     while inner.startswith("[") and inner.endswith("]"):
         inner = inner[1:-1].strip()
     elements = [e.strip() for e in inner.split(",") if e.strip()]
@@ -292,6 +314,8 @@ def _privileged_args(args: str) -> bool:
         member = _ROLE_MEMBER_RE.fullmatch(element) if literal is None else None
         if literal is not None:
             value = literal.group(1) or literal.group(2)
+        elif _ROLE_SYMBOL_RE.fullmatch(element):
+            value = element[1:]  # Ruby symbol: has_role?(:admin)
         elif member is not None and _ROLE_ENUM_RE.search(member.group(1)):
             value = member.group(2)
         elif _ROLE_CONSTANT_RE.fullmatch(element):
@@ -805,7 +829,7 @@ def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
         lines = content.splitlines()
         for i, line in enumerate(lines):
             if _CLASS_DECL_RE.search(line):
-                return bool(ROLE_MARKERS.search("\n".join(lines[max(0, i - 6) : i])))
+                return has_role_check("\n".join(lines[max(0, i - 6) : i]))
     return False
 
 

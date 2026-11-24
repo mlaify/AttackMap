@@ -1699,3 +1699,37 @@ def test_round11_sibling_decorators_and_decorator_blocks(tmp_path: Path) -> None
     # the tail of a statement above a class isn't its decorator
     content = "const x = configure(\n  restrictTo('admin'))\nexport class PublicController {\n  @Delete(':id')\n  remove() {}\n}\n"
     assert check(content, 4) is False
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        # #389: role-list calls count only for a privileged role.
+        ("hasRole('user')", False),
+        ("hasAuthority('ROLE_USER')", False),
+        (".hasAnyRole(\"USER\", \"ADMIN\")", False),
+        ("requireRole('member')", False),
+        ("@roles_required('member')", False),
+        ("has_role?(:user)", False),
+        ("@PreAuthorize(\"hasRole('USER')\")", False),
+        ("@PreAuthorize(\"isAuthenticated()\")", False),
+        ("hasRole('ADMIN')", True),
+        ("requireRole(['admin', 'owner'])", True),
+        ("@roles_required('admin')", True),
+        ("current_user.has_role?(:admin)", True),
+        ("@hasRole(role: ADMIN)", True),
+        ("@PreAuthorize(\"hasAnyRole('ROLE_ADMIN', 'ROLE_MANAGER')\")", True),
+        ("@PreAuthorize(\"hasPermission(#id, 'Doc', 'write')\")", True),
+        ("@permission_required('app.delete_doc')", True),
+    ],
+)
+def test_role_list_calls_need_a_privileged_role(code: str, expected: bool) -> None:
+    assert has_role_check(code) is expected
+
+
+def test_java_class_level_role_annotation_is_judged_by_its_role() -> None:
+    from attackmap.authz import _chain_roles
+
+    cls = '@RestController\n@PreAuthorize("hasRole(\'{}\')")\npublic class AdminController {{\n}}\n'
+    assert _chain_roles("A.java", cls.format("ADMIN")) is True
+    assert _chain_roles("A.java", cls.format("USER")) is False
