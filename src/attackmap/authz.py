@@ -594,7 +594,7 @@ class _ConfigControllerResolver:
         content = _read_file_content(rel_file, self.root, self.cache)
         if not content:
             return None
-        lines = content.splitlines()
+        lines = content.split("\n")
         # (0-based line, name) of each function, counting newlines once.
         starts: list[tuple[int, str]] = []
         line_no = pos = 0
@@ -710,7 +710,7 @@ def find_bfla_routes(
         if _guards_role_check(route):
             continue  # the plugin resolved a role check
         if route.file not in lines_cache:
-            lines_cache[route.file] = content.splitlines()
+            lines_cache[route.file] = content.split("\n")
             chain_role_cache[route.file] = _chain_roles(route.file, content)
         handler = _own_span(
             route.file,
@@ -826,7 +826,7 @@ def _chain_roles(file: str, content: str) -> bool | _ChainRoles:
                 info.routers.add(m.group("router"))
         return info
     if suffix in _JAVA_SUFFIXES:
-        lines = content.splitlines()
+        lines = content.split("\n")
         for i, line in enumerate(lines):
             if _CLASS_DECL_RE.search(line):
                 return has_role_check("\n".join(lines[max(0, i - 6) : i]))
@@ -1140,7 +1140,7 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
         handler = ""
         if content:
             if route.file not in lines_cache:
-                lines_cache[route.file] = content.splitlines()
+                lines_cache[route.file] = content.split("\n")
             handler = _own_span(
                 route.file,
                 span_text(route.line, lines_cache[route.file], route_lines.get(route.file, []), max_span=_AUTHZ_SPAN),
