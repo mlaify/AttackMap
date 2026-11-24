@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-24
+
 ### Added
 
 - Scan-time budget (#202): `ScanProgress` records wall-clock seconds per phase, with or without a TTY. `evals/perf/budget.json` pins the atproto monorepo (about 4,000 files, 47 s in the reference run) with a 180 s budget, and `scripts/perf_budget.py` prints per-phase times and fails over budget.
@@ -1546,7 +1548,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/mlaify/AttackMap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mlaify/AttackMap/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/mlaify/AttackMap/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/mlaify/AttackMap/compare/v0.6.3...v0.6.4
