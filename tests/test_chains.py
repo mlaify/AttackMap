@@ -97,6 +97,36 @@ def test_ssrf_reaches_cloud_admin_only_through_imds_v1() -> None:
     assert all(s.precondition_notes for s in chain.steps[1:])
     # IMDSv2 required (no imds finding): SSRF alone yields no cloud chain.
     assert _chain(build_attack_chains([findings[0], findings[2]]), "cloud_admin") is None
+    # An SSRF whose scheme and host are fixed can't reach instance metadata.
+    findings[0].tags.append("ssrf-fixed-host")
+    assert _chain(build_attack_chains(findings), "cloud_admin") is None
+
+
+def test_public_ssrf_route_and_cloud_records_chain_to_cloud_admin(tmp_path: Path) -> None:
+    from attackmap.models import CloudMisconfig
+
+    app = (
+        "from flask import Flask, request\nimport requests\napp = Flask(__name__)\n"
+        "@app.route('/preview', methods=['POST'])\ndef preview():\n"
+        "    return requests.get(request.json['url']).text\n"
+    )
+    (tmp_path / "app.py").write_text(app)
+    scan = scan_repo(tmp_path)
+    # What attackmap-analyzer-terraform emits for IMDSv1 and a PassRole-on-* policy.
+    scan.cloud_misconfigs += [
+        CloudMisconfig(kind="imds_v1_enabled", file="infra/ec2.tf", line=9, platform="aws", resource="aws_instance.web"),
+        CloudMisconfig(kind="iam_privilege_escalation", file="infra/iam.tf", line=2, platform="aws",
+                       resource="aws_iam_role_policy.web", severity="high"),
+    ]
+    chain = _chain(build_attack_chains(generate_findings(scan)), "cloud_admin")
+    assert chain.start == ["net_access_public"]
+    assert [(s.rule_id, s.location.file) for s in chain.steps] == [
+        ("ssrf", "app.py"), ("imds-v1-enabled", "infra/ec2.tf"), ("iam-privilege-escalation", "infra/iam.tf"),
+    ]
+    # Path-only SSRF in the same repo: no cloud chain.
+    (tmp_path / "app.py").write_text(app.replace("request.json['url']", "f\"https://api.example.com/{request.json['id']}\""))
+    scan.taint_chains = scan_repo(tmp_path).taint_chains
+    assert _chain(build_attack_chains(generate_findings(scan)), "cloud_admin") is None
 
 
 def test_sarif_puts_the_chain_on_its_final_steps_result() -> None:

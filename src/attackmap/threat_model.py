@@ -2934,6 +2934,9 @@ def generate_findings(scan: ScanResult, attack_surfaces: list[AttackSurface] | N
             ],
         )
         taint_finding.code_flows = _code_flows(kind_chains)
+        if kind == "ssrf" and all(c.url_control in ("path", "query") for c in kind_chains):
+            # Scheme and host are fixed everywhere: no internal reach (#241).
+            taint_finding.tags.append("ssrf-fixed-host")
         taint_findings_by_kind[kind] = taint_finding
         findings.append(taint_finding)
 

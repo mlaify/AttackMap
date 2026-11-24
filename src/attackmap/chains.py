@@ -133,7 +133,7 @@ def build_attack_chains(findings: list[Finding]) -> list[AttackChain]:
     steps: dict[tuple[str, str], ChainStep] = {}
     for finding in findings:
         rule = finding_rule_id(finding)
-        if rule not in STEP_LIBRARY:
+        if rule not in STEP_LIBRARY or "ssrf-fixed-host" in finding.tags:
             continue
         scoped = bool(_FILE_SCOPED & (STEP_LIBRARY[rule][0] | STEP_LIBRARY[rule][1]))
         for location in finding.locations or [None]:
