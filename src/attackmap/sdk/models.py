@@ -14,7 +14,11 @@ from ..models import (
     DependencyHint,
     CODE_WEAKNESS_KINDS,
     CodeWeakness,
+    CryptoWeakness,
     SupplyChainIssue,
+    TaintChain,
+    TaintFlowStep,
+    WebHardeningIssue,
 )
 from ..recon_models import (
     AuthHint,
@@ -31,6 +35,10 @@ from ..recon_models import (
 )
 
 __all__ = [
+    "CryptoWeakness",
+    "WebHardeningIssue",
+    "TaintChain",
+    "TaintFlowStep",
     "Route",
     "ExternalCall",
     "DatabaseHint",
