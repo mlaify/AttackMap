@@ -373,7 +373,8 @@
                 "ci_token",
                 "cloud_creds",
                 "node_root",
-                "cluster_admin"
+                "cluster_admin",
+                "cloud_admin"
               ]
             }
           },
@@ -426,7 +427,8 @@
                       "ci_token",
                       "cloud_creds",
                       "node_root",
-                      "cluster_admin"
+                      "cluster_admin",
+                      "cloud_admin"
                     ]
                   }
                 },
@@ -449,7 +451,8 @@
                       "ci_token",
                       "cloud_creds",
                       "node_root",
-                      "cluster_admin"
+                      "cluster_admin",
+                      "cloud_admin"
                     ]
                   }
                 },
@@ -512,7 +515,8 @@
               "ci_token",
               "cloud_creds",
               "node_root",
-              "cluster_admin"
+              "cluster_admin",
+              "cloud_admin"
             ]
           },
           "likelihood": {

@@ -1552,6 +1552,16 @@ _CLOUD_MISCONFIG_FINDING_SPEC: dict[str, dict[str, str]] = {
         "title": "Serverless function or service can be invoked by anyone",
         "mitigation": "If the function isn't meant to be public, require authentication on its endpoint: bind the invoker role to specific service accounts or groups instead of `allUsers` / `allAuthenticatedUsers` (Cloud Run, Cloud Functions), or use `authorization_type = \"AWS_IAM\"` on a Lambda function URL.",
     },
+    "imds_v1_enabled": {
+        "tier": "medium",
+        "title": "EC2 instance metadata accepts IMDSv1 (unauthenticated GET)",
+        "mitigation": "Set `metadata_options { http_tokens = \"required\" }` (and `http_put_response_hop_limit = 1` unless containers on the host need IMDS). With IMDSv1, any SSRF in software on the instance can read the instance role's temporary credentials from 169.254.169.254.",
+    },
+    "iam_privilege_escalation": {
+        "tier": "high",
+        "title": "IAM policy lets its holder escalate to administrator",
+        "mitigation": "Remove IAM-write actions (`iam:CreatePolicyVersion`, `iam:Attach*Policy`, `iam:Put*Policy`, `iam:PassRole` on `*`, `iam:*`, `*`) from policies attached to workloads and users who don't administer IAM. Scope `iam:PassRole` to the specific role ARNs, with an `iam:PassedToService` condition.",
+    },
     "privileged_container": {
         "tier": "high",
         "title": "Container runs privileged (equivalent to root on the host)",

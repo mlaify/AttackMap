@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Attack chains (#248, first part). Findings are composed into precondition → postcondition chains over attacker capabilities (`net_access_public`, `fork_pr`, `authn_user`, `code_exec_app`, `secrets`, `ci_token`, `cluster_admin`, ...). Each step cites the finding that enables it (`<rule>@<file>:<line>`), and no step comes from a template. Chains appear as `attack_chains` in `attackmap-report.json` and `defensive-review.json` (schema 1.6.0), and as SARIF `codeFlows` on the final step's result. CI code execution chains only within the workflow file that grants it. The templated `attack_paths` are unchanged.
+- Cloud misconfiguration kinds `imds_v1_enabled` (an EC2 instance whose metadata service accepts IMDSv1) and `iam_privilege_escalation` (an IAM policy with IAM-write actions such as `iam:CreatePolicyVersion`, `iam:Attach*Policy` or `iam:PassRole` on `*`), with taxonomy entries (T1552.005; T1098, T1078.004) and CloudTrail templates `aws-imds-v1-allowed` and `aws-iam-privilege-escalation` (#241, #370). They add the attack-chain steps SSRF → IMDSv1 → `cloud_creds` → IAM escalation → `cloud_admin`. attackmap-analyzer-terraform emits them in its next release.
 
 ### Fixed
 

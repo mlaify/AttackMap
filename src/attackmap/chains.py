@@ -24,7 +24,7 @@ IMPLIES: dict[Capability, frozenset[Capability]] = {
 }
 
 GOALS: tuple[Capability, ...] = (
-    "cluster_admin", "cloud_creds", "node_root", "secrets", "ci_token",
+    "cloud_admin", "cluster_admin", "cloud_creds", "node_root", "secrets", "ci_token",
     "db_write", "db_read", "authn_admin", "code_exec_app",
 )
 
@@ -40,8 +40,8 @@ def _rules(rules: str, requires: frozenset[Capability], grants: Iterable[Capabil
 
 
 # rule id -> (requires, grants). Only rules whose finding alone justifies the
-# transition; anything needing a signal core doesn't emit yet (IMDSv1, IAM
-# PassRole: #241, #370) is left out rather than assumed.
+# transition; anything needing a signal core doesn't emit is left out rather
+# than assumed.
 STEP_LIBRARY: dict[str, tuple[frozenset[Capability], frozenset[Capability]]] = {
     # Forged or fixed credentials.
     **_rules("jwt-alg-confusion jwt-weak-secret jwt-unverified-decode jwt-header-trust "
@@ -72,13 +72,22 @@ STEP_LIBRARY: dict[str, tuple[frozenset[Capability], frozenset[Capability]]] = {
     **_rules("secrets-inherit secret-in-run", _CI, {"secrets"}),
     **_rules("default-token-permissions broad-permissions checkout-persist-credentials", _CI, {"ci_token"}),
     **_rules("oidc-on-untrusted-trigger", _CI, {"cloud_creds"}),
+    # Cloud: SSRF to instance metadata, then IAM self-escalation (#241, #370).
+    **_rules("imds-v1-enabled", frozenset({"internal_network"}), {"cloud_creds"}),
+    **_rules("iam-privilege-escalation", frozenset({"cloud_creds"}), {"cloud_admin"}),
 }
 
-_WORKLOAD_RULES = frozenset(
-    "privileged-container host-path-mount host-namespace-shared dangerous-capability "
-    "rbac-secret-access cluster-admin-binding rbac-wildcard rbac-escalation".split()
-)
-_CROSS_ARTIFACT_NOTE ="assumes the exploited code runs in the workload this setting configures"
+# Steps that join two artifacts (app code and the config it runs under) state
+# the assumption that links them.
+_NOTES: dict[str, str] = {
+    **dict.fromkeys(
+        "privileged-container host-path-mount host-namespace-shared dangerous-capability "
+        "rbac-secret-access cluster-admin-binding rbac-wildcard rbac-escalation".split(),
+        "assumes the exploited code runs in the workload this setting configures",
+    ),
+    "imds-v1-enabled": "assumes the SSRF-reachable code runs on this instance",
+    "iam-privilege-escalation": "assumes the stolen credentials belong to a principal with this policy",
+}
 # Code execution in one workflow doesn't reach another workflow's secrets or
 # token: steps that need it must be in the file that grants it.
 _FILE_SCOPED: frozenset[Capability] = frozenset({"ci_code_exec"})
@@ -95,7 +104,7 @@ def evidence_id(rule: str, location: FindingLocation | None) -> str:
 
 def _step(rule: str, finding: Finding, location: FindingLocation | None) -> ChainStep:
     requires, grants = STEP_LIBRARY[rule]
-    notes = [_CROSS_ARTIFACT_NOTE] if rule in _WORKLOAD_RULES else []
+    notes = [_NOTES[rule]] if rule in _NOTES else []
     return ChainStep(
         id=evidence_id(rule, location),
         rule_id=rule,
