@@ -85,6 +85,8 @@ def canonical_category(finding: dict[str, Any]) -> str:
         return "token_auth"
     if "session-auth" in tags:
         return "session_auth"
+    if "prompt injection" in title:
+        return "advisory"  # text aimed at AI reviewers, not a code injection sink
     if any(m in title or m in tags for m in _INJECTION_MARKERS):
         return "injection"
     if "broken-authorization" in tags or "bola" in title or "idor" in title:
@@ -200,6 +202,16 @@ def _matches(finding: dict[str, Any], exp: Expected, window: int) -> bool:
     route. A file-only match is accepted when the label pins neither route nor line.
     """
     exp_file = _norm_path(exp.file)
+    # A structured location at the labeled line is the finding's own claim: an
+    # aggregated finding cites every instance there, but only its top route in
+    # the evidence text (#197 real-world corpus).
+    if exp.line is not None and any(
+        _norm_path(loc.get("file") or "") == exp_file
+        and loc.get("line") is not None
+        and abs(int(loc["line"]) - exp.line) <= window
+        for loc in finding.get("locations") or []
+    ):
+        return True
     if not _file_cited(finding, exp_file):
         return False  # the finding doesn't cite this file at all
     file_locs = [ln for (f, ln) in _finding_locations(finding) if f == exp_file]
@@ -435,6 +447,25 @@ def bench_json(results: list[CaseResult]) -> dict[str, Any]:
             for r in results
         ],
     }
+
+
+def regressions(results: list[CaseResult], baseline: dict[str, Any], tolerance: float = 0.05) -> list[str]:
+    """Scored classes whose precision or recall fell more than ``tolerance``
+    below ``baseline`` (a ``bench_json`` output; only its ``overall`` is read).
+    A class with findings in the baseline and none now regresses to 0."""
+    now = aggregate(results)
+    out: list[str] = []
+    for name, base in sorted(baseline.get("overall", {}).items()):
+        cs = now.get(name)
+        for metric in ("precision", "recall"):
+            before = base.get(metric)
+            if before is None:
+                continue
+            after = getattr(cs, metric) if cs is not None else None
+            after = 0.0 if after is None else after
+            if after < before - tolerance:
+                out.append(f"{name} {metric} {before:.0%} -> {after:.0%}")
+    return out
 
 
 def min_scored_metric(results: list[CaseResult]) -> float:

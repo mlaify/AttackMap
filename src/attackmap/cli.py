@@ -1431,6 +1431,11 @@ def bench(
         "--fail-under",
         help="Exit non-zero if any scored detector class falls below this precision/recall (0-1). For CI regression gating.",
     ),
+    baseline: str | None = typer.Option(
+        None,
+        "--baseline",
+        help="A committed benchmark-results.json: exit non-zero if any class's precision or recall drops >5 points below it.",
+    ),
 ) -> None:
     """Score AttackMap findings against the labeled benchmark corpus (#197).
 
@@ -1438,7 +1443,7 @@ def bench(
     Contributor/CI tool — run from the repo root (the manifest ships in `evals/`,
     not the installed wheel).
     """
-    from .bench import bench_json, load_benchmark, min_scored_metric, render_markdown, run_benchmark
+    from .bench import bench_json, load_benchmark, min_scored_metric, regressions, render_markdown, run_benchmark
 
     manifest = Path(benchmark)
     if not manifest.exists():
@@ -1461,6 +1466,13 @@ def bench(
     if errored:
         typer.echo(f"Cases that failed to scan: {', '.join(errored)}")
         raise typer.Exit(code=1)
+
+    if baseline is not None:
+        dropped = regressions(results, json.loads(Path(baseline).read_text(encoding="utf-8")))
+        if dropped:
+            typer.echo("FAIL: below the baseline: " + "; ".join(dropped))
+            raise typer.Exit(code=1)
+        typer.echo(f"OK: no class more than 5 points below {baseline}")
 
     if fail_under is not None:
         worst = min_scored_metric(results)
