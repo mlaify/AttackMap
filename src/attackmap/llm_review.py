@@ -48,15 +48,33 @@ from .review_prompts import (
 
 _LLM_INSTALL = 'pip install "attackmap[llm] @ git+https://github.com/mlaify/AttackMap.git"'
 
-DEFAULT_MODEL = "claude-opus-4-8"
+DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_EFFORT: Literal["low", "medium", "high", "xhigh", "max"] = "high"
 DEFAULT_MAX_TOKENS = 32000
 
-# Fast mode (2.5x output speed, premium price) is a research-preview beta and
-# only runs on the Opus 4.8 / 4.7 tiers via the API backend — the `claude` CLI
-# backend and other models silently fall back to standard speed.
+# Fast mode (up to 2.5x output speed, premium price), API backend only: GA on
+# Opus 5.5 and Fable 5.2 (a plain `speed="fast"`), a research preview on Opus 5
+# (beta endpoint + flag, needs access). Other models and the `claude` CLI
+# backend run at standard speed. Opus 4.8's fast mode ends on 2026-11-30.
 FAST_MODE_BETA = "fast-mode-2026-02-01"
-FAST_CAPABLE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-4-7"})
+FAST_GA_MODELS = frozenset({"claude-opus-5-5", "claude-fable-5-2"})
+FAST_PREVIEW_MODELS = frozenset({"claude-opus-5"})
+FAST_CAPABLE_MODELS = FAST_GA_MODELS | FAST_PREVIEW_MODELS
+# Server-side refusal fallback: when a model's safeguards decline, the API
+# reruns the request on a model chosen for the refusal category, in the same
+# call. Offered on these models; the result names the model that answered.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+FALLBACK_MODELS = frozenset(
+    {"claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
+)
+# Effort levels per model where they differ from all five; Haiku 4.5 predates
+# adaptive thinking and `effort`, so both are left out for it.
+_ALL_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+_MODEL_EFFORTS: dict[str, tuple[str, ...]] = {
+    "claude-opus-4-6": ("low", "medium", "high", "max"),
+    "claude-sonnet-4-6": ("low", "medium", "high", "max"),
+}
+NO_ADAPTIVE_THINKING_MODELS = frozenset({"claude-haiku-4-5"})
 CLAUDE_CLI_TIMEOUT_SECONDS = 600
 
 # OpenAI / Codex provider. `gpt-5-codex` is the code-optimized GPT-5 (Responses
@@ -64,7 +82,7 @@ CLAUDE_CLI_TIMEOUT_SECONDS = 600
 # so we never have to chase OpenAI's point-release churn. Reasoning effort maps
 # onto the Responses API's `reasoning.effort` — OpenAI exposes low/medium/high,
 # so our extended tiers (xhigh/max) clamp down to "high".
-OPENAI_DEFAULT_MODEL = "gpt-5-codex"
+OPENAI_DEFAULT_MODEL = "gpt-6.2-sol"  # API backend; the `codex` CLI uses its own default
 OPENAI_API_TIMEOUT_SECONDS = 900
 CODEX_CLI_TIMEOUT_SECONDS = 900
 OPENAI_EFFORT_MAP = {
@@ -147,6 +165,39 @@ def _usage_dict(usage: Any) -> dict[str, int]:
     return out
 
 
+def _accepts(messages_api: Any, param: str) -> bool:
+    """True when ``messages_api.stream`` takes ``param`` (or can't be inspected, e.g. a test double)."""
+    import inspect
+
+    stream = getattr(messages_api, "stream", None)
+    if stream is None:
+        return False
+    try:
+        params = inspect.signature(stream).parameters
+    except (TypeError, ValueError):
+        return True
+    return param in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+def _model_effort(model: str, effort: str) -> str:
+    """``effort`` if the model takes it, else the nearest lower level it supports."""
+    levels = _MODEL_EFFORTS.get(model, _ALL_EFFORTS)
+    if effort in levels or effort not in _ALL_EFFORTS:
+        return effort
+    for candidate in reversed(_ALL_EFFORTS[: _ALL_EFFORTS.index(effort) + 1]):
+        if candidate in levels:
+            return candidate
+    return levels[0]
+
+
+def _refusal_message(model: str, details: Any) -> str:
+    category = getattr(details, "category", None)
+    explanation = getattr(details, "explanation", None)
+    message = f"{model} declined the request (stop_reason=refusal"
+    message += f", category={category})" if category else ")"
+    return message + (f": {explanation}" if explanation else "")
+
+
 def _run_via_sdk(
     rendered_system: str,
     rendered_user: str,
@@ -157,6 +208,7 @@ def _run_via_sdk(
     api_key: str | None,
     client: Any | None,
     speed: str = "standard",
+    fallback: bool = True,
 ) -> LlmReviewResult:
     sdk_client, _ = _resolve_sdk_client(api_key, client)
 
@@ -167,18 +219,28 @@ def _run_via_sdk(
             {"type": "text", "text": rendered_system, "cache_control": {"type": "ephemeral"}}
         ],
         "messages": [{"role": "user", "content": rendered_user}],
-        "thinking": {"type": "adaptive"},
-        "output_config": {"effort": effort},
     }
+    if model not in NO_ADAPTIVE_THINKING_MODELS:
+        request_kwargs["thinking"] = {"type": "adaptive"}
+        request_kwargs["output_config"] = {"effort": _model_effort(model, effort)}
 
-    # Fast mode needs the beta endpoint + flag + top-level speed, and only on
-    # the Opus 4.8/4.7 tiers. Anything else runs at standard speed.
-    fast = speed == "fast" and model in FAST_CAPABLE_MODELS
-    messages_api = sdk_client.messages
-    if fast:
+    # The refusal fallback and preview-tier fast mode go through the beta
+    # endpoint; GA fast mode is a plain parameter. Each is sent only when the
+    # installed SDK accepts it, so an older `anthropic` keeps working.
+    betas: list[str] = []
+    beta_messages = getattr(getattr(sdk_client, "beta", None), "messages", None)
+    if fallback and model in FALLBACK_MODELS and _accepts(beta_messages, "fallbacks"):
+        request_kwargs["fallbacks"] = "default"
+        betas.append(FALLBACK_BETA)
+    if speed == "fast" and model in FAST_PREVIEW_MODELS and _accepts(beta_messages, "speed"):
         request_kwargs["speed"] = "fast"
-        request_kwargs["betas"] = [FAST_MODE_BETA]
-        messages_api = sdk_client.beta.messages
+        betas.append(FAST_MODE_BETA)
+    if speed == "fast" and model in FAST_GA_MODELS and _accepts(beta_messages if betas else sdk_client.messages, "speed"):
+        request_kwargs["speed"] = "fast"
+    messages_api = sdk_client.messages
+    if betas:
+        request_kwargs["betas"] = betas
+        messages_api = beta_messages
 
     try:
         with messages_api.stream(**request_kwargs) as stream:
@@ -188,14 +250,18 @@ def _run_via_sdk(
     except Exception as exc:  # pragma: no cover - surface SDK errors verbatim
         raise LlmReviewError(f"Claude API call failed: {exc}") from exc
 
+    stop_reason = getattr(final_message, "stop_reason", None)
+    if stop_reason == "refusal":
+        raise LlmReviewError(_refusal_message(model, getattr(final_message, "stop_details", None)))
+
     markdown = _extract_text(getattr(final_message, "content", []) or [])
     if not markdown:
         raise LlmReviewError("Claude returned no text content for the review.")
 
-    stop_reason = getattr(final_message, "stop_reason", None)
+    served = getattr(final_message, "model", None)
     return LlmReviewResult(
         markdown=markdown,
-        model=model,
+        model=served if isinstance(served, str) and served else model,
         stop_reason=stop_reason if isinstance(stop_reason, str) else None,
         usage=_usage_dict(getattr(final_message, "usage", None)),
         backend="api",
@@ -631,7 +697,7 @@ def _run_via_codex_cli(
     rendered_system: str,
     rendered_user: str,
     *,
-    model: str,
+    model: str | None,
     effort: str,
     runner: Any | None = None,
 ) -> LlmReviewResult:
@@ -658,8 +724,7 @@ def _run_via_codex_cli(
         return [
             "codex",
             "exec",
-            "--model",
-            model,
+            *(["--model", model] if model else []),
             "-c",
             f'model_reasoning_effort="{reasoning_effort}"',
             "--sandbox",
@@ -714,7 +779,7 @@ def _run_via_codex_cli(
 
     return LlmReviewResult(
         markdown=stdout,
-        model=model,
+        model=model or "codex default",
         stop_reason=None,
         usage={},
         backend="cli",
@@ -821,6 +886,7 @@ def generate_llm_review(
     lens: str | None = None,
     avoid_titles: list[str] | None = None,
     critic_hint: str | None = None,
+    fallback: bool = True,
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling an LLM.
@@ -865,9 +931,9 @@ def generate_llm_review(
         return _run_via_local(rendered.system, rendered.user, model=model, max_tokens=max_tokens)
 
     if provider == "openai":
-        resolved_model = (
-            model or os.environ.get("ATTACKMAP_OPENAI_MODEL") or OPENAI_DEFAULT_MODEL
-        )
+        # Unset, the `codex` CLI uses its own default model (always current);
+        # the API backend needs an explicit one.
+        requested = model or os.environ.get("ATTACKMAP_OPENAI_MODEL") or None
         if backend == "cli" and codex_runner is not None:
             chosen: Literal["api", "cli"] = "cli"
         else:
@@ -878,7 +944,7 @@ def generate_llm_review(
             return _run_via_openai_sdk(
                 rendered.system,
                 rendered.user,
-                model=resolved_model,
+                model=requested or OPENAI_DEFAULT_MODEL,
                 effort=resolved_effort,
                 max_tokens=max_tokens,
                 api_key=api_key,
@@ -887,7 +953,7 @@ def generate_llm_review(
         return _run_via_codex_cli(
             rendered.system,
             rendered.user,
-            model=resolved_model,
+            model=requested,
             effort=resolved_effort,
             runner=codex_runner,
         )
@@ -908,6 +974,7 @@ def generate_llm_review(
             api_key=api_key,
             client=client,
             speed=speed,
+            fallback=fallback,
         )
     return _run_via_claude_cli(
         rendered.system,

@@ -157,34 +157,69 @@ def test_generate_llm_review_honors_model_and_effort_overrides() -> None:
         _surfaces(),
         _findings(),
         [],
-        model="claude-sonnet-4-6",
+        model="claude-opus-4-7",
         effort="xhigh",
         max_tokens=1024,
         client=client,
     )
 
     captured = client.captured
-    assert captured["model"] == "claude-sonnet-4-6"
+    assert captured["model"] == "claude-opus-4-7"
     assert captured["output_config"] == {"effort": "xhigh"}
     assert captured["max_tokens"] == 1024
 
 
-def test_default_model_is_opus_4_8() -> None:
-    assert DEFAULT_MODEL == "claude-opus-4-8"
+def test_default_model_is_opus_5_5() -> None:
+    assert DEFAULT_MODEL == "claude-opus-5-5"
 
 
 def test_fast_mode_uses_beta_endpoint_on_supported_model() -> None:
+    # Opus 5: research preview (beta flag); Opus 5.5: GA, a plain parameter. Both also get the
+    # refusal fallback, which is what sends Opus 5.5 to the beta endpoint by default.
     client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
-
     generate_llm_review(
-        _trivial_scan(), _surfaces(), _findings(), [],
-        model="claude-opus-4-8", client=client, speed="fast",
+        _trivial_scan(), _surfaces(), _findings(), [], model="claude-opus-5", client=client, speed="fast",
     )
+    assert client.captured["endpoint"] == "beta" and client.captured["speed"] == "fast"
+    assert client.captured["betas"] == ["server-side-fallback-2026-07-01", "fast-mode-2026-02-01"]
 
-    captured = client.captured
-    assert captured["endpoint"] == "beta"
-    assert captured["speed"] == "fast"
-    assert captured["betas"] == ["fast-mode-2026-02-01"]
+    client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
+    generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [], model="claude-opus-5-5", client=client, speed="fast",
+        fallback=False,
+    )
+    assert client.captured["endpoint"] == "standard" and client.captured["speed"] == "fast"
+    assert "betas" not in client.captured
+
+    client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
+    generate_llm_review(
+        _trivial_scan(), _surfaces(), _findings(), [], model="claude-opus-4-8", client=client, speed="fast",
+    )
+    assert "speed" not in client.captured  # Opus 4.8's fast mode ends 2026-11-30
+
+
+def test_refusal_is_reported_and_the_serving_model_recorded() -> None:
+    message = _FakeMessage(content=[_FakeBlock(type="text", text="review")])
+    message.model = "claude-opus-4-8"  # the fallback model answered
+    client = _FakeClient(message)
+    result = generate_llm_review(_trivial_scan(), _surfaces(), _findings(), [], model="claude-fable-5-2", client=client)
+    assert client.captured["fallbacks"] == "default" and result.model == "claude-opus-4-8"
+
+    refused = _FakeMessage(content=[], stop_reason="refusal")
+    refused.stop_details = type("D", (), {"category": "cyber", "explanation": "declined"})()
+    with pytest.raises(LlmReviewError, match=r"declined the request \(stop_reason=refusal, category=cyber\): declined"):
+        generate_llm_review(
+            _trivial_scan(), _surfaces(), _findings(), [], model="claude-opus-5-5", client=_FakeClient(refused)
+        )
+
+
+def test_effort_and_thinking_follow_the_model() -> None:
+    client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
+    generate_llm_review(_trivial_scan(), _surfaces(), _findings(), [], model="claude-sonnet-4-6", effort="xhigh", client=client)
+    assert client.captured["output_config"] == {"effort": "high"}  # 4.6 has no xhigh
+    client = _FakeClient(_FakeMessage(content=[_FakeBlock(type="text", text="hi")]))
+    generate_llm_review(_trivial_scan(), _surfaces(), _findings(), [], model="claude-haiku-4-5", client=client)
+    assert "thinking" not in client.captured and "output_config" not in client.captured
 
 
 def test_fast_mode_falls_back_to_standard_on_unsupported_model() -> None:
@@ -502,7 +537,7 @@ class _FakeOpenAIClient:
 
 
 def test_openai_default_model_constant() -> None:
-    assert OPENAI_DEFAULT_MODEL == "gpt-5-codex"
+    assert OPENAI_DEFAULT_MODEL == "gpt-6.2-sol"
 
 
 def test_openai_api_returns_markdown_and_passes_expected_kwargs() -> None:
@@ -631,12 +666,12 @@ def test_codex_cli_backend_reads_stdout_and_passes_correct_flags() -> None:
 
     assert result.backend == "cli"
     assert result.markdown == "# Review\n\nCodex narrative body."
-    assert result.model == OPENAI_DEFAULT_MODEL
+    # No model given: `codex` keeps its own current default rather than a pinned ID.
+    assert result.model == "codex default"
 
     cmd = captured["cmd"]
     assert cmd[0:2] == ["codex", "exec"]
-    assert "--model" in cmd
-    assert cmd[cmd.index("--model") + 1] == OPENAI_DEFAULT_MODEL
+    assert "--model" not in cmd
     assert "-c" in cmd
     assert cmd[cmd.index("-c") + 1] == 'model_reasoning_effort="high"'
     assert cmd[cmd.index("--sandbox") + 1] == "read-only"
