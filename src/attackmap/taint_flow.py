@@ -71,6 +71,7 @@ from .srcpaths import line_number
 from .taint_sources import (
     ALL_SANITIZER_KINDS,
     CAST_SANITIZERS,
+    CONTENT_SINKS,
     CSHARP,
     EARLY_EXIT,
     GO,
@@ -732,6 +733,21 @@ _ASSIGN_OP[CSHARP] = _ASSIGN_OP[JAVA]
 _IDENT_RE[CSHARP] = _IDENT_RE[JAVA]
 _GO_OUTPARAM_RE = re.compile(r"&\s*([A-Za-z_]\w*)")
 _IF_RE = re.compile(r"\bif\b")
+# `if (!x) return` / `if (x == null) return` / `if (x.items.length === 0) return` on a lookup result (#444).
+_NOT_FOUND_RE = re.compile(
+    r"(?:!\s{0,8}(?P<a>[A-Za-z_$][\w$]{0,63})(?:\s{0,8}\??\.\s{0,8}[\w$]{1,64}){0,8}"
+    r"|(?P<b>[A-Za-z_$][\w$]{0,63})(?:\s{0,8}\??\.\s{0,8}[\w$]{1,64}){0,8}\s{0,8}={2,3}\s{0,8}(?:null|undefined|nil|0))"
+)
+# `x = [await] [recv.]name(` where name looks up a stored record by key: `map.get(k)`, `set.has(k)`,
+# `Model.findByPk(id)`, `retrieveSnippet(key)`, `readFixes(key)`.
+_LOOKUP_CALL_RE = re.compile(
+    r"(?<![\w$.])(?:await\s{1,8})?((?:[A-Za-z_$][\w$]{0,63}\s{0,8}\??\.\s{0,8}){0,8})([A-Za-z_$][\w$]{0,63})\s{0,8}\("
+)
+_LOOKUP_NAME_RE = re.compile(r"(?:find|retrieve|lookup|read(?!File))\w*")
+_LOOKUP_LIBS = frozenset({"_", "lodash", "R"})
+_ELSE_RE = re.compile(r"else\b\s*")
+_TRY_TAIL_RE = re.compile(r"\btry\s*$")
+_CATCH_RE = re.compile(r"catch\b\s*(?:\([^)]*\)\s*)?")
 _FN_KEYWORD_RE = re.compile(r"\b(?:function|func)\b")
 _NEW_CLASS_RE = re.compile(r"\bnew\s+[\w.<>]+\s*$")
 _TRAILING_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*$")
@@ -1256,7 +1272,9 @@ class _TextFlow:
                 stop = min(stop, idx)
         return body[:stop]
 
-    def _guards(self, kind: str, k: int, hdr: tuple[int, int, int], sink: int, env: dict, atoms: list[Atom]) -> list[Atom]:
+    def _guards(
+        self, kind: str, k: int, hdr: tuple[int, int, int], sink: int, env: dict, atoms: list[Atom], regions: list = ()
+    ) -> list[Atom]:
         live = {a.ident for a in atoms if a.sanitizer_for(kind) is None}
         if not live:
             return atoms
@@ -1292,23 +1310,105 @@ class _TextFlow:
                 blk = (self.opens[bk], self.closes[bk])
             else:
                 blk = (after, self._stmt_end(after, len(self.m)))
+            via_else = False
             if blk[1] < sink:
-                if not EARLY_EXIT.search(self.m, blk[0], blk[1] + 1):
-                    continue
-                encl = self._innermost(mt.start())
-                if encl >= 0 and not (self.opens[encl] < sink < self.closes[encl]):
+                if EARLY_EXIT.search(self.m, blk[0], blk[1] + 1):
+                    encl = self._innermost(mt.start())
+                    if encl >= 0 and not (self.opens[encl] < sink < self.closes[encl]) and not self._exits_try(encl, sink):
+                        continue
+                elif self._else_holds(blk[1], sink):
+                    via_else = True  # polarity matters: only the negative not-found form below
+                else:
                     continue
             elif not (blk[0] < sink < blk[1]):
                 continue
             text = self.raw[cond[0] : cond[1]]
-            label = next((lbl for lbl, pat in guard_patterns(kind) if pat.search(text)), None)
-            if label is None:
+            label = None if via_else else next((lbl for lbl, pat in guard_patterns(kind) if pat.search(text)), None)
+            if label is not None:
+                bound = {a.ident for a in self._eval(cond[0], cond[1], env)} & live
+            elif regions and kind not in CONTENT_SINKS:
+                label = "lookup validation"
+                keys = self._lookup_guard(cond, body_lo, mt.start(), env, regions)
+                bound = {i for i in live if i[:2] in keys}
+            else:
                 continue
-            bound = {a.ident for a in self._eval(cond[0], cond[1], env)} & live
             if bound:
                 gl = line_number(self.raw, mt.start())
                 atoms = [a.with_sanitizer((kind,), label, gl, "guard") if a.ident in bound else a for a in atoms]
         return atoms
+
+    def _skip_ws(self, p: int) -> int:
+        while p < len(self.m) and self.m[p].isspace():
+            p += 1
+        return p
+
+    def _else_holds(self, end: int, sink: int) -> bool:
+        """``sink`` sits in the ``else { }`` right after the block ending at ``end``."""
+        mt = _ELSE_RE.match(self.m, self._skip_ws(end + 1))
+        if mt is None or mt.end() not in self.open_index:
+            return False
+        bk = self.open_index[mt.end()]
+        return self.opens[bk] < sink < self.closes[bk]
+
+    def _exits_try(self, encl: int, sink: int) -> bool:
+        """Block ``encl`` is a ``try`` body whose ``catch`` also exits, so a check that returns inside it
+        still dominates ``sink`` after the try."""
+        o = self.opens[encl]
+        if not _TRY_TAIL_RE.search(self.m, max(0, o - 16), o):
+            return False
+        mt = _CATCH_RE.match(self.m, self._skip_ws(self.closes[encl] + 1))
+        if mt is None or mt.end() not in self.open_index:
+            return False
+        ck = self.open_index[mt.end()]
+        if self.closes[ck] > sink or not EARLY_EXIT.search(self.m, self.opens[ck], self.closes[ck] + 1):
+            return False
+        outer = self._innermost(o - 1)
+        return outer < 0 or self.opens[outer] < sink < self.closes[outer]
+
+    def _lookup_guard(self, cond: tuple[int, int], lo: int, at: int, env: dict, regions) -> set:
+        """Atoms validated by a not-found exit: ``rec = find(key); if (!rec) return`` means ``key`` names
+        a stored record (a known challenge, a session, a row), so a sink built from ``key`` itself carries no
+        attacker-chosen value. What ``rec`` holds may still be attacker-written (a stored username), so a
+        sink that reads ``rec`` stays tainted. Only single-argument lookups on a plain variable whose
+        receiver isn't itself tainted count. Returns the validated atoms' (kind, line)."""
+        a, b = cond
+        while a < b and self.m[a].isspace():
+            a += 1
+        while b > a and self.m[b - 1].isspace():
+            b -= 1
+        mt = _NOT_FOUND_RE.fullmatch(self.m, a, b)
+        if mt is None:
+            return set()
+        var = mt.group("a") or mt.group("b")
+        assign = None
+        for am in re.finditer(r"(?<![\w$.])" + re.escape(var) + r"\s*=(?![=>])", self.m[lo:at]):
+            assign = am
+        if assign is None:
+            return set()
+        cm = _LOOKUP_CALL_RE.match(self.m, self._skip_ws(lo + assign.end()), at)
+        if cm is None:
+            return set()
+        recv, name = cm.group(1), cm.group(2)
+        if recv:
+            if recv.split(".", 1)[0].strip() in _LOOKUP_LIBS:
+                return set()
+            if name not in ("get", "has") and not _LOOKUP_NAME_RE.fullmatch(name):
+                return set()
+        elif not _LOOKUP_NAME_RE.fullmatch(name):
+            return set()
+        open_ = cm.end() - 1
+        close = self._match_paren(open_, _MAX_RHS)
+        key = self.m[open_ + 1 : close].strip()
+        if close >= at or not _TRAILING_IDENT_RE.fullmatch(key) or key == var:
+            return set()
+        sink_text = " ".join(self.m[a:b] for a, b in regions)
+        if not re.search(r"(?<![\w$.])" + re.escape(key) + r"(?![\w$])", sink_text) or re.search(
+            r"(?<![\w$.])" + re.escape(var) + r"(?![\w$])", sink_text
+        ):
+            return set()
+        # (kind, line): an atom's label depends on the region it was read from.
+        arg = {a.ident[:2] for a in self._eval(open_ + 1, close, env)}
+        return arg - {a.ident[:2] for a in self._eval(cm.start(1), cm.start(2), env)}
 
     def _receiver(self, end: int) -> tuple[int, int]:
         """Region of the receiver expression ending just before ``end``
@@ -1434,7 +1534,7 @@ class _TextFlow:
             if _fixed_prefix(kind, self._leading_literal(s, e)):
                 continue
             atoms += self._eval(s, e, env)
-        atoms = self._guards(kind, k, hdr, paren, env, _dedupe(atoms))
+        atoms = self._guards(kind, k, hdr, paren, env, _dedupe(atoms), regions)
         if not any(a.weight == "high" and a.sanitizer_for(kind) is None for a in atoms):
             atoms = _dedupe(atoms + self._caller_atoms(kind, k, hdr, atoms))
         line = line_number(self.raw, paren)
