@@ -198,14 +198,26 @@ working plugin (pyproject, entry point, analyzer, conformance test) to copy.
 
 ### CI
 
-`attackmap` is on PyPI: `pip install -e ".[dev]"` resolves it from your
-`dependencies`. Test against the oldest core you declare and the latest
-release, and optionally against `main` (allowed to fail):
+Test against the oldest core you declare, the latest release and `main`. The
+official analyzers use AttackMap's reusable workflow, which does exactly that
+(`main` is allowed to fail) and then builds the sdist and wheel:
 
 ```yaml
-- run: pip install "attackmap==0.8.0" -e ".[dev]"   # your lower bound
-- run: pytest
+# .github/workflows/ci.yml
+name: CI
+on:
+  push: {branches: [main]}
+  pull_request: {branches: [main]}
+jobs:
+  ci:
+    uses: mlaify/AttackMap/.github/workflows/plugin-ci.yml@main
+    with:
+      min-core: "0.8.0"   # the lower bound in your pyproject dependencies
 ```
+
+AttackMap's own CI runs every official analyzer's tests against each core
+change (the `plugin-matrix` job), so a core change that breaks a plugin fails
+before a release.
 
 ## Merge semantics — what to expect when other analyzers also run
 
