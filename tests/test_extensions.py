@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from attackmap import extensions
 from attackmap.llm_review import LlmReviewError, generate_llm_review
-from tests.test_llm_review import _FakeClient, _FakeMessage, _findings, _make_cli_runner, _surfaces, _trivial_scan
+from test_llm_review import _FakeClient, _FakeMessage, _findings, _make_cli_runner, _surfaces, _trivial_scan
 
 
 class _EP:
