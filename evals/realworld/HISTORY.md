@@ -159,3 +159,11 @@ WebGoat injection 100% / 82% → 100% / 94%. `CommandExecutionService.java:34` (
 | `injection` | 97% → 97% | 85% → 88% | 30 / 1 / 60 |
 
 `CommentsCache.java:79` and Juice Shop `/file-upload:80` are matched: request input reaches an XML parse that resolves external entities. WebGoat's `XMLInputFactory` is hardened only under `if (securityEnabled)`, and its callers pass `false`; Juice Shop's libxml2 `XML_PARSE_NOENT` parse runs as `vm` code over the uploaded data, one cross-file hop from the route. WebGoat injection 100% / 94% → 100% / 100%. No new false positives; other cases unchanged.
+
+## Plaintext password storage (2026-11-25)
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `crypto` | 88% → 89% | 82% → 91% | 8 / 1 / 11 |
+
+NodeGoat `user-dao.js:25` (A2-1) is matched: the user record keeps the request's password and goes to `usersCol.insert`, with the bcrypt fix commented out. NodeGoat now scores 7 of 7. No other hit in the corpus's 3,307 JS/TS files; other cases unchanged.

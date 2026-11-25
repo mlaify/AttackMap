@@ -341,3 +341,23 @@ def test_weak_hash_helper_called_with_a_password_is_flagged_at_its_definition(tm
     (tmp_path / "cache.py").write_text("from util import digest\nkey = digest(url)\n")
     got = [(w.kind, w.file, w.line) for w in scan_repo(tmp_path).crypto_weaknesses]
     assert got == [("weak_password_hash", "lib/insecurity.ts", 2)]
+
+
+def test_plaintext_password_written_with_a_driver_insert() -> None:
+    # NodeGoat user-dao.js: the bcrypt fix is commented out; `compareSync` isn't hashing.
+    dao = (
+        "const bcrypt = require('bcrypt-nodejs');\n"
+        "this.addUser = (userName, password, callback) => {\n"
+        "    const user = {\n        userName,\n        password // from the request\n"
+        "        // password: bcrypt.hashSync(password, bcrypt.genSaltSync())\n    };\n"
+        "    usersCol.insert(user, callback);\n};\n"
+        "this.login = (password, user) => bcrypt.compareSync(password, user.password);\n"
+        "this.find = (userName, password) => usersCol.findOne({ userName, password });\n"
+        "this.add2 = (pwd) => db.users.insertOne({ name: 'x', password: pwd });\n"
+        "this.add3 = (hashedPassword) => db.users.insertOne({ password: hashedPassword });\n"
+    )
+    hits = [(w.kind, w.line) for w in find_crypto_weaknesses(dao, "app/data/user-dao.js")]
+    assert hits == [("plaintext_password", 5), ("plaintext_password", 12)]
+    hashed = dao.replace("        password // from", "        password: bcrypt.hashSync(password), // from")
+    assert find_crypto_weaknesses(hashed, "app/data/user-dao.js") == []
+    assert find_crypto_weaknesses(dao, "app/user_dao.py") == []

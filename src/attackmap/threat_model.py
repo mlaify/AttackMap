@@ -973,6 +973,14 @@ _CRYPTO_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Adversary-in-the-Middle",
         "tactic": "Credential Access",
     },
+    "plaintext_password": {
+        "severity": "high",
+        "title": "Password stored in plaintext",
+        "mitigation": "Hash passwords before storing them with a memory-hard KDF (argon2id, scrypt or bcrypt) and compare with the library's verify call. A database leak then exposes no reusable credentials.",
+        "technique_id": "T1552",
+        "technique_name": "Unsecured Credentials",
+        "tactic": "Credential Access",
+    },
 }
 
 
