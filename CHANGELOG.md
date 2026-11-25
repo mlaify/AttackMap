@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--llm-fallback/--no-llm-fallback` (Claude API backend, on by default): when a model's safeguards decline a request, the API reruns it on a fallback model chosen for the refusal category, on the models that offer it (Fable 5.2/5.1, Opus 5.5/5, Sonnet 5.5). The output records the model that answered.
+
+### Changed
+
+- The default Claude model is `claude-opus-5-5` (was `claude-opus-4-8`).
+- OpenAI: the `codex` CLI backend uses Codex's own default model unless `--llm-model` is given; the API backend defaults to `gpt-6.2-sol`. The previous default, `gpt-5-codex`, is no longer in current Codex catalogs.
+- Fast mode follows the current models: GA on Opus 5.5 and Fable 5.2, and a research preview on Opus 5. Opus 4.8's fast mode ends on 2026-11-30, so it is no longer requested.
+- `--llm-effort` falls to the nearest lower level a Claude model supports (the 4.6 models have no `xhigh`), and Claude Haiku 4.5 runs without adaptive thinking or effort, which it rejects.
+- `fallbacks` and `speed` are sent only when the installed `anthropic` SDK accepts them, so the `llm` extra's floor is unchanged.
+
+### Fixed
+
+- A Claude response with `stop_reason: "refusal"` is reported as a refusal, with its category and explanation, instead of "Claude returned no text content".
+
 ## [1.0.0] - 2026-11-25
 
 First stable release. The CLI, the report schemas, SARIF rule ids and the analyzer SDK 1.x are now covered by

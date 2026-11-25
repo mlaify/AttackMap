@@ -535,12 +535,12 @@ def analyze(
     llm_model: str | None = typer.Option(
         None,
         "--llm-model",
-        help="Model ID for --llm. Claude provider: e.g. claude-opus-4-8 (default), claude-fable-5, claude-sonnet-5, claude-opus-4-7. OpenAI provider: e.g. gpt-5-codex (default), gpt-5.5, gpt-5.4, gpt-5.4-mini — any model ID is passed through verbatim.",
+        help="Model ID for --llm, passed through verbatim. Claude provider: claude-opus-5-5 (default), e.g. claude-fable-5-2, claude-sonnet-5-5, claude-haiku-5-5. OpenAI provider: the `codex` CLI's own default model unless set; the API backend defaults to gpt-6.2-sol.",
     ),
     llm_effort: str | None = typer.Option(
         None,
         "--llm-effort",
-        help="Effort for --llm: low|medium|high|xhigh|max. Defaults to high. For OpenAI, xhigh/max clamp to high (Responses API reasoning effort tops out at high).",
+        help="Effort for --llm: low|medium|high|xhigh|max. Defaults to high. A Claude model without the level gets the nearest lower one it supports (the 4.6 models have no xhigh). For OpenAI, xhigh/max clamp to high.",
     ),
     llm_backend: str = typer.Option(
         "auto",
@@ -550,7 +550,12 @@ def analyze(
     llm_speed: str = typer.Option(
         "standard",
         "--llm-speed",
-        help="LLM output speed: 'standard' (default) or 'fast'. Fast mode (~2.5x output speed, premium price) applies only to Opus 4.8/4.7 via the API backend; other models/backends fall back to standard.",
+        help="LLM output speed: 'standard' (default) or 'fast'. Fast mode (up to 2.5x output speed, premium price) applies on the Claude API backend to Opus 5.5 and Fable 5.2, and to Opus 5 as a research preview; other models and backends run at standard speed.",
+    ),
+    llm_fallback: bool = typer.Option(
+        True,
+        "--llm-fallback/--no-llm-fallback",
+        help="Claude API backend: if the model's safeguards decline a request, let the API rerun it on a fallback model chosen for the refusal category (Fable 5.2/5.1, Opus 5.5/5, Sonnet 5.5). The output names the model that answered. On by default.",
     ),
     hunt: bool = typer.Option(
         False,
@@ -1027,6 +1032,7 @@ def analyze(
                     backend=llm_backend,  # type: ignore[arg-type]
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
+                    fallback=llm_fallback,
                 )
             finally:
                 scan_progress.done()
@@ -1077,6 +1083,7 @@ def analyze(
                 mode=mode,  # type: ignore[arg-type]
                 speed=llm_speed,  # type: ignore[arg-type]
                 provider=llm_provider,  # type: ignore[arg-type]
+                fallback=llm_fallback,
                 hypotheses=hypotheses,
                 lens=lens,
                 avoid_titles=avoid_titles,
@@ -1183,6 +1190,7 @@ def analyze(
                     mode="remediate",
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
+                    fallback=llm_fallback,
                 )
             finally:
                 scan_progress.done()
@@ -1238,6 +1246,7 @@ def analyze(
                     mode="triage",
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
+                    fallback=llm_fallback,
                 )
             finally:
                 scan_progress.done()
