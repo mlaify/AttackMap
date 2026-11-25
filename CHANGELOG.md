@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-25
+
 ### Added
 
 - Real-world benchmark controls: spring-petclinic and microblog (Flask Mega-Tutorial), clean apps that measure the false-positive rate. `scripts/realworld_corpus.py` fetches a pinned commit by SHA when a branch ref (`main`, `master`) has moved on.
@@ -1591,7 +1593,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/mlaify/AttackMap/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mlaify/AttackMap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mlaify/AttackMap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mlaify/AttackMap/compare/v0.6.5...v0.7.0
