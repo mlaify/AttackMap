@@ -1489,7 +1489,7 @@ def bench(
     Contributor/CI tool — run from the repo root (the manifest ships in `evals/`,
     not the installed wheel).
     """
-    from .bench import bench_json, load_benchmark, min_scored_metric, regressions, render_markdown, run_benchmark
+    from .bench import below_floor, bench_json, load_benchmark, min_scored_metric, regressions, render_markdown, run_benchmark
 
     manifest = Path(benchmark)
     if not manifest.exists():
@@ -1497,7 +1497,8 @@ def bench(
         typer.echo("Pass --benchmark <path>, or run from a checkout that has evals/benchmark/.")
         raise typer.Exit(code=2)
 
-    results = run_benchmark(load_benchmark(manifest), root)
+    benchmark = load_benchmark(manifest)
+    results = run_benchmark(benchmark, root)
     markdown = render_markdown(results)
     typer.echo(markdown)
 
@@ -1512,6 +1513,13 @@ def bench(
     if errored:
         typer.echo(f"Cases that failed to scan: {', '.join(errored)}")
         raise typer.Exit(code=1)
+
+    if benchmark.precision_floor:
+        low = below_floor(results, benchmark.precision_floor)
+        if low:
+            typer.echo("FAIL: below the precision floor: " + "; ".join(low))
+            raise typer.Exit(code=1)
+        typer.echo("OK: every class meets the benchmark's precision floor")
 
     if baseline is not None:
         dropped = regressions(results, json.loads(Path(baseline).read_text(encoding="utf-8")))

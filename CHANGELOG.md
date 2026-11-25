@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `precision_floor` in `evals/realworld/benchmark.json`: `attackmap bench` fails when a class's precision across the corpus drops under it. Set to the agreed v1.0 bar (#209): 85% for injection, crypto, token_auth, session_auth and bola. `unauth_state_change` stays advisory until it is scored per route.
+
+### Changed
+
+- No BOLA candidates in an app with no authentication at all, meaning no auth hint anywhere and no authenticated route (#209). Without users there's no object-level authorization to break, and the unauthenticated-state-change finding covers the open endpoints (spring-petclinic).
+
 ## [0.10.0] - 2026-11-25
 
 ### Added

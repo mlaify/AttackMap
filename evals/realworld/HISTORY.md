@@ -197,3 +197,11 @@ Corpus: + spring-petclinic (`500158f`) and microblog (`a975ef6`), maintained app
 Before the fixes in this PR the controls produced 5 scored findings: microblog's `os.system` calls in click CLI commands as request-reachable command execution, BOLA on `/reset_password/<token>`, and register / reset-password routes as unauthenticated state changes. Remaining false positives:
 - petclinic BOLA on `/owners/{ownerId}`: the app has no users, so object-level authorization doesn't apply; suppressing BOLA in apps with no authenticated route is an operator decision (it changes long-standing behavior for unauthenticated candidates);
 - microblog's API sign-up `POST /users`: indistinguishable from an unauthenticated admin user-creation endpoint, so it stays reported.
+
+## No BOLA without authentication; precision floor (2026-11-25)
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `bola` | 75% → 100% | 86% | 3 / 0 / 7 |
+
+spring-petclinic has no authentication at all, so its `/owners/{ownerId}` BOLA candidate is gone; its anonymous writes are still reported (`unauth_state_change`). The benchmark now carries the v1.0 bar agreed in #209, a precision floor of 85% for each precise class, which `attackmap bench` enforces. Today every precise class is at or above 89%.

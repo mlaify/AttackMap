@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import random
 import re
-import shutil
 import tomllib
 from pathlib import Path
 
@@ -24,6 +23,8 @@ from attackmap.detections.sigma import (
 )
 from attackmap.models import FindingLocation
 from attackmap.review_json import build_defensive_review_json
+from attackmap.authz import analyze_authz
+from attackmap.models import AuthHint
 from attackmap.scanner import scan_repo
 from attackmap.taxonomy import ATTACK_TECHNIQUES, RULE_TAXONOMY
 from attackmap.threat_model import generate_attack_paths, generate_findings
@@ -400,7 +401,13 @@ def test_markdown_has_rules_and_a_coverage_table() -> None:
 
 
 def test_coverage_rows_count_rules_per_finding_class() -> None:
-    _, _, findings, opps = _generate(TAINT_PY)
+    # The fixture authenticates nowhere; give it an auth signal so BOLA applies (#209).
+    scan = scan_repo(TAINT_PY)
+    scan.auth_hints.append(AuthHint(hint="login_required", file="auth.py"))
+    scan.authz_candidates = analyze_authz(scan, TAINT_PY)
+    surfaces = identify_attack_surfaces(scan)
+    findings = generate_findings(scan, surfaces)
+    opps = generate_detection_opportunities([], findings, scan, surfaces)
     rows = {r["rule_id"]: r for r in detection_coverage(findings, opps)}
     assert rows["ssrf"]["sigma_rules"] == 3
     assert rows["ssrf"]["logsources"] == ["webserver", "network_connection", "aws/cloudtrail"]

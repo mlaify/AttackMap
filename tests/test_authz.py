@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from attackmap.authz import analyze_authz, _resource_id_param, has_role_check, is_config_route_file
-from attackmap.models import BolaCandidate, DatabaseHint, Route, ScanResult, TaintChain
+from attackmap.models import AuthHint, BolaCandidate, DatabaseHint, Route, ScanResult, TaintChain
 from attackmap.scanner import scan_repo
 from attackmap.threat_model import generate_attack_paths, generate_findings
 
@@ -55,6 +55,9 @@ def test_non_id_paths_not_detected(path: str) -> None:
 # Candidate logic (controlled ScanResult + on-disk route file)
 # ---------------------------------------------------------------------------
 
+# The app authenticates somewhere: BOLA only applies to an app with users (#209).
+_APP_AUTH = [AuthHint(hint="login_required", file="auth.py")]
+
 
 def _scan_with_route(tmp_path: Path, path: str, method: str, file_body: str, *, db_same_file=True) -> ScanResult:
     (tmp_path / "handler.py").write_text(file_body, encoding="utf-8")
@@ -63,6 +66,7 @@ def _scan_with_route(tmp_path: Path, path: str, method: str, file_body: str, *, 
         root=str(tmp_path),
         routes=[Route(path=path, method=method, file="handler.py")],
         databases=databases,
+        auth_hints=_APP_AUTH,
     )
 
 
@@ -137,6 +141,7 @@ def test_taint_sql_chain_provides_db_reachability(tmp_path: Path) -> None:
     )
     scan = ScanResult(
         root=str(tmp_path),
+        auth_hints=_APP_AUTH,
         routes=[Route(path="/orders/{order_id}", method="GET", file="handler.py")],
         taint_chains=[
             TaintChain(
@@ -213,6 +218,7 @@ def test_scan_repo_flags_bola_route(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text(
         "from flask import Flask\n"
         "app = Flask(__name__)\n"
+        "@app.route('/account')\n@login_required\ndef account():\n    return 'ok'\n"
         "@app.route('/orders/<int:order_id>', methods=['GET'])\n"
         "def get_order(order_id):\n"
         "    cur = conn.cursor()\n"
@@ -254,6 +260,7 @@ def test_xrpc_id_bearing_method_flagged(tmp_path: Path) -> None:
     )
     scan = ScanResult(
         root=str(tmp_path),
+        auth_hints=_APP_AUTH,
         routes=[Route(path="/xrpc/com.atproto.repo.getRecord", method="ANY", file="handler.py")],
         databases=[DatabaseHint(kind="sqlite", file="handler.py")],
     )
@@ -283,6 +290,7 @@ def test_query_param_id_read_in_handler_flagged(tmp_path: Path) -> None:
     )
     scan = ScanResult(
         root=str(tmp_path),
+        auth_hints=_APP_AUTH,
         routes=[Route(path="/api/orders", method="GET", file="handler.py")],
         databases=[DatabaseHint(kind="sqlite", file="handler.py")],
     )
@@ -299,6 +307,7 @@ def test_query_param_fastapi_signature_flagged(tmp_path: Path) -> None:
     )
     scan = ScanResult(
         root=str(tmp_path),
+        auth_hints=_APP_AUTH,
         routes=[Route(path="/api/docs", method="GET", file="handler.py")],
         databases=[DatabaseHint(kind="sqlite", file="handler.py")],
     )
@@ -518,7 +527,7 @@ def _plugin_shaped_scan(root: Path, route: Route) -> ScanResult:
     # Django / Spring routes come from the plugins; reproduce the shape they
     # emit (file + declaration line) with a datastore hint in that file.
     return ScanResult(
-        root=str(root), routes=[route], databases=[DatabaseHint(kind="sql", file=route.file)]
+        root=str(root), routes=[route], databases=[DatabaseHint(kind="sql", file=route.file)], auth_hints=_APP_AUTH
     )
 
 
@@ -567,6 +576,9 @@ def test_spring_without_preauthorize_flagged(tmp_path: Path) -> None:
 def test_sibling_handler_markers_do_not_suppress(tmp_path: Path) -> None:
     # The flask-admin-demo shape: a `user_id: str` annotation in a *different*
     # handler used to suppress the whole file.
+    (tmp_path / "account.py").write_text(  # the app authenticates elsewhere (#209)
+        "from flask_login import login_required\n@app.route('/account')\n@login_required\ndef account():\n    return 'ok'\n"
+    )
     (tmp_path / "app.py").write_text(
         "import sqlite3\n"
         "from flask import Flask\n"
@@ -997,6 +1009,9 @@ def test_bfla_respects_hummingbird_role_and_permission_policies(tmp_path: Path) 
 
 
 def test_unauthenticated_write_reported_once_not_as_bola(tmp_path: Path) -> None:
+    (tmp_path / "account.py").write_text(  # the app authenticates elsewhere (#209)
+        "from flask_login import login_required\n@app.route('/account')\n@login_required\ndef account():\n    return 'ok'\n"
+    )
     (tmp_path / "app.py").write_text(
         "import sqlite3\n"
         "from flask import Flask\n"
@@ -1795,3 +1810,22 @@ def test_routes_in_static_asset_dirs_do_not_feed_bola(tmp_path: Path) -> None:
     )
     scan = ScanResult(root=str(tmp_path), authz_candidates=[cand])
     assert [f for f in generate_findings(scan) if f.rule_id.startswith("bola")] == []
+
+
+def test_an_app_with_no_authentication_has_no_bola_candidates(tmp_path: Path) -> None:
+    # spring-petclinic: no users at all, so object-level authorization doesn't apply (#209). Its open writes
+    # are still reported as unauthenticated state changes.
+    (tmp_path / "app.py").write_text(
+        "import sqlite3\n"
+        "from flask import Flask\n"
+        "app = Flask(__name__)\n"
+        "@app.route('/owners/<owner_id>')\n"
+        "def owner(owner_id):\n"
+        "    return sqlite3.connect('o.db').execute('select * from owners where id = ?', (owner_id,)).fetchone()\n"
+        "@app.route('/owners/<owner_id>/edit', methods=['POST'])\n"
+        "def edit(owner_id):\n"
+        "    sqlite3.connect('o.db').execute('update owners set n = 1 where id = ?', (owner_id,))\n"
+    )
+    scan = scan_repo(tmp_path)
+    assert scan.auth_hints == [] and scan.authz_candidates == []
+    assert any(f.rule_id == "unauth-state-change" for f in generate_findings(scan))
