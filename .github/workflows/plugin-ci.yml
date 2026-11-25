@@ -1,0 +1,87 @@
+name: Plugin CI (reusable)
+
+# Shared CI for the attackmap-analyzer-* repos (#254). Each plugin's ci.yml:
+#
+#   jobs:
+#     ci:
+#       uses: mlaify/AttackMap/.github/workflows/plugin-ci.yml@main
+#       with:
+#         min-core: "0.8.0"     # the lower bound in its pyproject dependencies
+#
+# Tests the plugin against the oldest core it declares, the latest release and
+# main (main is allowed to fail: it warns about core changes before a release),
+# then builds the sdist and wheel.
+on:
+  workflow_call:
+    inputs:
+      min-core:
+        description: "Oldest attackmap release the plugin supports (its dependency lower bound)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (core ${{ matrix.core }}, py${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.core == 'main' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        core: [minimum, latest, main]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+            core: latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install attackmap core (${{ matrix.core }})
+        env:
+          MIN_CORE: ${{ inputs.min-core }}
+          CORE: ${{ matrix.core }}
+        run: |
+          python -m pip install --upgrade pip
+          case "$CORE" in
+            minimum) pip install "attackmap==$MIN_CORE" ;;
+            latest)  pip install --upgrade attackmap ;;
+            main)    pip install "attackmap @ git+https://github.com/mlaify/AttackMap@main" ;;
+          esac
+          attackmap --version
+
+      - name: Install the plugin
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -q
+
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
