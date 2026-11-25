@@ -75,8 +75,9 @@ for repo in "${repos[@]}"; do
   fi
   tag="v$ver"
 
-  run=$(gh api "repos/$r/actions/workflows/release.yml/runs?event=push&status=waiting" \
-    --jq "[.workflow_runs[] | select(.head_branch == \"$tag\")] | .[0].id // empty")
+  # Filter on status here: the API's `status=waiting` query can omit a waiting run.
+  run=$(gh api "repos/$r/actions/workflows/release.yml/runs?event=push&per_page=50" \
+    --jq "[.workflow_runs[] | select(.head_branch == \"$tag\" and .status == \"waiting\")] | .[0].id // empty")
   [ -n "$run" ] || die "$r: no release.yml run for $tag is waiting (push the tag first)"
   sha=$(gh api "repos/$r/actions/runs/$run" --jq .head_sha)
 
