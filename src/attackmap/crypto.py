@@ -11,6 +11,7 @@ Detected families (each → a ``CryptoWeakness``):
     static_iv_salt      hard-coded IV or salt literal
     insecure_random     non-CSPRNG used for a security value
     insecure_tls        certificate / hostname verification disabled
+    plaintext_password  a raw password field written with a MongoDB driver insert
 
 Precision note (SSRF lesson from #68): the two families that would
 otherwise be noisy — ``weak_password_hash`` and ``insecure_random`` —
@@ -238,6 +239,77 @@ def find_crypto_weaknesses(content: str, rel_file: str) -> list[CryptoWeakness]:
                     source_analyzer="crypto",
                 )
             )
+    if rel_file.endswith(_JS_SUFFIXES):
+        for off in plaintext_password_writes(code):
+            out.append(
+                CryptoWeakness(
+                    kind="plaintext_password",
+                    file=rel_file,
+                    line=line_number(content, off),
+                    evidence_text=_snippet(content, off),
+                    severity="high",
+                    source_analyzer="crypto",
+                )
+            )
+    return out
+
+
+_JS_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts")
+# `password` in an object literal holding the raw value: shorthand
+# (`{ userName, password }`) or a password-named variable (`password: pwd`,
+# `password: req.body.password`), never a call or a literal.
+_PW_FIELD_RE = re.compile(
+    r"(?<![\w$.'\"])password(?=[ \t]{0,200}[,}\n]|\s{0,10}:\s{0,10}[\w$.]{0,80}?(?i:pass|pwd)[\w$.]{0,40}[ \t]{0,200}[,}\n])"
+)
+# A password hash computed anywhere in the file (bcrypt / argon2 / scrypt /
+# pbkdf2 / a hash helper). `compare` calls don't count.
+_PW_HASH_CALL_RE = re.compile(
+    r"\b(?:hash|hashSync|hashPassword|pbkdf2|pbkdf2Sync|scrypt|scryptSync|createHash|genSalt|genSaltSync)\s{0,10}\("
+)
+_HASHED_NAME_RE = re.compile(r"\s{0,10}:\s{0,10}[\w$.]{0,80}?(?i:hash|crypt|digest|enc)")
+_RECORD_VAR_RE = re.compile(r"(?:^|[^\w$.])([A-Za-z_$][\w$]{0,60})\s{0,10}=\s{0,10}$")
+_DRIVER_INSERT = r"\.\s{0,10}(?:insert|insertOne|insertMany)\s{0,10}\(\s{0,10}\[?\s{0,10}"
+_DIRECT_INSERT_RE = re.compile(_DRIVER_INSERT + r"$")
+
+
+def _enclosing_open(code: str, pos: int, limit: int = 3000) -> int:
+    """Index of the innermost unclosed `(`, `[` or `{` before ``pos``; -1 if none nearby."""
+    depth = 0
+    for i in range(pos - 1, max(-1, pos - 1 - limit), -1):
+        ch = code[i]
+        if ch in ")]}":
+            depth += 1
+        elif ch in "([{":
+            if depth == 0:
+                return i
+            depth -= 1
+    return -1
+
+
+def plaintext_password_writes(code: str) -> list[int]:
+    """Offsets of `password` fields stored as-is (NodeGoat A2-1, #446).
+
+    The object literal has to reach a MongoDB driver `insert` / `insertOne` /
+    `insertMany` (directly or through the variable it's assigned to), which
+    runs no model hooks, and the file must compute no password hash. ``code``
+    has comments masked, so a commented-out `bcrypt.hashSync` fix doesn't count.
+    """
+    if _PW_HASH_CALL_RE.search(code):
+        return []
+    out = []
+    for m in _PW_FIELD_RE.finditer(code):
+        if _HASHED_NAME_RE.match(code, m.end()):
+            continue  # `password: hashedPassword`, hashed elsewhere
+        brace = _enclosing_open(code, m.start())
+        if brace < 0 or code[brace] != "{":
+            continue  # a parameter list or an array, not a record
+        before = code[max(0, brace - 120) : brace]
+        if _DIRECT_INSERT_RE.search(before):
+            out.append(m.start())
+            continue
+        var = _RECORD_VAR_RE.search(before)
+        if var and re.search(_DRIVER_INSERT + re.escape(var.group(1)) + r"\b", code[brace:]):
+            out.append(m.start())
     return out
 
 
@@ -293,4 +365,4 @@ def _snippet(content: str, offset: int, radius: int = 120) -> str:
     return line[:radius] + ("…" if len(line) > radius else "")
 
 
-__all__ = ["find_crypto_weaknesses"]
+__all__ = ["find_crypto_weaknesses", "plaintext_password_writes"]

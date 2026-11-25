@@ -80,6 +80,7 @@ CWE_NAMES: dict[int, str] = {
     215: "Insertion of Sensitive Information Into Debugging Code",
     242: "Use of Inherently Dangerous Function",
     250: "Execution with Unnecessary Privileges",
+    256: "Plaintext Storage of a Password",
     269: "Improper Privilege Management",
     284: "Improper Access Control",
     285: "Improper Authorization",
@@ -293,6 +294,7 @@ RULE_TAXONOMY: dict[str, RuleTaxonomy] = {
     "open-redirect": RuleTaxonomy(cwe=(601,), owasp=("A01:2021",), asvs=("V5.1.5",), attack=("T1204.001", "T1566.002")),
     # Crypto (#70)
     "weak-password-hash": RuleTaxonomy(cwe=(916, 328), owasp=("A02:2021",), asvs=("V2.4.1",), attack=("T1110.002",)),
+    "plaintext-password": RuleTaxonomy(cwe=(256,), owasp=("A02:2021", "A04:2021"), asvs=("V2.4.1",), attack=("T1552",)),
     "weak-cipher": RuleTaxonomy(cwe=(327,), owasp=("A02:2021",), asvs=("V6.2.2", "V6.2.5"), attack=("T1600",)),
     "ecb-mode": RuleTaxonomy(cwe=(327,), owasp=("A02:2021",), asvs=("V6.2.5",), attack=("T1600",)),
     "static-iv-salt": RuleTaxonomy(cwe=(1204, 760), owasp=("A02:2021",), attack=("T1600",)),

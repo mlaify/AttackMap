@@ -625,6 +625,7 @@ class CryptoWeakness(_RedactedEvidence):
         "static_iv_salt",
         "insecure_random",
         "insecure_tls",
+        "plaintext_password",
     ]
     file: str
     line: int | None = None
