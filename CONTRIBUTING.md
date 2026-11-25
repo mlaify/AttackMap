@@ -110,6 +110,27 @@ releasing — is in [`docs/external-analyzers.md`](docs/external-analyzers.md).
 Use one of the existing plugin repos (Python or Go are the most thorough) as
 a working template.
 
+## Releasing core
+
+Maintainers cut a core release in this order:
+
+1. **Analyzers first**, if any changed. Release each plugin from its own repo (a version-bump PR, then a signed
+   `v*` tag). Then run `python scripts/update_plugin_lock.py`, which pins the released versions in the `[all]`
+   extra and their commits in `src/attackmap/plugins_lock.py`. Merge that only once every pinned version is on PyPI.
+2. **Green gates on `main`**:
+   - the `pytest` matrix and `ruff`;
+   - the **`plugin-matrix`** job: all 15 official analyzers' tests against this core;
+   - the real-world benchmark against its baseline (`attackmap bench --benchmark evals/realworld/benchmark.json
+     --baseline evals/realworld/baseline.json`, or `gh workflow run realworld-bench.yml`);
+   - the scan-time budget (`scripts/perf_budget.py`).
+3. **Version-bump PR**: date the `[Unreleased]` section of `CHANGELOG.md` and add its compare link; bump
+   `__version__` in `src/attackmap/__init__.py` and the README status line. If the report schema changed, freeze
+   the new version (`python scripts/schemas.py freeze`, see [`docs/schemas.md`](docs/schemas.md)).
+4. **Tag**: `git tag -s vX.Y.Z -m "AttackMap X.Y.Z"` on the merged commit, and push it.
+5. **Approve**: `release.yml` waits on the `release` and `pypi` environments. The required reviewer runs
+   `scripts/pypi/approve-releases.sh`; it checks the tag's signature, commit and version before approving.
+6. **After**: the Homebrew formula bumps itself once PyPI's one-day cooldown has passed.
+
 ## Reporting security issues
 
 Please do **not** open public issues for security vulnerabilities. Use this
