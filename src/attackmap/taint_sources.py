@@ -360,7 +360,8 @@ GENERIC_GUARDS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "regex validation",
-        re.compile(r"\bre\.fullmatch\s*\(|\bpreg_match\s*\(|\.MatchString\s*\(|\.matches\s*\(\s*\"\^"),
+        # Java's String.matches is always a full match: no anchor needed.
+        re.compile(r"\bre\.fullmatch\s*\(|\bpreg_match\s*\(|\.MatchString\s*\(|\.matches\s*\(\s*\""),
     ),
 )
 
@@ -376,8 +377,16 @@ def sanitizer_patterns(kind: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
     return SANITIZERS.get(kind, ()) + CAST_SANITIZERS
 
 
+# Sinks whose danger is the content itself: an allow-listed or validated
+# *name* (`allowed_file(f.filename)`) says nothing about the bytes that get
+# deserialized (PyGoat a9_uckv_lab).
+_CONTENT_SINKS = frozenset({"unsafe_deserialization"})
+
+
 def guard_patterns(kind: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
     """Dominating checks that neutralize ``kind`` (kind-specific + generic)."""
+    if kind in _CONTENT_SINKS:
+        return GUARDS.get(kind, ())
     return GUARDS.get(kind, ()) + GENERIC_GUARDS
 
 

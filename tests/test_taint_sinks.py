@@ -297,3 +297,57 @@ def test_csharp_action_parameters_and_sql_sinks(tmp_path: Path, signature: str, 
     scan = ScanResult(root=str(tmp_path), routes=[Route(path="/x", method="GET", file="C.cs", line=2)])
     flows = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "sql_execute" and c.source_kind]
     assert bool(flows) is traced
+
+
+@pytest.mark.parametrize(
+    ("call", "flagged"),
+    [
+        # PyGoat (real-world benchmark): object-constructing loaders are unsafe.
+        ("yaml.load(request.files['f'].stream, Loader=yaml.Loader)", True),
+        ("yaml.load(request.data, Loader=yaml.UnsafeLoader)", True),
+        ("yaml.load(request.data, Loader=yaml.SafeLoader)", False),
+        ("yaml.load(request.data, Loader=yaml.BaseLoader)", False),
+    ],
+)
+def test_yaml_loaders(tmp_path: Path, call: str, flagged: bool) -> None:
+    (tmp_path / "app.py").write_text(
+        "import yaml\nfrom flask import Flask, request\napp = Flask(__name__)\n"
+        f"@app.route('/up', methods=['POST'])\ndef up():\n    return str({call})\n"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/up", method="POST", file="app.py", line=4)])
+    hits = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "unsafe_deserialization" and not c.sanitized]
+    assert bool(hits) is flagged
+
+
+def test_cursor_named_c_and_filename_check_not_a_content_guard(tmp_path: Path) -> None:
+    # PyGoat: `c = conn.cursor(); c.execute(f"...{username}...")`, and an
+    # `allowed_file(f.filename)` extension check before yaml.load.
+    (tmp_path / "app.py").write_text(
+        "import sqlite3, yaml\nfrom flask import Flask, request\napp = Flask(__name__)\n"
+        "@app.route('/login', methods=['POST'])\ndef login():\n"
+        "    username = request.form.get('username', '')\n"
+        "    c = sqlite3.connect('d').cursor()\n"
+        "    return str(c.execute(f\"SELECT * FROM users WHERE username='{username}'\").fetchone())\n"
+        "@app.route('/up', methods=['POST'])\ndef up():\n"
+        "    file = request.files['file']\n"
+        "    if file and allowed_file(file.filename):\n"
+        "        return str(yaml.load(file.stream, Loader=yaml.Loader))\n"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[
+        Route(path="/login", method="POST", file="app.py", line=4), Route(path="/up", method="POST", file="app.py", line=9)])
+    live = {(c.route_path, c.sink_kind) for c in analyze_taint(scan, tmp_path) if not c.sanitized and c.source_kind}
+    assert live == {("/login", "sql_execute"), ("/up", "unsafe_deserialization")}
+
+
+@pytest.mark.parametrize(
+    ("target", "flagged"),
+    [("request.referrer or url_for('index')", False), ("request.headers.get('Referer')", False), ("request.args['next']", True)],
+)
+def test_redirect_back_to_the_referrer_is_not_an_open_redirect(tmp_path: Path, target: str, flagged: bool) -> None:
+    # PyGoat xss_lab / security_headers_lab: `redirect(request.referrer or "/")`.
+    (tmp_path / "app.py").write_text(
+        "from flask import Flask, request, redirect, url_for\napp = Flask(__name__)\n"
+        f"@app.route('/toggle')\ndef toggle():\n    return redirect({target})\n"
+    )
+    scan = ScanResult(root=str(tmp_path), routes=[Route(path="/toggle", method="GET", file="app.py", line=3)])
+    assert bool([c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "open_redirect"]) is flagged

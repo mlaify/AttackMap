@@ -64,6 +64,8 @@ _INJECTION_MARKERS = (
     "code execution",
     "open redirect",
     "path traversal",
+    "xxe",
+    "external entit",
 )
 
 

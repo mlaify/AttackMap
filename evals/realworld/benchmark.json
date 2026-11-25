@@ -376,6 +376,284 @@
           "note": "static IV define(\"IV\", \"1234567812345678\")"
         }
       ]
+    },
+    {
+      "id": "pygoat",
+      "path": "pygoat",
+      "repo": "https://github.com/adeyosemanputra/pygoat.git",
+      "ref": "v3.0.0",
+      "commit": "e5808ddd8aa653eaf7418260afcf6db0ac5b4b48",
+      "modules": [
+        "attackmap-analyzer-python"
+      ],
+      "label_source": "OWASP PyGoat v3 lab apps (dockerized_labs/*), each marked intentionally vulnerable in its code; checked against the code at the pinned commit",
+      "expected": [
+        {
+          "category": "injection",
+          "file": "dockerized_labs/sql_injection_lab/app.py",
+          "line": 57,
+          "severity": "high",
+          "note": "SQL injection lab: username/password f-string into c.execute"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/command_injection_lab/app.py",
+          "line": 29,
+          "severity": "high",
+          "note": "command injection lab: domain into an nslookup/dig shell command"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/command_injection_lab/app.py",
+          "line": 49,
+          "severity": "high",
+          "note": "eval lab: request expression eval'd"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/ssrf_lab/app.py",
+          "line": 37,
+          "severity": "high",
+          "note": "SSRF lab: requests.get(url) on a request URL"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/ssrf_lab/app.py",
+          "line": 22,
+          "severity": "high",
+          "note": "lab1: request 'blog' joined into a file path (directory traversal)"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/xxe_lab/app.py",
+          "line": 58,
+          "severity": "high",
+          "note": "XXE lab: SAX parser with feature_external_ges on request XML"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/insec_des_lab/main.py",
+          "line": 40,
+          "severity": "high",
+          "note": "insecure deserialization lab: pickle.loads of a cookie"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/software_integrity_lab/app.py",
+          "line": 44,
+          "severity": "high",
+          "note": "software integrity lab: pickle.loads of uploaded data"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/a9_uckv_lab/app.py",
+          "line": 62,
+          "severity": "high",
+          "note": "vulnerable components lab: yaml.load(Loader=yaml.Loader) on an upload"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/a9_uckv_lab/app.py",
+          "line": 94,
+          "severity": "high",
+          "note": "vulnerable components lab: Pillow ImageMath.eval on a request expression (CVE-2023-50447)"
+        },
+        {
+          "category": "injection",
+          "file": "dockerized_labs/template_injection_lab/app.py",
+          "line": 111,
+          "severity": "high",
+          "note": "SSTI lab: user content written into a template file, then render_template(f'blogs/{filename}') (stored SSTI)"
+        },
+        {
+          "category": "crypto",
+          "file": "dockerized_labs/crypto_failure_lab/app.py",
+          "line": 38,
+          "severity": "medium",
+          "note": "crypto failure lab: unsalted MD5 password hash"
+        },
+        {
+          "category": "crypto",
+          "file": "dockerized_labs/crypto_failure_lab/app.py",
+          "line": 25,
+          "severity": "medium",
+          "note": "crypto failure lab: SHA-1 password hash"
+        },
+        {
+          "category": "session_auth",
+          "file": "dockerized_labs/broken_auth_lab/app.py",
+          "line": 16,
+          "severity": "medium",
+          "note": "broken auth lab: hard-coded Flask secret_key (marked vulnerable in the code)"
+        },
+        {
+          "category": "crypto",
+          "file": "dockerized_labs/auth_failure_lab/app.py",
+          "line": 99,
+          "severity": "medium",
+          "note": "auth failure lab: OTP from random.randint (marked vulnerable in the code)"
+        }
+      ]
+    },
+    {
+      "id": "webgoat",
+      "path": "webgoat",
+      "repo": "https://github.com/WebGoat/WebGoat.git",
+      "ref": "v2026.5",
+      "commit": "7e198f39189f33e1912f7cbb60e24e42635ca06a",
+      "modules": [
+        "attackmap-analyzer-java-spring"
+      ],
+      "label_source": "OWASP WebGoat lessons (src/main/java/org/owasp/webgoat/lessons/*), each an intentionally vulnerable assignment; checked against the code at the pinned commit",
+      "expected": [
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson2.java",
+          "line": 49,
+          "severity": "high",
+          "note": "SQLi intro 2: request SQL text executed (executeQuery(query))"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson3.java",
+          "line": 47,
+          "severity": "high",
+          "note": "SQLi intro 3: request SQL text executed (executeUpdate)"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson4.java",
+          "line": 46,
+          "severity": "high",
+          "note": "SQLi intro 4: request SQL text executed (executeUpdate)"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson5a.java",
+          "line": 52,
+          "severity": "high",
+          "note": "SQLi 5a: account/operator/injection params concatenated into a query"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson8.java",
+          "line": 62,
+          "severity": "high",
+          "note": "SQLi 8: name/auth_tan concatenated into a query"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson9.java",
+          "line": 65,
+          "severity": "high",
+          "note": "SQLi 9: name/auth_tan concatenated, statement.execute"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson10.java",
+          "line": 56,
+          "severity": "high",
+          "note": "SQLi 10: action_string concatenated into a LIKE query"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/advanced/SqlInjectionLesson6a.java",
+          "line": 72,
+          "severity": "high",
+          "note": "SQLi 6a: userid_6a concatenated into a query"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/advanced/SqlInjectionChallenge.java",
+          "line": 61,
+          "severity": "high",
+          "note": "SQLi challenge: username_reg concatenated into a query"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/sqlinjection/mitigation/Servers.java",
+          "line": 50,
+          "severity": "high",
+          "note": "SQLi mitigation: column param concatenated into ORDER BY of a prepared statement"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/commandinjection/CommandExecutionService.java",
+          "line": 34,
+          "severity": "high",
+          "note": "command injection: request command run via /bin/sh -c (task2 base+payload)"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/deserialization/InsecureDeserializationTask.java",
+          "line": 42,
+          "severity": "high",
+          "note": "insecure deserialization: ObjectInputStream.readObject of a request token"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/xxe/CommentsCache.java",
+          "line": 79,
+          "severity": "high",
+          "note": "XXE: XMLInputFactory without external-entity hardening on request XML (securityEnabled=false callers)"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUploadBase.java",
+          "line": 51,
+          "severity": "high",
+          "note": "path traversal: request fullName joined into the upload path"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileZipSlip.java",
+          "line": 79,
+          "severity": "high",
+          "note": "zip slip: zip entry name joined into an extraction path"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUploadRetrieval.java",
+          "line": 101,
+          "severity": "high",
+          "note": "path traversal retrieval: request id joined into a file path; the raw-query '..' check misses URL-encoded input"
+        },
+        {
+          "category": "injection",
+          "file": "src/main/java/org/owasp/webgoat/lessons/openredirect/OpenRedirectRealRedirect.java",
+          "line": 21,
+          "severity": "medium",
+          "note": "open redirect: request url into redirect: view (marked intentionally vulnerable)"
+        },
+        {
+          "category": "token_auth",
+          "file": "src/main/java/org/owasp/webgoat/lessons/jwt/JWTVotesEndpoint.java",
+          "line": 141,
+          "severity": "high",
+          "note": "JWT votes: jjwt parse() accepts unsigned (alg none) tokens"
+        },
+        {
+          "category": "token_auth",
+          "file": "src/main/java/org/owasp/webgoat/lessons/jwt/JWTRefreshEndpoint.java",
+          "line": 91,
+          "severity": "high",
+          "note": "JWT refresh: jjwt parse() accepts unsigned tokens"
+        },
+        {
+          "category": "token_auth",
+          "file": "src/main/java/org/owasp/webgoat/lessons/jwt/JWTRefreshEndpoint.java",
+          "line": 46,
+          "severity": "high",
+          "note": "JWT refresh: hard-coded HS512 signing key"
+        },
+        {
+          "category": "crypto",
+          "file": "src/main/java/org/owasp/webgoat/lessons/cryptography/HashingAssignment.java",
+          "line": 39,
+          "severity": "medium",
+          "note": "hashing lesson: MD5 digest of a secret"
+        }
+      ]
     }
   ]
 }

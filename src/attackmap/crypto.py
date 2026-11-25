@@ -61,8 +61,12 @@ _CRYPTO_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     (
         "weak_password_hash",
         "high",
-        # Java MessageDigest.getInstance("MD5"|"SHA-1")
-        _rx(r"MessageDigest\.getInstance\s*\(\s*['\"](?:MD5|SHA-?1)['\"]\s*\)"),
+        # Java MessageDigest.getInstance("MD5"|"SHA-1") fed a secret: an MD5
+        # for an ETag or a checksum is not a password hash.
+        _rx(
+            r"MessageDigest\.getInstance\s*\(\s*['\"](?:MD5|SHA-?1)['\"]\s*\)[^}]{0,300}?"
+            rf"\.(?:update|digest)\s*\([^);]*{_SECURITY_CTX}"
+        ),
     ),
     # --- weak ciphers ----------------------------------------------------
     # CASE-SENSITIVE on purpose: algorithm tokens are uppercase/PascalCase

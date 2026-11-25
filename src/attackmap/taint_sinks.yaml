@@ -59,7 +59,8 @@ kinds:
 sinks:
   # --- SQL ------------------------------------------------------------------
   - {id: sql-cursor-execute, kind: sql_execute, langs: [python, js, go, php], cwe: 89,
-     regex: '\b(?:cursor|conn|connection|db|session|engine|client|pool)\.(?:execute|query|exec_driver_sql)\s*\('}
+     note: "c / cur / curs: the usual names for `conn.cursor()` (PyGoat's sql_injection_lab)",
+     regex: '\b(?:cursor|cur|curs|c|conn|connection|db|session|engine|client|pool)\.(?:execute|query|exec_driver_sql)\s*\('}
   - {id: go-sql-query, kind: sql_execute, langs: [python, js, go, php], cwe: 89,
      note: "Go database/sql (#102); title-case methods + db-ish receiver avoid url.Query()",
      regex: '\b(?:db|conn|tx|stmt|dbx|sqlx|pool|database|store|dao)\.(?:Query|QueryRow|Exec)\s*\('}
@@ -222,8 +223,8 @@ sinks:
   - {id: py-pickle, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
      regex: '\b(?:cPickle|pickle)\.loads?\s*\('}
   - {id: py-yaml-load, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
-     note: "yaml.load without a Safe loader in the same call",
-     regex: '\byaml\.load\s*\((?![^)]*(?:Safe|Loader\s*=))'}
+     note: "yaml.load without a safe loader (SafeLoader, CSafeLoader, BaseLoader) in the same call; Loader=yaml.Loader / UnsafeLoader / FullLoader construct objects",
+     regex: '\byaml\.load\s*\((?![^)]{0,300}(?:Safe|BaseLoader))'}
   - {id: py-yaml-unsafe-load, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
      regex: '\byaml\.unsafe_load\s*\('}
   - {id: py-marshal, kind: unsafe_deserialization, langs: [python, js, go, php], cwe: 502,
@@ -296,9 +297,18 @@ sinks:
 
   # --- open redirect ----------------------------------------------------------
   - {id: redirect, kind: open_redirect, langs: [python, js, go, php], cwe: 601, gate: tainted,
+     note: "redirect(request.referrer ...) sends the user back where they came from, not to an attacker's choice",
+     unless: '(?i)^\s*(?:request\.(?:referrer|referer)\b|request\.headers\.get\(\s*[''"]referer)',
      regex: '\bredirect\s*\('}
   - {id: express-redirect, kind: open_redirect, langs: [python, js, go, php], cwe: 601, gate: tainted, args: all,
      regex: '\bres\s*\.\s*(?:redirect|location)\s*\('}
+  # Spring MVC: a "redirect:" view name, a RedirectView, a servlet sendRedirect.
+  - {id: java-redirect-view, kind: open_redirect, langs: [java], cwe: 601, gate: tainted,
+     when: '^\s*"redirect:', regex: '\bnew\s+ModelAndView\s*\('}
+  - {id: java-return-redirect, kind: open_redirect, langs: [java], cwe: 601, gate: tainted, args: rest,
+     regex: '\breturn(?=\s+"redirect:)'}
+  - {id: java-send-redirect, kind: open_redirect, langs: [java], cwe: 601, gate: tainted,
+     regex: '\.\s*sendRedirect\s*\(|\bnew\s+RedirectView\s*\('}
 
   # --- HTTP response headers (CRLF / header value control) ---------------
   - {id: py-response-header-assign, kind: header_injection, langs: [python], cwe: 113, gate: tainted, args: rest,

@@ -8,31 +8,38 @@
       "expected_total": 6
     },
     "crypto": {
-      "precision": 0.8,
-      "recall": 0.8333333333333334,
-      "tp": 4,
+      "precision": 0.875,
+      "recall": 0.9,
+      "tp": 7,
       "fp": 1,
-      "expected_total": 6
+      "expected_total": 10
     },
     "injection": {
-      "precision": 0.9,
-      "recall": 0.6785714285714286,
-      "tp": 9,
+      "precision": 0.9523809523809523,
+      "recall": 0.75,
+      "tp": 20,
       "fp": 1,
-      "expected_total": 28
+      "expected_total": 56
+    },
+    "session_auth": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "tp": 1,
+      "fp": 0,
+      "expected_total": 1
     },
     "token_auth": {
       "precision": 1.0,
       "recall": 1.0,
-      "tp": 3,
+      "tp": 5,
       "fp": 0,
-      "expected_total": 2
+      "expected_total": 5
     },
     "unauth_state_change": {
       "precision": 0.0,
       "recall": 0.0,
       "tp": 0,
-      "fp": 1,
+      "fp": 3,
       "expected_total": 1
     }
   }
