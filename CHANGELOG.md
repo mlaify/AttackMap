@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/versioning.md`, the semver policy for 1.x (#209): what a minor or patch release never breaks (CLI, report schemas, SARIF rule ids, the analyzer SDK), what isn't covered (findings, Python internals, Markdown output), and how deprecation works.
 - `precision_floor` in `evals/realworld/benchmark.json`: `attackmap bench` fails when a class's precision across the corpus drops under it. Set to the agreed v1.0 bar (#209): 85% for injection, crypto, token_auth, session_auth and bola. `unauth_state_change` stays advisory until it is scored per route.
 
 ### Changed
