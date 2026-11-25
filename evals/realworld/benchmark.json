@@ -11,6 +11,13 @@
     "session_auth"
   ],
   "line_window": 4,
+  "precision_floor": {
+    "injection": 0.85,
+    "crypto": 0.85,
+    "token_auth": 0.85,
+    "session_auth": 0.85,
+    "bola": 0.85
+  },
   "cases": [
     {
       "id": "juice-shop",

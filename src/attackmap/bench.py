@@ -131,6 +131,8 @@ class Benchmark:
     scored_categories: tuple[str, ...]
     line_window: int
     cases: list[Case]
+    # Minimum precision per class across the whole corpus (the v1.0 bar, #209).
+    precision_floor: dict[str, float] = field(default_factory=dict)
 
 
 def load_benchmark(path: str | Path) -> Benchmark:
@@ -145,7 +147,10 @@ def load_benchmark(path: str | Path) -> Benchmark:
         for c in data.get("cases", [])
     ]
     scored = tuple(data.get("scored_categories", SCORED_CATEGORIES))
-    return Benchmark(scored_categories=scored, line_window=int(data.get("line_window", 8)), cases=cases)
+    floor = {k: float(v) for k, v in data.get("precision_floor", {}).items()}
+    return Benchmark(
+        scored_categories=scored, line_window=int(data.get("line_window", 8)), cases=cases, precision_floor=floor
+    )
 
 
 # --- matching ----------------------------------------------------------------
@@ -467,6 +472,18 @@ def regressions(results: list[CaseResult], baseline: dict[str, Any], tolerance: 
             after = 0.0 if after is None else after
             if after < before - tolerance:
                 out.append(f"{name} {metric} {before:.0%} -> {after:.0%}")
+    return out
+
+
+def below_floor(results: list[CaseResult], floor: dict[str, float]) -> list[str]:
+    """Classes whose corpus-wide precision is under the benchmark's ``precision_floor``.
+    A class with no findings has no precision and passes."""
+    now = aggregate(results)
+    out = []
+    for name, minimum in sorted(floor.items()):
+        cs = now.get(name)
+        if cs is not None and cs.precision is not None and cs.precision < minimum:
+            out.append(f"{name} precision {cs.precision:.0%} < {minimum:.0%}")
     return out
 
 

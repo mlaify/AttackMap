@@ -287,3 +287,16 @@ def test_baseline_regression_gate():
     assert regressions(run(2, 0), baseline) == []
     assert regressions(run(1, 1), baseline) == ["injection precision 80% -> 50%", "injection recall 50% -> 25%"]
     assert regressions([], baseline) == ["injection precision 80% -> 0%", "injection recall 50% -> 0%"]
+
+
+def test_precision_floor_gate():
+    # The v1.0 bar (#209): every precise class at or above 85% precision on the real-world corpus.
+    from attackmap.bench import CaseResult, CategoryScore, below_floor
+
+    def run(tp, fp):
+        return [CaseResult(id="c", scores={"bola": CategoryScore("bola", tp=tp, fp=fp)}, finding_count=tp + fp)]
+
+    floor = {"bola": 0.85, "crypto": 0.85}
+    assert below_floor(run(6, 1), floor) == []  # 86%; crypto has no findings, so no precision
+    assert below_floor(run(3, 1), floor) == ["bola precision 75% < 85%"]
+    assert load_benchmark(REPO_ROOT / "evals" / "realworld" / "benchmark.json").precision_floor["bola"] == 0.85

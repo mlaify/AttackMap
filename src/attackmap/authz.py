@@ -1196,6 +1196,19 @@ def analyze_authz(scan: ScanResult, root: str | Path | None = None) -> list[Bola
             )
         )
 
+    # An app with no authentication at all (no auth hint anywhere, no authenticated
+    # route) has no users to tell apart: object-level authorization doesn't apply,
+    # and the unauthenticated-route findings cover its open endpoints
+    # (spring-petclinic). Decided for v1.0 (#209).
+    if (
+        candidates
+        and not scan.auth_hints
+        and not java_global_auth
+        and not any(c.authn_evidence for c in candidates)
+        and not any(r.auth == "required" for r in scan.routes)
+    ):
+        candidates = []
+
     # GraphQL fields aren't modeled as routes — scan the repo's SDL directly.
     candidates.extend(_graphql_bola_candidates(root_path, seen))
 
