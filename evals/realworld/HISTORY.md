@@ -183,3 +183,17 @@ The last injection false positive is gone: Juice Shop `/profile/image/file` writ
 | `injection` | 100% | 88% → 92% | 30 / 0 / 60 |
 
 DVWA `sqli/source/medium.php:12` and `sqli_blind/source/medium.php:15` are matched: `mysqli_real_escape_string` runs, but `$id` goes into `WHERE user_id = $id` unquoted, so `1 OR 1=1` needs no quote to escape. Other cases unchanged.
+
+## Clean-app controls (2026-11-25)
+
+Corpus: + spring-petclinic (`500158f`) and microblog (`a975ef6`), maintained apps with no security challenges. 7 cases, 87 labels. Petclinic has no authentication at all, so its anonymous writes are labeled (`POST /owners/new`); everything else either control reports in a scored class is a false positive.
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `bola` | 100% → 75% | 86% | 3 / 1 / 7 |
+| `unauth_state_change` | 0% → 20% | 0% → 50% | 1 / 4 / 2 |
+| `injection` | 100% | 92% | 30 / 0 / 60 |
+
+Before the fixes in this PR the controls produced 5 scored findings: microblog's `os.system` calls in click CLI commands as request-reachable command execution, BOLA on `/reset_password/<token>`, and register / reset-password routes as unauthenticated state changes. Remaining false positives:
+- petclinic BOLA on `/owners/{ownerId}`: the app has no users, so object-level authorization doesn't apply; suppressing BOLA in apps with no authenticated route is an operator decision (it changes long-standing behavior for unauthenticated candidates);
+- microblog's API sign-up `POST /users`: indistinguishable from an unauthenticated admin user-creation endpoint, so it stays reported.

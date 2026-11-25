@@ -259,7 +259,27 @@ def _handler_session_gate(
     return gates[key]
 
 
+# Account-entry flows are public by design: sign-up, sign-in/out and the
+# password-reset / email-verification steps a signed-out user takes.
+_ACCOUNT_FLOW_PATH = re.compile(
+    r"(?:^|/)(?:register|signup|sign[-_]up|login|log[-_]in|signin|sign[-_]in|logout|log[-_]out"
+    r"|forgot[-_]?password|reset[-_]?password(?:[-_]request)?|password[-_]?reset|password[-_]?forgot"
+    r"|verify[-_]?email|confirm[-_]?email|activate)(?:/|$)",
+    re.IGNORECASE,
+)
+
+
+def _account_flow(path: str) -> bool:
+    """The caller's own account flow: no path parameter before the flow segment
+    (`/users/:id/logout` acts on another user)."""
+    path = path.split("?", 1)[0]
+    m = _ACCOUNT_FLOW_PATH.search(path)
+    return m is not None and not re.search(r"[:{<*]", path[: m.start()])
+
+
 def _in_scope(surface: AttackSurface, route: Route) -> bool:
+    if _account_flow(route.path):
+        return False
     if surface.category == "public_api":
         return surface.exposure == "public"
     if surface.category == "admin":

@@ -44,6 +44,7 @@ def test_resource_id_param_detected(path: str, expected: str) -> None:
         "/search/{query}",
         "/i18n/{lang}",
         "/static/{filename}",  # filename is a path, not a resource id we enumerate
+        "/reset_password/<token>",  # a bearer capability, not an enumerable reference
     ],
 )
 def test_non_id_paths_not_detected(path: str) -> None:
