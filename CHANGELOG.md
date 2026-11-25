@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `attackmap llm-models [--llm-provider claude|openai|local] [--llm-backend auto|api|cli] [--json]` lists the models your credentials can use, so the CLI and the macOS app offer your models instead of a fixed list:
+  - **Claude API key or OAuth token:** the Models API, which lists exactly what the organization can call. Gated models such as Claude Mythos appear only for verified organizations.
+  - **`claude` CLI (a Claude subscription):** Claude Code has no non-interactive model list, so this shows AttackMap's catalog with gated models marked. `--check <model>` confirms a model is on the account by asking it for a one-word reply.
+  - **`codex` CLI (a ChatGPT login):** the account's Codex catalog from `codex debug models`, with each model's reasoning levels, fast tier and cyber access programs (for example `standard`, `daybreak_blue`). `--all` includes the models Codex hides.
+  - **OpenAI API key:** the OpenAI Models API. **Local:** the server's `GET /models`.
+- `--llm-access-program standard|daybreak_blue|daybreak_red` (OpenAI/Codex) requests a cyber access program for the run through `codex exec --cyber-access-program`, checked against what the model offers on the account. Omitted, Codex uses the account's own default, such as the Daybreak setting in ChatGPT.
+- `--llm-fallback/--no-llm-fallback` (Claude API backend, on by default): when a model's safeguards decline a request, the API reruns it on a fallback model chosen for the refusal category, on the models that offer it (Fable 5.2/5.1, Opus 5.5/5, Sonnet 5.5). The output names the model that answered.
+
+### Changed
+
+- The default Claude model is `claude-opus-5-5`, which was `claude-opus-4-8`. The default OpenAI model is the first model in your Codex catalog, falling back to `gpt-6.2-sol` (was `gpt-5-codex`, which current catalogs no longer list).
+- Fast mode follows the current models: GA on Opus 5.5 and Fable / Mythos 5.2, a research preview on Opus 5. Opus 4.8's fast mode ends on 2026-11-30, so it is no longer requested.
+- `--llm-effort` goes to the model as given when the model supports it; otherwise it falls to the nearest lower supported level. OpenAI efforts follow the Codex catalog (`xhigh` and `max` now reach the models that take them), else low/medium/high. Claude Haiku 4.5 runs without adaptive thinking or effort, which it doesn't support.
+
+### Fixed
+
+- A Claude response with `stop_reason: "refusal"` is reported as a refusal, with its category and explanation (a `cyber` refusal points to the Cyber Verification Program and `attackmap llm-models`). It used to surface as "no text content".
+
 ## [1.0.0] - 2026-11-25
 
 First stable release. The CLI, the report schemas, SARIF rule ids and the analyzer SDK 1.x are now covered by

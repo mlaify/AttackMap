@@ -229,6 +229,7 @@ def _validate_analyze_options(
     llm_effort: str | None,
     llm_backend: str,
     hunt: bool,
+    llm_access_program: str | None = None,
     verify: bool,
     verify_votes: int,
     hunt_lenses: int,
@@ -255,6 +256,9 @@ def _validate_analyze_options(
     _choice("--llm-speed", llm_speed, LLM_SPEEDS)
     _choice("--llm-effort", llm_effort, LLM_EFFORTS)
     _choice("--llm-backend", llm_backend, LLM_BACKENDS)
+    _choice("--llm-access-program", llm_access_program, ("standard", "daybreak_blue", "daybreak_red"))
+    if llm_access_program and llm_provider != "openai":
+        raise typer.BadParameter("--llm-access-program applies only to --llm-provider openai (Codex).")
 
     hunt_only = ("verify", "verify_votes", "hunt_lenses", "hunt_rounds", "hunt_budget")
     orphaned = [f"--{name.replace('_', '-')}" for name in hunt_only if _given(ctx, name)]
@@ -535,12 +539,12 @@ def analyze(
     llm_model: str | None = typer.Option(
         None,
         "--llm-model",
-        help="Model ID for --llm. Claude provider: e.g. claude-opus-4-8 (default), claude-fable-5, claude-sonnet-5, claude-opus-4-7. OpenAI provider: e.g. gpt-5-codex (default), gpt-5.5, gpt-5.4, gpt-5.4-mini — any model ID is passed through verbatim.",
+        help="Model ID for --llm. Any ID your account can use is passed through verbatim, gated ones included (Claude Mythos for verified organizations). Claude default: claude-opus-5-5. OpenAI default: the first model in your Codex catalog. List what your credentials can use with `attackmap llm-models`.",
     ),
     llm_effort: str | None = typer.Option(
         None,
         "--llm-effort",
-        help="Effort for --llm: low|medium|high|xhigh|max. Defaults to high. For OpenAI, xhigh/max clamp to high (Responses API reasoning effort tops out at high).",
+        help="Effort for --llm: low|medium|high|xhigh|max. Defaults to high. A model that lacks the level gets the nearest lower one it supports (Claude 4.6 models stop at max without xhigh; OpenAI models follow your Codex catalog, else low/medium/high).",
     ),
     llm_backend: str = typer.Option(
         "auto",
@@ -550,7 +554,17 @@ def analyze(
     llm_speed: str = typer.Option(
         "standard",
         "--llm-speed",
-        help="LLM output speed: 'standard' (default) or 'fast'. Fast mode (~2.5x output speed, premium price) applies only to Opus 4.8/4.7 via the API backend; other models/backends fall back to standard.",
+        help="LLM output speed: 'standard' (default) or 'fast'. Fast mode (up to 2.5x output speed, premium price) applies on the Claude API backend to Opus 5.5, Fable 5.2 and Mythos 5.2 (and Opus 5 as a research preview); other models and backends run at standard speed.",
+    ),
+    llm_access_program: str | None = typer.Option(
+        None,
+        "--llm-access-program",
+        help="OpenAI/Codex only: request a cyber access program for the run (standard, daybreak_blue or daybreak_red), passed to `codex exec --cyber-access-program`. Omit to use your account's default, such as the Daybreak setting in ChatGPT. `attackmap llm-models --llm-provider openai` shows which programs each model offers. Also ATTACKMAP_OPENAI_ACCESS_PROGRAM.",
+    ),
+    llm_fallback: bool = typer.Option(
+        True,
+        "--llm-fallback/--no-llm-fallback",
+        help="Claude API backend: if the model's safeguards decline a request, let the API rerun it on a fallback model chosen for the refusal category (Fable 5.2/5.1, Opus 5.5/5, Sonnet 5.5). The output names the model that answered. On by default.",
     ),
     hunt: bool = typer.Option(
         False,
@@ -708,6 +722,7 @@ def analyze(
         output_format=format,
         llm_provider=llm_provider,
         llm_speed=llm_speed,
+        llm_access_program=llm_access_program,
         llm_effort=llm_effort,
         llm_backend=llm_backend,
         hunt=hunt,
@@ -1027,6 +1042,8 @@ def analyze(
                     backend=llm_backend,  # type: ignore[arg-type]
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
+                    access_program=llm_access_program,
+                    fallback=llm_fallback,
                 )
             finally:
                 scan_progress.done()
@@ -1077,6 +1094,8 @@ def analyze(
                 mode=mode,  # type: ignore[arg-type]
                 speed=llm_speed,  # type: ignore[arg-type]
                 provider=llm_provider,  # type: ignore[arg-type]
+                access_program=llm_access_program,
+                fallback=llm_fallback,
                 hypotheses=hypotheses,
                 lens=lens,
                 avoid_titles=avoid_titles,
@@ -1183,6 +1202,8 @@ def analyze(
                     mode="remediate",
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
+                    access_program=llm_access_program,
+                    fallback=llm_fallback,
                 )
             finally:
                 scan_progress.done()
@@ -1238,6 +1259,8 @@ def analyze(
                     mode="triage",
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
+                    access_program=llm_access_program,
+                    fallback=llm_fallback,
                 )
             finally:
                 scan_progress.done()
@@ -1452,6 +1475,124 @@ def rules(
     width = max(len(r) for r, _, _ in catalog)
     for rule_id, title, severity in catalog:
         typer.echo(f"{rule_id.ljust(width)}  {severity:<7}  {title}")
+
+
+@app.command("llm-models")
+def llm_models(
+    llm_provider: str = typer.Option(
+        "claude", "--llm-provider", help="Provider to list: claude, openai or local."
+    ),
+    llm_backend: str = typer.Option(
+        "auto",
+        "--llm-backend",
+        help="auto, api or cli, resolved the same way as for `analyze --llm`. The API backends and the "
+        "`codex` CLI list the models your account can use; the `claude` CLI has no model list, so it "
+        "shows AttackMap's catalog (see --check).",
+    ),
+    llm_base_url: str | None = typer.Option(
+        None, "--llm-base-url", help="With --llm-provider local: the server's OpenAI-compatible base URL."
+    ),
+    show_all: bool = typer.Option(False, "--all", help="Include models Codex hides from its own picker."),
+    check: str | None = typer.Option(
+        None,
+        "--check",
+        help="Confirm one Claude model is on your account by asking it for a one-word reply through the "
+        "chosen backend (spends one small request). Useful for gated models such as Claude Mythos.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the models as JSON, for the macOS app and wrappers."),
+) -> None:
+    """List the LLM models your credentials can use with --llm / --hunt / --remediate / --triage."""
+    from .llm_models import (
+        ModelListError,
+        check_claude_model,
+        claude_catalog,
+        list_claude_models_api,
+        list_codex_models,
+        list_local_models,
+        list_openai_models_api,
+    )
+    from .llm_review import (
+        LOCAL_DEFAULT_URL,
+        LlmReviewError,
+        _resolve_backend,
+        _resolve_openai_backend,
+        _resolve_openai_client,
+        _resolve_sdk_client,
+    )
+
+    for flag, value, allowed in (("--llm-provider", llm_provider, LLM_PROVIDERS), ("--llm-backend", llm_backend, LLM_BACKENDS)):
+        if value not in allowed:
+            raise typer.BadParameter(f"{flag} must be one of {', '.join(allowed)} (got {value!r}).")
+    backend = "api"
+    note: str | None = None
+    try:
+        if llm_provider == "local":
+            base = llm_base_url or os.environ.get("ATTACKMAP_LOCAL_LLM_URL") or LOCAL_DEFAULT_URL
+            models = list_local_models(base)
+        elif llm_provider == "openai":
+            backend = _resolve_openai_backend(llm_backend, api_key=None, client=None, codex_runner=None)  # type: ignore[arg-type]
+            models = (
+                list_openai_models_api(_resolve_openai_client(None, None))
+                if backend == "api"
+                else list_codex_models(include_hidden=show_all)
+            )
+        else:
+            backend = _resolve_backend(llm_backend, api_key=None, client=None)  # type: ignore[arg-type]
+            if check:
+                if backend == "cli":
+                    ok, detail = check_claude_model(check)
+                else:
+                    ok, detail = _check_claude_api(_resolve_sdk_client(None, None)[0], check)
+                if as_json:
+                    typer.echo(json.dumps({"model": check, "backend": backend, "available": ok, "detail": detail}, indent=2))
+                else:
+                    typer.echo(f"{check}: {'available' if ok else 'not available'} ({backend} backend) {'' if ok else detail}".rstrip())
+                raise typer.Exit(code=0 if ok else 1)
+            if backend == "api":
+                models = list_claude_models_api(_resolve_sdk_client(None, None)[0])
+            else:
+                models = claude_catalog()
+                note = (
+                    "The `claude` CLI can't list a subscription's models, so this is AttackMap's catalog. "
+                    "Gated models work only if your account has them: confirm one with --check <model>."
+                )
+    except (LlmReviewError, ModelListError) as exc:
+        if as_json:
+            typer.echo(json.dumps({"provider": llm_provider, "error": str(exc), "models": []}, indent=2))
+        else:
+            typer.echo(f"Could not list {llm_provider} models: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if as_json:
+        typer.echo(json.dumps(
+            {"provider": llm_provider, "backend": backend, "note": note, "models": [m.to_json() for m in models]},
+            indent=2,
+        ))
+        return
+    if not models:
+        typer.echo(f"No {llm_provider} models listed.")
+        return
+    width = max(len(m.id) for m in models)
+    for m in models:
+        tags = [t for t in (
+            "default" if m.default else "",
+            "fast" if m.fast else "",
+            "access: " + ", ".join(k + "=" + "/".join(v) for k, v in m.access_programs.items()) if m.access_programs else "",
+            m.gated or "",
+            "deprecated" if m.deprecated else "",
+        ) if t]
+        typer.echo(f"{m.id.ljust(width)}  {m.display_name}" + (f"  [{'; '.join(tags)}]" if tags else ""))
+    if note:
+        typer.echo("\n" + note)
+
+
+def _check_claude_api(client: object, model: str) -> tuple[bool, str]:
+    """Confirm a model on the API backend: the Models API answers for the organization."""
+    try:
+        client.models.retrieve(model)  # type: ignore[attr-defined]
+    except Exception as exc:  # NotFound / permission errors: not on this organization
+        return False, str(exc)[:300]
+    return True, "available"
 
 
 @app.command("bench")
