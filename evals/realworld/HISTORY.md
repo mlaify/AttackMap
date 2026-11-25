@@ -109,11 +109,11 @@ WebGoat injection went from 67% / 19% to 100% / 82%. Fixes: request input passed
 
 token_auth 100% / 40% → 100% / 100% (5 / 0 / 5); no other class changes. Core now checks jjwt and auth0 java-jwt in Java/Kotlin: `Jwts.parser()…parse(token)` accepts unsigned tokens, short hard-coded HMAC keys are reported at the literal or its constant, and `Algorithm.none()` and `JWT.decode` without `JWT.require` are flagged. On WebGoat this reports 7 locations, all in the JWT lessons.
 
-## #444 lookup validation (2026-11-25)
+## #444 lookup validation (2026-11-24)
 
 No class totals change: Juice Shop's path-traversal finding is aggregated, and it keeps one flow (`profileImageFileUpload.ts:42`, a path built from the session record's `data.id`). The `vulnCodeSnippet.ts:90` / `vulnCodeFixes.ts:83` sinks behind it are gone. The stored-username SSTI (`GET /profile:65`) stays matched: a lookup validates its key, not the record it returns.
 
-## #445 destructured Express requests, vm context eval (2026-11-25)
+## #445 destructured Express requests, vm context eval (2026-11-24)
 
 | Detector class | Precision | Recall | TP / FP / expected |
 |---|---|---|---|
@@ -121,11 +121,11 @@ No class totals change: Juice Shop's path-traversal finding is aggregated, and i
 
 Juice Shop injection 83% / 58% → 88% / 75%: `POST /b2b/v2/orders:23` (notevil `safeEval` in a vm context) and `GET /redirect:18` are matched. Both handlers destructure the request (`({ body }: Request, …)`), which the JS header scan lost. The redirect sits behind `security.isRedirectAllowed(toUrl)`, a cross-file check whose substring `includes` is the bug, and is reported unguarded. No new false positives; other classes unchanged.
 
-## #445 request body as render locals (2026-11-25)
+## #445 request body as render locals (2026-11-24)
 
 injection 96% / 79% → 96% / 80% (23 / 1 / 56): `POST /dataerasure:104` is matched (`res.render(…, { ...req.body, … })`). No new false positives. Still missed in #445: the XXE upload (`parseXmlString` in `lib/xml.ts`, a cross-file helper) and finale routes (node-service).
 
-## NodeGoat (2026-11-25)
+## NodeGoat (2026-11-24)
 
 Corpus: + OWASP NodeGoat master (`c5cb68a`), 7 labels from its OWASP Top 10 markers ("Insecure ..." and "Fix for A1..A10" comments with the fix commented out): SSJS `eval`, `$where` NoSQL injection, SSRF (`needle.get`), open redirect, IDOR on `/allocations/:userId`, session fixation on login, plaintext password storage. 5 cases, 86 labels.
 
@@ -144,7 +144,7 @@ NodeGoat scores 6 of 7 labels with no false positives. The miss is plaintext pas
 
 The other four cases are unchanged.
 
-## Cross-file helpers, one hop (2026-11-25)
+## Cross-file helpers, one hop (2026-11-24)
 
 | Detector class | Precision | Recall | TP / FP / expected |
 |---|---|---|---|
