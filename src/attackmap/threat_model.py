@@ -833,6 +833,14 @@ _TAINT_FINDING_SPEC: dict[str, dict[str, str]] = {
         "technique_name": "Endpoint Denial of Service: Application or System Exploitation",
         "tactic": "Impact",
     },
+    "xml_external_entity": {
+        "severity": "high",
+        "title": "Request input parsed as XML with external entities enabled (XXE)",
+        "mitigation": "Disable DTDs and external entities on the parser: `disallow-doctype-decl` / `XMLConstants.ACCESS_EXTERNAL_DTD = \"\"` / `SUPPORT_DTD = false` (Java), no `noent` / `XML_PARSE_NOENT` (libxml), defusedxml (Python). Harden unconditionally, not behind a flag.",
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+    },
     "open_redirect": {
         "severity": "medium",
         "title": "Request-reachable open redirect",

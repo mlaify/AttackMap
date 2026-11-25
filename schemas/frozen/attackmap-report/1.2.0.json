@@ -1,0 +1,2874 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://attackmap.dev/schemas/attackmap-report.schema.json",
+  "title": "AttackMap report (attackmap-report.json)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "scan",
+    "findings",
+    "attack_paths",
+    "attack_chains"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "scan": {
+      "$ref": "#/$defs/ScanResult"
+    },
+    "architecture_summary": {
+      "type": "string"
+    },
+    "attack_surface_summary": {
+      "type": "string"
+    },
+    "defensive_review": {
+      "type": "string"
+    },
+    "defensive_review_json": {
+      "type": "object"
+    },
+    "review_context_pack": {
+      "type": "object"
+    },
+    "attack_surfaces": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AttackSurface"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Finding"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "suppressed_findings": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Finding"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "rule": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "suppressed_by": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "confidence_filter": {
+      "type": "object",
+      "properties": {
+        "min_confidence": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "filtered": {
+          "type": "integer"
+        }
+      }
+    },
+    "attack_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AttackPath"
+      }
+    },
+    "attack_chains": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AttackChain"
+      }
+    },
+    "exploitability": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ExploitabilityScore"
+      }
+    }
+  },
+  "$defs": {
+    "AnalyzerError": {
+      "description": "An analyzer whose ``analyze()`` raised or returned something unusable\n(#220). The scan carries on without it; this records the gap.",
+      "properties": {
+        "analyzer": {
+          "title": "Analyzer",
+          "type": "string"
+        },
+        "error_type": {
+          "title": "Error Type",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "analyzer",
+        "error_type"
+      ],
+      "title": "AnalyzerError",
+      "type": "object"
+    },
+    "Anomaly": {
+      "description": "A within-repo consistency outlier \u2014 the odd-one-out in a peer group (#78).\n\nEmitted by the `anomalies` analyzer. Rather than matching a known-bad\nsignature, it flags a route that deviates from the norm its siblings\nestablish: peers in the same resource cohort carry an auth/validation\nsignal (or are read-only) and this one doesn't. The bigger and more\nconsistent the peer group, the more likely the deviation is a mistake \u2014\nso `confidence` scales with `consistent_peers`.\n\n`invariant_violation` (#149a) is the mined-invariant variant: the cohort\nis not a route-path prefix but the set of handlers that reach the same\ndangerous sink kind, and the norm they establish is a *behavioural*\ninvariant (\"guard the request before the sink\") rather than a static\nsignal. When set, `invariant` states the mined rule as evidence.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "auth_outlier",
+            "validation_outlier",
+            "method_outlier",
+            "invariant_violation"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "route_path": {
+          "title": "Route Path",
+          "type": "string"
+        },
+        "route_method": {
+          "title": "Route Method",
+          "type": "string"
+        },
+        "route_file": {
+          "title": "Route File",
+          "type": "string"
+        },
+        "route_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Route Line"
+        },
+        "peer_group": {
+          "title": "Peer Group",
+          "type": "string"
+        },
+        "peer_group_size": {
+          "title": "Peer Group Size",
+          "type": "integer"
+        },
+        "consistent_peers": {
+          "title": "Consistent Peers",
+          "type": "integer"
+        },
+        "deviation": {
+          "title": "Deviation",
+          "type": "string"
+        },
+        "invariant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invariant"
+        },
+        "peer_examples": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Peer Examples",
+          "type": "array"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.5,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "route_path",
+        "route_method",
+        "route_file",
+        "peer_group",
+        "peer_group_size",
+        "consistent_peers",
+        "deviation"
+      ],
+      "title": "Anomaly",
+      "type": "object"
+    },
+    "AppSurfaceIssue": {
+      "description": "A mobile/desktop app attack-surface issue emitted by a platform plugin\n(#188, #190): the Apple analyzers (Swift, Objective-C) report App Transport\nSecurity exceptions, custom URL-scheme handlers, weakening entitlements,\nWKWebView script built from strings, secrets in UserDefaults or on the\npasteboard, unvalidated XPC peers, and classes, selectors or libraries\nresolved from runtime strings. Native format-string and command-exec\nconstructs are `CodeWeakness` kinds shared with the C/C++ plugins.\n\nCore owns the findings: one aggregated finding per kind (rule id = the\nkind, dashed), at the most severe instance's severity. Like the other\nissue families, every instance is a positively-present construct, never\nan absence.\n\n``kind`` is one of ``APP_SURFACE_ISSUE_KINDS`` but typed ``str``, so a\nplugin built against a newer core still validates: core drops records\nwith a kind it doesn't know (noted under ``analyzer_errors``) and keeps\nthe rest of the plugin's result.",
+      "properties": {
+        "kind": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.8,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "AppSurfaceIssue",
+      "type": "object"
+    },
+    "AttackChain": {
+      "description": "Steps ordered so each step's `requires` is met by `start` or an earlier step.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "start": {
+          "items": {
+            "enum": [
+              "net_access_public",
+              "fork_pr",
+              "authn_user",
+              "authn_admin",
+              "code_exec_app",
+              "read_fs",
+              "db_read",
+              "db_write",
+              "secrets",
+              "internal_network",
+              "ci_code_exec",
+              "ci_token",
+              "cloud_creds",
+              "cloud_admin",
+              "node_root",
+              "cluster_admin"
+            ],
+            "type": "string"
+          },
+          "title": "Start",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/ChainStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "impact": {
+          "enum": [
+            "net_access_public",
+            "fork_pr",
+            "authn_user",
+            "authn_admin",
+            "code_exec_app",
+            "read_fs",
+            "db_read",
+            "db_write",
+            "secrets",
+            "internal_network",
+            "ci_code_exec",
+            "ci_token",
+            "cloud_creds",
+            "cloud_admin",
+            "node_root",
+            "cluster_admin"
+          ],
+          "title": "Impact",
+          "type": "string"
+        },
+        "likelihood": {
+          "title": "Likelihood",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "start",
+        "steps",
+        "impact",
+        "likelihood"
+      ],
+      "title": "AttackChain",
+      "type": "object"
+    },
+    "AttackPath": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "impact": {
+          "title": "Impact",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "steps",
+        "impact"
+      ],
+      "title": "AttackPath",
+      "type": "object"
+    },
+    "AttackSurface": {
+      "properties": {
+        "route": {
+          "title": "Route",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "webhook",
+            "admin",
+            "auth",
+            "upload",
+            "internal",
+            "health",
+            "public_api"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "exposure": {
+          "default": "public",
+          "enum": [
+            "public",
+            "internal",
+            "unknown"
+          ],
+          "title": "Exposure",
+          "type": "string"
+        },
+        "risk": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Risk",
+          "type": "string"
+        },
+        "auth_signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Auth Signals",
+          "type": "array"
+        },
+        "data_store_interaction": {
+          "default": false,
+          "title": "Data Store Interaction",
+          "type": "boolean"
+        },
+        "outbound_integration": {
+          "default": false,
+          "title": "Outbound Integration",
+          "type": "boolean"
+        },
+        "rationale": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Rationale",
+          "type": "array"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "webhook_verification": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebhookVerification"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "route",
+        "method",
+        "file",
+        "category",
+        "risk"
+      ],
+      "title": "AttackSurface",
+      "type": "object"
+    },
+    "AttackTechnique": {
+      "description": "Reference to a MITRE ATT&CK technique (Enterprise matrix).",
+      "properties": {
+        "technique_id": {
+          "title": "Technique Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "tactic": {
+          "title": "Tactic",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "technique_id",
+        "name",
+        "tactic"
+      ],
+      "title": "AttackTechnique",
+      "type": "object"
+    },
+    "AuthHint": {
+      "properties": {
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.7,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hint",
+        "file"
+      ],
+      "title": "AuthHint",
+      "type": "object"
+    },
+    "BolaCandidate": {
+      "description": "A route that may be missing object-level authorization (#69).\n\nEmitted by the authz analyzer when a route takes a resource\nidentifier and reaches a datastore, but no ownership/authorization\ncheck is visible near the handler. Heuristic \u2014 the ownership-marker\nscan is the main false-positive reducer; confidence stays honest.",
+      "properties": {
+        "route_path": {
+          "title": "Route Path",
+          "type": "string"
+        },
+        "route_method": {
+          "title": "Route Method",
+          "type": "string"
+        },
+        "route_file": {
+          "title": "Route File",
+          "type": "string"
+        },
+        "route_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Route Line"
+        },
+        "id_param": {
+          "title": "Id Param",
+          "type": "string"
+        },
+        "surface": {
+          "default": "path_param",
+          "enum": [
+            "path_param",
+            "query_param",
+            "rpc_method",
+            "graphql_field"
+          ],
+          "title": "Surface",
+          "type": "string"
+        },
+        "reaches_db": {
+          "default": false,
+          "title": "Reaches Db",
+          "type": "boolean"
+        },
+        "db_evidence": {
+          "default": "",
+          "title": "Db Evidence",
+          "type": "string"
+        },
+        "has_ownership_check": {
+          "default": false,
+          "title": "Has Ownership Check",
+          "type": "boolean"
+        },
+        "authn_evidence": {
+          "default": "",
+          "title": "Authn Evidence",
+          "type": "string"
+        },
+        "confidence": {
+          "default": "medium",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_path",
+        "route_method",
+        "route_file",
+        "id_param"
+      ],
+      "title": "BolaCandidate",
+      "type": "object"
+    },
+    "ChainStep": {
+      "description": "One finding as a capability transition: `requires` \u2192 `grants`.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "rule_id": {
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "technique": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttackTechnique"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "requires": {
+          "items": {
+            "enum": [
+              "net_access_public",
+              "fork_pr",
+              "authn_user",
+              "authn_admin",
+              "code_exec_app",
+              "read_fs",
+              "db_read",
+              "db_write",
+              "secrets",
+              "internal_network",
+              "ci_code_exec",
+              "ci_token",
+              "cloud_creds",
+              "cloud_admin",
+              "node_root",
+              "cluster_admin"
+            ],
+            "type": "string"
+          },
+          "title": "Requires",
+          "type": "array"
+        },
+        "grants": {
+          "items": {
+            "enum": [
+              "net_access_public",
+              "fork_pr",
+              "authn_user",
+              "authn_admin",
+              "code_exec_app",
+              "read_fs",
+              "db_read",
+              "db_write",
+              "secrets",
+              "internal_network",
+              "ci_code_exec",
+              "ci_token",
+              "cloud_creds",
+              "cloud_admin",
+              "node_root",
+              "cluster_admin"
+            ],
+            "type": "string"
+          },
+          "title": "Grants",
+          "type": "array"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FindingLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "confidence": {
+          "title": "Confidence",
+          "type": "number"
+        },
+        "precondition_notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Precondition Notes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "rule_id",
+        "title",
+        "requires",
+        "grants",
+        "evidence_ids",
+        "confidence"
+      ],
+      "title": "ChainStep",
+      "type": "object"
+    },
+    "CloudMisconfig": {
+      "description": "A cloud, IaC or container-runtime misconfiguration (terraform#4, iac#1).\n\nEmitted by IaC plugins (Terraform, Kubernetes / Helm, compose,\nDockerfile). Like the other issue families, each one is a\npositively-present setting (or a documented insecure default that the\nfile leaves in place) at a file and line. Core turns each `kind` into\nfindings, one per (kind, severity) tier, so a low `/var/log` mount never\ninherits the severity of a `docker.sock` mount of the same kind.\n\n- `kind`: one of `CLOUD_MISCONFIG_KINDS`. Typed `str` so a plugin built\n  against a newer core still validates here; core drops records with a\n  kind it doesn't know (noted under `analyzer_errors`) and keeps the rest\n  of the plugin's result.\n- `resource`: what the setting belongs to, e.g. `aws_eks_cluster.main`,\n  `Deployment/web container app`, `module.vpc`.\n- `platform`: one of `CLOUD_MISCONFIG_PLATFORMS`.\n- `context`: how the resource is instantiated \u2014 `for_each`/`count`,\n  the calling module of a local module, a Helm template.\n- `escalation_path`: what an attacker gets from it, in one line, e.g.\n  `hostPath / \u2192 node root \u2192 kubelet credentials`.\n\nThe free-text fields are redacted, folded to one line and capped.",
+      "properties": {
+        "kind": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource"
+        },
+        "platform": {
+          "anyOf": [
+            {
+              "enum": [
+                "aws",
+                "azure",
+                "gcp",
+                "kubernetes",
+                "helm",
+                "compose",
+                "docker",
+                "terraform"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Platform"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context"
+        },
+        "escalation_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Escalation Path"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.8,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "CloudMisconfig",
+      "type": "object"
+    },
+    "CodeWeakness": {
+      "description": "A novel vulnerability-class weakness in source (#77).\n\nEmitted by the built-in `weaknesses` finder \u2014 bug classes beyond the\ntaint/crypto/web-hardening families, detected from concrete risky\nconstructs (not absence).",
+      "properties": {
+        "kind": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "source_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Kind"
+        },
+        "source_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Line"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "CodeWeakness",
+      "type": "object"
+    },
+    "CryptoWeakness": {
+      "description": "An insecure-cryptography or weak-randomness usage (#70).\n\nEmitted by the built-in crypto finder. Heuristic and regex-based;\nthe noisy families (weak hash, insecure RNG) are gated on a\nsecurity-context identifier to keep precision high.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "weak_password_hash",
+            "weak_cipher",
+            "ecb_mode",
+            "static_iv_salt",
+            "insecure_random",
+            "insecure_tls"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "CryptoWeakness",
+      "type": "object"
+    },
+    "DatabaseHint": {
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "DatabaseHint",
+      "type": "object"
+    },
+    "DependencyHint": {
+      "description": "A single third-party dependency declared in a manifest or lockfile.\n\nManifests (#48) carry version *ranges* verbatim (``^4.16.0``, ``>=2,<3``,\n``latest``) and only direct dependencies. Lockfiles (#143) carry *exact*\nresolved versions and the full transitive tree \u2014 those hints set\n``resolved=True`` and populate ``direct`` / ``via``.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "ecosystem": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "dev": {
+          "default": false,
+          "title": "Dev",
+          "type": "boolean"
+        },
+        "resolved": {
+          "default": false,
+          "title": "Resolved",
+          "type": "boolean"
+        },
+        "direct": {
+          "default": true,
+          "title": "Direct",
+          "type": "boolean"
+        },
+        "via": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Via"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "ecosystem",
+        "file"
+      ],
+      "title": "DependencyHint",
+      "type": "object"
+    },
+    "EdgeHint": {
+      "properties": {
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.7,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hint",
+        "file"
+      ],
+      "title": "EdgeHint",
+      "type": "object"
+    },
+    "EntrypointHint": {
+      "properties": {
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.7,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hint",
+        "file"
+      ],
+      "title": "EntrypointHint",
+      "type": "object"
+    },
+    "ExploitabilityFactor": {
+      "description": "One named, signed contribution to an exploitability score (#79).\n\nKept explicit so every score is explainable \u2014 the report shows exactly\nwhich signals raised (or, at 0 points, notably did not raise) the number.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "points": {
+          "title": "Points",
+          "type": "integer"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "points"
+      ],
+      "title": "ExploitabilityFactor",
+      "type": "object"
+    },
+    "ExploitabilityScore": {
+      "description": "A fused 'exploitable now' score for one route\u2192sink combination (#79).\n\nDeterministic: the same scan always yields the same score, and `factors`\nsums (before the 0\u2013100 clamp) to `raw_score`, so nothing is hidden.",
+      "properties": {
+        "subject": {
+          "title": "Subject",
+          "type": "string"
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "sink_kind": {
+          "title": "Sink Kind",
+          "type": "string"
+        },
+        "location": {
+          "title": "Location",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "integer"
+        },
+        "raw_score": {
+          "title": "Raw Score",
+          "type": "integer"
+        },
+        "tier": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Tier",
+          "type": "string"
+        },
+        "factors": {
+          "items": {
+            "$ref": "#/$defs/ExploitabilityFactor"
+          },
+          "title": "Factors",
+          "type": "array"
+        }
+      },
+      "required": [
+        "subject",
+        "route",
+        "method",
+        "sink_kind",
+        "location",
+        "score",
+        "raw_score",
+        "tier"
+      ],
+      "title": "ExploitabilityScore",
+      "type": "object"
+    },
+    "ExternalCall": {
+      "properties": {
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Method"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        }
+      },
+      "required": [
+        "target",
+        "file"
+      ],
+      "title": "ExternalCall",
+      "type": "object"
+    },
+    "Finding": {
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "rule_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rule Id"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "locations": {
+          "items": {
+            "$ref": "#/$defs/FindingLocation"
+          },
+          "title": "Locations",
+          "type": "array"
+        },
+        "mitigation": {
+          "title": "Mitigation",
+          "type": "string"
+        },
+        "confidence": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "attack_techniques": {
+          "items": {
+            "$ref": "#/$defs/AttackTechnique"
+          },
+          "title": "Attack Techniques",
+          "type": "array"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "exploitability": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exploitability"
+        },
+        "exploitability_tier": {
+          "anyOf": [
+            {
+              "enum": [
+                "critical",
+                "high",
+                "medium",
+                "low"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exploitability Tier"
+        },
+        "code_flows": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/TaintFlowStep"
+            },
+            "type": "array"
+          },
+          "title": "Code Flows",
+          "type": "array"
+        },
+        "taxonomy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FindingTaxonomy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "title",
+        "severity",
+        "mitigation"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "FindingLocation": {
+      "description": "A file (and line, when known) a finding applies to (#214). Carried\nstructurally so SARIF, suppression and diffing don't have to parse\nevidence prose.",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fingerprint"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "title": "FindingLocation",
+      "type": "object"
+    },
+    "FindingTaxonomy": {
+      "description": "Standard ids for a finding's rule (#250), looked up by `rule_id` in\n`attackmap.taxonomy` \u2014 never inferred from title or evidence text.",
+      "properties": {
+        "cwe": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cwe",
+          "type": "array"
+        },
+        "owasp": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Owasp",
+          "type": "array"
+        },
+        "asvs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Asvs",
+          "type": "array"
+        },
+        "attack": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Attack",
+          "type": "array"
+        }
+      },
+      "title": "FindingTaxonomy",
+      "type": "object"
+    },
+    "FrameworkHint": {
+      "properties": {
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.7,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hint",
+        "file"
+      ],
+      "title": "FrameworkHint",
+      "type": "object"
+    },
+    "LogicFlawCandidate": {
+      "description": "A business-logic or race-condition lead on a mutating route (#245):\n`check_then_act` (a balance-like `field` checked, then written, with no\nlock) or `idempotency_gap` (a redeem/checkout/transfer POST with no\nidempotency, uniqueness or rate-limit signal). Always needs human review.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "check_then_act",
+            "idempotency_gap"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "route_method": {
+          "title": "Route Method",
+          "type": "string"
+        },
+        "route_path": {
+          "title": "Route Path",
+          "type": "string"
+        },
+        "route_file": {
+          "title": "Route File",
+          "type": "string"
+        },
+        "route_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Route Line"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.4,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "route_method",
+        "route_path",
+        "route_file",
+        "file"
+      ],
+      "title": "LogicFlawCandidate",
+      "type": "object"
+    },
+    "ProtocolHint": {
+      "properties": {
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.7,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hint",
+        "file"
+      ],
+      "title": "ProtocolHint",
+      "type": "object"
+    },
+    "Route": {
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "method": {
+          "default": "ANY",
+          "title": "Method",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "auth": {
+          "default": "unknown",
+          "enum": [
+            "required",
+            "anonymous",
+            "unknown"
+          ],
+          "title": "Auth",
+          "type": "string"
+        },
+        "guards": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Guards",
+          "type": "array"
+        },
+        "guard_evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guard Evidence"
+        }
+      },
+      "required": [
+        "path",
+        "file"
+      ],
+      "title": "Route",
+      "type": "object"
+    },
+    "ScanResult": {
+      "properties": {
+        "root": {
+          "title": "Root",
+          "type": "string"
+        },
+        "languages": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Languages",
+          "type": "array"
+        },
+        "routes": {
+          "items": {
+            "$ref": "#/$defs/Route"
+          },
+          "title": "Routes",
+          "type": "array"
+        },
+        "external_calls": {
+          "items": {
+            "$ref": "#/$defs/ExternalCall"
+          },
+          "title": "External Calls",
+          "type": "array"
+        },
+        "databases": {
+          "items": {
+            "$ref": "#/$defs/DatabaseHint"
+          },
+          "title": "Databases",
+          "type": "array"
+        },
+        "auth_hints": {
+          "items": {
+            "$ref": "#/$defs/AuthHint"
+          },
+          "title": "Auth Hints",
+          "type": "array"
+        },
+        "service_hints": {
+          "items": {
+            "$ref": "#/$defs/ServiceHint"
+          },
+          "title": "Service Hints",
+          "type": "array"
+        },
+        "edge_hints": {
+          "items": {
+            "$ref": "#/$defs/EdgeHint"
+          },
+          "title": "Edge Hints",
+          "type": "array"
+        },
+        "entrypoint_hints": {
+          "items": {
+            "$ref": "#/$defs/EntrypointHint"
+          },
+          "title": "Entrypoint Hints",
+          "type": "array"
+        },
+        "protocol_hints": {
+          "items": {
+            "$ref": "#/$defs/ProtocolHint"
+          },
+          "title": "Protocol Hints",
+          "type": "array"
+        },
+        "framework_hints": {
+          "items": {
+            "$ref": "#/$defs/FrameworkHint"
+          },
+          "title": "Framework Hints",
+          "type": "array"
+        },
+        "secret_hints": {
+          "items": {
+            "$ref": "#/$defs/SecretHint"
+          },
+          "title": "Secret Hints",
+          "type": "array"
+        },
+        "taint_chains": {
+          "items": {
+            "$ref": "#/$defs/TaintChain"
+          },
+          "title": "Taint Chains",
+          "type": "array"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/DependencyHint"
+          },
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "vulnerabilities": {
+          "items": {
+            "$ref": "#/$defs/Vulnerability"
+          },
+          "title": "Vulnerabilities",
+          "type": "array"
+        },
+        "authz_candidates": {
+          "items": {
+            "$ref": "#/$defs/BolaCandidate"
+          },
+          "title": "Authz Candidates",
+          "type": "array"
+        },
+        "logic_flaws": {
+          "items": {
+            "$ref": "#/$defs/LogicFlawCandidate"
+          },
+          "title": "Logic Flaws",
+          "type": "array"
+        },
+        "crypto_weaknesses": {
+          "items": {
+            "$ref": "#/$defs/CryptoWeakness"
+          },
+          "title": "Crypto Weaknesses",
+          "type": "array"
+        },
+        "web_hardening_issues": {
+          "items": {
+            "$ref": "#/$defs/WebHardeningIssue"
+          },
+          "title": "Web Hardening Issues",
+          "type": "array"
+        },
+        "code_weaknesses": {
+          "items": {
+            "$ref": "#/$defs/CodeWeakness"
+          },
+          "title": "Code Weaknesses",
+          "type": "array"
+        },
+        "workflow_issues": {
+          "items": {
+            "$ref": "#/$defs/WorkflowIssue"
+          },
+          "title": "Workflow Issues",
+          "type": "array"
+        },
+        "supply_chain_issues": {
+          "items": {
+            "$ref": "#/$defs/SupplyChainIssue"
+          },
+          "title": "Supply Chain Issues",
+          "type": "array"
+        },
+        "cloud_misconfigs": {
+          "items": {
+            "$ref": "#/$defs/CloudMisconfig"
+          },
+          "title": "Cloud Misconfigs",
+          "type": "array"
+        },
+        "app_surface_issues": {
+          "items": {
+            "$ref": "#/$defs/AppSurfaceIssue"
+          },
+          "title": "App Surface Issues",
+          "type": "array"
+        },
+        "secret_history": {
+          "items": {
+            "$ref": "#/$defs/SecretHistoryHit"
+          },
+          "title": "Secret History",
+          "type": "array"
+        },
+        "anomalies": {
+          "items": {
+            "$ref": "#/$defs/Anomaly"
+          },
+          "title": "Anomalies",
+          "type": "array"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "analyzer_errors": {
+          "items": {
+            "$ref": "#/$defs/AnalyzerError"
+          },
+          "title": "Analyzer Errors",
+          "type": "array"
+        },
+        "files_scanned": {
+          "default": 0,
+          "title": "Files Scanned",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "root"
+      ],
+      "title": "ScanResult",
+      "type": "object"
+    },
+    "SecretHint": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.85,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "kind": {
+          "default": "env_reference",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "file"
+      ],
+      "title": "SecretHint",
+      "type": "object"
+    },
+    "SecretHistoryHit": {
+      "description": "A hard-coded secret found in git history (#252, ``--secrets-history``).\n\n``name`` is the masked value; ``introduced_in`` is the oldest scanned\ncommit that added it; ``still_in_head`` is False when a later commit\nremoved it from the file (it remains in every clone's history).",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "introduced_in": {
+          "title": "Introduced In",
+          "type": "string"
+        },
+        "still_in_head": {
+          "title": "Still In Head",
+          "type": "boolean"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "file",
+        "introduced_in",
+        "still_in_head"
+      ],
+      "title": "SecretHistoryHit",
+      "type": "object"
+    },
+    "ServiceHint": {
+      "properties": {
+        "hint": {
+          "title": "Hint",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.7,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "hint",
+        "file"
+      ],
+      "title": "ServiceHint",
+      "type": "object"
+    },
+    "SupplyChainIssue": {
+      "description": "A dependency supply-chain risk beyond CVEs (#247).\n\nEmitted by the built-in, offline ``supply_chain`` pass over manifests,\nlockfiles and package-manager configs: dependency confusion, typosquat\ncandidates, mutable VCS/URL dependencies, install scripts, unlocked\nmanifests and insecure registries.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "dependency_confusion",
+            "typosquat_candidate",
+            "mutable_vcs_dependency",
+            "install_script",
+            "unlocked_manifest",
+            "insecure_registry"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "package": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Package"
+        },
+        "ecosystem": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ecosystem"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "SupplyChainIssue",
+      "type": "object"
+    },
+    "TaintChain": {
+      "description": "Cross-file data-flow evidence: a route reaches a sink via imports.\n\nEmitted by the lite taint analyzer (see #45). Each entry names the\nstarting route, the sink kind and location, and the chain of files\nthe import-walk traversed. Confidence encodes that import-edge is a\nheuristic proxy for call-edge \u2014 real dispatch may not hit the sink.",
+      "properties": {
+        "route_path": {
+          "title": "Route Path",
+          "type": "string"
+        },
+        "route_method": {
+          "title": "Route Method",
+          "type": "string"
+        },
+        "route_file": {
+          "title": "Route File",
+          "type": "string"
+        },
+        "sink_kind": {
+          "enum": [
+            "sql_execute",
+            "subprocess_shell",
+            "eval",
+            "exec",
+            "dynamic_open",
+            "unsafe_deserialization",
+            "ssti",
+            "ssrf",
+            "nosql_injection",
+            "open_redirect",
+            "path_traversal",
+            "zip_slip",
+            "code_injection",
+            "expression_injection",
+            "jndi_injection",
+            "ldap_injection",
+            "xpath_injection",
+            "header_injection",
+            "regex_injection",
+            "xml_external_entity"
+          ],
+          "title": "Sink Kind",
+          "type": "string"
+        },
+        "sink_file": {
+          "title": "Sink File",
+          "type": "string"
+        },
+        "sink_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sink Line"
+        },
+        "hops": {
+          "title": "Hops",
+          "type": "integer"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "confidence": {
+          "default": 0.6,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "sanitized": {
+          "default": false,
+          "title": "Sanitized",
+          "type": "boolean"
+        },
+        "sanitizer_evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sanitizer Evidence"
+        },
+        "speculative": {
+          "default": false,
+          "title": "Speculative",
+          "type": "boolean"
+        },
+        "source_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Kind"
+        },
+        "source_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Line"
+        },
+        "flow": {
+          "items": {
+            "$ref": "#/$defs/TaintFlowStep"
+          },
+          "title": "Flow",
+          "type": "array"
+        },
+        "url_control": {
+          "anyOf": [
+            {
+              "enum": [
+                "full",
+                "host",
+                "path",
+                "query",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url Control"
+        }
+      },
+      "required": [
+        "route_path",
+        "route_method",
+        "route_file",
+        "sink_kind",
+        "sink_file",
+        "hops"
+      ],
+      "title": "TaintChain",
+      "type": "object"
+    },
+    "TaintFlowStep": {
+      "description": "One step of an intra-procedural flow (#239): where the tainted value\ncame from, each assignment it passed through, any sanitizer/guard bound to\nit, and the sink. Rendered as SARIF ``codeFlows``. ``evidence_text`` is\nthe code at that step (redacted like other evidence).",
+      "properties": {
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "kind": {
+          "enum": [
+            "source",
+            "propagation",
+            "sanitizer",
+            "guard",
+            "sink"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        }
+      },
+      "required": [
+        "file",
+        "kind"
+      ],
+      "title": "TaintFlowStep",
+      "type": "object"
+    },
+    "Vulnerability": {
+      "description": "A known CVE / advisory affecting a resolved dependency (#60).\n\nOne entry per (dep \u00d7 advisory). ``package_version`` is the concrete\nlower-bound the CVE lookup resolved from the manifest spec \u2014 it may\ndiffer from the DependencyHint's raw ``version`` string.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "cvss_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cvss Score"
+        },
+        "references": {
+          "items": {
+            "type": "string"
+          },
+          "title": "References",
+          "type": "array"
+        },
+        "affected_range": {
+          "default": "",
+          "title": "Affected Range",
+          "type": "string"
+        },
+        "package_name": {
+          "title": "Package Name",
+          "type": "string"
+        },
+        "package_version": {
+          "title": "Package Version",
+          "type": "string"
+        },
+        "ecosystem": {
+          "enum": [
+            "pypi",
+            "npm",
+            "go",
+            "cargo",
+            "composer",
+            "swiftpm",
+            "maven",
+            "nuget",
+            "conan",
+            "vcpkg",
+            "cmake",
+            "gem",
+            "cocoapods",
+            "carthage",
+            "hex",
+            "pub"
+          ],
+          "title": "Ecosystem",
+          "type": "string"
+        },
+        "direct": {
+          "default": true,
+          "title": "Direct",
+          "type": "boolean"
+        },
+        "resolution_path": {
+          "default": "",
+          "title": "Resolution Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "package_name",
+        "package_version",
+        "ecosystem"
+      ],
+      "title": "Vulnerability",
+      "type": "object"
+    },
+    "WebHardeningIssue": {
+      "description": "A web-hardening misconfiguration (#71).\n\nEmitted by the built-in web-hardening finder. Detects\npositively-present misconfigurations (wildcard CORS with credentials,\nexplicit CSRF disable, insecure cookie flags, unsafe-inline/eval CSP,\ndebug enabled) rather than hard-to-judge absences.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "cors_wildcard_credentials",
+            "cors_wildcard_origin",
+            "cors_untrusted_origin",
+            "csrf_disabled",
+            "csrf_unprotected_session",
+            "insecure_cookie",
+            "weak_csp",
+            "debug_enabled"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "WebHardeningIssue",
+      "type": "object"
+    },
+    "WebhookVerification": {
+      "description": "How a webhook handler authenticates the events it receives (#243, part B).\n\n``verified``: a provider SDK verifier, or an HMAC checked with a\nconstant-time compare (and, for schemes that sign a timestamp, a freshness\ncheck). ``weak_compare``: an HMAC compared with ``==``. ``no_replay_guard``:\na timestamped scheme whose timestamp is never checked. ``absent``: nothing\nthat verifies the payload. ``unknown``: the handler couldn't be read, or it\nhands the signature to code we couldn't follow.",
+      "properties": {
+        "state": {
+          "enum": [
+            "verified",
+            "weak_compare",
+            "no_replay_guard",
+            "absent",
+            "unknown"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence"
+        },
+        "notes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "inert": {
+          "default": false,
+          "title": "Inert",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "WebhookVerification",
+      "type": "object"
+    },
+    "WorkflowIssue": {
+      "description": "A CI-workflow security issue in a GitHub Actions file (#142).\n\nEmitted by the built-in workflow scanner over ``.github/workflows/*.yml``.\nEvery issue is a positively-present misconfiguration (an unpinned action,\nan untrusted-code checkout under ``pull_request_target``, a secret or an\nattacker-controlled context interpolated into a shell step, ``write-all``\npermissions, a self-hosted runner on a PR trigger) \u2014 a hardened workflow\nproduces nothing.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "unpinned_action",
+            "pr_target_checkout",
+            "secret_in_run",
+            "script_injection",
+            "broad_permissions",
+            "self_hosted_pr",
+            "workflow_run_artifact_poisoning",
+            "issue_comment_pr_checkout",
+            "github_script_injection",
+            "github_env_injection",
+            "default_token_permissions",
+            "oidc_on_untrusted_trigger",
+            "secrets_inherit",
+            "checkout_persist_credentials",
+            "cache_poisoning_pr_target",
+            "docker_action_unpinned",
+            "curl_pipe_shell"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context"
+        },
+        "evidence_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Text"
+        },
+        "severity": {
+          "default": "medium",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "file"
+      ],
+      "title": "WorkflowIssue",
+      "type": "object"
+    }
+  }
+}

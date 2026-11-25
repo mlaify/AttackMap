@@ -151,3 +151,11 @@ The other four cases are unchanged.
 | `injection` | 96% → 97% | 82% → 85% | 28 / 1 / 60 |
 
 WebGoat injection 100% / 82% → 100% / 94%. `CommandExecutionService.java:34` (from `CommandInjectionTask2`) and `ProfileUploadBase.java:51` (from the path-traversal upload endpoints) are matched: request input passed to a helper in another file, whose parameter reaches the sink. Java gets import and same-package edges for this, but emits no cross-file chain without such a traced call. No new false positives; other cases unchanged. Still missed: `CommentsCache.java:79` (`XMLInputFactory` hardened only under `if (securityEnabled)`) and Juice Shop's libxml2 XXE, both XXE flow sinks core doesn't model yet.
+
+## XXE taint sink (2026-11-25)
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 97% → 97% | 85% → 88% | 30 / 1 / 60 |
+
+`CommentsCache.java:79` and Juice Shop `/file-upload:80` are matched: request input reaches an XML parse that resolves external entities. WebGoat's `XMLInputFactory` is hardened only under `if (securityEnabled)`, and its callers pass `false`; Juice Shop's libxml2 `XML_PARSE_NOENT` parse runs as `vm` code over the uploaded data, one cross-file hop from the route. WebGoat injection 100% / 94% → 100% / 100%. No new false positives; other cases unchanged.

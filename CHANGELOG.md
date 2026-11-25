@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- XXE is a taint sink (#445): request input reaching a Java XML parse (`createXMLStreamReader` / `createXMLEventReader`, or `parse` / `build` / `read` on a receiver named like a `DocumentBuilder`, `SAXParser`, `XMLReader`, JDOM `SAXBuilder` or dom4j `SAXReader`) in a file that uses an XML factory, libxmljs `parseXml(x, { noent: true })`, or a libxml parse run as fixed `vm` code over the input with `XML_PARSE_NOENT` (Juice Shop `lib/xml.ts`). Java hardening (`ACCESS_EXTERNAL_DTD`, `SUPPORT_DTD = false`, `disallow-doctype-decl`, external entities off, secure processing) clears the file, unless it only runs behind a flag check like `if (securityEnabled) { … }`. New sink kind `xml_external_entity` (rule `xml-external-entity`, CWE-611), so the report schema is 1.2.0. WebGoat injection recall 94% → 100%; Juice Shop's XXE upload is matched.
+
 ## [0.9.0] - 2026-11-24
 
 ### Added

@@ -55,6 +55,7 @@ kinds:
   xpath_injection:        {label: "XPath expression", cwe: 643, base_score: 22}
   header_injection:       {label: "HTTP response header", cwe: 113, base_score: 12}
   regex_injection:        {label: "regular expression (ReDoS)", cwe: 1333, base_score: 12}
+  xml_external_entity:    {label: "XML parser with external entities (XXE)", cwe: 611, base_score: 30}
 
 sinks:
   # --- SQL ------------------------------------------------------------------
@@ -254,6 +255,22 @@ sinks:
      regex: '\bnew\s+Yaml\s*\('}
   - {id: java-xstream, kind: unsafe_deserialization, langs: [java], cwe: 502,
      regex: '\b(?:xstream|xStream|XSTREAM)\s*\.\s*fromXML\s*\('}
+
+  # --- XML external entities (XXE) -----------------------------------------
+  # Java factories resolve external entities by default; taint.py drops the
+  # hit when the file hardens the factory outside a flag check (#445).
+  - {id: java-xml-parse, kind: xml_external_entity, langs: [java], cwe: 611, gate: tainted, args: all,
+     requires: '\b(?:XMLInputFactory|DocumentBuilderFactory|SAXParserFactory|XMLReaderFactory|SAXBuilder|SAXReader)\b',
+     regex: '\.\s*(?:createXMLStreamReader|createXMLEventReader)\s*\(|\b(?:builder|db|docBuilder|documentBuilder|dBuilder|parser|saxParser|xmlReader|saxBuilder|saxReader)\s*\.\s*(?:parse|build|read)\s*\('}
+  - {id: js-libxml-noent, kind: xml_external_entity, langs: [js], cwe: 611, gate: tainted,
+     note: "libxmljs `noent: true` substitutes entities, external ones included",
+     when: '\bnoent\s*:\s*true\b',
+     regex: '\.\s*parseXml(?:String)?\s*\('}
+  - {id: js-vm-libxml-noent, kind: xml_external_entity, langs: [js], cwe: 611, gate: tainted, args: [1],
+     note: "a libxml parse run as fixed vm code over a context variable (Juice Shop lib/xml.ts); the context carries the input",
+     requires: '\bXML_PARSE_NOENT\b|\bnoent\s*:\s*true\b',
+     when: '^\s*[''"`][^''"`\n]{0,200}?\b(?:fromString|parseXml(?:String)?)\s*\(',
+     regex: '\bvm\s*\.\s*(?:runInNewContext|runInContext)\s*\('}
 
   # --- server-side template injection ---------------------------------------
   - {id: flask-render-template-string, kind: ssti, langs: [python, js, go, php], cwe: 1336, gate: tainted,

@@ -380,7 +380,7 @@ def sanitizer_patterns(kind: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
 # Sinks whose danger is the content itself: an allow-listed or validated
 # *name* (`allowed_file(f.filename)`) says nothing about the bytes that get
 # deserialized (PyGoat a9_uckv_lab).
-CONTENT_SINKS = frozenset({"unsafe_deserialization"})
+CONTENT_SINKS = frozenset({"unsafe_deserialization", "xml_external_entity"})
 
 
 def guard_patterns(kind: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
@@ -410,4 +410,5 @@ ALL_SANITIZER_KINDS: tuple[str, ...] = (
     "xpath_injection",
     "header_injection",
     "regex_injection",
+    "xml_external_entity",
 )

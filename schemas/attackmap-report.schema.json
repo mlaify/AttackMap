@@ -2379,7 +2379,8 @@
             "ldap_injection",
             "xpath_injection",
             "header_injection",
-            "regex_injection"
+            "regex_injection",
+            "xml_external_entity"
           ],
           "title": "Sink Kind",
           "type": "string"
