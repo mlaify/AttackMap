@@ -724,3 +724,21 @@ def test_laravel_routes_seed_from_their_controller_method(tmp_path: Path) -> Non
         ("/posts/{post}", "sql_execute", 8),
         ("/legacy", "sql_execute", 8),
     }
+
+
+def test_python_cli_commands_are_not_request_reachable(tmp_path: Path) -> None:
+    # microblog app/cli.py: a click command registered on the app runs from the command line.
+    (tmp_path / "app.py").write_text(
+        "import os\nfrom flask import Flask, request\nfrom cli import bp\napp = Flask(__name__)\napp.register_blueprint(bp)\n\n"
+        "@app.route('/run')\ndef run():\n    os.system('ping -c1 ' + request.args['host'])\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "cli.py").write_text(
+        "import os\nimport click\nfrom flask import Blueprint\nbp = Blueprint('cli', __name__)\n\n"
+        "@bp.cli.group()\ndef translate():\n    pass\n\n"
+        "@translate.command()\n@click.argument('lang')\ndef init(lang):\n"
+        "    os.system('pybabel init -l ' + lang)\n",
+        encoding="utf-8",
+    )
+    chains = scan_repo(tmp_path).taint_chains
+    assert {(c.sink_file, c.sink_line) for c in chains if c.sink_kind == "subprocess_shell"} == {("app.py", 9)}

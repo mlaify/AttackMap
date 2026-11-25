@@ -728,6 +728,40 @@
           "note": "A2-1 passwords stored in plaintext (bcrypt fix commented out)"
         }
       ]
+    },
+    {
+      "id": "spring-petclinic",
+      "path": "spring-petclinic",
+      "repo": "https://github.com/spring-projects/spring-petclinic.git",
+      "ref": "main",
+      "commit": "500158f732419217507c7656904b8e6aa1bcc0d6",
+      "modules": [
+        "attackmap-analyzer-java-spring"
+      ],
+      "label_source": "control: a maintained sample app with no security challenges; labels only for what the code plainly does (no authentication at all), every other scored finding is a false positive",
+      "expected": [
+        {
+          "category": "unauth_state_change",
+          "route": "/owners/new",
+          "method": "POST",
+          "file": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+          "line": 77,
+          "severity": "high",
+          "note": "no authentication anywhere: owners, pets and visits are created and edited anonymously"
+        }
+      ]
+    },
+    {
+      "id": "microblog",
+      "path": "microblog",
+      "repo": "https://github.com/miguelgrinberg/microblog.git",
+      "ref": "main",
+      "commit": "a975ef64864354867c88e0ed3a17ba7d17dca752",
+      "modules": [
+        "attackmap-analyzer-python"
+      ],
+      "label_source": "control: the Flask Mega-Tutorial app (Flask-Login, token API); no labeled vulnerabilities, so every scored finding is a false positive",
+      "expected": []
     }
   ]
 }

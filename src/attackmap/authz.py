@@ -52,7 +52,9 @@ _PATH_PARAM_RE = re.compile(r"\{([^{}]+)\}|:([A-Za-z_]\w*)|<(?:[^:<>]+:)?([^<>]+
 # would enumerate. Matches `id`, `user_id`, `orderId`, `uuid`, `slug`,
 # `*_key`, `guid`, Django's `pk`, but not generic words like `format` or `lang`.
 _ID_PARAM_RE = re.compile(
-    r"(?:^|_)id$|^id$|_id$|(?:^|[a-z])Id$|^pk$|uuid|guid|slug|(?:^|_)key$|hash$|token$|ref$",
+    # Not `token`: a token in the path is a bearer capability (`/reset_password/<token>`), not an
+    # enumerable object reference.
+    r"(?:^|_)id$|^id$|_id$|(?:^|[a-z])Id$|^pk$|uuid|guid|slug|(?:^|_)key$|hash$|ref$",
     re.IGNORECASE,
 )
 

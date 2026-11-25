@@ -36,6 +36,14 @@ def fetch(dest: Path, manifest: Path = MANIFEST) -> int:
                  "--branch", case["ref"], case["repo"], str(target))
         head = _git("rev-parse", "HEAD", cwd=target)
         if head != case["commit"]:
+            # A branch ref (`main`, `master`) moves on: fetch the pinned commit itself.
+            try:
+                _git("fetch", "--quiet", "--depth", "1", "origin", case["commit"], cwd=target)
+                _git("-c", "advice.detachedHead=false", "checkout", "--quiet", case["commit"], cwd=target)
+                head = _git("rev-parse", "HEAD", cwd=target)
+            except subprocess.CalledProcessError:
+                pass
+        if head != case["commit"]:
             print(f"{case['id']}: {head} != pinned {case['commit']}", file=sys.stderr)
             failed += 1
         else:

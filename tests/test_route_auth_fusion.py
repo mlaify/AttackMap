@@ -353,3 +353,17 @@ def test_path_literal_strip_is_linear_on_unterminated_backslashes(tmp_path: Path
     start = time.perf_counter()
     _unauth_findings(scan)
     assert time.perf_counter() - start < 2.0
+
+
+def test_own_account_flows_are_public_by_design(tmp_path: Path) -> None:
+    # microblog: sign-up and password reset are for signed-out users; logging out another user isn't.
+    scan = _write(
+        tmp_path,
+        "server.js",
+        "const app = require('express')();\n"
+        "app.post('/register', (req, res) => { db.users.insert(req.body); res.end(); });\n"
+        "app.post('/reset_password/:token', (req, res) => { db.users.update(req.body); res.end(); });\n"
+        "app.post('/users/:id/logout', (req, res) => { db.sessions.remove(req.params.id); res.end(); });\n",
+    )
+    unauth = [f for f in generate_findings(scan) if f.rule_id == "unauth-state-change"]
+    assert len(unauth) == 1 and _routes_in(unauth[0]) == {"/users/:id/logout"}

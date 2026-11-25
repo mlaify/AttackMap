@@ -1,10 +1,10 @@
 {
   "overall": {
     "bola": {
-      "precision": 1.0,
+      "precision": 0.75,
       "recall": 0.8571428571428571,
       "tp": 3,
-      "fp": 0,
+      "fp": 1,
       "expected_total": 7
     },
     "crypto": {
@@ -36,11 +36,11 @@
       "expected_total": 5
     },
     "unauth_state_change": {
-      "precision": 0.0,
-      "recall": 0.0,
-      "tp": 0,
-      "fp": 3,
-      "expected_total": 1
+      "precision": 0.2,
+      "recall": 0.5,
+      "tp": 1,
+      "fp": 4,
+      "expected_total": 2
     }
   }
 }

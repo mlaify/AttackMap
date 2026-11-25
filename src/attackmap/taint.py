@@ -1484,6 +1484,42 @@ def _xml_hardened(content: str) -> bool:
     return False
 
 
+# A CLI entry point: click / typer / Flask CLI (`@click.command()`,
+# `@translate.command()`, `@bp.cli.group()`, `@app.cli.command("x")`).
+_CLI_DECORATOR_RE = re.compile(r"^[ \t]{0,40}@[\w.]{0,120}\.(?:command|group)\s{0,10}\(|^[ \t]{0,40}@click\.", re.M)
+_PY_DEF_RE = re.compile(r"^([ \t]{0,40})(?:async[ \t]{1,10})?def[ \t]", re.M)
+
+
+def cli_command_spans(content: str) -> list[tuple[int, int]]:
+    """Offsets of Python functions decorated as CLI commands: they run from the
+    command line, not on a request."""
+    if _CLI_DECORATOR_RE.search(content) is None:
+        return []
+    spans = []
+    for d in _PY_DEF_RE.finditer(content):
+        head = content[: d.start()].rstrip("\n").split("\n")[-12:]
+        cli = False
+        for line in reversed(head):
+            stripped = line.strip()
+            if stripped and not stripped.startswith(("@", ")")):
+                break
+            if _CLI_DECORATOR_RE.match(line):
+                cli = True
+                break
+        if not cli:
+            continue
+        indent = len(d.group(1))
+        end = len(content)
+        body = re.compile(r"^([ \t]*)\S", re.M)
+        first = content.find("\n", d.end()) + 1
+        for ln in body.finditer(content, first if first > 0 else len(content)):
+            if len(ln.group(1)) <= indent and not content.startswith(")", ln.end() - 1):
+                end = ln.start()
+                break
+        spans.append((d.start(), end))
+    return spans
+
+
 def _call_paren(content: str, match: re.Match[str]) -> int:
     """Offset of the sink call's opening paren: the one ending the match, the
     first inside it, or one right after it — else -1 (not a call)."""
@@ -1527,6 +1563,7 @@ def _find_sinks(
         suffix = abs_path.suffix
         lang = lang_for_suffix(suffix)
         flows = FileFlow(content, suffix)  # parsed lazily, once per file
+        cli_spans = cli_command_spans(content) if lang == "python" else []
         hits: list[_SinkHit] = []
         # Fallback per-file sanitizer lookup, memoized per sink kind.
         sanitizer_by_kind: dict[str, str | None] = {}
@@ -1573,6 +1610,8 @@ def _find_sinks(
                 snippet = _line_snippet(content, match.start())
                 flow = flows.sink_flow(kind, paren, sink.args, snippet, match.start(), match.end())
                 traced = flow is not None and (flow.tainted or flow.sanitized)
+                if cli_spans and not (flow is not None and flow.tainted) and any(lo <= match.start() < hi for lo, hi in cli_spans):
+                    continue  # `@translate.command()`: runs from the command line, not a request
                 flow_only = False
                 helper_only = False
                 if sink.gate == "tainted":
