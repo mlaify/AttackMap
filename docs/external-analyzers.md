@@ -407,6 +407,33 @@ Manifest risks your analyzer understands better than core, such as a CMake
 as `attackmap.sdk.SupplyChainIssue` records. Use the kinds core already
 reports, for example `mutable_vcs_dependency`.
 
+## Extending the CLI and LLM runs
+
+Two more entry-point groups let a separately installed package extend AttackMap without forking it:
+
+- **`attackmap.cli`**: a callable `register(app: typer.Typer) -> None` that adds commands to the
+  `attackmap` CLI. An extension can only add commands; one that reuses an existing name is ignored.
+- **`attackmap.llm`**: an object (or a no-argument class) with any of these optional members:
+  - `llm_options: dict[str, dict]`: the `--llm-option KEY=VALUE` keys it understands, each
+    `{"description": str, "choices": [...]}` (choices optional). Unknown keys and values are rejected
+    before a scan starts.
+  - `validate_llm_run(*, provider, backend, model, options) -> None`: raise `ValueError` to stop a run
+    with a message.
+  - `codex_args(*, model, options) -> list[str]`: extra arguments for `codex exec`.
+  - `refusal_hint(*, model, category) -> str | None`: a sentence appended to a Claude refusal message.
+
+```toml
+[project.entry-points."attackmap.cli"]
+mytools = "my_package.cli:register"
+
+[project.entry-points."attackmap.llm"]
+mytools = "my_package.llm:Hooks"
+```
+
+Extensions are never official plugins, so trusted-only mode (`--trusted-analyzers-only` /
+`ATTACKMAP_TRUSTED_ANALYZERS_ONLY`, the GitHub Action's default) loads none of them.
+`attackmap capabilities` lists the extensions that loaded and the LLM options they declare.
+
 ## What analyzers may not do
 
 - **No subprocess calls** to other tools (linters, language servers, etc.).

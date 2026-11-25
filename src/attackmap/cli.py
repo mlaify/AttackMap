@@ -219,6 +219,29 @@ def _given(ctx: typer.Context, name: str) -> bool:
     return source is not None and source.name not in {"DEFAULT", "DEFAULT_MAP"}
 
 
+def _parse_llm_options(pairs: list[str]) -> dict[str, str]:
+    """`--llm-option KEY=VALUE` pairs, checked against what installed extensions declare."""
+    from . import extensions
+
+    if not pairs:
+        return {}
+    known = extensions.llm_options()
+    parsed: dict[str, str] = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key:
+            raise typer.BadParameter(f"--llm-option takes KEY=VALUE (got {pair!r}).")
+        if key not in known:
+            available = ", ".join(sorted(known)) or "none: no installed extension declares LLM options"
+            raise typer.BadParameter(f"--llm-option {key!r} isn't declared by an installed extension (known: {available}).")
+        choices = known[key].get("choices")
+        if choices and value not in choices:
+            raise typer.BadParameter(f"--llm-option {key} must be one of {', '.join(choices)} (got {value!r}).")
+        parsed[key] = value
+    return parsed
+
+
 def _validate_analyze_options(
     ctx: typer.Context,
     *,
@@ -552,6 +575,11 @@ def analyze(
         "--llm-speed",
         help="LLM output speed: 'standard' (default) or 'fast'. Fast mode (up to 2.5x output speed, premium price) applies on the Claude API backend to Opus 5.5 and Fable 5.2, and to Opus 5 as a research preview; other models and backends run at standard speed.",
     ),
+    llm_option: list[str] = typer.Option(
+        [],
+        "--llm-option",
+        help="KEY=VALUE setting for an installed LLM extension (repeatable). The keys come from extensions registered under the `attackmap.llm` entry point; `attackmap capabilities` lists them.",
+    ),
     llm_fallback: bool = typer.Option(
         True,
         "--llm-fallback/--no-llm-fallback",
@@ -707,6 +735,7 @@ def analyze(
                 os.environ["ATTACKMAP_LOCAL_LLM_URL"] = previous_url
 
         ctx.call_on_close(_restore_url_env)
+    llm_options = _parse_llm_options(llm_option)
     _validate_analyze_options(
         ctx,
         progress_format=progress_format,
@@ -1033,6 +1062,7 @@ def analyze(
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
                     fallback=llm_fallback,
+                    llm_options=llm_options,
                 )
             finally:
                 scan_progress.done()
@@ -1084,6 +1114,7 @@ def analyze(
                 speed=llm_speed,  # type: ignore[arg-type]
                 provider=llm_provider,  # type: ignore[arg-type]
                 fallback=llm_fallback,
+                llm_options=llm_options,
                 hypotheses=hypotheses,
                 lens=lens,
                 avoid_titles=avoid_titles,
@@ -1191,6 +1222,7 @@ def analyze(
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
                     fallback=llm_fallback,
+                    llm_options=llm_options,
                 )
             finally:
                 scan_progress.done()
@@ -1247,6 +1279,7 @@ def analyze(
                     speed=llm_speed,  # type: ignore[arg-type]
                     provider=llm_provider,  # type: ignore[arg-type]
                     fallback=llm_fallback,
+                    llm_options=llm_options,
                 )
             finally:
                 scan_progress.done()
@@ -1309,6 +1342,7 @@ def capabilities() -> None:
         "commands": sorted(commands),
         "analyze": {"options": sorted(options), "multi_repo": multi_repo},
         "progress_protocol": PROGRESS_PROTOCOL_VERSION,
+        "extensions": {**_extensions.loaded(), "llm_options": _extensions.llm_options()},
     }
     typer.echo(json.dumps(payload, indent=2))
 
@@ -1543,6 +1577,13 @@ def bench(
             typer.echo(f"FAIL: lowest scored precision/recall {worst:.2f} < --fail-under {fail_under:.2f}")
             raise typer.Exit(code=1)
         typer.echo(f"OK: lowest scored precision/recall {worst:.2f} ≥ --fail-under {fail_under:.2f}")
+
+
+# Commands from installed extensions (`attackmap.cli` entry points), registered
+# after the built-in ones so an extension can't replace them.
+from . import extensions as _extensions  # noqa: E402
+
+_extensions.load_cli_extensions(app)
 
 
 if __name__ == "__main__":
