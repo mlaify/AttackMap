@@ -16,7 +16,7 @@
     },
     "injection": {
       "precision": 1.0,
-      "recall": 0.8833333333333333,
+      "recall": 0.9166666666666666,
       "tp": 30,
       "fp": 0,
       "expected_total": 60

@@ -175,3 +175,11 @@ NodeGoat `user-dao.js:25` (A2-1) is matched: the user record keeps the request's
 | `injection` | 97% → 100% | 88% | 30 / 0 / 60 |
 
 The last injection false positive is gone: Juice Shop `/profile/image/file` writes `uploads/${loggedInUser.data.id}.${ext}`, where `loggedInUser = authenticatedUsers.get(req.cookies.token)`. The cookie names a session; the id is the server's. Other fields of a looked-up record stay tainted (stored-username SSTI is still matched). Other cases unchanged.
+
+## SQL escape needs quotes (2026-11-25)
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 100% | 88% → 92% | 30 / 0 / 60 |
+
+DVWA `sqli/source/medium.php:12` and `sqli_blind/source/medium.php:15` are matched: `mysqli_real_escape_string` runs, but `$id` goes into `WHERE user_id = $id` unquoted, so `1 OR 1=1` needs no quote to escape. Other cases unchanged.
