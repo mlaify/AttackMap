@@ -40,7 +40,7 @@ from .srcpaths import is_test_file
 _HIGH_SINKS = frozenset(
     {
         "sql_execute", "subprocess_shell", "eval", "exec", "unsafe_deserialization", "ssti",
-        "code_injection", "expression_injection", "jndi_injection", "zip_slip",
+        "code_injection", "expression_injection", "jndi_injection", "zip_slip", "xml_external_entity",
     }
 )
 _MEDIUM_SINKS = frozenset(

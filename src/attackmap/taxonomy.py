@@ -284,6 +284,7 @@ RULE_TAXONOMY: dict[str, RuleTaxonomy] = {
     "jndi-injection": RuleTaxonomy(cwe=(74, 917), owasp=("A03:2021",), attack=("T1059", "T1190")),
     "ldap-injection": RuleTaxonomy(cwe=(90,), owasp=("A03:2021",), asvs=("V5.3.7",), attack=("T1190",)),
     "xpath-injection": RuleTaxonomy(cwe=(643,), owasp=("A03:2021",), asvs=("V5.3.10",), attack=("T1190",)),
+    "xml-external-entity": RuleTaxonomy(cwe=(611,), owasp=("A05:2021",), asvs=("V5.5.2",), attack=("T1190",)),
     "header-injection": RuleTaxonomy(cwe=(113,), owasp=("A03:2021",), attack=("T1190",)),
     "regex-injection": RuleTaxonomy(cwe=(1333,), owasp=("A03:2021",), attack=("T1499.004",)),
     # Flow-confirmed taint findings (#239)

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-REPORT_SCHEMA_VERSION = "1.1.0"
+REPORT_SCHEMA_VERSION = "1.2.0"
 _DRAFT = "https://json-schema.org/draft/2020-12/schema"
 
 

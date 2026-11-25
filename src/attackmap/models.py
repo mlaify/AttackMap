@@ -725,6 +725,7 @@ class TaintChain(_RedactedEvidence):
         "xpath_injection",
         "header_injection",
         "regex_injection",
+        "xml_external_entity",
     ]
     sink_file: str
     sink_line: int | None = None

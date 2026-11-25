@@ -1449,6 +1449,41 @@ class _SinkHit:
     helper_only: bool = False
 
 
+# Java XML factory hardening (#445): DTDs or external entities turned off.
+_XML_HARDENING_RE = re.compile(
+    r"\bACCESS_EXTERNAL_DTD\b"
+    r"|\b(?:SUPPORT_DTD|IS_SUPPORTING_EXTERNAL_ENTITIES)\s{0,10},\s{0,10}(?:false|Boolean\.FALSE)\b"
+    r"|disallow-doctype-decl[\"']\s{0,10},\s{0,10}true\b"
+    r"|external-general-entities[\"']\s{0,10},\s{0,10}false\b"
+    r"|\bsetExpandEntityReferences\s{0,10}\(\s{0,10}false\b"
+    r"|\bFEATURE_SECURE_PROCESSING\s{0,10},\s{0,10}true\b"
+)
+# `if (flag) {` / `if (!flag) {` right before a block.
+_FLAG_IF_RE = re.compile(r"\bif\s{0,10}\(\s{0,10}!?\s{0,10}[A-Za-z_$][\w$]{0,60}\s{0,10}\)\s{0,10}$")
+
+
+def _xml_hardened(content: str) -> bool:
+    """True when the file hardens its XML factory outside a flag check.
+
+    Hardening inside `if (securityEnabled) { ... }` only holds for callers
+    that pass the flag (WebGoat CommentsCache), so it doesn't count.
+    """
+    for m in _XML_HARDENING_RE.finditer(content):
+        depth, i, lo = 0, m.start() - 1, max(0, m.start() - 2000)
+        while i >= lo:
+            ch = content[i]
+            if ch == "}":
+                depth += 1
+            elif ch == "{":
+                if depth == 0:
+                    break
+                depth -= 1
+            i -= 1
+        if i < lo or not _FLAG_IF_RE.search(content[max(0, i - 120) : i]):
+            return True
+    return False
+
+
 def _call_paren(content: str, match: re.Match[str]) -> int:
     """Offset of the sink call's opening paren: the one ending the match, the
     first inside it, or one right after it — else -1 (not a call)."""
@@ -1532,6 +1567,8 @@ def _find_sinks(
                 if sink.unless is not None and sink.unless.search(arg_text) is not None:
                     continue
                 if sink.receiver_unless is not None and sink.receiver_unless.search(call_receiver(content, match.start())):
+                    continue
+                if kind == "xml_external_entity" and lang == "java" and _xml_hardened(content):
                     continue
                 snippet = _line_snippet(content, match.start())
                 flow = flows.sink_flow(kind, paren, sink.args, snippet, match.start(), match.end())

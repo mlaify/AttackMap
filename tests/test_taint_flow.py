@@ -805,3 +805,49 @@ def test_js_request_input_into_an_imported_helper_is_traced(tmp_path: Path) -> N
     chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
     traced = [(c.route_path, c.sink_file, c.sink_line, c.source_kind) for c in chains if c.source_kind]
     assert traced == [("/a", "db.js", 2, "query")]  # /b keeps an untraced reach chain
+
+
+def test_xxe_needs_unconditional_parser_hardening(tmp_path: Path) -> None:
+    # WebGoat CommentsCache: hardening behind `if (securityEnabled)` doesn't hold for callers passing false.
+    pkg = tmp_path / "src/main/java/org/x"
+    pkg.mkdir(parents=True)
+    (pkg / "Xxe.java").write_text(
+        "@RestController\npublic class Xxe {\n  private Comments comments;\n  private Safe safe;\n"
+        '  @PostMapping("/xxe")\n  public Object post(@RequestBody String body) {\n'
+        "    return comments.parseXml(body, false) + safe.parse(body);\n  }\n}\n",
+        encoding="utf-8",
+    )
+    reader = "    var xsr = xif.createXMLStreamReader(new StringReader(xml));\n    return xsr;\n  }\n}\n"
+    (pkg / "Comments.java").write_text(
+        "public class Comments {\n  public Object parseXml(String xml, boolean securityEnabled) {\n"
+        "    var xif = XMLInputFactory.newInstance();\n    if (securityEnabled) {\n"
+        '      xif.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");\n    }\n' + reader,
+        encoding="utf-8",
+    )
+    (pkg / "Safe.java").write_text(
+        "public class Safe {\n  public Object parse(String xml) {\n    var xif = XMLInputFactory.newInstance();\n"
+        "    xif.setProperty(XMLInputFactory.SUPPORT_DTD, false);\n" + reader,
+        encoding="utf-8",
+    )
+    routes = [Route(path="/xxe", method="POST", file="src/main/java/org/x/Xxe.java", line=5)]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    assert [(c.sink_file.rsplit("/", 1)[1], c.sink_line, c.sink_kind) for c in chains] == [("Comments.java", 7, "xml_external_entity")]
+
+
+def test_libxml_entity_parse_in_a_vm_context_is_xxe(tmp_path: Path) -> None:
+    # Juice Shop lib/xml.ts: XML_PARSE_NOENT parse run as fixed vm code over the uploaded data.
+    (tmp_path / "upload.js").write_text(
+        "const { parseXmlString } = require('./xml');\n"
+        "app.post('/upload', (req, res) => { res.send(parseXmlString(req.body.xml)); });\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "xml.js").write_text(
+        "function parseXmlString(data) {\n  const option = libxml2.ParseOption.XML_PARSE_NOENT;\n"
+        "  const sandbox = { libxml2, data, option };\n"
+        "  return vm.runInContext('libxml2.XmlDocument.fromString(data, { option })', sandbox);\n}\n"
+        "module.exports = { parseXmlString };\n",
+        encoding="utf-8",
+    )
+    routes = [Route(path="/upload", method="POST", file="upload.js", line=2)]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    assert [(c.sink_file, c.sink_line, c.sink_kind, c.source_kind) for c in chains] == [("xml.js", 4, "xml_external_entity", "body")]
