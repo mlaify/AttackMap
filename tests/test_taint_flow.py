@@ -855,3 +855,23 @@ def test_libxml_entity_parse_in_a_vm_context_is_xxe(tmp_path: Path) -> None:
     routes = [Route(path="/upload", method="POST", file="upload.js", line=2)]
     chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
     assert [(c.sink_file, c.sink_line, c.sink_kind, c.source_kind) for c in chains] == [("xml.js", 4, "xml_external_entity", "body")]
+
+
+def test_a_quote_only_sql_escape_needs_quotes_around_the_value(tmp_path: Path) -> None:
+    # DVWA sqli medium: mysqli_real_escape_string, then `WHERE user_id = $id` with no quotes.
+    queries = {
+        "num.php": '"SELECT * FROM users WHERE user_id = $id;"',
+        "cat.php": '"SELECT * FROM users WHERE user_id = " . $id',
+        "quoted.php": "\"SELECT * FROM users WHERE user_id = '$id';\"",
+        "like.php": "\"SELECT * FROM users WHERE name LIKE '%\" . $id . \"%'\"",
+    }
+    for name, query in queries.items():
+        (tmp_path / name).write_text(
+            "<?php\n$id = $_POST['id'];\n$id = mysqli_real_escape_string($conn, $id);\n"
+            f"$query = {query};\n$result = mysqli_query($conn, $query);\n",
+            encoding="utf-8",
+        )
+    routes = [Route(path=f"/{n}", method="POST", file=n, line=1) for n in queries]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    got = {c.route_path: c.sanitized for c in chains if c.sink_kind == "sql_execute"}
+    assert got == {"/num.php": False, "/cat.php": False, "/quoted.php": True, "/like.php": True}

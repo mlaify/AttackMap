@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mysqli_real_escape_string` only sanitizes SQL when the value sits inside quotes: an escaped value interpolated or concatenated with no SQL quote around it (`WHERE user_id = $id`, `"… = " . $id`) is still injectable (DVWA `sqli` / `sqli_blind` medium). `'$id'`, `'%$id%'` and `'" . $id . "'` stay sanitized; escapes that add their own quotes (PDO `quote`, `pg_escape_literal`, `mysql.escape`) are unaffected.
 - Lookup records (#444): `user = sessions.get(token)` keeps what the record holds tainted (a stored username), but its id-shaped fields (`user.id`, `user.data.id`, `user.userId`, `._id`, `.uuid`) are server-assigned and carry no taint from the key, when the store itself isn't request-derived. Removes the Juice Shop `profileImageFileUpload` path-traversal false positive (`uploads/${loggedInUser.data.id}.${ext}`).
 
 ## [0.9.0] - 2026-11-24

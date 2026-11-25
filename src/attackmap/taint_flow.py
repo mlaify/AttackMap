@@ -137,6 +137,14 @@ class Atom:
             steps = steps + ((line, kind, note[:120]),)
         return Atom(self.kind, self.line, self.weight, self.label, self.sanitized, steps)
 
+    def without_quote_escape(self, line: int) -> "Atom":
+        """Drop a quote-only SQL escape: the value is used outside quotes (`WHERE id = $id`)."""
+        keep = tuple(x for x in self.sanitized if not (x[0] == "sql_execute" and x[1] in _QUOTE_ONLY_ESCAPES))
+        if keep == self.sanitized:
+            return self
+        a = Atom(self.kind, self.line, self.weight, self.label, keep, self.steps)
+        return a.with_step(line, "propagation", "escaped value used outside SQL quotes")
+
     def with_sanitizer(self, kinds: frozenset[str] | tuple[str, ...], label: str, line: int, step_kind: str = "sanitizer") -> "Atom":
         have = {k for k, _ in self.sanitized}
         add = tuple((k, label) for k in kinds if k not in have)
@@ -144,6 +152,11 @@ class Atom:
             return self
         a = Atom(self.kind, self.line, self.weight, self.label, self.sanitized + add, self.steps)
         return a.with_step(line, step_kind, label)
+
+
+# String escapes that only protect a value inside a quoted SQL literal; they
+# add no quotes themselves (unlike PDO::quote, pg_escape_literal, mysql.escape).
+_QUOTE_ONLY_ESCAPES = frozenset({"mysqli_real_escape_string"})
 
 
 def _dedupe(atoms: list[Atom]) -> list[Atom]:
@@ -1133,8 +1146,42 @@ class _TextFlow:
         for mt in _IDENT_RE[self.lang].finditer(self.m, a, b):
             got = env.get(mt.group())
             if got and not self._record_id(mt.group(), mt.start(), mt.end(), env):
+                if any(x.sanitized for x in got) and self._sql_unquoted(mt.start()):
+                    ln = line_number(self.raw, mt.start())
+                    got = [x.without_quote_escape(ln) for x in got]
                 atoms += [sanitize(x, mt.start()) for x in got]
         return _dedupe(atoms)
+
+    def _sql_unquoted(self, p: int) -> bool:
+        """The identifier at ``p`` is spliced into a string with no SQL quote around it: interpolated
+        (`"… = $id"`, `` `… = ${id}` ``) or concatenated (`"… = " . $id`) right after a literal that doesn't
+        end in a quote. Any other use (a call argument, a bare variable) is unknown: False."""
+        raw, m = self.raw, self.m
+        k = p - 2 if raw[max(0, p - 2) : p] == "${" else p - 1 if raw[p - 1 : p] == "{" else p
+        q = k - 1
+        while q >= 0 and m[q] in " \t":
+            q -= 1
+        if q < 0:
+            return False
+        if m[q] in "\"`" and raw[q + 1 : k].strip():
+            return not self._sql_quote_before(k)  # interpolated after SQL text
+        if m[q] in ".+":
+            r = q - 1
+            while r >= 0 and m[r] in " \t":
+                r -= 1
+            if r > 0 and m[r] in "\"'`" and raw[r - 1] not in "\"'`":
+                return not self._sql_quote_before(r) and bool(raw[max(0, r - 40) : r].strip())
+        return False
+
+    def _sql_quote_before(self, end: int) -> bool:
+        """A SQL quote opens the token ending at ``end`` (`'$id`, `'%$id`, `"{$id}`)."""
+        for i in range(end - 1, max(-1, end - 41), -1):
+            c = self.raw[i]
+            if c in "'\"":
+                return True
+            if c.isspace() or c in "=(,":
+                return False
+        return False
 
     def _param_env(self, hdr: tuple[int, int, int]) -> dict[str, list[Atom]]:
         env: dict[str, list[Atom]] = {}
