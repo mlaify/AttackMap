@@ -18,10 +18,10 @@ sends your code anywhere.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/mlaify/AttackMap/blob/main/LICENSE)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
 
-> **Status: beta (v0.10.0).** Core engine + 15 analyzer plugins, published on
+> **Status: stable (v1.0.0).** Core engine + 15 analyzer plugins, published on
 > [PyPI](https://pypi.org/project/attackmap/) and validated on real codebases. AttackMap is heuristic by
-> design — findings are confidence-tiered evidence, not proof. Roadmap to 1.0:
-> [issue #209](https://github.com/mlaify/AttackMap/issues/209).
+> design — findings are confidence-tiered evidence, not proof. What 1.x keeps stable:
+> [versioning and compatibility](https://github.com/mlaify/AttackMap/blob/main/docs/versioning.md).
 
 Full documentation: **[docs.mlaify.io](https://docs.mlaify.io)** ·
 architecture & internals: **[wiki](https://github.com/mlaify/AttackMap/wiki)**.
