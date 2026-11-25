@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-25
+
+First stable release. The CLI, the report schemas, SARIF rule ids and the analyzer SDK 1.x are now covered by
+semantic versioning; [`docs/versioning.md`](docs/versioning.md) says what that covers and what it doesn't. The 1.0
+criteria and how each was met are in #209: a real-world benchmark of 7 apps and 87 labels with a precision floor of
+85% per precise class (injection 100%, BOLA 100%, crypto 89%, token and session auth 100%), frozen report schemas,
+SDK 1.0 with all 15 official analyzers conforming and tested against every core change, a fuzz suite, a scan-time
+budget, and signed releases on PyPI, Homebrew and the notarized macOS app.
+
 ### Added
 
 - `docs/versioning.md`, the semver policy for 1.x (#209): what a minor or patch release never breaks (CLI, report schemas, SARIF rule ids, the analyzer SDK), what isn't covered (findings, Python internals, Markdown output), and how deprecation works.
@@ -1602,7 +1611,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/mlaify/AttackMap/compare/v0.10.0...v1.0.0
 [0.10.0]: https://github.com/mlaify/AttackMap/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mlaify/AttackMap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mlaify/AttackMap/compare/v0.7.0...v0.8.0
