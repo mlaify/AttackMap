@@ -748,6 +748,12 @@ _LOOKUP_LIBS = frozenset({"_", "lodash", "R"})
 _ELSE_RE = re.compile(r"else\b\s*")
 _TRY_TAIL_RE = re.compile(r"\btry\s*$")
 _CATCH_RE = re.compile(r"catch\b\s*(?:\([^)]*\)\s*)?")
+_REQUEST_TYPE_RE = re.compile(r":\s*(?:express\s*\.\s*)?Request\b")
+_RESPONSE_NAMES = frozenset({"res", "response", "reply"})
+_REQUEST_FIELDS = {
+    "body": "body", "query": "query", "params": "path_param", "headers": "header",
+    "cookies": "cookie", "signedCookies": "cookie", "file": "upload_filename", "files": "upload_filename",
+}
 _FN_KEYWORD_RE = re.compile(r"\b(?:function|func)\b")
 _NEW_CLASS_RE = re.compile(r"\bnew\s+[\w.<>]+\s*$")
 _TRAILING_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*$")
@@ -957,7 +963,22 @@ class _TextFlow:
         hend = o + 1 if k in self._concise else o
         lo = max(0, o - _MAX_HEADER)
         seg = self.m[lo:hend]
-        cut = max(seg.rfind(";"), seg.rfind("{"), seg.rfind("}"))
+        # The header starts after the last `;`, `{` or `}`, except inside the parameter list that ends
+        # it: a destructured parameter (`({ body }, res) =>`, `function f({ a }) {`) has braces of its own.
+        limit = len(seg)
+        p0 = seg.rfind(")")
+        rest = seg[p0 + 1 :].strip() if p0 != -1 else None
+        if rest is not None and (rest in ("", "=>") or rest.startswith(":")):
+            depth = 0
+            for q in range(p0, -1, -1):
+                if seg[q] == ")":
+                    depth += 1
+                elif seg[q] == "(":
+                    depth -= 1
+                    if depth == 0:
+                        limit = q
+                        break
+        cut = max(seg.rfind(";", 0, limit), seg.rfind("{", 0, limit), seg.rfind("}", 0, limit))
         start = lo + cut + 1
         header = self.m[start:hend]
         h = header.rstrip()
@@ -1137,7 +1158,32 @@ class _TextFlow:
                 env[name] = [Atom(kind, line, "high", label, (), ((line, "source", f"{kind}: {label}"),))]
             else:
                 env[name] = [Atom("param", line, "param", name)]
+        if self.lang == JS:
+            env.update(self._destructured_request(po, pc, line))
         return env
+
+    def _destructured_request(self, po: int, pc: int, line: int) -> dict[str, list[Atom]]:
+        """Express handlers that destructure the request: ``({ body }, res) =>``, ``({ query }: Request, ...)``."""
+        segs = self._split_args(po + 1, pc)
+        if not segs:
+            return {}
+        s, e = segs[0]
+        first = self.m[s:e].strip()
+        if not first.startswith("{") or "}" not in first:
+            return {}
+        inner, tail = first[1:].split("}", 1)
+        second = _IDENT_RE[JS].findall(self.m[segs[1][0] : segs[1][1]].split(":", 1)[0]) if len(segs) > 1 else []
+        if not (_REQUEST_TYPE_RE.match(tail.lstrip()) or (second and second[0] in _RESPONSE_NAMES)):
+            return {}
+        out: dict[str, list[Atom]] = {}
+        for part in inner.split(","):
+            field, _, local = part.split("=", 1)[0].partition(":")
+            field, local = field.strip(), (local.strip() or field.strip())
+            kind = _REQUEST_FIELDS.get(field)
+            if kind and _IDENT_RE[JS].fullmatch(local):
+                label = f"handler parameter `{{ {field} }}`"
+                out[local] = [Atom(kind, line, "high", label, (), ((line, "source", f"{kind}: {label}"),))]
+        return out
 
     def _lhs_names(self, op: int, floor: int) -> tuple[list[str], list[str]]:
         m = self.m

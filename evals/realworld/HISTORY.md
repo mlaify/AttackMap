@@ -112,3 +112,11 @@ token_auth 100% / 40% → 100% / 100% (5 / 0 / 5); no other class changes. Core 
 ## #444 lookup validation (2026-11-25)
 
 No class totals change: Juice Shop's path-traversal finding is aggregated, and it keeps one flow (`profileImageFileUpload.ts:42`, a path built from the session record's `data.id`). The `vulnCodeSnippet.ts:90` / `vulnCodeFixes.ts:83` sinks behind it are gone. The stored-username SSTI (`GET /profile:65`) stays matched: a lookup validates its key, not the record it returns.
+
+## #445 destructured Express requests, vm context eval (2026-11-25)
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 95% → 96% | 75% → 79% | 22 / 1 / 56 |
+
+Juice Shop injection 83% / 58% → 88% / 75%: `POST /b2b/v2/orders:23` (notevil `safeEval` in a vm context) and `GET /redirect:18` are matched. Both handlers destructure the request (`({ body }: Request, …)`), which the JS header scan lost. The redirect sits behind `security.isRedirectAllowed(toUrl)`, a cross-file check whose substring `includes` is the bug, and is reported unguarded. No new false positives; other classes unchanged.
