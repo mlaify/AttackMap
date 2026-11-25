@@ -430,8 +430,10 @@ mytools = "my_package.cli:register"
 mytools = "my_package.llm:Hooks"
 ```
 
-Extensions are never official plugins, so trusted-only mode (`--trusted-analyzers-only` /
-`ATTACKMAP_TRUSTED_ANALYZERS_ONLY`, the GitHub Action's default) loads none of them.
+Extensions are never official plugins, so trusted-only mode loads none of them:
+`ATTACKMAP_TRUSTED_ANALYZERS_ONLY=1` (the GitHub Action's default) blocks both groups, and
+`analyze --trusted-analyzers-only` blocks the LLM hooks for that run (extension commands are registered
+before options are read, so only the environment variable keeps them out of the CLI).
 `attackmap capabilities` lists the extensions that loaded and the LLM options they declare.
 
 ## What analyzers may not do

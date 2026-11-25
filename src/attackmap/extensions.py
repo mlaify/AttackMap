@@ -22,9 +22,11 @@ separately installed package extend the rest of AttackMap without forking it:
     - ``refusal_hint(*, model, category) -> str | None``: a sentence appended
       to a Claude refusal message.
 
-Extensions are never official plugins, so trusted-only mode
-(``ATTACKMAP_TRUSTED_ANALYZERS_ONLY``, the GitHub Action's default) loads none
-of them. ``attackmap capabilities`` lists the ones that loaded.
+Extensions are never official plugins, so trusted-only mode loads none of them:
+``ATTACKMAP_TRUSTED_ANALYZERS_ONLY=1`` (the GitHub Action's default) blocks both
+groups; ``analyze --trusted-analyzers-only`` sets it for the run, which blocks
+the LLM hooks (commands are registered at import, before options are read).
+``attackmap capabilities`` lists the ones that loaded.
 """
 
 from __future__ import annotations
