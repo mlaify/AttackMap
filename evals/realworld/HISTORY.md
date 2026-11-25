@@ -127,7 +127,7 @@ injection 96% / 79% → 96% / 80% (23 / 1 / 56): `POST /dataerasure:104` is matc
 
 ## NodeGoat (2026-11-25)
 
-Corpus: + OWASP NodeGoat master (`c5cb68a`), 7 labels from its OWASP Top 10 markers ("Insecure ..." and "Fix for A1..A10" comments with the fix commented out): SSJS `eval`, `$where` NoSQL injection, SSRF (`needle.get`), open redirect, IDOR on `/allocations/:userId`, session fixation on login, plaintext password storage. 5 cases, 87 labels.
+Corpus: + OWASP NodeGoat master (`c5cb68a`), 7 labels from its OWASP Top 10 markers ("Insecure ..." and "Fix for A1..A10" comments with the fix commented out): SSJS `eval`, `$where` NoSQL injection, SSRF (`needle.get`), open redirect, IDOR on `/allocations/:userId`, session fixation on login, plaintext password storage. 5 cases, 86 labels.
 
 | Detector class | Precision | Recall | TP / FP / expected |
 |---|---|---|---|
@@ -143,3 +143,11 @@ NodeGoat scores 6 of 7 labels with no false positives. The miss is plaintext pas
 - `needle` is an SSRF sink.
 
 The other four cases are unchanged.
+
+## Cross-file helpers, one hop (2026-11-25)
+
+| Detector class | Precision | Recall | TP / FP / expected |
+|---|---|---|---|
+| `injection` | 96% → 97% | 82% → 85% | 28 / 1 / 60 |
+
+WebGoat injection 100% / 82% → 100% / 94%. `CommandExecutionService.java:34` (from `CommandInjectionTask2`) and `ProfileUploadBase.java:51` (from the path-traversal upload endpoints) are matched: request input passed to a helper in another file, whose parameter reaches the sink. Java gets import and same-package edges for this, but emits no cross-file chain without such a traced call. No new false positives; other cases unchanged. Still missed: `CommentsCache.java:79` (`XMLInputFactory` hardened only under `if (securityEnabled)`) and Juice Shop's libxml2 XXE, both XXE flow sinks core doesn't model yet.

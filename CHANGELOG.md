@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Taint follows request input into a helper in another file, one hop. For example, `svc.execute(null, command)` reaches `new ProcessBuilder(sh, "-c", command)` in `ExecService`. The helper's parameter has to reach the sink, and the route's file has to pass request input at that position; the caller's sanitizers and guards still apply. Java files get import and same-package edges for this, but Java still emits no cross-file chain without a traced call. A request-gated sink that only a parameter reaches now fires when such a caller exists. WebGoat injection recall 82% → 94%.
 - Precision and recall from OWASP NodeGoat (real-world benchmark):
   - Sinks named in a comment no longer match (`// Insecure use of eval()`, a commented-out `$where` query). Code in a string still counts (`vm.runInContext('yaml.load(data)', …)`).
   - Constructor-function handlers resolve. `const h = new Handler(db)` maps `h.method` to `this.method = (req, res) =>` in Handler's module, for taint seeding and the BOLA hop. A `…DAO.method(` call counts as datastore access.
