@@ -187,6 +187,29 @@ def test_server_store_in_another_file_keeps_fixation(tmp_path: Path) -> None:
     assert _fixation(scan_repo(root)) == [("routes/login.js", 1)]
 
 
+def test_fixation_is_judged_per_login_write(tmp_path: Path) -> None:
+    # NodeGoat session.js: signup regenerates, login doesn't; the "fix" is only a comment.
+    root = _write(
+        tmp_path,
+        {
+            "app.js": "const session = require('express-session')\napp.use(session({ secret: process.env.S }))\n",
+            "routes/session.js": (
+                "this.login = (req, res) => {\n"
+                "  // fix: wrap in req.session.regenerate(() => {})\n"
+                "  req.session.userId = user._id\n"
+                "}\n"
+                "this.signup = (req, res) => {\n"
+                "  /* req.session.userId = user._id */\n"
+                "  req.session.regenerate(() => {\n"
+                "    req.session.userId = user._id\n"
+                "  })\n"
+                "}\n"
+            ),
+        },
+    )
+    assert _fixation(scan_repo(root)) == [("routes/session.js", 3)]
+
+
 def test_php_fixation_needs_no_store(tmp_path: Path) -> None:
     root = _write(tmp_path, {"login.php": (FIXTURES / "vuln_oauth_session.php").read_text()})
     assert _fixation(scan_repo(root)) == [("login.php", 6)]

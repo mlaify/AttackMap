@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Plugin CI (#254): a reusable workflow, `.github/workflows/plugin-ci.yml`, tests an analyzer against its minimum declared core, the latest release and `main`. Core CI's new `plugin-matrix` job runs all 15 official analyzers' tests against every core change.
 
+## [0.9.0] - 2026-11-24
+
+### Added
+
+- Java/Kotlin JWT checks (#472): jjwt `parse()` / `parseClaimsJwt` / `unsecured()` accept unsigned (`alg: none`) tokens, and auth0 `Algorithm.none()` does too (`jwt_alg_confusion`). Short hard-coded HMAC keys in `setSigningKey` / `signWith` / `verifyWith` / `Keys.hmacShaKeyFor` / `Algorithm.HMAC*` are cited at the literal or its constant (`jwt_weak_secret`). `JWT.decode` claims are flagged when the file never calls `JWT.require` (`jwt_unverified_decode`). `parseClaimsJws` / `parseSignedClaims` / `JWT.require` count as the `jwt_verified` control. These run in the repo pass with the JVM crypto rules.
+
+### Fixed
+
+- Taint follows request input into a helper in another file, one hop. For example, `svc.execute(null, command)` reaches `new ProcessBuilder(sh, "-c", command)` in `ExecService`. The helper's parameter has to reach the sink, and the route's file has to pass request input at that position; the caller's sanitizers and guards still apply. Java files get import and same-package edges for this, but Java still emits no cross-file chain without a traced call. A request-gated sink that only a parameter reaches now fires when such a caller exists. WebGoat injection recall 82% → 94%.
+- Precision and recall from OWASP NodeGoat (real-world benchmark):
+  - Sinks named in a comment no longer match (`// Insecure use of eval()`, a commented-out `$where` query). Code in a string still counts (`vm.runInContext('yaml.load(data)', …)`).
+  - Constructor-function handlers resolve. `const h = new Handler(db)` maps `h.method` to `this.method = (req, res) =>` in Handler's module, for taint seeding and the BOLA hop. A `…DAO.method(` call counts as datastore access.
+  - `isLoggedIn` route middleware counts as authentication.
+  - Session fixation is judged per login write: a write inside or right after a live `regenerate()` is safe, and a `regenerate()` in a comment no longer clears the whole file.
+  - `needle`, `got`, `superagent` and `https.get` / `https.request` are SSRF sinks.
+  - The benchmark adds NodeGoat (7 labels).
+- `res.render(view, { ...req.body })` / `res.render(view, req.query)` is template injection (#445): the whole request becomes the template locals, so `layout`, `settings` and engine options come from the request (Juice Shop dataErasure local file read). Picking fields (`{ name: req.body.name }`) isn't flagged.
+- Juice Shop recall (#445): Express handlers that destructure the request (`({ body }: Request, res) =>`, `({ query: q }, res) =>`) take `body` / `query` / `params` / `headers` / `cookies` / `files` as request sources, when the parameter is typed `Request` or followed by `res` / `response` / `reply`. The JS function-header scan no longer stops at a brace inside the parameter list, which dropped every destructured parameter. `vm.runInContext` / `runInNewContext` with fixed code that evaluates a context variable (`'safeEval(x)'`) is code injection when request input reaches the context object.
+- Lookup validation (#444): `rec = find(key); if (!rec) return` (also `rec == null`, `rec.items.length === 0`, or the sink in the `else` branch) validates `key` for later sinks built from `key` itself, when the lookup is a single-argument `map.get` / `set.has` / `find*` / `retrieve*` / `lookup*` / `read*` call whose receiver isn't tainted. What the record holds stays tainted (stored data, such as Juice Shop's username SSTI). A check that returns inside a `try` whose `catch` also exits now counts as dominating the code after the try. Removes the Juice Shop `vulnCodeSnippet` / `vulnCodeFixes` path-traversal flows.
+- Third-party scripts in a `lib`/`libs` directory under a static-asset directory (`static/js/libs/ace.js`, `public/lib/jquery.js`) count as vendored, which removes 20 WebGoat noise locations (secrets, prototype pollution, ReDoS in `ace.js`). A top-level `lib/` or `libs/` is still first-party.
+- Java precision from OWASP WebGoat (real-world benchmark): taint flow follows request input into same-file helpers, up to two calls deep (JS/TS, PHP, Java, C#). The caller's sanitizers and guards still apply at the call site. Spring `"redirect:" + x` views, `RedirectView` and `sendRedirect` are open-redirect sinks. Java `String.matches("…")` is a full-match validation guard. Core's crypto rules now run on Java/Kotlin sources, which no scan checked before. The Java MD5/SHA-1 rule needs a secret passed to `update`/`digest`. The benchmark adds WebGoat v2026.5 (21 labels).
+- Python precision from OWASP PyGoat (real-world benchmark): `c` / `cur` cursor names are SQL sinks; `yaml.load` with `Loader=yaml.Loader` / `UnsafeLoader` / `FullLoader` is unsafe deserialization (only Safe/Base loaders are exempt); an allow-list check on a file *name* no longer guards deserialization of its content; SAX `setFeature(feature_external_ges, True)` (and the Java external-entity feature URIs, libxmljs `noent: true`) is XXE; `redirect(request.referrer)` is no longer an open redirect. The benchmark adds PyGoat v3.0.0 (15 labels).
+
 ## [0.8.0] - 2026-11-24
 
 ### Added
@@ -1552,7 +1575,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/mlaify/AttackMap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mlaify/AttackMap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mlaify/AttackMap/compare/v0.6.5...v0.7.0
 [0.6.5]: https://github.com/mlaify/AttackMap/compare/v0.6.4...v0.6.5

@@ -145,6 +145,10 @@ sinks:
      regex: '\bnew\s+Function\s*\('}
   - {id: js-vm-run, kind: code_injection, langs: [js], cwe: 94, gate: tainted,
      regex: '\bvm\s*\.\s*(?:runInNewContext|runInThisContext|runInContext|compileFunction)\s*\(|\bnew\s+vm\s*\.\s*Script\s*\('}
+  - {id: js-vm-context-eval, kind: code_injection, langs: [js], cwe: 94, gate: tainted, args: [1],
+     note: "fixed code that evaluates a context variable (Juice Shop b2bOrder: notevil safeEval); the context carries the input",
+     when: '^\s*[''"`][^''"`\n]{0,200}?\b(?:safeEval|eval|evaluate|Function)\s*\(',
+     regex: '\bvm\s*\.\s*(?:runInNewContext|runInContext)\s*\('}
   - {id: js-timer-string, kind: code_injection, langs: [js], cwe: 94, gate: tainted,
      note: "setTimeout/setInterval with a string body; function callbacks are ignored",
      unless: '^\s*(?:async\b|function\b|\(|[A-Za-z_$][\w$]*\s*=>)',
@@ -257,6 +261,11 @@ sinks:
   - {id: jinja-template, kind: ssti, langs: [python, js, go, php], cwe: 1336, gate: tainted,
      regex: '\bTemplate\s*\('}
 
+  - {id: js-render-request-locals, kind: ssti, langs: [js], cwe: 1336, gate: tainted, args: [1],
+     note: "the whole request object as template locals: `layout`, `settings` and engine options come from the request (Juice Shop dataErasure)",
+     when: '^[^,]*,\s*(?:\{\s*(?:[^{}]*,\s*)?\.\.\.\s*)?req(?:uest)?\s*\.\s*(?:body|query)(?![\w$.\[])',
+     regex: '\bres\s*\.\s*render\s*\('}
+
   # --- SSRF -------------------------------------------------------------------
   - {id: py-requests, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
      regex: '\brequests\.(?:get|post|put|delete|patch|head)\s*\('}
@@ -269,7 +278,7 @@ sinks:
   - {id: py-urlopen, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
      regex: '\b(?:urlopen|urlretrieve)\s*\('}
   - {id: js-http-client, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
-     regex: '\b(?:axios\s*\.\s*(?:get|post|put|delete|patch|head|request)|fetch|http\.(?:get|request))\s*\('}
+     regex: '\b(?:(?:axios|needle|got|superagent)\s*\.\s*(?:get|post|put|delete|patch|head)|axios\s*\.\s*request|fetch|(?<![\w$.])got|https?\.(?:get|request))\s*\('}
   - {id: go-http-get, kind: ssrf, langs: [go], cwe: 918, gate: tainted,
      regex: '\bhttp\.(?:Get|Head|Post|PostForm)\s*\('}
   - {id: go-http-new-request, kind: ssrf, langs: [go], cwe: 918, gate: tainted, args: [1],

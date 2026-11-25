@@ -35,7 +35,7 @@ from bisect import bisect_left, bisect_right
 import warnings
 from collections import deque
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .safe_fs import is_contained, is_oversized, read_repo_text, walk_repo
 from .models import Route, ScanResult, TaintChain, TaintFlowStep
@@ -352,6 +352,7 @@ def analyze_taint(
     defs_cache: dict[str, _ModuleDefs] = {}
     php_classes: dict[str, list[str]] | None = None
     sink_index: dict[str, tuple[list[int], list[int]]] = {}
+    flow_cache: dict[str, FileFlow] = {}
 
     def read(rel: str) -> str:
         if rel not in content_cache:
@@ -440,6 +441,8 @@ def analyze_taint(
                         seed_spans[rel] = _php_method_spans(read(rel), ref[1])
 
         for seed in seed_files:
+            if seed not in flow_cache:
+                flow_cache[seed] = FileFlow(read(seed), Path(seed).suffix)
             for chain in _walk_from_route(
                 route,
                 seed,
@@ -449,6 +452,7 @@ def analyze_taint(
                 route_lines.get(route_file, []),
                 handler_span=seed_spans.get(seed) if seed != route_file else None,
                 sink_index=sink_index,
+                seed_flow=flow_cache[seed],
             ):
                 key = (
                     f"{chain.route_method} {chain.route_path}",
@@ -605,6 +609,10 @@ def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str
     go_module = _go_module_path(root)
     go_dirs = _go_dir_index(files)
     php_psr4 = _php_psr4_map(root)
+    java_index: dict[str, list[str]] = {}
+    for rel in files:
+        if rel.endswith(".java"):
+            java_index.setdefault(PurePosixPath(rel).stem, []).append(rel)
     for rel, abs_path in files.items():
         try:
             content = abs_path.read_text(encoding="utf-8")
@@ -617,12 +625,32 @@ def _build_import_graph(files: dict[str, Path], root: Path) -> dict[str, set[str
             graph[rel].update(_resolve_go_imports(content, go_module, go_dirs))
         elif abs_path.suffix in _PHP_SUFFIXES:
             graph[rel].update(_resolve_php_imports(content, rel, files, root, php_psr4))
+        elif abs_path.suffix in _JAVA_SUFFIXES:
+            # Edges for traced cross-file calls only: the walk emits no Java reach chain without one.
+            graph[rel].update(_resolve_java_refs(content, rel, java_index))
         elif abs_path.suffix in _SAME_FILE_ONLY_SUFFIXES:
             continue  # same-file flows only (#239, #240)
         else:  # JS/TS
             edges = _resolve_js_imports_named(content, rel, files, root)
             graph[rel].update(_prune_unused_edges(edges, content, ".js"))
     return graph
+
+
+_JAVA_IMPORT_RE = re.compile(r"^\s*import\s+(?!static\b)([\w.]+)\.([A-Z]\w*)(?:\.\w+)*\s*;", re.MULTILINE)
+
+
+def _resolve_java_refs(content: str, rel: str, java_index: dict[str, list[str]]) -> set[str]:
+    """Classes a Java file uses: explicit imports, and same-package classes it names."""
+    out: set[str] = set()
+    for m in _JAVA_IMPORT_RE.finditer(content):
+        tail = "/" + m.group(1).replace(".", "/") + "/" + m.group(2) + ".java"
+        out.update(r for r in java_index.get(m.group(2), ()) if ("/" + r).endswith(tail))
+    here = PurePosixPath(rel).parent
+    words = set(re.findall(r"\b[A-Z]\w*", content))
+    for stem in words & java_index.keys():
+        out.update(r for r in java_index[stem] if PurePosixPath(r).parent == here)
+    out.discard(rel)
+    return out
 
 
 def _prune_unused_edges(
@@ -803,7 +831,14 @@ def _named_import_modules(
                 continue
             for name in _binding_names(match.group("clause")):
                 out.setdefault(name, rel)
+    # `const handler = new Handler(db)`: the instance's methods live in Handler's module (NodeGoat).
+    for match in _JS_NEW_INSTANCE_RE.finditer(content):
+        if match.group(2) in out:
+            out.setdefault(match.group(1), out[match.group(2)])
     return out
+
+
+_JS_NEW_INSTANCE_RE = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]{0,80})\s*=\s*new\s+([A-Za-z_$][\w$]{0,80})\s*\(")
 
 
 _ROUTE_CALL_RE = re.compile(
@@ -1409,6 +1444,9 @@ class _SinkHit:
     # request token) — such a hit belongs to the handler that encloses it.
     flow_only: bool = False
     url_control: str | None = None
+    # Untraced in its own file; it fires only when a caller in another file passes
+    # request input to the enclosing function's parameter (`flow.helper`).
+    helper_only: bool = False
 
 
 def _call_paren(content: str, match: re.Match[str]) -> int:
@@ -1467,6 +1505,8 @@ def _find_sinks(
                 continue
             kind = sink.kind
             for match in sink.pattern.finditer(content):
+                if flows.in_comment(match.start()):
+                    continue  # `// insecure use of eval()`, a commented-out query
                 # A "dangerous-regardless" sink whose argument is a static
                 # literal / local-file read (#88 follow-up): the default pass
                 # suppresses it; recall keeps it as a speculative lead.
@@ -1497,6 +1537,7 @@ def _find_sinks(
                 flow = flows.sink_flow(kind, paren, sink.args, snippet, match.start(), match.end())
                 traced = flow is not None and (flow.tainted or flow.sanitized)
                 flow_only = False
+                helper_only = False
                 if sink.gate == "tainted":
                     # The pre-#239 same-call gate: a request-container token
                     # between the call's paren and its first `)` — inside the
@@ -1508,7 +1549,9 @@ def _find_sinks(
                     )
                     if not legacy_ok:
                         if not traced:
-                            continue
+                            if flow is None or flow.helper is None:
+                                continue
+                            helper_only = True
                         flow_only = True
                 # Suppress parameterized SQL — bind params / builder / placeholders
                 # only — vs. raw string-built queries (#101). A traced flow into the
@@ -1524,7 +1567,7 @@ def _find_sinks(
                     sanitizer = sanitizer_by_kind[kind]
                 line = line_number(content, match.start())
                 control = url_control(arg_text) if kind == "ssrf" else None
-                hits.append(_SinkHit(kind, line, snippet, sanitizer, relaxed, flow, flow_only, control))
+                hits.append(_SinkHit(kind, line, snippet, sanitizer, relaxed, flow, flow_only, control, helper_only))
                 emitted.add((kind, line))
 
         # Capability-reach pass (#148b, recall only): the bare-call form of the
@@ -1586,6 +1629,7 @@ def _walk_from_route(
     route_lines: list[int] | None = None,
     handler_span: list[tuple[int, int]] | None = None,
     sink_index: dict[str, tuple[list[int], list[int]]] | None = None,
+    seed_flow: FileFlow | None = None,
 ) -> list[TaintChain]:
     """BFS out from route_file, up to ``recall.max_hops``. Emit chains at each
     sink; tag as speculative any chain that only exists because a recall knob
@@ -1623,6 +1667,15 @@ def _walk_from_route(
             hits = _hits_in_spans(current, hits, handler_span, sink_index)
         for hit in hits:
             flow = hit.flow
+            cross: list[TaintFlowStep] | None = None
+            if current_hops == 1 and seed_flow is not None and flow is not None and flow.helper is not None:
+                cross_flow, cross = _cross_file_flow(route, route_file, route_lines, seed_flow, flow.helper, hit, current)
+                if cross_flow is not None:
+                    flow = cross_flow
+            if cross is None and (
+                hit.helper_only or (current_hops >= 1 and Path(current).suffix in _SAME_FILE_ONLY_SUFFIXES)
+            ):
+                continue  # needs a traced call from this route's file
             if current_hops == 0 and handler_span is not None:
                 # Seeded from the view a URLconf names (#372): that view's sinks,
                 # and those of the same-module helpers and bases it reaches, are
@@ -1673,7 +1726,9 @@ def _walk_from_route(
                     source_kind=flow.source_kind if traced and flow is not None else None,
                     source_line=flow.source_line if traced and flow is not None else None,
                     flow=(
-                        [
+                        cross
+                        if cross is not None
+                        else [
                             TaintFlowStep(file=current, line=ln, kind=k, evidence_text=note)  # type: ignore[arg-type]
                             for ln, k, note in flow.steps
                         ]
@@ -1694,6 +1749,33 @@ def _walk_from_route(
             parents[neighbor] = current
             queue.append(neighbor)
     return chains
+
+
+def _cross_file_flow(
+    route: Route,
+    seed: str,
+    route_lines: list[int],
+    seed_flow: FileFlow,
+    helper: tuple[str, tuple[int, ...]],
+    hit: _SinkHit,
+    sink_file: str,
+) -> tuple[SinkFlow | None, list[TaintFlowStep] | None]:
+    """One hop across files: the route's file calls the helper whose parameter reaches ``hit``
+    (`commandExecutionService.execute(null, command, …)` → `new ProcessBuilder(sh, "-c", command)`)."""
+    own_file = seed == _normalize_rel(route.file)
+    for atom, (lo, hi) in seed_flow.external_calls(helper[0], helper[1], hit.kind):
+        if own_file and route.line is not None and not lo <= route.line <= hi:
+            if any(lo <= ln <= hi for ln in route_lines if ln != route.line):
+                continue  # another route's handler makes the call
+        steps = sorted(atom.steps, key=lambda st: st[0])
+        flow = SinkFlow(tainted=True, source_kind=atom.kind, source_line=atom.line, span=(lo, hi))
+        path = [
+            TaintFlowStep(file=seed, line=ln, kind=k, evidence_text=note)  # type: ignore[arg-type]
+            for ln, k, note in steps
+        ]
+        path.append(TaintFlowStep(file=sink_file, line=hit.line, kind="sink", evidence_text=hit.snippet[:120]))
+        return flow, path
+    return None, None
 
 
 def _reachable_files(

@@ -71,6 +71,7 @@ from .srcpaths import line_number
 from .taint_sources import (
     ALL_SANITIZER_KINDS,
     CAST_SANITIZERS,
+    CONTENT_SINKS,
     CSHARP,
     EARLY_EXIT,
     GO,
@@ -170,6 +171,9 @@ class SinkFlow:
     sanitizer: str | None = None
     steps: list[Step] = field(default_factory=list)
     span: tuple[int, int] | None = None  # enclosing function (start_line, end_line), decorators included
+    # Untraced, but the enclosing function's own parameters reach the arg: (function name, parameter
+    # indexes). A caller in another file may pass request input there (one hop, `external_calls`).
+    helper: tuple[str, tuple[int, ...]] | None = None
 
 
 def _verdict(kind: str, atoms: list[Atom], sink_line: int, sink_note: str, span: tuple[int, int]) -> SinkFlow:
@@ -732,6 +736,27 @@ _ASSIGN_OP[CSHARP] = _ASSIGN_OP[JAVA]
 _IDENT_RE[CSHARP] = _IDENT_RE[JAVA]
 _GO_OUTPARAM_RE = re.compile(r"&\s*([A-Za-z_]\w*)")
 _IF_RE = re.compile(r"\bif\b")
+# `if (!x) return` / `if (x == null) return` / `if (x.items.length === 0) return` on a lookup result (#444).
+_NOT_FOUND_RE = re.compile(
+    r"(?:!\s{0,8}(?P<a>[A-Za-z_$][\w$]{0,63})(?:\s{0,8}\??\.\s{0,8}[\w$]{1,64}){0,8}"
+    r"|(?P<b>[A-Za-z_$][\w$]{0,63})(?:\s{0,8}\??\.\s{0,8}[\w$]{1,64}){0,8}\s{0,8}={2,3}\s{0,8}(?:null|undefined|nil|0))"
+)
+# `x = [await] [recv.]name(` where name looks up a stored record by key: `map.get(k)`, `set.has(k)`,
+# `Model.findByPk(id)`, `retrieveSnippet(key)`, `readFixes(key)`.
+_LOOKUP_CALL_RE = re.compile(
+    r"(?<![\w$.])(?:await\s{1,8})?((?:[A-Za-z_$][\w$]{0,63}\s{0,8}\??\.\s{0,8}){0,8})([A-Za-z_$][\w$]{0,63})\s{0,8}\("
+)
+_LOOKUP_NAME_RE = re.compile(r"(?:find|retrieve|lookup|read(?!File))\w*")
+_LOOKUP_LIBS = frozenset({"_", "lodash", "R"})
+_ELSE_RE = re.compile(r"else\b\s*")
+_TRY_TAIL_RE = re.compile(r"\btry\s*$")
+_CATCH_RE = re.compile(r"catch\b\s*(?:\([^)]*\)\s*)?")
+_REQUEST_TYPE_RE = re.compile(r":\s*(?:express\s*\.\s*)?Request\b")
+_RESPONSE_NAMES = frozenset({"res", "response", "reply"})
+_REQUEST_FIELDS = {
+    "body": "body", "query": "query", "params": "path_param", "headers": "header",
+    "cookies": "cookie", "signedCookies": "cookie", "file": "upload_filename", "files": "upload_filename",
+}
 _FN_KEYWORD_RE = re.compile(r"\b(?:function|func)\b")
 _NEW_CLASS_RE = re.compile(r"\bnew\s+[\w.<>]+\s*$")
 _TRAILING_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*$")
@@ -941,7 +966,22 @@ class _TextFlow:
         hend = o + 1 if k in self._concise else o
         lo = max(0, o - _MAX_HEADER)
         seg = self.m[lo:hend]
-        cut = max(seg.rfind(";"), seg.rfind("{"), seg.rfind("}"))
+        # The header starts after the last `;`, `{` or `}`, except inside the parameter list that ends
+        # it: a destructured parameter (`({ body }, res) =>`, `function f({ a }) {`) has braces of its own.
+        limit = len(seg)
+        p0 = seg.rfind(")")
+        rest = seg[p0 + 1 :].strip() if p0 != -1 else None
+        if rest is not None and (rest in ("", "=>") or rest.startswith(":")):
+            depth = 0
+            for q in range(p0, -1, -1):
+                if seg[q] == ")":
+                    depth += 1
+                elif seg[q] == "(":
+                    depth -= 1
+                    if depth == 0:
+                        limit = q
+                        break
+        cut = max(seg.rfind(";", 0, limit), seg.rfind("{", 0, limit), seg.rfind("}", 0, limit))
         start = lo + cut + 1
         header = self.m[start:hend]
         h = header.rstrip()
@@ -1046,6 +1086,19 @@ class _TextFlow:
     def _is_code(self, off: int) -> bool:
         return self.m[off] == self.raw[off]
 
+    def _in_comment(self, off: int) -> bool:
+        m, raw = self.m, self.raw
+        if m[off] == raw[off]:
+            return False
+        # Back to the start of the masked run: comments are blanked from their opener on, string
+        # literals only inside their (kept) quotes.
+        j = off
+        while j > 0 and (m[j - 1] != raw[j - 1] or raw[j - 1].isspace()):
+            j -= 1
+        while j < off and raw[j].isspace():
+            j += 1
+        return raw.startswith(("//", "/*"), j) or (self.lang == PHP and raw[j] == "#")
+
     def _eval(self, a: int, b: int, env: dict[str, list[Atom]]) -> list[Atom]:
         if b <= a:
             return []
@@ -1121,7 +1174,32 @@ class _TextFlow:
                 env[name] = [Atom(kind, line, "high", label, (), ((line, "source", f"{kind}: {label}"),))]
             else:
                 env[name] = [Atom("param", line, "param", name)]
+        if self.lang == JS:
+            env.update(self._destructured_request(po, pc, line))
         return env
+
+    def _destructured_request(self, po: int, pc: int, line: int) -> dict[str, list[Atom]]:
+        """Express handlers that destructure the request: ``({ body }, res) =>``, ``({ query }: Request, ...)``."""
+        segs = self._split_args(po + 1, pc)
+        if not segs:
+            return {}
+        s, e = segs[0]
+        first = self.m[s:e].strip()
+        if not first.startswith("{") or "}" not in first:
+            return {}
+        inner, tail = first[1:].split("}", 1)
+        second = _IDENT_RE[JS].findall(self.m[segs[1][0] : segs[1][1]].split(":", 1)[0]) if len(segs) > 1 else []
+        if not (_REQUEST_TYPE_RE.match(tail.lstrip()) or (second and second[0] in _RESPONSE_NAMES)):
+            return {}
+        out: dict[str, list[Atom]] = {}
+        for part in inner.split(","):
+            field, _, local = part.split("=", 1)[0].partition(":")
+            field, local = field.strip(), (local.strip() or field.strip())
+            kind = _REQUEST_FIELDS.get(field)
+            if kind and _IDENT_RE[JS].fullmatch(local):
+                label = f"handler parameter `{{ {field} }}`"
+                out[local] = [Atom(kind, line, "high", label, (), ((line, "source", f"{kind}: {label}"),))]
+        return out
 
     def _lhs_names(self, op: int, floor: int) -> tuple[list[str], list[str]]:
         m = self.m
@@ -1256,7 +1334,9 @@ class _TextFlow:
                 stop = min(stop, idx)
         return body[:stop]
 
-    def _guards(self, kind: str, k: int, hdr: tuple[int, int, int], sink: int, env: dict, atoms: list[Atom]) -> list[Atom]:
+    def _guards(
+        self, kind: str, k: int, hdr: tuple[int, int, int], sink: int, env: dict, atoms: list[Atom], regions: list = ()
+    ) -> list[Atom]:
         live = {a.ident for a in atoms if a.sanitizer_for(kind) is None}
         if not live:
             return atoms
@@ -1292,23 +1372,105 @@ class _TextFlow:
                 blk = (self.opens[bk], self.closes[bk])
             else:
                 blk = (after, self._stmt_end(after, len(self.m)))
+            via_else = False
             if blk[1] < sink:
-                if not EARLY_EXIT.search(self.m, blk[0], blk[1] + 1):
-                    continue
-                encl = self._innermost(mt.start())
-                if encl >= 0 and not (self.opens[encl] < sink < self.closes[encl]):
+                if EARLY_EXIT.search(self.m, blk[0], blk[1] + 1):
+                    encl = self._innermost(mt.start())
+                    if encl >= 0 and not (self.opens[encl] < sink < self.closes[encl]) and not self._exits_try(encl, sink):
+                        continue
+                elif self._else_holds(blk[1], sink):
+                    via_else = True  # polarity matters: only the negative not-found form below
+                else:
                     continue
             elif not (blk[0] < sink < blk[1]):
                 continue
             text = self.raw[cond[0] : cond[1]]
-            label = next((lbl for lbl, pat in guard_patterns(kind) if pat.search(text)), None)
-            if label is None:
+            label = None if via_else else next((lbl for lbl, pat in guard_patterns(kind) if pat.search(text)), None)
+            if label is not None:
+                bound = {a.ident for a in self._eval(cond[0], cond[1], env)} & live
+            elif regions and kind not in CONTENT_SINKS:
+                label = "lookup validation"
+                keys = self._lookup_guard(cond, body_lo, mt.start(), env, regions)
+                bound = {i for i in live if i[:2] in keys}
+            else:
                 continue
-            bound = {a.ident for a in self._eval(cond[0], cond[1], env)} & live
             if bound:
                 gl = line_number(self.raw, mt.start())
                 atoms = [a.with_sanitizer((kind,), label, gl, "guard") if a.ident in bound else a for a in atoms]
         return atoms
+
+    def _skip_ws(self, p: int) -> int:
+        while p < len(self.m) and self.m[p].isspace():
+            p += 1
+        return p
+
+    def _else_holds(self, end: int, sink: int) -> bool:
+        """``sink`` sits in the ``else { }`` right after the block ending at ``end``."""
+        mt = _ELSE_RE.match(self.m, self._skip_ws(end + 1))
+        if mt is None or mt.end() not in self.open_index:
+            return False
+        bk = self.open_index[mt.end()]
+        return self.opens[bk] < sink < self.closes[bk]
+
+    def _exits_try(self, encl: int, sink: int) -> bool:
+        """Block ``encl`` is a ``try`` body whose ``catch`` also exits, so a check that returns inside it
+        still dominates ``sink`` after the try."""
+        o = self.opens[encl]
+        if not _TRY_TAIL_RE.search(self.m, max(0, o - 16), o):
+            return False
+        mt = _CATCH_RE.match(self.m, self._skip_ws(self.closes[encl] + 1))
+        if mt is None or mt.end() not in self.open_index:
+            return False
+        ck = self.open_index[mt.end()]
+        if self.closes[ck] > sink or not EARLY_EXIT.search(self.m, self.opens[ck], self.closes[ck] + 1):
+            return False
+        outer = self._innermost(o - 1)
+        return outer < 0 or self.opens[outer] < sink < self.closes[outer]
+
+    def _lookup_guard(self, cond: tuple[int, int], lo: int, at: int, env: dict, regions) -> set:
+        """Atoms validated by a not-found exit: ``rec = find(key); if (!rec) return`` means ``key`` names
+        a stored record (a known challenge, a session, a row), so a sink built from ``key`` itself carries no
+        attacker-chosen value. What ``rec`` holds may still be attacker-written (a stored username), so a
+        sink that reads ``rec`` stays tainted. Only single-argument lookups on a plain variable whose
+        receiver isn't itself tainted count. Returns the validated atoms' (kind, line)."""
+        a, b = cond
+        while a < b and self.m[a].isspace():
+            a += 1
+        while b > a and self.m[b - 1].isspace():
+            b -= 1
+        mt = _NOT_FOUND_RE.fullmatch(self.m, a, b)
+        if mt is None:
+            return set()
+        var = mt.group("a") or mt.group("b")
+        assign = None
+        for am in re.finditer(r"(?<![\w$.])" + re.escape(var) + r"\s*=(?![=>])", self.m[lo:at]):
+            assign = am
+        if assign is None:
+            return set()
+        cm = _LOOKUP_CALL_RE.match(self.m, self._skip_ws(lo + assign.end()), at)
+        if cm is None:
+            return set()
+        recv, name = cm.group(1), cm.group(2)
+        if recv:
+            if recv.split(".", 1)[0].strip() in _LOOKUP_LIBS:
+                return set()
+            if name not in ("get", "has") and not _LOOKUP_NAME_RE.fullmatch(name):
+                return set()
+        elif not _LOOKUP_NAME_RE.fullmatch(name):
+            return set()
+        open_ = cm.end() - 1
+        close = self._match_paren(open_, _MAX_RHS)
+        key = self.m[open_ + 1 : close].strip()
+        if close >= at or not _TRAILING_IDENT_RE.fullmatch(key) or key == var:
+            return set()
+        sink_text = " ".join(self.m[a:b] for a, b in regions)
+        if not re.search(r"(?<![\w$.])" + re.escape(key) + r"(?![\w$])", sink_text) or re.search(
+            r"(?<![\w$.])" + re.escape(var) + r"(?![\w$])", sink_text
+        ):
+            return set()
+        # (kind, line): an atom's label depends on the region it was read from.
+        arg = {a.ident[:2] for a in self._eval(open_ + 1, close, env)}
+        return arg - {a.ident[:2] for a in self._eval(cm.start(1), cm.start(2), env)}
 
     def _receiver(self, end: int) -> tuple[int, int]:
         """Region of the receiver expression ending just before ``end``
@@ -1434,7 +1596,7 @@ class _TextFlow:
             if _fixed_prefix(kind, self._leading_literal(s, e)):
                 continue
             atoms += self._eval(s, e, env)
-        atoms = self._guards(kind, k, hdr, paren, env, _dedupe(atoms))
+        atoms = self._guards(kind, k, hdr, paren, env, _dedupe(atoms), regions)
         if not any(a.weight == "high" and a.sanitizer_for(kind) is None for a in atoms):
             atoms = _dedupe(atoms + self._caller_atoms(kind, k, hdr, atoms))
         line = line_number(self.raw, paren)
@@ -1447,7 +1609,48 @@ class _TextFlow:
                 if (a.kind, a.line) == (flow.source_kind, flow.source_line) and a.ident in self._caller_span:
                     flow.span = self._caller_span[a.ident]
                     break
+        elif not flow.sanitized:
+            flow.helper = self._helper_params(kind, hdr, atoms)
         return flow
+
+    def _helper_params(self, kind: str, hdr: tuple[int, int, int], atoms: list[Atom]) -> tuple[str, tuple[int, ...]] | None:
+        hs, po, _ = hdr
+        params = {a.label for a in atoms if a.weight == "param" and a.sanitizer_for(kind) is None}
+        order = self._param_order.get(po) if po >= 0 else None
+        word = _TRAILING_IDENT_RE.search(self.m[hs:po].rstrip()) if params and order else None
+        if word is None or word.group() in _KEYWORDS:
+            return None
+        idx = tuple(i for i, n in enumerate(order) if n in params)
+        return (word.group(), idx) if idx else None
+
+    def external_calls(self, name: str, idxs: tuple[int, ...], kind: str) -> list[tuple[Atom, tuple[int, int]]]:
+        """Request input this file passes to ``name`` (any receiver: ``svc.name(…)``) at ``idxs``, with the
+        calling function's span. The caller's sanitizers and dominating guards apply."""
+        out: list[tuple[Atom, tuple[int, int]]] = []
+        calls = 0
+        for mt in re.finditer(rf"(?<![\w$]){re.escape(name)}\s*\(", self.m):
+            p = mt.end() - 1
+            close = self._match_paren(p, _MAX_ARGS)
+            if self.m[close + 1 : close + 12].lstrip().startswith(("{", "throws")):
+                continue  # a definition, not a call
+            found = self._enclosing_fn(p)
+            if found is None or found[1][1] == p:
+                continue
+            if calls >= _MAX_CALLERS:
+                break
+            calls += 1
+            ck, chdr = found
+            env = self._env_at(ck, chdr, p)
+            args = self._split_args(p + 1, close)
+            line = line_number(self.raw, p)
+            got: list[Atom] = []
+            for i in idxs:
+                if i < len(args):
+                    got += [a.with_step(line, "propagation", f"passed to {name}()") for a in self._eval(*args[i], env)]
+            got = self._guards(kind, ck, chdr, p, env, _dedupe(got))
+            span = (line_number(self.raw, chdr[0]), line_number(self.raw, self._body(ck)[1]))
+            out += [(a, span) for a in got if a.weight == "high" and a.sanitizer_for(kind) is None]
+        return out
 
 
 # =============================================================================
@@ -1484,6 +1687,16 @@ class FileFlow:
                 self._failed = True
                 return None
         return self._impl
+
+    def external_calls(self, name: str, idxs: tuple[int, ...], kind: str) -> list[tuple[Atom, tuple[int, int]]]:
+        impl = self._get()
+        return impl.external_calls(name, idxs, kind) if isinstance(impl, _TextFlow) else []
+
+    def in_comment(self, off: int) -> bool:
+        """True when ``off`` sits in a comment (brace languages). A string literal isn't a comment: code in a
+        string can still run (`vm.runInContext('yaml.load(data)', …)`)."""
+        impl = self._get()
+        return isinstance(impl, _TextFlow) and impl._in_comment(off)
 
     def sink_flow(
         self,

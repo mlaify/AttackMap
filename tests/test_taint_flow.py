@@ -669,3 +669,139 @@ def test_java_string_matches_is_a_full_match_guard(tmp_path: Path) -> None:
     scan = ScanResult(root=str(tmp_path), routes=[Route(path="/s", method="POST", file="S.java", line=3)])
     [chain] = [c for c in analyze_taint(scan, tmp_path) if c.sink_kind == "ssrf"]
     assert chain.sanitized
+
+
+def test_a_not_found_exit_after_a_lookup_validates_the_key(tmp_path: Path) -> None:
+    # Juice Shop vulnCodeSnippet (#444): the key named a stored record, or the handler returned. The record
+    # itself may hold attacker-written data (Juice Shop's stored username SSTI), and a bare presence check
+    # of the raw input proves nothing.
+    (tmp_path / "app.js").write_text(
+        "app.post('/a', async (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  const snippet = await retrieveSnippet(key)\n"
+        "  if (snippet == null) { return res.status(404).end() }\n"
+        "  fs.readFileSync('./data/' + key + '.yml')\n"
+        "})\n"
+        "app.post('/b', (req, res) => {\n"
+        "  const user = sessions.get(req.cookies.token)\n"
+        "  if (!user) { return next(new Error('blocked')) }\n"
+        "  fs.writeFileSync(`uploads/${user.data.id}.png`, buf)\n"
+        "})\n"
+        "app.post('/c', (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  if (!key) { return res.status(400).end() }\n"
+        "  fs.readFileSync('./data/' + key)\n"
+        "})\n"
+        "app.post('/d', async (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  let rec\n"
+        "  try {\n"
+        "    rec = await retrieveSnippet(key)\n"
+        "    if (rec == null) { return res.status(404).end() }\n"
+        "  } catch (e) { return next(e) }\n"
+        "  fs.readFileSync('./data/' + key)\n"
+        "})\n"
+        "app.post('/e', (req, res) => {\n"
+        "  const key = req.body.key\n"
+        "  const fixes = readFixes(key)\n"
+        "  if (fixes.items.length === 0) { res.status(404).end() } else { fs.readFileSync('./f/' + key) }\n"
+        "  if (fixes) { res.end() } else { fs.readFileSync('./g/' + key) }\n"
+        "})\n",
+        encoding="utf-8",
+    )
+    spec = (("/a", 1), ("/b", 7), ("/c", 12), ("/d", 17), ("/e", 26))
+    routes = [Route(path=p, method="POST", file="app.js", line=n) for p, n in spec]
+    chains = [c for c in analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path) if c.sink_kind == "dynamic_open"]
+    assert sorted((c.sink_line, c.sanitized) for c in chains) == [
+        (5, True), (10, False), (15, False), (24, True), (29, True), (30, False)
+    ]
+
+
+def test_destructured_express_request_and_vm_context_eval(tmp_path: Path) -> None:
+    # Juice Shop b2bOrder / redirect (#445): `({ body }: Request, res)` destructures the request; the fixed
+    # vm code `safeEval(x)` evaluates a context variable. Destructured props of a non-handler stay untainted.
+    (tmp_path / "a.ts").write_text(
+        "app.post('/b', ({ body }: Request, res: Response) => {\n"
+        "  const lines = body.orderLinesData || ''\n"
+        "  vm.runInContext('safeEval(lines)', { safeEval, lines }, { timeout: 2000 })\n"
+        "  vm.runInContext('render(lines)', { lines })\n"
+        "})\n"
+        "app.get('/r', ({ query: q }, res) => {\n"
+        "  res.redirect(q.to)\n"
+        "})\n"
+        "function Search({ query }) { return eval(query) }\n",
+        encoding="utf-8",
+    )
+    routes = [Route(path="/b", method="POST", file="a.ts", line=1), Route(path="/r", method="GET", file="a.ts", line=6)]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    assert {(c.sink_kind, c.sink_line, c.source_kind) for c in chains if c.source_kind} == {
+        ("code_injection", 3, "body"),
+        ("open_redirect", 7, "query"),
+    }
+
+
+def test_the_whole_request_as_render_locals_is_template_injection(tmp_path: Path) -> None:
+    # Juice Shop dataErasure (#445): `layout` and engine options come from the request. Picking fields is fine.
+    (tmp_path / "a.js").write_text(
+        "app.post('/a', (req, res) => {\n"
+        "  res.render('result', { ...req.body, ...themeVars }, (e, html) => res.send(html))\n"
+        "})\n"
+        "app.post('/b', (req, res) => {\n"
+        "  res.render('result', req.query)\n"
+        "})\n"
+        "app.post('/c', (req, res) => {\n"
+        "  res.render('profile', { username: req.body.name, title: 'x' })\n"
+        "})\n",
+        encoding="utf-8",
+    )
+    routes = [Route(path=p, method="POST", file="a.js", line=n) for p, n in (("/a", 1), ("/b", 4), ("/c", 7))]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    assert {(c.route_path, c.sink_line, c.source_kind) for c in chains if c.source_kind} == {("/a", 2, "body"), ("/b", 5, "query")}
+    assert not [c for c in chains if c.sink_line == 8]
+
+
+def test_request_input_is_followed_into_a_helper_in_another_file(tmp_path: Path) -> None:
+    # WebGoat CommandInjectionTask2 → CommandExecutionService (same package, no import): one hop across
+    # files, only when the call passes request input. A Java helper with no traced caller adds nothing.
+    pkg = tmp_path / "src/main/java/org/x"
+    pkg.mkdir(parents=True)
+    (pkg / "Task.java").write_text(
+        "@RestController\npublic class Task {\n  private final ExecService svc;\n"
+        '  @PostMapping("/run")\n  public String run(@RequestParam String command) {\n'
+        "    return svc.execute(null, command).out();\n  }\n"
+        '  @PostMapping("/fixed")\n  public String fixed(@RequestParam String q) {\n'
+        '    return svc.execute(null, "uname -a").out() + svc.render(q);\n  }\n}\n',
+        encoding="utf-8",
+    )
+    (pkg / "ExecService.java").write_text(
+        "public class ExecService {\n"
+        "  public Result execute(File dir, String command) {\n"
+        '    return run(dir, new ProcessBuilder("/bin/sh", "-c", command));\n  }\n'
+        "  public String render(String name) { return name; }\n"
+        "  public Result other(String c) {\n    return run(null, new ProcessBuilder(c));\n  }\n}\n",
+        encoding="utf-8",
+    )
+    task = "src/main/java/org/x/Task.java"
+    routes = [Route(path="/run", method="POST", file=task, line=4), Route(path="/fixed", method="POST", file=task, line=8)]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    assert [(c.route_path, c.sink_file.rsplit("/", 1)[1], c.sink_line, c.source_kind) for c in chains] == [
+        ("/run", "ExecService.java", 3, "query")
+    ]
+    assert [(s.file.rsplit("/", 1)[1], s.line, s.kind) for s in chains[0].flow][-1] == ("ExecService.java", 3, "sink")
+
+
+def test_js_request_input_into_an_imported_helper_is_traced(tmp_path: Path) -> None:
+    (tmp_path / "app.js").write_text(
+        "const { runQuery } = require('./db');\n"
+        "app.get('/a', (req, res) => { res.json(runQuery(req.query.id)); });\n"
+        "app.get('/b', (req, res) => { res.json(runQuery(42)); });\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "db.js").write_text(
+        "function runQuery(id) {\n  return conn.query('SELECT * FROM t WHERE id = ' + id);\n}\nmodule.exports = { runQuery };\n",
+        encoding="utf-8",
+    )
+    routes = [Route(path="/a", method="GET", file="app.js", line=2), Route(path="/b", method="GET", file="app.js", line=3)]
+    chains = analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path)
+    traced = [(c.route_path, c.sink_file, c.sink_line, c.source_kind) for c in chains if c.source_kind]
+    assert traced == [("/a", "db.js", 2, "query")]  # /b keeps an untraced reach chain

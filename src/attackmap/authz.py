@@ -1300,6 +1300,8 @@ _ORM_RECORD_ACCESS = re.compile(
     r"\b(?:[A-Z][\w$]{0,60}|prisma\s*\.\s*[\w$]{1,60}|[\w$]{0,40}[Rr]epo(?:sitory)?)\s*\.\s*"
     r"(?:findOne|findByPk|findById|findAll|findMany|findUnique|findFirst|findOneBy|findByIdAndUpdate"
     r"|findByIdAndDelete|findOneAndUpdate|findOneAndDelete|update|updateOne|destroy|deleteOne|remove)\s*\("
+    # a data-access object by name: `allocationsDAO.getByUserId(userId, …)` (NodeGoat)
+    r"|\b[\w$]{0,40}(?:DAO|Dao)\s*\.\s*[A-Za-z_$][\w$]{0,60}\s*\("
 )
 
 
@@ -1353,9 +1355,12 @@ _DEF_RE = re.compile(
     r"|^[ \t]*(?:export\s+)?(?:const|let|var)\s+(?P<d>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)"
     r"|^[ \t]*(?:exports|module\.exports)\.(?P<e>[A-Za-z_$][\w$]*)\s*="
     r"|^[ \t]*(?:(?:public|private|protected|static|async)\s+)*(?P<f>[A-Za-z_$][\w$]*)\s*\([^)\n]*\)\s*(?::\s*[^{\n]+)?\{"
-    r"|^[ \t]*(?:public|private|protected)\s+[\w<>\[\], ?]+\s+(?P<g>\w+)\s*\(",
+    r"|^[ \t]*(?:public|private|protected)\s+[\w<>\[\], ?]+\s+(?P<g>\w+)\s*\("
+    # a method set in a constructor function: `this.displayAllocations = (req, res) => {` (NodeGoat)
+    r"|^[ \t]*this\.(?P<h>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)",
     re.MULTILINE,
 )
+_JS_NEW_INSTANCE_RE = re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]{0,80})\s*=\s*new\s+([A-Za-z_$][\w$]{0,80})\s*\(")
 _NOT_DEFS = frozenset({"if", "for", "while", "switch", "catch", "function", "return", "with"})
 
 
@@ -1523,6 +1528,10 @@ class _HopResolver:
                             out.setdefault(name, target)
                     if len(out) >= _MAX_IMPORTS:
                         break
+            # `const handler = new Handler(db)`: the instance's methods live in Handler's module.
+            for m in _JS_NEW_INSTANCE_RE.finditer(content):
+                if m.group(2) in out:
+                    out.setdefault(m.group(1), out[m.group(2)])
         self._imports[rel_file] = out
         return out
 

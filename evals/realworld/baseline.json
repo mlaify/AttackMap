@@ -2,31 +2,31 @@
   "overall": {
     "bola": {
       "precision": 1.0,
-      "recall": 0.8333333333333334,
-      "tp": 2,
+      "recall": 0.8571428571428571,
+      "tp": 3,
       "fp": 0,
-      "expected_total": 6
+      "expected_total": 7
     },
     "crypto": {
       "precision": 0.875,
-      "recall": 0.9,
+      "recall": 0.8181818181818182,
       "tp": 7,
       "fp": 1,
-      "expected_total": 10
+      "expected_total": 11
     },
     "injection": {
-      "precision": 0.9523809523809523,
-      "recall": 0.75,
-      "tp": 20,
+      "precision": 0.9655172413793104,
+      "recall": 0.85,
+      "tp": 28,
       "fp": 1,
-      "expected_total": 56
+      "expected_total": 60
     },
     "session_auth": {
       "precision": 1.0,
       "recall": 1.0,
-      "tp": 1,
+      "tp": 2,
       "fp": 0,
-      "expected_total": 1
+      "expected_total": 2
     },
     "token_auth": {
       "precision": 1.0,
