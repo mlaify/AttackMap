@@ -261,6 +261,11 @@ sinks:
   - {id: jinja-template, kind: ssti, langs: [python, js, go, php], cwe: 1336, gate: tainted,
      regex: '\bTemplate\s*\('}
 
+  - {id: js-render-request-locals, kind: ssti, langs: [js], cwe: 1336, gate: tainted, args: [1],
+     note: "the whole request object as template locals: `layout`, `settings` and engine options come from the request (Juice Shop dataErasure)",
+     when: '^[^,]*,\s*(?:\{\s*(?:[^{}]*,\s*)?\.\.\.\s*)?req(?:uest)?\s*\.\s*(?:body|query)(?![\w$.\[])',
+     regex: '\bres\s*\.\s*render\s*\('}
+
   # --- SSRF -------------------------------------------------------------------
   - {id: py-requests, kind: ssrf, langs: [python, js, go, php], cwe: 918, gate: tainted,
      regex: '\brequests\.(?:get|post|put|delete|patch|head)\s*\('}

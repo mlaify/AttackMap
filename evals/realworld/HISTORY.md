@@ -120,3 +120,7 @@ No class totals change: Juice Shop's path-traversal finding is aggregated, and i
 | `injection` | 95% → 96% | 75% → 79% | 22 / 1 / 56 |
 
 Juice Shop injection 83% / 58% → 88% / 75%: `POST /b2b/v2/orders:23` (notevil `safeEval` in a vm context) and `GET /redirect:18` are matched. Both handlers destructure the request (`({ body }: Request, …)`), which the JS header scan lost. The redirect sits behind `security.isRedirectAllowed(toUrl)`, a cross-file check whose substring `includes` is the bug, and is reported unguarded. No new false positives; other classes unchanged.
+
+## #445 request body as render locals (2026-11-25)
+
+injection 96% / 79% → 96% / 80% (23 / 1 / 56): `POST /dataerasure:104` is matched (`res.render(…, { ...req.body, … })`). No new false positives. Still missed in #445: the XXE upload (`parseXmlString` in `lib/xml.ts`, a cross-file helper) and finale routes (node-service).
