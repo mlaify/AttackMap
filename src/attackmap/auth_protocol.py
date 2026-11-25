@@ -627,6 +627,9 @@ _JS_SESSION_LOGIN = _rx(
     r"\breq\.session\.(?:user|userId|user_id|uid|account|accountId|authenticated|loggedIn|logged_in"
     r"|isAuthenticated|isLoggedIn|username|email)\s*=(?!=)(?!\s*(?:null\b|undefined\b|false\b|''|\"\"))"
 )
+_JS_REGENERATE = _rx(r"\.regenerate\s*\(")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+_REGENERATE_WINDOW = 400  # chars from a `regenerate(` to the login write in its callback / after its await
 _PHP_SESSION_LOGIN = _rx(
     r"\$_SESSION\s*\[\s*['\"](?:user|user_id|userid|uid|username|logged_in|loggedin|is_logged_in|auth"
     r"|authenticated|account_id|email)['\"]\s*\]\s*=(?!=)(?!\s*(?:null\b|false\b|''|\"\"))",
@@ -661,10 +664,17 @@ def _check_js_session(c: _Collector) -> bool:
             if len(s.group(2)) < _MIN_SECRET_LEN:
                 c.weakness("session_weak_secret", "high", offset - 1, f"hard-coded session secret under {_MIN_SECRET_LEN} chars")
                 break
-    if not re.search(r"\.regenerate\s*\(", content):
-        for m in _JS_SESSION_LOGIN.finditer(content):
-            if not c.commented(m.start()):
-                c.weakness("session_fixation", "medium", m.start(), "login stored in the session without `regenerate()`")
+    # Per login write, not per file: NodeGoat's signup regenerates, its login doesn't. A write inside
+    # (or right after) a live `regenerate()` call is safe; one in a comment counts for nothing.
+    blocks = [(m.start(), m.end()) for m in _BLOCK_COMMENT.finditer(content)]
+
+    def live(off: int) -> bool:
+        return not c.commented(off) and not any(a <= off < b for a, b in blocks)
+
+    regens = [m.start() for m in _JS_REGENERATE.finditer(content) if live(m.start())]
+    for m in _JS_SESSION_LOGIN.finditer(content):
+        if live(m.start()) and not any(0 < m.start() - r <= _REGENERATE_WINDOW for r in regens):
+            c.weakness("session_fixation", "medium", m.start(), "login stored in the session without `regenerate()`")
     return _JS_SERVER_STORE.search(content) is not None
 
 
