@@ -143,7 +143,8 @@ documented in the [CLI reference](https://docs.mlaify.io/cli/).
 - **[Roadmap / Bug Triage / Kanban](https://github.com/orgs/mlaify/projects)** —
   project boards · [Road to 1.0](https://github.com/mlaify/AttackMap/issues/209)
 - [`CHANGELOG.md`](https://github.com/mlaify/AttackMap/blob/main/CHANGELOG.md) · [`CONTRIBUTING.md`](https://github.com/mlaify/AttackMap/blob/main/CONTRIBUTING.md) ·
-  [`SECURITY.md`](https://github.com/mlaify/AttackMap/blob/main/SECURITY.md) · [`VISION.md`](https://github.com/mlaify/AttackMap/blob/main/VISION.md)
+  [`SECURITY.md`](https://github.com/mlaify/AttackMap/blob/main/SECURITY.md) · [`VISION.md`](https://github.com/mlaify/AttackMap/blob/main/VISION.md) ·
+  [Versioning and compatibility](https://github.com/mlaify/AttackMap/blob/main/docs/versioning.md)
 
 ## Special thanks
 
