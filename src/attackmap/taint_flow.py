@@ -748,6 +748,9 @@ _LOOKUP_CALL_RE = re.compile(
 )
 _LOOKUP_NAME_RE = re.compile(r"(?:find|retrieve|lookup|read(?!File))\w*")
 _LOOKUP_LIBS = frozenset({"_", "lodash", "R"})
+# An id-shaped field read off a record: `.id`, `._id`, `.data.id`, `?.userId`, `.uuid`.
+_RECORD_ID_RE = re.compile(r"(?:\s{0,8}\??\.\s{0,8}[\w$]{1,64}){0,2}?\s{0,8}\??\.\s{0,8}(?:_?id|uuid|[\w$]{0,40}(?:Id|ID|_id))(?![\w$(])")
+_LOOKUP_WINDOW = 4000
 _ELSE_RE = re.compile(r"else\b\s*")
 _TRY_TAIL_RE = re.compile(r"\btry\s*$")
 _CATCH_RE = re.compile(r"catch\b\s*(?:\([^)]*\)\s*)?")
@@ -1129,7 +1132,7 @@ class _TextFlow:
                 atoms.append(sanitize(atom, mt.start()))
         for mt in _IDENT_RE[self.lang].finditer(self.m, a, b):
             got = env.get(mt.group())
-            if got:
+            if got and not self._record_id(mt.group(), mt.start(), mt.end(), env):
                 atoms += [sanitize(x, mt.start()) for x in got]
         return _dedupe(atoms)
 
@@ -1427,6 +1430,36 @@ class _TextFlow:
         outer = self._innermost(o - 1)
         return outer < 0 or self.opens[outer] < sink < self.closes[outer]
 
+    def _lookup_binding(self, var: str, lo: int, at: int) -> re.Match[str] | None:
+        """The lookup call that last assigned ``var`` in ``[lo, at)``: a single-key ``recv.get`` / ``recv.has``
+        / ``find*`` / ``retrieve*`` / ``lookup*`` / ``read*`` call (not lodash-style helpers), or None."""
+        assign = None
+        for am in re.finditer(r"(?<![\w$.])" + re.escape(var) + r"\s*=(?![=>])", self.m[lo:at]):
+            assign = am
+        if assign is None:
+            return None
+        cm = _LOOKUP_CALL_RE.match(self.m, self._skip_ws(lo + assign.end()), at)
+        if cm is None:
+            return None
+        recv, name = cm.group(1), cm.group(2)
+        if recv:
+            if recv.split(".", 1)[0].strip() in _LOOKUP_LIBS:
+                return None
+            if name not in ("get", "has") and not _LOOKUP_NAME_RE.fullmatch(name):
+                return None
+        elif not _LOOKUP_NAME_RE.fullmatch(name):
+            return None
+        return cm
+
+    def _record_id(self, name: str, start: int, end: int, env: dict) -> bool:
+        """``name.id`` / ``name.data.id`` / ``name.userId`` where ``name`` holds a record looked up from an
+        untainted store (``authenticatedUsers.get(token)``): the id is assigned by the server, so the
+        lookup key's taint doesn't reach it (#444). Other fields of the record stay tainted."""
+        if _RECORD_ID_RE.match(self.m, end) is None:
+            return False
+        cm = self._lookup_binding(name, max(0, start - _LOOKUP_WINDOW), start)
+        return cm is not None and not self._eval(cm.start(1), cm.start(2), env)
+
     def _lookup_guard(self, cond: tuple[int, int], lo: int, at: int, env: dict, regions) -> set:
         """Atoms validated by a not-found exit: ``rec = find(key); if (!rec) return`` means ``key`` names
         a stored record (a known challenge, a session, a row), so a sink built from ``key`` itself carries no
@@ -1442,21 +1475,8 @@ class _TextFlow:
         if mt is None:
             return set()
         var = mt.group("a") or mt.group("b")
-        assign = None
-        for am in re.finditer(r"(?<![\w$.])" + re.escape(var) + r"\s*=(?![=>])", self.m[lo:at]):
-            assign = am
-        if assign is None:
-            return set()
-        cm = _LOOKUP_CALL_RE.match(self.m, self._skip_ws(lo + assign.end()), at)
+        cm = self._lookup_binding(var, lo, at)
         if cm is None:
-            return set()
-        recv, name = cm.group(1), cm.group(2)
-        if recv:
-            if recv.split(".", 1)[0].strip() in _LOOKUP_LIBS:
-                return set()
-            if name not in ("get", "has") and not _LOOKUP_NAME_RE.fullmatch(name):
-                return set()
-        elif not _LOOKUP_NAME_RE.fullmatch(name):
             return set()
         open_ = cm.end() - 1
         close = self._match_paren(open_, _MAX_RHS)

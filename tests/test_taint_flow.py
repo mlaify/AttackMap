@@ -673,8 +673,8 @@ def test_java_string_matches_is_a_full_match_guard(tmp_path: Path) -> None:
 
 def test_a_not_found_exit_after_a_lookup_validates_the_key(tmp_path: Path) -> None:
     # Juice Shop vulnCodeSnippet (#444): the key named a stored record, or the handler returned. The record
-    # itself may hold attacker-written data (Juice Shop's stored username SSTI), and a bare presence check
-    # of the raw input proves nothing.
+    # itself may hold attacker-written data (Juice Shop's stored username SSTI), except its id, which the
+    # server assigned (profileImageFileUpload). A bare presence check of the raw input proves nothing.
     (tmp_path / "app.js").write_text(
         "app.post('/a', async (req, res) => {\n"
         "  const key = req.body.key\n"
@@ -706,15 +706,19 @@ def test_a_not_found_exit_after_a_lookup_validates_the_key(tmp_path: Path) -> No
         "  const fixes = readFixes(key)\n"
         "  if (fixes.items.length === 0) { res.status(404).end() } else { fs.readFileSync('./f/' + key) }\n"
         "  if (fixes) { res.end() } else { fs.readFileSync('./g/' + key) }\n"
+        "})\n"
+        "app.post('/f', (req, res) => {\n"
+        "  const user = sessions.get(req.cookies.token)\n"
+        "  fs.writeFileSync(`t/${user.name}`, buf)\n"
         "})\n",
         encoding="utf-8",
     )
-    spec = (("/a", 1), ("/b", 7), ("/c", 12), ("/d", 17), ("/e", 26))
+    spec = (("/a", 1), ("/b", 7), ("/c", 12), ("/d", 17), ("/e", 26), ("/f", 32))
     routes = [Route(path=p, method="POST", file="app.js", line=n) for p, n in spec]
     chains = [c for c in analyze_taint(ScanResult(root=str(tmp_path), routes=routes), tmp_path) if c.sink_kind == "dynamic_open"]
     assert sorted((c.sink_line, c.sanitized) for c in chains) == [
-        (5, True), (10, False), (15, False), (24, True), (29, True), (30, False)
-    ]
+        (5, True), (15, False), (24, True), (29, True), (30, False), (34, False)
+    ]  # /b: the record's server-assigned id carries no taint; /f: its other fields do
 
 
 def test_destructured_express_request_and_vm_context_eval(tmp_path: Path) -> None:
