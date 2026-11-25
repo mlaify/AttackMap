@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal
 
+from . import extensions
 from .models import AttackPath, AttackSurface, Finding, ScanResult
 from .review_prompts import (
     render_critic_prompts,
@@ -195,7 +196,10 @@ def _refusal_message(model: str, details: Any) -> str:
     explanation = getattr(details, "explanation", None)
     message = f"{model} declined the request (stop_reason=refusal"
     message += f", category={category})" if category else ")"
-    return message + (f": {explanation}" if explanation else "")
+    message += f": {explanation}" if explanation else ""
+    for hint in extensions.refusal_hints(model=model, category=category):
+        message += f" {hint}"
+    return message
 
 
 def _run_via_sdk(
@@ -700,6 +704,7 @@ def _run_via_codex_cli(
     model: str | None,
     effort: str,
     runner: Any | None = None,
+    options: dict[str, str] | None = None,
 ) -> LlmReviewResult:
     """Invoke `codex exec` non-interactively and return the final message.
 
@@ -719,6 +724,7 @@ def _run_via_codex_cli(
         )
 
     reasoning_effort = OPENAI_EFFORT_MAP.get(effort, "high")
+    extra_args = extensions.codex_args(model=model, options=options or {})
 
     def build_cmd(cwd: str) -> list[str]:
         return [
@@ -734,6 +740,7 @@ def _run_via_codex_cli(
             "--ephemeral",
             "--ignore-rules",
             "--skip-git-repo-check",
+            *extra_args,
             rendered_system,
         ]
 
@@ -861,6 +868,13 @@ def _resolve_backend(
     )
 
 
+def _validate_with_extensions(provider: str, backend: str, model: str | None, options: dict[str, str] | None) -> None:
+    try:
+        extensions.validate_llm_run(provider=provider, backend=backend, model=model, options=dict(options or {}))
+    except ValueError as exc:
+        raise LlmReviewError(str(exc)) from exc
+
+
 def generate_llm_review(
     scan: ScanResult,
     attack_surfaces: list[AttackSurface],
@@ -887,6 +901,7 @@ def generate_llm_review(
     avoid_titles: list[str] | None = None,
     critic_hint: str | None = None,
     fallback: bool = True,
+    llm_options: dict[str, str] | None = None,
 ) -> LlmReviewResult:
     """Produce a narrative defensive review — or, with ``mode="hunt"``, ranked
     vulnerability hypotheses (#80) — by calling an LLM.
@@ -928,6 +943,7 @@ def generate_llm_review(
         rendered = render(scan, attack_surfaces, findings, attack_paths)
 
     if provider == "local":
+        _validate_with_extensions("local", "api", model, llm_options)
         return _run_via_local(rendered.system, rendered.user, model=model, max_tokens=max_tokens)
 
     if provider == "openai":
@@ -940,6 +956,7 @@ def generate_llm_review(
             chosen = _resolve_openai_backend(
                 backend, api_key=api_key, client=openai_client, codex_runner=codex_runner
             )
+        _validate_with_extensions("openai", chosen, requested, llm_options)
         if chosen == "api":
             return _run_via_openai_sdk(
                 rendered.system,
@@ -956,6 +973,7 @@ def generate_llm_review(
             model=requested,
             effort=resolved_effort,
             runner=codex_runner,
+            options=llm_options,
         )
 
     resolved_model = model or os.environ.get("ATTACKMAP_LLM_MODEL") or DEFAULT_MODEL
@@ -964,6 +982,7 @@ def generate_llm_review(
     else:
         chosen_backend = _resolve_backend(backend, api_key=api_key, client=client)
 
+    _validate_with_extensions("claude", chosen_backend, resolved_model, llm_options)
     if chosen_backend == "api":
         return _run_via_sdk(
             rendered.system,

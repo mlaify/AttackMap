@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extension points for installed packages (`docs/external-analyzers.md`): the `attackmap.cli` entry-point group adds CLI commands (it can't replace built-in ones), and `attackmap.llm` adds LLM-run hooks: declared `--llm-option KEY=VALUE` settings, validation before a run, extra `codex exec` arguments and refusal hints. `ATTACKMAP_TRUSTED_ANALYZERS_ONLY=1` loads no extensions (`analyze --trusted-analyzers-only` blocks the LLM hooks for that run); `attackmap capabilities` lists the ones that loaded.
 - `--llm-fallback/--no-llm-fallback` (Claude API backend, on by default): when a model's safeguards decline a request, the API reruns it on a fallback model chosen for the refusal category, on the models that offer it (Fable 5.2/5.1, Opus 5.5/5, Sonnet 5.5). The output records the model that answered.
 
 ### Changed
