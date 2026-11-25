@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-25
+
 ### Added
 
 - Extension points for installed packages (`docs/external-analyzers.md`): the `attackmap.cli` entry-point group adds CLI commands (it can't replace built-in ones), and `attackmap.llm` adds LLM-run hooks: declared `--llm-option KEY=VALUE` settings, validation before a run, extra `codex exec` arguments and refusal hints. `ATTACKMAP_TRUSTED_ANALYZERS_ONLY=1` loads no extensions (`analyze --trusted-analyzers-only` blocks the LLM hooks for that run); `attackmap capabilities` lists the ones that loaded.
@@ -1628,7 +1630,8 @@ for codebases.
   evidence pack is sent to the configured LLM backend.
 - See [SECURITY.md](SECURITY.md) for vulnerability disclosure.
 
-[Unreleased]: https://github.com/mlaify/AttackMap/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mlaify/AttackMap/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/mlaify/AttackMap/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mlaify/AttackMap/compare/v0.10.0...v1.0.0
 [0.10.0]: https://github.com/mlaify/AttackMap/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mlaify/AttackMap/compare/v0.8.0...v0.9.0
